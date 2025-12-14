@@ -416,6 +416,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   app.get('/api/strava/callback', async (c) => {
+    const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
+    
     try {
       const code = c.req.query('code');
       const state = c.req.query('state');
@@ -424,11 +426,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const STRAVA_CLIENT_SECRET = c.env.STRAVA_CLIENT_SECRET;
       
       if (authError) {
-        return c.redirect('/?strava_error=denied');
+        return c.redirect(`${FRONTEND_URL}/?strava_error=denied`);
       }
       
       if (!code || !state || !STRAVA_CLIENT_ID || !STRAVA_CLIENT_SECRET) {
-        return c.redirect('/?strava_error=invalid');
+        return c.redirect(`${FRONTEND_URL}/?strava_error=invalid`);
       }
 
       let userId: string;
@@ -436,7 +438,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         const decoded = JSON.parse(atob(state));
         userId = decoded.userId;
       } catch {
-        return c.redirect('/?strava_error=invalid_state');
+        return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
       const tokenResponse = await fetch('https://www.strava.com/oauth/token', {
@@ -452,7 +454,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       if (!tokenResponse.ok) {
         console.error('Strava token exchange failed:', await tokenResponse.text());
-        return c.redirect('/?strava_error=token_exchange');
+        return c.redirect(`${FRONTEND_URL}/?strava_error=token_exchange`);
       }
 
       const tokenData: any = await tokenResponse.json();
@@ -463,7 +465,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       const existingAccount = await storage.getStravaAccountByAthleteId(athlete.id);
       if (existingAccount && existingAccount.userId !== userId) {
-        return c.redirect('/?strava_error=already_linked');
+        return c.redirect(`${FRONTEND_URL}/?strava_error=already_linked`);
       }
 
       const expiresAtDate = new Date(expires_at * 1000);
@@ -484,10 +486,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         await storage.createStravaAccount(stravaAccountData);
       }
 
-      return c.redirect('/?strava_connected=true');
+      return c.redirect(`${FRONTEND_URL}/?strava_connected=true`);
     } catch (error: any) {
       console.error('Strava callback error:', error);
-      return c.redirect('/?strava_error=server');
+      return c.redirect(`${FRONTEND_URL}/?strava_error=server`);
     }
   });
 
