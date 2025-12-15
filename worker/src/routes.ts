@@ -42,15 +42,16 @@ async function getValidStravaToken(
 
   // Token expired or expiring soon, refresh it
   try {
+    const params = new URLSearchParams({
+      client_id: env.STRAVA_CLIENT_ID!,
+      client_secret: env.STRAVA_CLIENT_SECRET!,
+      grant_type: 'refresh_token',
+      refresh_token: stravaAccount.refreshToken,
+    });
     const response = await fetch('https://www.strava.com/oauth/token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        client_id: env.STRAVA_CLIENT_ID,
-        client_secret: env.STRAVA_CLIENT_SECRET,
-        grant_type: 'refresh_token',
-        refresh_token: stravaAccount.refreshToken,
-      }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
     });
 
     if (!response.ok) {
@@ -441,15 +442,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
+      const params = new URLSearchParams({
+        client_id: STRAVA_CLIENT_ID!,
+        client_secret: STRAVA_CLIENT_SECRET!,
+        code: code as string,
+        grant_type: 'authorization_code',
+      });
       const tokenResponse = await fetch('https://www.strava.com/oauth/token', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: STRAVA_CLIENT_ID,
-          client_secret: STRAVA_CLIENT_SECRET,
-          code,
-          grant_type: 'authorization_code',
-        }),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
       });
 
       if (!tokenResponse.ok) {
