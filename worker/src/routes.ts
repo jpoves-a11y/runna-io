@@ -139,7 +139,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       const isValid = await verifyPassword(password, user.password);
       if (!isValid) {
-        return c.json({ error: "Contraseña incorrecta" }, 401);
+        return c.json({ error: "ContraseÃ±a incorrecta" }, 401);
       }
 
       const { password: _, ...userWithoutPassword } = user;
@@ -157,7 +157,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const { password, ...userData } = body;
       
       if (!password || password.length < 4) {
-        return c.json({ error: "La contraseña debe tener al menos 4 caracteres" }, 400);
+        return c.json({ error: "La contraseÃ±a debe tener al menos 4 caracteres" }, 400);
       }
 
       const hashedPassword = await hashPassword(password);
@@ -399,7 +399,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     try {
       const userId = c.req.query('userId');
       const STRAVA_CLIENT_ID = c.env.STRAVA_CLIENT_ID;
-      const STRAVA_REDIRECT_URI = c.env.STRAVA_REDIRECT_URI || 'https://runna-io.pages.dev/api/strava/callback';
+      const STRAVA_REDIRECT_URI = 'https://runna-io-api.runna-io-api.workers.dev/api/strava/callback';
+
       
       if (!userId || !STRAVA_CLIENT_ID) {
         return c.json({ error: "userId required and Strava not configured" }, 400);
@@ -442,12 +443,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
+            const STRAVA_REDIRECT_URI = 'https://runna-io-api.runna-io-api.workers.dev/api/strava/callback';
+      
       const params = new URLSearchParams({
         client_id: STRAVA_CLIENT_ID!,
         client_secret: STRAVA_CLIENT_SECRET!,
         code: code as string,
         grant_type: 'authorization_code',
+        redirect_uri: STRAVA_REDIRECT_URI,
       });
+
       const tokenResponse = await fetch('https://www.strava.com/oauth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
