@@ -18,3 +18,4 @@
 [x] 18. Changed m² to km² with 2 decimals in Profile page
 [x] 19. Added compass/navigation icon for center on user position button
 [x] 20. Added refresh app button in Settings dialog
+[x] 21. Final migration verification - npm install completed, workflow running on port 5000
