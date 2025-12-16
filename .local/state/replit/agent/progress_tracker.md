@@ -21,3 +21,4 @@
 [x] 21. Final migration verification - npm install completed, workflow running on port 5000
 [x] 22. Re-ran npm install to fix tsx not found error, workflow now running successfully on port 5000
 [x] 23. Fixed ProfilePage: added bottom padding (pb-24) to prevent content cutoff, converted hex color codes to readable Spanish color names
+[x] 24. Fixed ProfilePage width: added max-w-lg mx-auto to constrain width on large screens, improved color naming algorithm with HSL-based detection

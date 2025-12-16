@@ -24,81 +24,64 @@ import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 
-// Convert hex color to readable Spanish name
+// Convert hex color to readable Spanish name based on HSL
 function getColorName(hex: string): string {
-  const colorMap: Record<string, string> = {
-    '#FF5733': 'Naranja rojizo',
-    '#33FF57': 'Verde lima',
-    '#3357FF': 'Azul real',
-    '#FF33F5': 'Magenta',
-    '#33FFF5': 'Turquesa',
-    '#F5FF33': 'Amarillo limon',
-    '#FF3333': 'Rojo',
-    '#33FF33': 'Verde',
-    '#3333FF': 'Azul',
-    '#FFFF33': 'Amarillo',
-    '#FF33FF': 'Rosa fucsia',
-    '#33FFFF': 'Cian',
-    '#FF6600': 'Naranja',
-    '#6600FF': 'Violeta',
-    '#00FF66': 'Verde esmeralda',
-    '#FF0066': 'Rosa intenso',
-    '#0066FF': 'Azul cielo',
-    '#66FF00': 'Verde fluorescente',
-    '#9933FF': 'Purpura',
-    '#FF9933': 'Melocoton',
-    '#33FF99': 'Menta',
-    '#FF3399': 'Rosa chicle',
-    '#3399FF': 'Azul celeste',
-    '#99FF33': 'Lima brillante',
-    '#FF6633': 'Coral',
-    '#6633FF': 'Indigo',
-    '#33FF66': 'Verde primavera',
-    '#FF3366': 'Frambuesa',
-    '#3366FF': 'Azul cobalto',
-    '#66FF33': 'Chartreuse',
-  };
-
-  const upperHex = hex.toUpperCase();
-  if (colorMap[upperHex]) {
-    return colorMap[upperHex];
-  }
-
-  // Parse hex to RGB and determine approximate color
+  if (!hex || hex.length < 7) return 'Color personalizado';
+  
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
 
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2 / 255;
+  const rNorm = r / 255;
+  const gNorm = g / 255;
+  const bNorm = b / 255;
 
-  if (max === min) {
-    if (l > 0.9) return 'Blanco';
-    if (l < 0.1) return 'Negro';
-    return 'Gris';
+  const max = Math.max(rNorm, gNorm, bNorm);
+  const min = Math.min(rNorm, gNorm, bNorm);
+  const l = (max + min) / 2;
+  const d = max - min;
+  
+  let s = 0;
+  if (d !== 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
   }
 
   let h = 0;
-  const d = max - min;
-  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  else if (max === g) h = ((b - r) / d + 2) / 6;
-  else h = ((r - g) / d + 4) / 6;
+  if (d !== 0) {
+    if (max === rNorm) h = ((gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0)) / 6;
+    else if (max === gNorm) h = ((bNorm - rNorm) / d + 2) / 6;
+    else h = ((rNorm - gNorm) / d + 4) / 6;
+  }
 
   const hue = h * 360;
+  const sat = s * 100;
+  const light = l * 100;
 
-  if (l < 0.2) return 'Negro';
-  if (l > 0.85) return 'Blanco';
+  // Grays, black, white
+  if (sat < 10) {
+    if (light < 15) return 'Negro';
+    if (light < 35) return 'Gris oscuro';
+    if (light < 65) return 'Gris';
+    if (light < 85) return 'Gris claro';
+    return 'Blanco';
+  }
 
-  if (hue < 15) return 'Rojo';
-  if (hue < 45) return 'Naranja';
-  if (hue < 70) return 'Amarillo';
-  if (hue < 150) return 'Verde';
-  if (hue < 190) return 'Cian';
-  if (hue < 260) return 'Azul';
-  if (hue < 290) return 'Violeta';
-  if (hue < 330) return 'Rosa';
-  return 'Rojo';
+  // Determine base color name from hue
+  let colorName = '';
+  if (hue < 15 || hue >= 345) colorName = 'Rojo';
+  else if (hue < 45) colorName = 'Naranja';
+  else if (hue < 70) colorName = 'Amarillo';
+  else if (hue < 150) colorName = 'Verde';
+  else if (hue < 190) colorName = 'Turquesa';
+  else if (hue < 260) colorName = 'Azul';
+  else if (hue < 290) colorName = 'Violeta';
+  else if (hue < 345) colorName = 'Rosa';
+
+  // Add lightness modifier
+  if (light < 25) return colorName + ' oscuro';
+  if (light > 75) return colorName + ' claro';
+  
+  return colorName;
 }
 
 interface StravaStatus {
@@ -299,13 +282,13 @@ export default function ProfilePage() {
 
   if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6">
+      <div className="flex flex-col items-center justify-center h-full p-4 max-w-lg mx-auto w-full">
         <div className="text-center space-y-4">
           <div className="relative inline-block">
-            <User className="h-20 w-20 mx-auto text-muted-foreground" />
+            <User className="h-16 w-16 mx-auto text-muted-foreground" />
           </div>
-          <h2 className="text-2xl font-bold">No has iniciado sesion</h2>
-          <p className="text-muted-foreground">
+          <h2 className="text-xl font-bold">No has iniciado sesion</h2>
+          <p className="text-muted-foreground text-sm">
             Inicia sesion para acceder a tu perfil
           </p>
           <Button
@@ -331,15 +314,15 @@ export default function ProfilePage() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col min-h-full">
-        <div className="p-6 border-b border-border bg-gradient-to-br from-primary/5 to-transparent">
-          <h1 className="text-3xl font-bold flex items-center gap-3">
-            <User className="h-8 w-8 text-primary" />
+      <div className="flex flex-col min-h-full max-w-lg mx-auto w-full">
+        <div className="p-4 border-b border-border bg-gradient-to-br from-primary/5 to-transparent">
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <User className="h-6 w-6 text-primary" />
             Perfil
           </h1>
         </div>
 
-        <div className="p-6 pb-24 space-y-6">
+        <div className="p-4 pb-24 space-y-4">
           <div className="flex flex-col items-center text-center gap-4">
             <div className="relative group">
               <Avatar className="h-28 w-28 ring-4 ring-offset-4"
