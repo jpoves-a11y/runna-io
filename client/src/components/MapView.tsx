@@ -170,8 +170,19 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full map-container" data-testid="map-container" />
       
-      {/* Zoom Controls */}
+      {/* Map Controls */}
       <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-[1000]">
+        {/* Locate Button - Compass style for centering on user position */}
+        <Button
+          size="icon"
+          variant="secondary"
+          onClick={handleLocate}
+          disabled={isLocating}
+          data-testid="button-locate"
+          className="shadow-lg bg-primary text-primary-foreground hover:bg-primary/90 border-border"
+        >
+          <Navigation className={`h-5 w-5 ${isLocating ? 'animate-spin' : ''}`} />
+        </Button>
         <Button
           size="icon"
           variant="secondary"
@@ -200,18 +211,6 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
           <Layers className="h-5 w-5" />
         </Button>
       </div>
-
-      {/* Locate Button - Compass style for centering on user position */}
-      <Button
-        size="icon"
-        variant="secondary"
-        onClick={handleLocate}
-        disabled={isLocating}
-        data-testid="button-locate"
-        className="absolute left-4 bottom-4 shadow-lg z-[1000] bg-card/95 backdrop-blur-sm hover:bg-card border-border"
-      >
-        <Navigation className={`h-5 w-5 ${isLocating ? 'animate-spin' : ''}`} />
-      </Button>
 
       <style>{`
         .map-container {
