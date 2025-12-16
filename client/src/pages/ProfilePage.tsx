@@ -296,11 +296,12 @@ export default function ProfilePage() {
                 <MapPin className="h-6 w-6 text-primary" />
               </div>
               <p className="text-2xl font-bold" data-testid="text-total-area">
-                {user.totalArea.toLocaleString('es-ES', {
-                  maximumFractionDigits: 0,
+                {(user.totalArea / 1000000).toLocaleString('es-ES', {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
                 })}
               </p>
-              <p className="text-sm text-muted-foreground">m2 conquistados</p>
+              <p className="text-sm text-muted-foreground">km² conquistados</p>
             </Card>
 
             <Card className="p-4 text-center">

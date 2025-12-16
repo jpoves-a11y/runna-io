@@ -13,7 +13,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { useToast } from '@/hooks/use-toast';
-import { Save, User, Palette, Camera, Upload } from 'lucide-react';
+import { Save, User, Palette, Camera, Upload, RefreshCw } from 'lucide-react';
 import type { UserWithStats } from '@shared/schema';
 import { USER_COLORS } from '@/lib/colors';
 
@@ -265,6 +265,20 @@ export function SettingsDialog({ open, onOpenChange, user }: SettingsDialogProps
           >
             <Save className="h-5 w-5 mr-2" />
             {updateUserMutation.isPending ? 'Guardando...' : 'Guardar cambios'}
+          </Button>
+
+          {/* Refresh App Button */}
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              window.location.reload();
+            }}
+            className="w-full hover:scale-105 active:scale-95 transition-all duration-300"
+            data-testid="button-refresh-app"
+          >
+            <RefreshCw className="h-5 w-5 mr-2" />
+            Actualizar aplicacion
           </Button>
         </div>
       </DialogContent>

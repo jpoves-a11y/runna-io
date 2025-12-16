@@ -14,3 +14,7 @@
 [x] 14. Fix responsive width issues for all devices
 [x] 15. Convert m² to km² with 2 decimal places in all components
 [x] 16. Migration to Replit environment completed - npm dependencies installed and workflow configured
+[x] 17. Fix mobile UI - moved map buttons above bottom nav (bottom-4 instead of bottom-24)
+[x] 18. Changed m² to km² with 2 decimals in Profile page
+[x] 19. Added compass/navigation icon for center on user position button
+[x] 20. Added refresh app button in Settings dialog

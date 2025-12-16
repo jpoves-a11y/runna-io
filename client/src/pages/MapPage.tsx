@@ -128,7 +128,7 @@ export default function MapPage() {
       
       <Button
         size="lg"
-        className="absolute bottom-24 right-4 h-16 w-16 rounded-full shadow-2xl z-[1000] gradient-primary border-0 hover:scale-110 active:scale-95 transition-all duration-300 group animate-scale-in"
+        className="absolute bottom-4 right-4 h-16 w-16 rounded-full shadow-2xl z-[1000] gradient-primary border-0 hover:scale-110 active:scale-95 transition-all duration-300 group animate-scale-in"
         onClick={() => setIsTracking(true)}
         data-testid="button-start-run"
       >

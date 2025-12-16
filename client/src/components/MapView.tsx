@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Button } from '@/components/ui/button';
-import { ZoomIn, ZoomOut, Locate, Layers } from 'lucide-react';
+import { ZoomIn, ZoomOut, Layers, Navigation } from 'lucide-react';
 import type { TerritoryWithUser } from '@shared/schema';
 import { DEFAULT_CENTER, getCurrentPosition } from '@/lib/geolocation';
 
@@ -201,16 +201,16 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
         </Button>
       </div>
 
-      {/* Locate Button */}
+      {/* Locate Button - Compass style for centering on user position */}
       <Button
         size="icon"
         variant="secondary"
         onClick={handleLocate}
         disabled={isLocating}
         data-testid="button-locate"
-        className="absolute left-4 bottom-24 shadow-lg z-[1000] bg-card/95 backdrop-blur-sm hover:bg-card border-border"
+        className="absolute left-4 bottom-4 shadow-lg z-[1000] bg-card/95 backdrop-blur-sm hover:bg-card border-border"
       >
-        <Locate className={`h-5 w-5 ${isLocating ? 'animate-pulse' : ''}`} />
+        <Navigation className={`h-5 w-5 ${isLocating ? 'animate-spin' : ''}`} />
       </Button>
 
       <style>{`
