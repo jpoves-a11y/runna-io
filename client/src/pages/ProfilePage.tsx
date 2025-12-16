@@ -14,7 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -23,6 +23,83 @@ import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
+
+// Convert hex color to readable Spanish name
+function getColorName(hex: string): string {
+  const colorMap: Record<string, string> = {
+    '#FF5733': 'Naranja rojizo',
+    '#33FF57': 'Verde lima',
+    '#3357FF': 'Azul real',
+    '#FF33F5': 'Magenta',
+    '#33FFF5': 'Turquesa',
+    '#F5FF33': 'Amarillo limon',
+    '#FF3333': 'Rojo',
+    '#33FF33': 'Verde',
+    '#3333FF': 'Azul',
+    '#FFFF33': 'Amarillo',
+    '#FF33FF': 'Rosa fucsia',
+    '#33FFFF': 'Cian',
+    '#FF6600': 'Naranja',
+    '#6600FF': 'Violeta',
+    '#00FF66': 'Verde esmeralda',
+    '#FF0066': 'Rosa intenso',
+    '#0066FF': 'Azul cielo',
+    '#66FF00': 'Verde fluorescente',
+    '#9933FF': 'Purpura',
+    '#FF9933': 'Melocoton',
+    '#33FF99': 'Menta',
+    '#FF3399': 'Rosa chicle',
+    '#3399FF': 'Azul celeste',
+    '#99FF33': 'Lima brillante',
+    '#FF6633': 'Coral',
+    '#6633FF': 'Indigo',
+    '#33FF66': 'Verde primavera',
+    '#FF3366': 'Frambuesa',
+    '#3366FF': 'Azul cobalto',
+    '#66FF33': 'Chartreuse',
+  };
+
+  const upperHex = hex.toUpperCase();
+  if (colorMap[upperHex]) {
+    return colorMap[upperHex];
+  }
+
+  // Parse hex to RGB and determine approximate color
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2 / 255;
+
+  if (max === min) {
+    if (l > 0.9) return 'Blanco';
+    if (l < 0.1) return 'Negro';
+    return 'Gris';
+  }
+
+  let h = 0;
+  const d = max - min;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+
+  const hue = h * 360;
+
+  if (l < 0.2) return 'Negro';
+  if (l > 0.85) return 'Blanco';
+
+  if (hue < 15) return 'Rojo';
+  if (hue < 45) return 'Naranja';
+  if (hue < 70) return 'Amarillo';
+  if (hue < 150) return 'Verde';
+  if (hue < 190) return 'Cian';
+  if (hue < 260) return 'Azul';
+  if (hue < 290) return 'Violeta';
+  if (hue < 330) return 'Rosa';
+  return 'Rojo';
+}
 
 interface StravaStatus {
   connected: boolean;
@@ -262,7 +339,7 @@ export default function ProfilePage() {
           </h1>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-6 pb-24 space-y-6">
           <div className="flex flex-col items-center text-center gap-4">
             <div className="relative group">
               <Avatar className="h-28 w-28 ring-4 ring-offset-4"
@@ -316,16 +393,21 @@ export default function ProfilePage() {
           </div>
 
           <Card className="p-4">
-            <h3 className="font-semibold mb-3">Tu color de territorio</h3>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 mb-3">
+              <Palette className="h-5 w-5 text-primary" />
+              <h3 className="font-semibold">Tu color de territorio</h3>
+            </div>
+            <div className="flex items-center gap-4">
               <div
-                className="w-16 h-16 rounded-xl border-2 border-border shadow-lg"
+                className="w-14 h-14 rounded-xl shadow-md flex-shrink-0"
                 style={{ backgroundColor: user.color }}
               />
-              <div className="flex-1">
-                <p className="font-medium text-lg">{user.color}</p>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-lg" data-testid="text-color-name">
+                  {getColorName(user.color)}
+                </p>
                 <p className="text-sm text-muted-foreground">
-                  Este color representa tus conquistas en el mapa
+                  Este color identifica tus territorios en el mapa
                 </p>
               </div>
             </div>
