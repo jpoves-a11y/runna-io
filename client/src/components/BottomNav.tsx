@@ -20,13 +20,13 @@ export function BottomNav() {
 
   return (
     <nav 
-      className="fixed bottom-0 left-0 right-0 bg-card/98 backdrop-blur-xl border-t border-border z-50"
+      className="fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur-xl border-t border-border/50 z-50 shadow-lg shadow-black/5 dark:shadow-black/20"
       style={{ 
-        height: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))',
+        height: 'calc(4rem + env(safe-area-inset-bottom, 0px))',
         paddingBottom: 'env(safe-area-inset-bottom, 0px)'
       }}
     >
-      <div className="flex items-stretch justify-around h-[4.5rem] max-w-md mx-auto px-2">
+      <div className="flex items-stretch justify-around h-[4rem] max-w-md mx-auto px-1">
         {navItems.map((item) => {
           const isActive = isPathActive(item.path);
           const Icon = item.icon;
@@ -39,14 +39,14 @@ export function BottomNav() {
               className="flex-1 flex items-center justify-center"
             >
               <div
-                className={`flex flex-col items-center justify-center gap-0.5 py-1 px-3 rounded-xl transition-all duration-200 ${
-                  isActive ? 'text-primary' : 'text-muted-foreground active:bg-muted/50'
+                className={`flex flex-col items-center justify-center gap-0.5 py-1.5 px-4 rounded-2xl transition-all duration-300 ${
+                  isActive 
+                    ? 'text-primary bg-primary/10' 
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/30 active:scale-95'
                 }`}
               >
-                <div className={`p-1.5 rounded-lg transition-all duration-200 ${isActive ? 'bg-primary/15' : ''}`}>
-                  <Icon className={`h-5 w-5 ${isActive ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
-                </div>
-                <span className={`text-[10px] leading-tight ${isActive ? 'font-bold' : 'font-medium'}`}>
+                <Icon className={`h-5 w-5 transition-transform duration-200 ${isActive ? 'stroke-[2.5] scale-110' : 'stroke-[1.75]'}`} />
+                <span className={`text-[10px] leading-tight transition-all duration-200 ${isActive ? 'font-bold' : 'font-medium opacity-80'}`}>
                   {item.label}
                 </span>
               </div>

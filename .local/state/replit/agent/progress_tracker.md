@@ -22,3 +22,9 @@
 [x] 22. Re-ran npm install to fix tsx not found error, workflow now running successfully on port 5000
 [x] 23. Fixed ProfilePage: added bottom padding (pb-24) to prevent content cutoff, converted hex color codes to readable Spanish color names
 [x] 24. Fixed ProfilePage width: added max-w-lg mx-auto to constrain width on large screens, improved color naming algorithm with HSL-based detection
+[x] 25. Aesthetic improvements for mobile:
+    - Updated favicon, icons with runna_app logo
+    - Improved BottomNav: more compact (4rem), backdrop blur, subtle shadow, rounded pills for active state
+    - Compact headers in Rankings, Activity, Profile pages with icons in rounded containers
+    - Added bottom padding (pb-24) to all scrollable pages for bottom nav
+    - Fixed LSP error in LeaderboardTable (ringColor -> --tw-ring-color)

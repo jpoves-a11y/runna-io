@@ -315,11 +315,16 @@ export default function ProfilePage() {
   return (
     <ScrollArea className="h-full">
       <div className="flex flex-col min-h-full max-w-lg mx-auto w-full">
-        <div className="p-4 border-b border-border bg-gradient-to-br from-primary/5 to-transparent">
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <User className="h-6 w-6 text-primary" />
-            Perfil
-          </h1>
+        <div className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5">
+          <div className="flex items-center gap-3">
+            <div className="relative p-2 rounded-xl bg-primary/10">
+              <User className="h-6 w-6 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">Perfil</h1>
+              <p className="text-xs text-muted-foreground">Tu cuenta y ajustes</p>
+            </div>
+          </div>
         </div>
 
         <div className="p-4 pb-24 space-y-4">

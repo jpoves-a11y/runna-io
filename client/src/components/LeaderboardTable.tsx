@@ -49,23 +49,24 @@ export function LeaderboardTable({ users, currentUserId }: LeaderboardTableProps
   return (
     <div className="flex flex-col h-full animate-fade-in">
       {/* Header */}
-      <div className="p-6 border-b border-border bg-gradient-to-br from-primary/5 to-transparent animate-slide-down">
-        <h1 className="text-3xl font-bold flex items-center gap-3">
-          <div className="relative">
-            <Trophy className="h-8 w-8 text-primary" />
-            <div className="absolute inset-0 bg-primary/20 blur-xl animate-pulse" />
+      <div className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5 animate-slide-down">
+        <div className="flex items-center gap-3">
+          <div className="relative p-2 rounded-xl bg-primary/10">
+            <Trophy className="h-6 w-6 text-primary" />
           </div>
-          Rankings
-        </h1>
-        <p className="text-muted-foreground mt-2 flex items-center gap-2">
-          <TrendingUp className="h-4 w-4" />
-          Tabla de posiciones por territorio conquistado
-        </p>
+          <div>
+            <h1 className="text-xl font-bold">Rankings</h1>
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              <TrendingUp className="h-3 w-3" />
+              Territorio conquistado
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Leaderboard */}
       <ScrollArea className="flex-1">
-        <div className="p-4 space-y-2">
+        <div className="p-4 pb-24 space-y-2">
           {users.map((user, index) => {
             const rank = index + 1;
             const isCurrentUser = user.id === currentUserId;
@@ -101,8 +102,8 @@ export function LeaderboardTable({ users, currentUserId }: LeaderboardTableProps
                   <div className="relative">
                     <Avatar className={`${isTopThree ? 'h-14 w-14 ring-2 ring-offset-2' : 'h-12 w-12'} transition-all duration-300`}
                       style={{
-                        ringColor: isTopThree ? user.color : 'transparent'
-                      }}
+                        '--tw-ring-color': isTopThree ? user.color : 'transparent'
+                      } as React.CSSProperties}
                     >
                       <AvatarImage src={user.avatar || undefined} />
                       <AvatarFallback style={{ backgroundColor: user.color }}>
