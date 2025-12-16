@@ -41,6 +41,35 @@ export const friendships = pgTable("friendships", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Polar Integration Tables
+export const polarAccounts = pgTable("polar_accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  polarUserId: bigint("polar_user_id", { mode: "number" }).notNull().unique(),
+  accessToken: text("access_token").notNull(),
+  memberId: text("member_id"),
+  registeredAt: timestamp("registered_at").defaultNow(),
+  lastSyncAt: timestamp("last_sync_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const polarActivities = pgTable("polar_activities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  polarExerciseId: varchar("polar_exercise_id").notNull().unique(),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  territoryId: varchar("territory_id").references(() => territories.id, { onDelete: 'set null' }),
+  name: text("name").notNull(),
+  activityType: text("activity_type").notNull(),
+  distance: real("distance").notNull(),
+  duration: integer("duration").notNull(),
+  startDate: timestamp("start_date").notNull(),
+  summaryPolyline: text("summary_polyline"),
+  processed: boolean("processed").notNull().default(false),
+  processedAt: timestamp("processed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // Strava Integration Tables
 export const stravaAccounts = pgTable("strava_accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -77,8 +106,32 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   routes: many(routes),
   territories: many(territories),
   friendships: many(friendships),
+  polarAccount: one(polarAccounts),
+  polarActivities: many(polarActivities),
   stravaAccount: one(stravaAccounts),
   stravaActivities: many(stravaActivities),
+}));
+
+export const polarAccountsRelations = relations(polarAccounts, ({ one }) => ({
+  user: one(users, {
+    fields: [polarAccounts.userId],
+    references: [users.id],
+  }),
+}));
+
+export const polarActivitiesRelations = relations(polarActivities, ({ one }) => ({
+  user: one(users, {
+    fields: [polarActivities.userId],
+    references: [users.id],
+  }),
+  route: one(routes, {
+    fields: [polarActivities.routeId],
+    references: [routes.id],
+  }),
+  territory: one(territories, {
+    fields: [polarActivities.territoryId],
+    references: [territories.id],
+  }),
 }));
 
 export const routesRelations = relations(routes, ({ one, many }) => ({
@@ -154,6 +207,16 @@ export const insertFriendshipSchema = createInsertSchema(friendships).omit({
   createdAt: true,
 });
 
+export const insertPolarAccountSchema = createInsertSchema(polarAccounts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertPolarActivitySchema = createInsertSchema(polarActivities).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertStravaAccountSchema = createInsertSchema(stravaAccounts).omit({
   id: true,
   createdAt: true,
@@ -176,6 +239,12 @@ export type InsertTerritory = z.infer<typeof insertTerritorySchema>;
 
 export type Friendship = typeof friendships.$inferSelect;
 export type InsertFriendship = z.infer<typeof insertFriendshipSchema>;
+
+export type PolarAccount = typeof polarAccounts.$inferSelect;
+export type InsertPolarAccount = z.infer<typeof insertPolarAccountSchema>;
+
+export type PolarActivity = typeof polarActivities.$inferSelect;
+export type InsertPolarActivity = z.infer<typeof insertPolarActivitySchema>;
 
 export type StravaAccount = typeof stravaAccounts.$inferSelect;
 export type InsertStravaAccount = z.infer<typeof insertStravaAccountSchema>;

@@ -3,6 +3,8 @@ import {
   routes,
   territories,
   friendships,
+  polarAccounts,
+  polarActivities,
   stravaAccounts,
   stravaActivities,
   type User,
@@ -13,6 +15,10 @@ import {
   type InsertTerritory,
   type Friendship,
   type InsertFriendship,
+  type PolarAccount,
+  type InsertPolarAccount,
+  type PolarActivity,
+  type InsertPolarActivity,
   type StravaAccount,
   type InsertStravaAccount,
   type StravaActivity,
@@ -48,6 +54,18 @@ export interface IStorage {
   createFriendship(friendship: InsertFriendship): Promise<Friendship>;
   getFriendsByUserId(userId: string): Promise<UserWithStats[]>;
   checkFriendship(userId: string, friendId: string): Promise<boolean>;
+
+  // Polar
+  getPolarAccountByUserId(userId: string): Promise<PolarAccount | undefined>;
+  getPolarAccountByPolarUserId(polarUserId: number): Promise<PolarAccount | undefined>;
+  createPolarAccount(account: InsertPolarAccount): Promise<PolarAccount>;
+  updatePolarAccount(userId: string, data: Partial<PolarAccount>): Promise<PolarAccount>;
+  deletePolarAccount(userId: string): Promise<void>;
+  getPolarActivityByPolarId(polarExerciseId: string): Promise<PolarActivity | undefined>;
+  createPolarActivity(activity: InsertPolarActivity): Promise<PolarActivity>;
+  updatePolarActivity(id: string, data: Partial<PolarActivity>): Promise<PolarActivity>;
+  getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]>;
+  getPolarActivitiesByUserId(userId: string): Promise<PolarActivity[]>;
 
   // Strava
   getStravaAccountByUserId(userId: string): Promise<StravaAccount | undefined>;
@@ -259,6 +277,58 @@ export class DatabaseStorage implements IStorage {
         sql`${friendships.userId} = ${userId} AND ${friendships.friendId} = ${friendId}`
       );
     return !!friendship;
+  }
+
+  // Polar
+  async getPolarAccountByUserId(userId: string): Promise<PolarAccount | undefined> {
+    const [account] = await db.select().from(polarAccounts).where(eq(polarAccounts.userId, userId));
+    return account || undefined;
+  }
+
+  async getPolarAccountByPolarUserId(polarUserId: number): Promise<PolarAccount | undefined> {
+    const [account] = await db.select().from(polarAccounts).where(eq(polarAccounts.polarUserId, polarUserId));
+    return account || undefined;
+  }
+
+  async createPolarAccount(account: InsertPolarAccount): Promise<PolarAccount> {
+    const [created] = await db.insert(polarAccounts).values(account).returning();
+    return created;
+  }
+
+  async updatePolarAccount(userId: string, data: Partial<PolarAccount>): Promise<PolarAccount> {
+    const [updated] = await db.update(polarAccounts).set(data).where(eq(polarAccounts.userId, userId)).returning();
+    return updated;
+  }
+
+  async deletePolarAccount(userId: string): Promise<void> {
+    await db.delete(polarAccounts).where(eq(polarAccounts.userId, userId));
+  }
+
+  async getPolarActivityByPolarId(polarExerciseId: string): Promise<PolarActivity | undefined> {
+    const [activity] = await db.select().from(polarActivities).where(eq(polarActivities.polarExerciseId, polarExerciseId));
+    return activity || undefined;
+  }
+
+  async createPolarActivity(activity: InsertPolarActivity): Promise<PolarActivity> {
+    const [created] = await db.insert(polarActivities).values(activity).returning();
+    return created;
+  }
+
+  async updatePolarActivity(id: string, data: Partial<PolarActivity>): Promise<PolarActivity> {
+    const [updated] = await db.update(polarActivities).set(data).where(eq(polarActivities.id, id)).returning();
+    return updated;
+  }
+
+  async getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]> {
+    return await db.select().from(polarActivities)
+      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = false`)
+      .orderBy(desc(polarActivities.startDate));
+  }
+
+  async getPolarActivitiesByUserId(userId: string): Promise<PolarActivity[]> {
+    return await db.select().from(polarActivities)
+      .where(eq(polarActivities.userId, userId))
+      .orderBy(desc(polarActivities.startDate));
   }
 
   // Strava
