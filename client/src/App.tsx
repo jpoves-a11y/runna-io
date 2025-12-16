@@ -1,11 +1,11 @@
+import { useState, useEffect } from 'react';
 import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { BottomNav } from "@/components/BottomNav";
-import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Play } from "lucide-react";
 import MapPage from "@/pages/MapPage";
 import RankingsPage from "@/pages/RankingsPage";
 import ActivityPage from "@/pages/ActivityPage";
@@ -27,33 +27,47 @@ function Router() {
 }
 
 function StartActivityButton() {
-  const [location, setLocation] = useLocation();
+  const [location] = useLocation();
+  const [showButton, setShowButton] = useState(() => {
+    return (location === '/' || location.startsWith('/?')) && !window.location.search.includes('tracking=true');
+  });
   
-  // Always show on map page
-  if (location !== '/' && !location.startsWith('/?')) return null;
+  useEffect(() => {
+    const checkVisibility = () => {
+      const isMapPage = window.location.pathname === '/';
+      const isTracking = window.location.search.includes('tracking=true');
+      setShowButton(isMapPage && !isTracking);
+    };
+    window.addEventListener('popstate', checkVisibility);
+    checkVisibility();
+    return () => window.removeEventListener('popstate', checkVisibility);
+  }, [location]);
+
+  const handleStartTracking = () => {
+    window.history.pushState({}, '', '/?tracking=true');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+  
+  if (!showButton) return null;
   
   return (
-    <div 
+    <button
+      className="fixed z-[9999] flex items-center justify-center shadow-2xl transition-all duration-300 active:scale-95"
       style={{
-        position: 'fixed',
-        bottom: '96px',
-        right: '16px',
-        width: '64px',
-        height: '64px',
+        bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px) + 12px)',
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: '60px',
+        height: '60px',
         borderRadius: '50%',
-        backgroundColor: '#22c55e',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-        zIndex: 9999,
-        cursor: 'pointer',
+        background: 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
+        border: '3px solid rgba(255,255,255,0.3)',
       }}
-      onClick={() => setLocation('/?tracking=true')}
+      onClick={handleStartTracking}
       data-testid="button-start-run"
     >
-      <Plus className="h-8 w-8 text-white" />
-    </div>
+      <Play className="h-7 w-7 text-white ml-0.5" fill="white" />
+    </button>
   );
 }
 
@@ -61,19 +75,13 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <div className="flex flex-col h-screen w-full max-w-full overflow-hidden bg-background">
-          {/* Main content area - accounts for bottom nav */}
-          <main className="flex-1 w-full max-w-full overflow-hidden pb-16">
+        <div className="fixed inset-0 flex flex-col bg-background">
+          <main className="flex-1 relative overflow-hidden" style={{ marginBottom: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))' }}>
             <Router />
           </main>
-          
-          {/* Bottom Navigation */}
           <BottomNav />
         </div>
-        
-        {/* Start Activity Button - fixed position outside container */}
         <StartActivityButton />
-        
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

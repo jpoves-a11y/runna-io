@@ -170,45 +170,44 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full map-container" data-testid="map-container" />
       
-      {/* Map Controls */}
-      <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col gap-2 z-[1000]">
-        {/* Locate Button - Compass style for centering on user position */}
+      {/* Map Controls - positioned above the bottom nav */}
+      <div className="absolute right-3 bottom-4 flex flex-col gap-2 z-[1000]">
         <Button
           size="icon"
           variant="secondary"
           onClick={handleLocate}
           disabled={isLocating}
           data-testid="button-locate"
-          className="shadow-lg bg-primary text-primary-foreground hover:bg-primary/90 border-border"
+          className="shadow-md bg-primary text-primary-foreground border-0"
         >
-          <Navigation className={`h-5 w-5 ${isLocating ? 'animate-spin' : ''}`} />
+          <Navigation className={`h-4 w-4 ${isLocating ? 'animate-spin' : ''}`} />
         </Button>
         <Button
           size="icon"
           variant="secondary"
           onClick={handleZoomIn}
           data-testid="button-zoom-in"
-          className="shadow-lg bg-card/95 backdrop-blur-sm hover:bg-card border-border"
+          className="shadow-md bg-card/95 backdrop-blur-md border border-border"
         >
-          <ZoomIn className="h-5 w-5" />
+          <ZoomIn className="h-4 w-4" />
         </Button>
         <Button
           size="icon"
           variant="secondary"
           onClick={handleZoomOut}
           data-testid="button-zoom-out"
-          className="shadow-lg bg-card/95 backdrop-blur-sm hover:bg-card border-border"
+          className="shadow-md bg-card/95 backdrop-blur-md border border-border"
         >
-          <ZoomOut className="h-5 w-5" />
+          <ZoomOut className="h-4 w-4" />
         </Button>
         <Button
           size="icon"
           variant="secondary"
           onClick={toggleMapStyle}
           data-testid="button-toggle-style"
-          className="shadow-lg bg-card/95 backdrop-blur-sm hover:bg-card border-border"
+          className="shadow-md bg-card/95 backdrop-blur-md border border-border"
         >
-          <Layers className="h-5 w-5" />
+          <Layers className="h-4 w-4" />
         </Button>
       </div>
 

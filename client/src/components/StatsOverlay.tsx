@@ -1,5 +1,4 @@
 import { Trophy, TrendingUp, Award } from 'lucide-react';
-import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { UserWithStats } from '@shared/schema';
 
@@ -18,72 +17,69 @@ export function StatsOverlay({ user }: StatsOverlayProps) {
     
     if (user.rank === 1) {
       return (
-        <Badge className="gap-1 bg-yellow-500 hover:bg-yellow-600 text-white border-0">
-          <Trophy className="h-3 w-3" />
-          1º Lugar
+        <Badge className="gap-1 bg-yellow-500/90 hover:bg-yellow-600 text-white border-0 text-[10px] px-1.5 py-0.5">
+          <Trophy className="h-2.5 w-2.5" />
+          1º
         </Badge>
       );
     }
     
     if (user.rank === 2) {
       return (
-        <Badge className="gap-1 bg-gray-400 hover:bg-gray-500 text-white border-0">
-          <Award className="h-3 w-3" />
-          2º Lugar
+        <Badge className="gap-1 bg-gray-400/90 hover:bg-gray-500 text-white border-0 text-[10px] px-1.5 py-0.5">
+          <Award className="h-2.5 w-2.5" />
+          2º
         </Badge>
       );
     }
     
     if (user.rank === 3) {
       return (
-        <Badge className="gap-1 bg-amber-600 hover:bg-amber-700 text-white border-0">
-          <Award className="h-3 w-3" />
-          3º Lugar
+        <Badge className="gap-1 bg-amber-600/90 hover:bg-amber-700 text-white border-0 text-[10px] px-1.5 py-0.5">
+          <Award className="h-2.5 w-2.5" />
+          3º
         </Badge>
       );
     }
     
     return (
-      <Badge variant="secondary" className="gap-1">
-        <Trophy className="h-3 w-3" />
+      <Badge variant="secondary" className="gap-1 text-[10px] px-1.5 py-0.5">
+        <Trophy className="h-2.5 w-2.5" />
         #{user.rank}
       </Badge>
     );
   };
 
   return (
-    <Card
-      className="absolute top-4 left-4 right-4 p-4 bg-card/95 backdrop-blur-md border-border shadow-xl z-[1000]"
+    <div
+      className="absolute top-3 left-3 right-3 p-3 bg-card/95 backdrop-blur-xl rounded-xl border border-border shadow-lg z-[1000]"
       data-testid="stats-overlay"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-3">
-            <h3 className="text-sm font-medium text-muted-foreground">
-              Tu territorio
-            </h3>
-            {getRankBadge()}
-          </div>
-          
-          <div className="flex items-baseline gap-2 mb-2">
-            <span className="text-5xl font-bold tracking-tight" data-testid="total-area">
-              {formattedArea}
-            </span>
-            <span className="text-xl text-muted-foreground font-medium">km²</span>
-          </div>
-          
-          <div className="flex items-center gap-1.5 text-sm font-medium" style={{ color: user.color }}>
-            <TrendingUp className="h-4 w-4" />
-            <span>+12% esta semana</span>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <div
+            className="w-10 h-10 rounded-lg flex-shrink-0 shadow-md"
+            style={{ backgroundColor: user.color }}
+          />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-0.5">
+              <span className="text-xs text-muted-foreground font-medium">Tu territorio</span>
+              {getRankBadge()}
+            </div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-2xl font-bold tracking-tight" data-testid="total-area">
+                {formattedArea}
+              </span>
+              <span className="text-sm text-muted-foreground font-medium">km²</span>
+            </div>
           </div>
         </div>
         
-        <div
-          className="w-16 h-16 rounded-xl flex-shrink-0 shadow-lg border-2 border-white/20"
-          style={{ backgroundColor: user.color }}
-          aria-label="Tu color de territorio"
-        />
+        <div className="flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-md bg-primary/10" style={{ color: user.color }}>
+          <TrendingUp className="h-3 w-3" />
+          <span>+12%</span>
+        </div>
       </div>
-    </Card>
+    </div>
   );
 }

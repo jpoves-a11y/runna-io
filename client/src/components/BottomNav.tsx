@@ -1,6 +1,5 @@
 import { Map, Trophy, Activity, User } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
-import { useState, useEffect } from 'react';
 
 const navItems = [
   { path: '/', label: 'Mapa', icon: Map },
@@ -11,27 +10,25 @@ const navItems = [
 
 export function BottomNav() {
   const [location] = useLocation();
-  const [activeIndex, setActiveIndex] = useState(0);
 
-  useEffect(() => {
-    const index = navItems.findIndex(item => item.path === location);
-    if (index !== -1) setActiveIndex(index);
-  }, [location]);
+  const isPathActive = (path: string) => {
+    if (path === '/') {
+      return location === '/' || location.startsWith('/?');
+    }
+    return location === path;
+  };
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur-md border-t border-card-border h-16 safe-area-bottom z-50 animate-slide-up">
-      <div className="relative flex items-center justify-around h-full px-2">
-        {/* Sliding indicator */}
-        <div
-          className="absolute bottom-0 h-1 bg-primary transition-all duration-300 ease-out rounded-t-full"
-          style={{
-            width: `${100 / navItems.length}%`,
-            left: `${(100 / navItems.length) * activeIndex}%`,
-          }}
-        />
-        
-        {navItems.map((item, index) => {
-          const isActive = location === item.path;
+    <nav 
+      className="fixed bottom-0 left-0 right-0 bg-card/98 backdrop-blur-xl border-t border-border z-50"
+      style={{ 
+        height: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)'
+      }}
+    >
+      <div className="flex items-stretch justify-around h-[4.5rem] max-w-md mx-auto px-2">
+        {navItems.map((item) => {
+          const isActive = isPathActive(item.path);
           const Icon = item.icon;
           
           return (
@@ -39,26 +36,20 @@ export function BottomNav() {
               key={item.path}
               href={item.path}
               data-testid={`nav-${item.label.toLowerCase()}`}
+              className="flex-1 flex items-center justify-center"
             >
-              <button
-                className={`flex flex-col items-center justify-center gap-1 px-4 py-2 rounded-xl transition-all duration-300 ${
-                  isActive
-                    ? 'text-primary scale-110'
-                    : 'text-muted-foreground hover-elevate active-elevate-2 hover:scale-105'
+              <div
+                className={`flex flex-col items-center justify-center gap-0.5 py-1 px-3 rounded-xl transition-all duration-200 ${
+                  isActive ? 'text-primary' : 'text-muted-foreground active:bg-muted/50'
                 }`}
               >
-                <div className={`relative ${isActive ? 'animate-bounce-in' : ''}`}>
-                  <Icon className={`h-5 w-5 transition-all duration-300 ${isActive ? 'stroke-[2.5]' : ''}`} />
-                  {isActive && (
-                    <div className="absolute inset-0 bg-primary/20 rounded-full blur-md animate-pulse" />
-                  )}
+                <div className={`p-1.5 rounded-lg transition-all duration-200 ${isActive ? 'bg-primary/15' : ''}`}>
+                  <Icon className={`h-5 w-5 ${isActive ? 'stroke-[2.5]' : 'stroke-[1.75]'}`} />
                 </div>
-                <span className={`text-xs font-medium transition-all duration-300 ${
-                  isActive ? 'font-semibold' : ''
-                }`}>
+                <span className={`text-[10px] leading-tight ${isActive ? 'font-bold' : 'font-medium'}`}>
                   {item.label}
                 </span>
-              </button>
+              </div>
             </Link>
           );
         })}

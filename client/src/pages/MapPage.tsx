@@ -13,13 +13,23 @@ import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
 import type { TerritoryWithUser } from '@shared/schema';
 
 export default function MapPage() {
-  const [location, setLocation] = useLocation();
-  const isTracking = location.includes('tracking=true');
+  const [, setLocation] = useLocation();
+  const [isTracking, setIsTracking] = useState(() => {
+    return window.location.search.includes('tracking=true');
+  });
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const { toast } = useToast();
   const { user: currentUser, isLoading: userLoading, login } = useSession();
+
+  useEffect(() => {
+    const checkTracking = () => {
+      setIsTracking(window.location.search.includes('tracking=true'));
+    };
+    window.addEventListener('popstate', checkTracking);
+    return () => window.removeEventListener('popstate', checkTracking);
+  }, []);
 
   useEffect(() => {
     getCurrentPosition()
@@ -101,14 +111,18 @@ export default function MapPage() {
     createRouteMutation.mutate(routeData);
   };
 
+  const handleCancelTracking = () => {
+    window.history.pushState({}, '', '/');
+    setIsTracking(false);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  };
+
   if (isTracking) {
     return (
-      <div className="animate-fade-in">
-        <RouteTracker
-          onComplete={handleRouteComplete}
-          onCancel={() => setLocation('/')}
-        />
-      </div>
+      <RouteTracker
+        onComplete={handleRouteComplete}
+        onCancel={handleCancelTracking}
+      />
     );
   }
 

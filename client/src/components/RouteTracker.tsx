@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Play, Pause, Square, MapPin, Zap, Activity } from 'lucide-react';
-import { watchPosition, clearWatch, type Coordinates } from '@/lib/geolocation';
+import { Play, Pause, Square, MapPin, Zap, Activity, X } from 'lucide-react';
+import { watchPosition, clearWatch, getCurrentPosition, type Coordinates } from '@/lib/geolocation';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -21,12 +21,14 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const [duration, setDuration] = useState(0);
   const [distance, setDistance] = useState(0);
   const [coordinates, setCoordinates] = useState<Array<[number, number]>>([]);
+  const [isGettingLocation, setIsGettingLocation] = useState(true);
   
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const routeLineRef = useRef<L.Polyline | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const intervalRef = useRef<number | null>(null);
+  const userMarkerRef = useRef<L.Marker | null>(null);
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -43,6 +45,25 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     }).addTo(map);
 
     mapRef.current = map;
+
+    getCurrentPosition()
+      .then((pos) => {
+        map.setView([pos.lat, pos.lng], 17);
+        const pulsingIcon = L.divIcon({
+          className: 'current-location-marker',
+          html: `
+            <div class="relative flex items-center justify-center">
+              <div class="absolute w-8 h-8 bg-primary/30 rounded-full animate-ping"></div>
+              <div class="relative w-4 h-4 bg-primary rounded-full border-2 border-white shadow-lg"></div>
+            </div>
+          `,
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        });
+        userMarkerRef.current = L.marker([pos.lat, pos.lng], { icon: pulsingIcon }).addTo(map);
+      })
+      .catch(() => {})
+      .finally(() => setIsGettingLocation(false));
 
     return () => {
       if (watchIdRef.current) clearWatch(watchIdRef.current);
@@ -86,6 +107,10 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
       (coords: Coordinates) => {
         const newCoords: [number, number] = [coords.lat, coords.lng];
         
+        if (userMarkerRef.current && mapRef.current) {
+          userMarkerRef.current.setLatLng([coords.lat, coords.lng]);
+        }
+        
         setCoordinates((prev) => {
           const updated = [...prev, newCoords];
           setDistance(calculateDistance(updated));
@@ -97,10 +122,11 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
               routeLineRef.current.setLatLngs(updated.map(c => [c[0], c[1]]));
             } else {
               routeLineRef.current = L.polyline(updated.map(c => [c[0], c[1]]), {
-                color: '#10b981',
-                weight: 5,
-                opacity: 0.8,
-                className: 'route-line-animated',
+                color: '#22c55e',
+                weight: 6,
+                opacity: 0.9,
+                lineCap: 'round',
+                lineJoin: 'round',
               }).addTo(mapRef.current);
             }
           }
@@ -155,72 +181,84 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     : 0;
 
   return (
-    <div className="flex flex-col h-full bg-background animate-fade-in">
-      {/* Stats Cards */}
-      <div className="p-4 grid grid-cols-3 gap-3 animate-slide-down">
-        <Card className="p-4 text-center glass transition-all duration-300 hover:scale-105">
-          <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-            <Activity className="h-3 w-3" />
-            Tiempo
-          </p>
-          <p className="text-2xl font-bold" data-testid="text-duration">
-            {formatTime(duration)}
-          </p>
-        </Card>
-        <Card className="p-4 text-center glass transition-all duration-300 hover:scale-105">
-          <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-            <MapPin className="h-3 w-3" />
-            Distancia
-          </p>
-          <p className="text-2xl font-bold" data-testid="text-distance">
-            {formatDistance(distance)}
-          </p>
-        </Card>
-        <Card className="p-4 text-center glass transition-all duration-300 hover:scale-105">
-          <p className="text-xs text-muted-foreground mb-2 flex items-center justify-center gap-1">
-            <Zap className="h-3 w-3" />
-            Ritmo
-          </p>
-          <p className="text-2xl font-bold" data-testid="text-pace">
-            {pace > 0 ? pace.toFixed(1) : '0.0'}
-          </p>
-          <p className="text-xs text-muted-foreground">min/km</p>
-        </Card>
-      </div>
-
-      {/* Map */}
+    <div className="absolute inset-0 flex flex-col bg-background">
+      {/* Map - Full screen */}
       <div className="flex-1 relative">
-        <div ref={mapContainer} className="w-full h-full" data-testid="tracker-map" />
+        <div ref={mapContainer} className="absolute inset-0" data-testid="tracker-map" />
         
-        {coordinates.length > 0 && (
-          <Card className="absolute top-4 right-4 p-3 glass animate-bounce-in">
-            <div className="flex items-center gap-2 text-sm">
-              <MapPin className="h-4 w-4 text-primary animate-pulse" />
-              <span className="font-medium">{coordinates.length} puntos</span>
-            </div>
-          </Card>
-        )}
+        {/* Close button */}
+        <button
+          className="absolute top-3 left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
+          onClick={onCancel}
+          data-testid="button-cancel"
+        >
+          <X className="h-5 w-5" />
+        </button>
 
+        {/* Recording indicator */}
         {isTracking && !isPaused && (
-          <div className="absolute top-4 left-4 animate-pulse">
-            <div className="flex items-center gap-2 px-3 py-2 bg-red-500 text-white rounded-full shadow-lg">
-              <div className="w-2 h-2 bg-white rounded-full animate-ping" />
-              <span className="text-sm font-medium">Grabando</span>
+          <div className="absolute top-3 right-3 z-[1000]">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500 text-white rounded-full shadow-lg">
+              <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+              <span className="text-xs font-semibold">REC</span>
+            </div>
+          </div>
+        )}
+        
+        {/* Loading indicator */}
+        {isGettingLocation && (
+          <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm z-[999]">
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm text-muted-foreground">Obteniendo ubicación...</span>
             </div>
           </div>
         )}
       </div>
 
-      {/* Controls */}
-      <div className="p-4 space-y-3 animate-slide-up">
+      {/* Bottom Panel - Stats and Controls */}
+      <div className="bg-card border-t border-border p-4 space-y-4 safe-area-bottom">
+        {/* Stats Row */}
+        <div className="grid grid-cols-3 gap-3">
+          <div className="text-center">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1">
+              <Activity className="h-3 w-3" />
+              Tiempo
+            </p>
+            <p className="text-xl font-bold tabular-nums" data-testid="text-duration">
+              {formatTime(duration)}
+            </p>
+          </div>
+          <div className="text-center border-x border-border">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1">
+              <MapPin className="h-3 w-3" />
+              Distancia
+            </p>
+            <p className="text-xl font-bold tabular-nums" data-testid="text-distance">
+              {formatDistance(distance)}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1">
+              <Zap className="h-3 w-3" />
+              Ritmo
+            </p>
+            <p className="text-xl font-bold tabular-nums" data-testid="text-pace">
+              {pace > 0 ? `${pace.toFixed(1)}'` : "0.0'"}
+            </p>
+          </div>
+        </div>
+
+        {/* Control Buttons */}
         {!isTracking ? (
           <Button
             size="lg"
-            className="w-full h-16 text-lg gradient-primary border-0 hover:scale-105 active:scale-95 transition-all duration-300 group"
+            className="w-full h-14 text-base font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform"
             onClick={handleStart}
+            disabled={isGettingLocation}
             data-testid="button-start-tracking"
           >
-            <Play className="h-7 w-7 mr-2 group-hover:scale-110 transition-transform" />
+            <Play className="h-6 w-6 mr-2" fill="currentColor" />
             Iniciar Ruta
           </Button>
         ) : (
@@ -229,58 +267,37 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
               <Button
                 size="lg"
                 variant="secondary"
-                className="flex-1 h-16 hover:scale-105 active:scale-95 transition-all duration-300"
+                className="flex-1 h-14 font-semibold active:scale-[0.98] transition-transform"
                 onClick={handlePause}
                 data-testid="button-pause"
               >
-                <Pause className="h-6 w-6 mr-2" />
+                <Pause className="h-5 w-5 mr-2" />
                 Pausar
               </Button>
             ) : (
               <Button
                 size="lg"
-                className="flex-1 h-16 gradient-primary border-0 hover:scale-105 active:scale-95 transition-all duration-300"
+                className="flex-1 h-14 font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform"
                 onClick={handleResume}
                 data-testid="button-resume"
               >
-                <Play className="h-6 w-6 mr-2" />
+                <Play className="h-5 w-5 mr-2" fill="currentColor" />
                 Reanudar
               </Button>
             )}
             <Button
               size="lg"
               variant="destructive"
-              className="flex-1 h-16 hover:scale-105 active:scale-95 transition-all duration-300"
+              className="flex-1 h-14 font-semibold active:scale-[0.98] transition-transform"
               onClick={handleStop}
               data-testid="button-stop"
             >
-              <Square className="h-6 w-6 mr-2" />
+              <Square className="h-5 w-5 mr-2" fill="currentColor" />
               Finalizar
             </Button>
           </div>
         )}
-        
-        <Button
-          variant="ghost"
-          className="w-full hover:scale-105 active:scale-95 transition-all duration-300"
-          onClick={onCancel}
-          data-testid="button-cancel"
-        >
-          Cancelar
-        </Button>
       </div>
-
-      <style>{`
-        .route-line-animated {
-          animation: dash 20s linear infinite;
-        }
-        
-        @keyframes dash {
-          to {
-            stroke-dashoffset: -1000;
-          }
-        }
-      `}</style>
     </div>
   );
 }
