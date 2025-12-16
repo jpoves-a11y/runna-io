@@ -98,9 +98,10 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
                       >
                         <TrendingUp className="h-3 w-3 text-primary" />
                         <span className="text-primary font-medium">
-                          +{route.territory.area.toLocaleString('es-ES', {
-                            maximumFractionDigits: 0,
-                          })} m² conquistados
+                          +{(route.territory.area / 1000000).toLocaleString('es-ES', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })} km² conquistados
                         </span>
                       </Badge>
                     )}

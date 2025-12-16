@@ -10,3 +10,6 @@
 [x] 10. Add Strava activities list endpoint and sync functionality
 [x] 11. Add Strava activities UI display in ProfilePage
 [x] 12. Final verification - application running successfully on port 5000
+[x] 13. Auto-center map on user's device location
+[x] 14. Fix responsive width issues for all devices
+[x] 15. Convert m² to km² with 2 decimal places in all components

@@ -116,9 +116,10 @@ export function FriendsList({ friends, onAddFriend, onViewTerritory }: FriendsLi
                   <div>
                     <p className="text-xs text-muted-foreground mb-1">Territorio</p>
                     <p className="text-xl font-bold">
-                      {friend.totalArea.toLocaleString('es-ES', {
-                        maximumFractionDigits: 0,
-                      })} m²
+                      {(friend.totalArea / 1000000).toLocaleString('es-ES', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })} km²
                     </p>
                   </div>
 

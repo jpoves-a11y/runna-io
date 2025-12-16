@@ -28,9 +28,9 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <div className="flex flex-col h-screen overflow-hidden bg-background">
+        <div className="flex flex-col h-screen w-full max-w-full overflow-hidden bg-background">
           {/* Main content area - accounts for bottom nav */}
-          <main className="flex-1 overflow-hidden pb-16">
+          <main className="flex-1 w-full max-w-full overflow-hidden pb-16">
             <Router />
           </main>
           

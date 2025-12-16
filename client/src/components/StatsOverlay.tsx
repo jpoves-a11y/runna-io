@@ -8,8 +8,9 @@ interface StatsOverlayProps {
 }
 
 export function StatsOverlay({ user }: StatsOverlayProps) {
-  const formattedArea = user.totalArea.toLocaleString('es-ES', {
-    maximumFractionDigits: 0,
+  const formattedArea = (user.totalArea / 1000000).toLocaleString('es-ES', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
 
   const getRankBadge = () => {
@@ -68,7 +69,7 @@ export function StatsOverlay({ user }: StatsOverlayProps) {
             <span className="text-5xl font-bold tracking-tight" data-testid="total-area">
               {formattedArea}
             </span>
-            <span className="text-xl text-muted-foreground font-medium">m²</span>
+            <span className="text-xl text-muted-foreground font-medium">km²</span>
           </div>
           
           <div className="flex items-center gap-1.5 text-sm font-medium" style={{ color: user.color }}>

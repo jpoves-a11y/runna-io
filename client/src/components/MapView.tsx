@@ -100,7 +100,7 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
           <div class="text-sm text-muted-foreground">
             <div class="flex items-center justify-between">
               <span>Área conquistada:</span>
-              <span class="font-semibold text-foreground">${territory.area.toLocaleString('es-ES', { maximumFractionDigits: 0 })} m²</span>
+              <span class="font-semibold text-foreground">${(territory.area / 1000000).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km²</span>
             </div>
           </div>
         </div>
@@ -109,15 +109,15 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
       });
 
       // Add hover effect
-      polygon.on('mouseover', function() {
-        this.setStyle({
+      polygon.on('mouseover', () => {
+        polygon.setStyle({
           fillOpacity: 0.6,
           weight: 4,
         });
       });
 
-      polygon.on('mouseout', function() {
-        this.setStyle({
+      polygon.on('mouseout', () => {
+        polygon.setStyle({
           fillOpacity: 0.4,
           weight: 3,
         });

@@ -138,11 +138,12 @@ export function LeaderboardTable({ users, currentUserId }: LeaderboardTableProps
                   {/* Area */}
                   <div className="text-right">
                     <p className={`font-bold ${isTopThree ? 'text-2xl' : 'text-lg'} ${rank === 1 ? 'text-white' : ''}`} data-testid={`text-area-${user.id}`}>
-                      {user.totalArea.toLocaleString('es-ES', {
-                        maximumFractionDigits: 0,
+                      {(user.totalArea / 1000000).toLocaleString('es-ES', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
                       })}
                     </p>
-                    <p className={`text-xs ${rank === 1 ? 'text-white/80' : 'text-muted-foreground'}`}>m²</p>
+                    <p className={`text-xs ${rank === 1 ? 'text-white/80' : 'text-muted-foreground'}`}>km²</p>
                   </div>
                 </div>
               </Card>

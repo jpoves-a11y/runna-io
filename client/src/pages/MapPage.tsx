@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Plus, Zap, User } from 'lucide-react';
@@ -10,13 +10,30 @@ import { MapSkeleton } from '@/components/LoadingState';
 import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
+import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
 import type { TerritoryWithUser } from '@shared/schema';
 
 export default function MapPage() {
   const [isTracking, setIsTracking] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const { toast } = useToast();
   const { user: currentUser, isLoading: userLoading, login } = useSession();
+
+  useEffect(() => {
+    getCurrentPosition()
+      .then((coords) => {
+        setUserLocation(coords);
+      })
+      .catch((error) => {
+        console.log('Could not get user location, using default:', error);
+        setUserLocation(DEFAULT_CENTER);
+      })
+      .finally(() => {
+        setIsLoadingLocation(false);
+      });
+  }, []);
 
   const { data: territories = [], isLoading: territoriesLoading } = useQuery<TerritoryWithUser[]>({
     queryKey: ['/api/territories'],
@@ -51,9 +68,10 @@ export default function MapPage() {
       if (data.territory) {
         toast({
           title: '🎉 ¡Territorio conquistado!',
-          description: `Has conquistado ${data.territory.area.toLocaleString('es-ES', {
-            maximumFractionDigits: 0,
-          })} m² de territorio`,
+          description: `Has conquistado ${(data.territory.area / 1000000).toLocaleString('es-ES', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })} km² de territorio`,
           duration: 5000,
           className: 'animate-bounce-in',
         });
@@ -94,13 +112,13 @@ export default function MapPage() {
     );
   }
 
-  if (territoriesLoading || userLoading) {
+  if (territoriesLoading || userLoading || isLoadingLocation) {
     return <MapSkeleton />;
   }
 
   return (
     <div className="relative w-full h-full animate-fade-in">
-      <MapView territories={territories} />
+      <MapView territories={territories} center={userLocation || DEFAULT_CENTER} />
       
       {currentUser && (
         <div className="animate-slide-down">
