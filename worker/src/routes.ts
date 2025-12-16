@@ -708,6 +708,94 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: error.message }, 500);
     }
   });
+
+  // Get all Strava activities for a user
+  app.get('/api/strava/activities/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const activities = await storage.getStravaActivitiesByUserId(userId);
+      return c.json(activities);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Sync recent Strava activities (pull from Strava API)
+  app.post('/api/strava/sync/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const stravaAccount = await storage.getStravaAccountByUserId(userId);
+      
+      if (!stravaAccount) {
+        return c.json({ error: 'Strava account not connected' }, 404);
+      }
+
+      // Get valid access token
+      const validToken = await getValidStravaToken(stravaAccount, storage, c.env);
+      if (!validToken) {
+        return c.json({ error: 'Failed to get valid Strava token' }, 401);
+      }
+
+      // Fetch recent activities from Strava (last 30 days)
+      const after = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      const activitiesResponse = await fetch(
+        `https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=50`,
+        {
+          headers: { 'Authorization': `Bearer ${validToken}` },
+        }
+      );
+
+      if (!activitiesResponse.ok) {
+        console.error('Failed to fetch Strava activities:', await activitiesResponse.text());
+        return c.json({ error: 'Failed to fetch activities from Strava' }, 500);
+      }
+
+      const stravaActivitiesList: any[] = await activitiesResponse.json();
+      let imported = 0;
+
+      for (const activity of stravaActivitiesList) {
+        // Only process runs and walks
+        if (!['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+          continue;
+        }
+
+        // Check if already exists
+        const existing = await storage.getStravaActivityByStravaId(activity.id);
+        if (existing) {
+          continue;
+        }
+
+        // Store the activity
+        await storage.createStravaActivity({
+          stravaActivityId: activity.id,
+          userId,
+          routeId: null,
+          territoryId: null,
+          name: activity.name,
+          activityType: activity.type,
+          distance: activity.distance,
+          duration: activity.moving_time,
+          startDate: new Date(activity.start_date),
+          summaryPolyline: activity.map?.summary_polyline || null,
+          processed: false,
+          processedAt: null,
+        });
+        imported++;
+      }
+
+      // Update last sync time
+      await storage.updateStravaAccount(userId, { lastSyncAt: new Date() });
+
+      return c.json({ imported, total: stravaActivitiesList.length });
+    } catch (error: any) {
+      console.error('Strava sync error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
 }
 
 // Polyline decoder for Cloudflare Workers (no npm dependency)

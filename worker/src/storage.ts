@@ -278,4 +278,12 @@ export class WorkerStorage {
       .from(stravaActivities)
       .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.processed} = false`);
   }
+
+  async getStravaActivitiesByUserId(userId: string): Promise<StravaActivity[]> {
+    return await this.db
+      .select()
+      .from(stravaActivities)
+      .where(eq(stravaActivities.userId, userId))
+      .orderBy(desc(stravaActivities.startDate));
+  }
 }

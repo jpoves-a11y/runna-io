@@ -59,6 +59,7 @@ export interface IStorage {
   createStravaActivity(activity: InsertStravaActivity): Promise<StravaActivity>;
   updateStravaActivity(id: string, data: Partial<StravaActivity>): Promise<StravaActivity>;
   getUnprocessedStravaActivities(userId: string): Promise<StravaActivity[]>;
+  getStravaActivitiesByUserId(userId: string): Promise<StravaActivity[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -303,6 +304,12 @@ export class DatabaseStorage implements IStorage {
   async getUnprocessedStravaActivities(userId: string): Promise<StravaActivity[]> {
     return await db.select().from(stravaActivities)
       .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.processed} = false`)
+      .orderBy(desc(stravaActivities.startDate));
+  }
+
+  async getStravaActivitiesByUserId(userId: string): Promise<StravaActivity[]> {
+    return await db.select().from(stravaActivities)
+      .where(eq(stravaActivities.userId, userId))
       .orderBy(desc(stravaActivities.startDate));
   }
 }

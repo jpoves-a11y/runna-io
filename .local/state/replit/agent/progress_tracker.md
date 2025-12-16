@@ -7,3 +7,5 @@
 [x] 7. Create PostgreSQL database
 [x] 8. Push database schema with Drizzle
 [x] 9. Fix tsx not found error by running npm install
+[x] 10. Add Strava activities list endpoint and sync functionality
+[x] 11. Add Strava activities UI display in ProfilePage

@@ -36,6 +36,19 @@ interface StravaStatus {
   lastSyncAt?: string | null;
 }
 
+interface StravaActivity {
+  id: string;
+  stravaActivityId: number;
+  userId: string;
+  name: string;
+  activityType: string;
+  distance: number;
+  duration: number;
+  startDate: string;
+  processed: boolean;
+  processedAt: string | null;
+}
+
 export default function ProfilePage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
@@ -49,6 +62,13 @@ export default function ProfilePage() {
   const { data: stravaStatus, isLoading: isStravaLoading } = useQuery<StravaStatus>({
     queryKey: [stravaStatusKey],
     enabled: !!user?.id,
+  });
+
+  // Strava activities query
+  const stravaActivitiesKey = `/api/strava/activities/${user?.id}`;
+  const { data: stravaActivities, isLoading: isActivitiesLoading } = useQuery<StravaActivity[]>({
+    queryKey: [stravaActivitiesKey],
+    enabled: !!user?.id && stravaStatus?.connected,
   });
 
   // Strava connect mutation
@@ -108,6 +128,7 @@ export default function ProfilePage() {
         queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
         queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
         queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
+        queryClient.invalidateQueries({ queryKey: [stravaActivitiesKey] });
         toast({
           title: 'Actividades procesadas',
           description: `Se procesaron ${data.processed} actividades de Strava`,
@@ -123,6 +144,37 @@ export default function ProfilePage() {
       toast({
         title: 'Error',
         description: 'No se pudieron procesar las actividades',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Sync Strava activities from API
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', `/api/strava/sync/${user?.id}`);
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [stravaActivitiesKey] });
+      queryClient.invalidateQueries({ queryKey: [stravaStatusKey] });
+      if (data.imported > 0) {
+        toast({
+          title: 'Actividades sincronizadas',
+          description: `Se importaron ${data.imported} nuevas actividades de Strava`,
+        });
+      } else {
+        toast({
+          title: 'Sin actividades nuevas',
+          description: 'Todas tus actividades ya estan sincronizadas',
+        });
+      }
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'No se pudieron sincronizar las actividades',
         variant: 'destructive',
       });
     },
@@ -318,16 +370,30 @@ export default function ProfilePage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => processMutation.mutate()}
-                    disabled={processMutation.isPending}
+                    onClick={() => syncMutation.mutate()}
+                    disabled={syncMutation.isPending}
                     data-testid="button-sync-strava"
                   >
-                    {processMutation.isPending ? (
+                    {syncMutation.isPending ? (
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     ) : (
                       <RefreshCw className="h-4 w-4 mr-2" />
                     )}
-                    Sincronizar actividades
+                    Importar de Strava
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => processMutation.mutate()}
+                    disabled={processMutation.isPending}
+                    data-testid="button-process-strava"
+                  >
+                    {processMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <MapPin className="h-4 w-4 mr-2" />
+                    )}
+                    Procesar territorios
                   </Button>
                   <Button
                     variant="ghost"
@@ -362,6 +428,60 @@ export default function ProfilePage() {
               </div>
             )}
           </Card>
+
+          {stravaStatus?.connected && (
+            <Card className="p-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <h3 className="font-semibold">Actividades de Strava</h3>
+                {stravaActivities && stravaActivities.length > 0 && (
+                  <Badge variant="secondary" className="text-xs">
+                    {stravaActivities.filter(a => !a.processed).length} pendientes
+                  </Badge>
+                )}
+              </div>
+              
+              {isActivitiesLoading ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Cargando actividades...</span>
+                </div>
+              ) : stravaActivities && stravaActivities.length > 0 ? (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {stravaActivities.slice(0, 10).map((activity) => (
+                    <div 
+                      key={activity.id}
+                      className="flex items-center justify-between p-2 rounded-md bg-muted/50"
+                      data-testid={`strava-activity-${activity.id}`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate">{activity.name}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>{activity.activityType}</span>
+                          <span>{(activity.distance / 1000).toFixed(2)} km</span>
+                          <span>{new Date(activity.startDate).toLocaleDateString('es-ES')}</span>
+                        </div>
+                      </div>
+                      <Badge 
+                        variant={activity.processed ? "secondary" : "outline"}
+                        className={activity.processed ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}
+                      >
+                        {activity.processed ? "Procesado" : "Pendiente"}
+                      </Badge>
+                    </div>
+                  ))}
+                  {stravaActivities.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center py-2">
+                      +{stravaActivities.length - 10} actividades mas
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No hay actividades importadas. Usa "Importar de Strava" para sincronizar tus entrenamientos.
+                </p>
+              )}
+            </Card>
+          )}
 
           <div className="space-y-3">
             <Button

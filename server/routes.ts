@@ -689,6 +689,90 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get all Strava activities for a user
+  app.get("/api/strava/activities/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const activities = await storage.getStravaActivitiesByUserId(userId);
+      res.json(activities);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Sync recent Strava activities (pull from Strava API)
+  app.post("/api/strava/sync/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const stravaAccount = await storage.getStravaAccountByUserId(userId);
+      
+      if (!stravaAccount) {
+        return res.status(404).json({ error: 'Strava account not connected' });
+      }
+
+      // Get valid access token
+      const validToken = await getValidStravaToken(stravaAccount);
+      if (!validToken) {
+        return res.status(401).json({ error: 'Failed to get valid Strava token' });
+      }
+
+      // Fetch recent activities from Strava (last 30 days)
+      const after = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      const activitiesResponse = await fetch(
+        `https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=50`,
+        {
+          headers: { 'Authorization': `Bearer ${validToken}` },
+        }
+      );
+
+      if (!activitiesResponse.ok) {
+        console.error('Failed to fetch Strava activities:', await activitiesResponse.text());
+        return res.status(500).json({ error: 'Failed to fetch activities from Strava' });
+      }
+
+      const stravaActivities = await activitiesResponse.json();
+      let imported = 0;
+
+      for (const activity of stravaActivities) {
+        // Only process runs and walks
+        if (!['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+          continue;
+        }
+
+        // Check if already exists
+        const existing = await storage.getStravaActivityByStravaId(activity.id);
+        if (existing) {
+          continue;
+        }
+
+        // Store the activity
+        await storage.createStravaActivity({
+          stravaActivityId: activity.id,
+          userId,
+          routeId: null,
+          territoryId: null,
+          name: activity.name,
+          activityType: activity.type,
+          distance: activity.distance,
+          duration: activity.moving_time,
+          startDate: new Date(activity.start_date),
+          summaryPolyline: activity.map?.summary_polyline || null,
+          processed: false,
+          processedAt: null,
+        });
+        imported++;
+      }
+
+      // Update last sync time
+      await storage.updateStravaAccount(userId, { lastSyncAt: new Date() });
+
+      res.json({ imported, total: stravaActivities.length });
+    } catch (error: any) {
+      console.error('Strava sync error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
