@@ -1,9 +1,11 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { BottomNav } from "@/components/BottomNav";
+import { Button } from "@/components/ui/button";
+import { Plus } from "lucide-react";
 import MapPage from "@/pages/MapPage";
 import RankingsPage from "@/pages/RankingsPage";
 import ActivityPage from "@/pages/ActivityPage";
@@ -24,6 +26,37 @@ function Router() {
   );
 }
 
+function StartActivityButton() {
+  const [location, setLocation] = useLocation();
+  
+  // Always show on map page
+  if (location !== '/' && !location.startsWith('/?')) return null;
+  
+  return (
+    <div 
+      style={{
+        position: 'fixed',
+        bottom: '96px',
+        right: '16px',
+        width: '64px',
+        height: '64px',
+        borderRadius: '50%',
+        backgroundColor: '#22c55e',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+        zIndex: 9999,
+        cursor: 'pointer',
+      }}
+      onClick={() => setLocation('/?tracking=true')}
+      data-testid="button-start-run"
+    >
+      <Plus className="h-8 w-8 text-white" />
+    </div>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -37,6 +70,10 @@ function App() {
           {/* Bottom Navigation */}
           <BottomNav />
         </div>
+        
+        {/* Start Activity Button - fixed position outside container */}
+        <StartActivityButton />
+        
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Plus, Zap, User } from 'lucide-react';
+import { useLocation } from 'wouter';
 import { MapView } from '@/components/MapView';
 import { StatsOverlay } from '@/components/StatsOverlay';
 import { RouteTracker } from '@/components/RouteTracker';
@@ -14,7 +13,8 @@ import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
 import type { TerritoryWithUser } from '@shared/schema';
 
 export default function MapPage() {
-  const [isTracking, setIsTracking] = useState(false);
+  const [location, setLocation] = useLocation();
+  const isTracking = location.includes('tracking=true');
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
@@ -82,7 +82,7 @@ export default function MapPage() {
         });
       }
 
-      setIsTracking(false);
+      setLocation('/');
     },
     onError: (error: Error) => {
       toast({
@@ -106,7 +106,7 @@ export default function MapPage() {
       <div className="animate-fade-in">
         <RouteTracker
           onComplete={handleRouteComplete}
-          onCancel={() => setIsTracking(false)}
+          onCancel={() => setLocation('/')}
         />
       </div>
     );
@@ -118,26 +118,16 @@ export default function MapPage() {
 
   return (
     <div className="relative w-full h-full animate-fade-in">
-      <MapView territories={territories} center={userLocation || DEFAULT_CENTER} />
+      <MapView 
+        territories={territories} 
+        center={userLocation || DEFAULT_CENTER} 
+      />
       
       {currentUser && (
         <div className="animate-slide-down">
           <StatsOverlay user={currentUser} />
         </div>
       )}
-      
-      <Button
-        size="lg"
-        className="absolute bottom-4 right-4 h-16 w-16 rounded-full shadow-2xl z-[1000] gradient-primary border-0 hover:scale-110 active:scale-95 transition-all duration-300 group animate-scale-in"
-        onClick={() => setIsTracking(true)}
-        data-testid="button-start-run"
-      >
-        <div className="relative">
-          <Plus className="h-8 w-8 text-white transition-transform duration-300 group-hover:rotate-90" />
-          <Zap className="h-4 w-4 text-white absolute -top-1 -right-1 animate-pulse" />
-          <div className="absolute inset-0 bg-white/20 rounded-full blur-xl animate-pulse" />
-        </div>
-      </Button>
     </div>
   );
 }
