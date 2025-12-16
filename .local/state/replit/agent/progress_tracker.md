@@ -6,3 +6,4 @@
 [x] 6. Add missing deployment scripts (pages:build, pages:deploy, worker:deploy, worker:dev)
 [x] 7. Create PostgreSQL database
 [x] 8. Push database schema with Drizzle
+[x] 9. Fix tsx not found error by running npm install
