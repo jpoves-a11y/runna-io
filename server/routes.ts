@@ -773,6 +773,479 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ==================== POLAR INTEGRATION ====================
+  
+  const POLAR_CLIENT_ID = process.env.POLAR_CLIENT_ID;
+  const POLAR_CLIENT_SECRET = process.env.POLAR_CLIENT_SECRET;
+  
+  // Get base URL for redirect
+  function getPolarRedirectUri(): string {
+    // Use REPLIT_DEV_DOMAIN for dev, otherwise fallback to a configured URL
+    const domain = process.env.REPLIT_DEV_DOMAIN || process.env.POLAR_REDIRECT_DOMAIN || 'localhost:5000';
+    const protocol = domain.includes('localhost') ? 'http' : 'https';
+    return `${protocol}://${domain}/api/polar/callback`;
+  }
+
+  // Get Polar connection status for user
+  app.get("/api/polar/status/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      
+      if (polarAccount) {
+        res.json({
+          connected: true,
+          polarUserId: polarAccount.polarUserId,
+          lastSyncAt: polarAccount.lastSyncAt,
+        });
+      } else {
+        res.json({ connected: false });
+      }
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Initiate Polar OAuth
+  app.get("/api/polar/connect", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      if (!userId || !POLAR_CLIENT_ID) {
+        return res.status(400).json({ error: "userId required and Polar not configured" });
+      }
+
+      const state = Buffer.from(JSON.stringify({ userId, ts: Date.now() })).toString('base64');
+      const redirectUri = getPolarRedirectUri();
+      
+      const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+      
+      res.json({ authUrl });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Polar OAuth callback
+  app.get("/api/polar/callback", async (req, res) => {
+    try {
+      const { code, state, error: authError } = req.query;
+      
+      if (authError) {
+        return res.redirect('/profile?polar_error=denied');
+      }
+      
+      if (!code || !state || !POLAR_CLIENT_ID || !POLAR_CLIENT_SECRET) {
+        return res.redirect('/profile?polar_error=invalid');
+      }
+
+      // Decode state to get userId
+      let userId: string;
+      try {
+        const decoded = JSON.parse(Buffer.from(state as string, 'base64').toString());
+        userId = decoded.userId;
+      } catch {
+        return res.redirect('/profile?polar_error=invalid_state');
+      }
+
+      // Exchange code for token
+      const redirectUri = getPolarRedirectUri();
+      const authHeader = Buffer.from(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`).toString('base64');
+      
+      const tokenResponse = await fetch('https://polaraccesslink.com/v3/oauth2/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${authHeader}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code as string,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+
+      if (!tokenResponse.ok) {
+        console.error('Polar token exchange failed:', await tokenResponse.text());
+        return res.redirect('/profile?polar_error=token_exchange');
+      }
+
+      const tokenData = await tokenResponse.json();
+      const { access_token, x_user_id } = tokenData;
+
+      // Check if this Polar account is already linked to another user
+      const existingAccount = await storage.getPolarAccountByPolarUserId(x_user_id);
+      if (existingAccount && existingAccount.userId !== userId) {
+        return res.redirect('/profile?polar_error=already_linked');
+      }
+
+      // Register user with Polar AccessLink (required before accessing data)
+      try {
+        const registerResponse = await fetch('https://www.polaraccesslink.com/v3/users', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${access_token}`,
+          },
+          body: JSON.stringify({
+            'member-id': userId,
+          }),
+        });
+
+        // 409 means already registered, which is fine
+        if (!registerResponse.ok && registerResponse.status !== 409) {
+          console.error('Polar user registration failed:', await registerResponse.text());
+          return res.redirect('/profile?polar_error=registration');
+        }
+      } catch (e) {
+        console.error('Polar registration error:', e);
+      }
+
+      // Create or update Polar account
+      const polarAccountData = {
+        userId,
+        polarUserId: x_user_id,
+        accessToken: access_token,
+        memberId: userId,
+        registeredAt: new Date(),
+        lastSyncAt: null,
+      };
+
+      if (existingAccount) {
+        await storage.updatePolarAccount(userId, polarAccountData);
+      } else {
+        await storage.createPolarAccount(polarAccountData);
+      }
+
+      res.redirect('/profile?polar_connected=true');
+    } catch (error: any) {
+      console.error('Polar callback error:', error);
+      res.redirect('/profile?polar_error=server');
+    }
+  });
+
+  // Disconnect Polar
+  app.post("/api/polar/disconnect", async (req, res) => {
+    try {
+      const { userId } = req.body;
+      if (!userId) {
+        return res.status(400).json({ error: "userId required" });
+      }
+
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      if (!polarAccount) {
+        return res.status(404).json({ error: "Polar account not connected" });
+      }
+
+      // Delete user from Polar AccessLink (best effort)
+      try {
+        await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${polarAccount.accessToken}`,
+          },
+        });
+      } catch (e) {
+        console.error('Failed to delete Polar user:', e);
+      }
+
+      await storage.deletePolarAccount(userId);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Sync exercises from Polar
+  app.post("/api/polar/sync/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      
+      if (!polarAccount) {
+        return res.status(404).json({ error: 'Polar account not connected' });
+      }
+
+      // Create transaction to get available data
+      const transactionResponse = await fetch('https://www.polaraccesslink.com/v3/users/' + polarAccount.polarUserId + '/exercise-transactions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (transactionResponse.status === 204) {
+        // No new data available
+        await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+        return res.json({ imported: 0, message: 'No new exercises available' });
+      }
+
+      if (!transactionResponse.ok) {
+        console.error('Polar transaction failed:', await transactionResponse.text());
+        return res.status(500).json({ error: 'Failed to create Polar transaction' });
+      }
+
+      const transaction = await transactionResponse.json();
+      const transactionId = transaction['transaction-id'];
+
+      // List exercises in transaction
+      const exercisesResponse = await fetch(transaction['resource-uri'], {
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!exercisesResponse.ok) {
+        console.error('Failed to list Polar exercises:', await exercisesResponse.text());
+        return res.status(500).json({ error: 'Failed to list Polar exercises' });
+      }
+
+      const exercisesData = await exercisesResponse.json();
+      const exerciseUrls = exercisesData.exercises || [];
+      let imported = 0;
+
+      for (const exerciseUrl of exerciseUrls) {
+        try {
+          // Get exercise details
+          const exerciseResponse = await fetch(exerciseUrl, {
+            headers: {
+              'Authorization': `Bearer ${polarAccount.accessToken}`,
+              'Accept': 'application/json',
+            },
+          });
+
+          if (!exerciseResponse.ok) continue;
+
+          const exercise = await exerciseResponse.json();
+          const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+
+          // Check if already exists
+          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
+          if (existing) continue;
+
+          // Only process running and walking activities
+          const sport = exercise['detailed-sport-info']?.sport || exercise.sport || '';
+          const activityType = sport.toLowerCase();
+          if (!['running', 'walking', 'trail_running', 'hiking', 'jogging'].some(t => activityType.includes(t))) {
+            continue;
+          }
+
+          // Try to get GPX data for the route
+          let summaryPolyline = null;
+          try {
+            const gpxResponse = await fetch(`${exerciseUrl}/gpx`, {
+              headers: {
+                'Authorization': `Bearer ${polarAccount.accessToken}`,
+                'Accept': 'application/gpx+xml',
+              },
+            });
+
+            if (gpxResponse.ok) {
+              const gpxText = await gpxResponse.text();
+              // Parse GPX and extract coordinates, then encode as polyline
+              const coordinates = parseGpxToCoordinates(gpxText);
+              if (coordinates.length >= 2) {
+                const polyline = await import('@mapbox/polyline');
+                summaryPolyline = polyline.encode(coordinates);
+              }
+            }
+          } catch (e) {
+            console.error('Failed to get GPX for exercise:', exerciseId, e);
+          }
+
+          // Create the activity
+          await storage.createPolarActivity({
+            polarExerciseId: exerciseId.toString(),
+            userId,
+            routeId: null,
+            territoryId: null,
+            name: exercise.sport || 'Polar Exercise',
+            activityType: sport,
+            distance: exercise.distance || 0,
+            duration: parseDuration(exercise.duration),
+            startDate: new Date(exercise['start-time']),
+            summaryPolyline,
+            processed: false,
+            processedAt: null,
+          });
+          imported++;
+        } catch (e) {
+          console.error('Error processing Polar exercise:', e);
+        }
+      }
+
+      // Commit the transaction
+      try {
+        await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${polarAccount.accessToken}`,
+          },
+        });
+      } catch (e) {
+        console.error('Failed to commit Polar transaction:', e);
+      }
+
+      // Update last sync time
+      await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+
+      res.json({ imported, total: exerciseUrls.length });
+    } catch (error: any) {
+      console.error('Polar sync error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Helper to parse GPX to coordinates
+  function parseGpxToCoordinates(gpxText: string): Array<[number, number]> {
+    const coordinates: Array<[number, number]> = [];
+    const trkptRegex = /<trkpt[^>]*lat="([^"]+)"[^>]*lon="([^"]+)"/g;
+    let match;
+    while ((match = trkptRegex.exec(gpxText)) !== null) {
+      const lat = parseFloat(match[1]);
+      const lon = parseFloat(match[2]);
+      if (!isNaN(lat) && !isNaN(lon)) {
+        coordinates.push([lat, lon]);
+      }
+    }
+    return coordinates;
+  }
+
+  // Helper to parse ISO 8601 duration to seconds
+  function parseDuration(duration: string): number {
+    if (!duration) return 0;
+    const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+    if (!match) return 0;
+    const hours = parseInt(match[1] || '0', 10);
+    const minutes = parseInt(match[2] || '0', 10);
+    const seconds = parseFloat(match[3] || '0');
+    return hours * 3600 + minutes * 60 + Math.round(seconds);
+  }
+
+  // Get all Polar activities for a user
+  app.get("/api/polar/activities/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const activities = await storage.getPolarActivitiesByUserId(userId);
+      res.json(activities);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Process pending Polar activities
+  app.post("/api/polar/process/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const unprocessed = await storage.getUnprocessedPolarActivities(userId);
+      const results: any[] = [];
+
+      for (const activity of unprocessed) {
+        if (!activity.summaryPolyline) {
+          // Skip activities without GPS data
+          await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+          continue;
+        }
+
+        try {
+          // Decode polyline to coordinates
+          const polyline = await import('@mapbox/polyline');
+          const decoded = polyline.decode(activity.summaryPolyline);
+          const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+
+          if (coordinates.length >= 3) {
+            // Create route
+            const route = await storage.createRoute({
+              userId: activity.userId,
+              name: activity.name,
+              coordinates,
+              distance: activity.distance,
+              duration: activity.duration,
+              startedAt: activity.startDate,
+              completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+            });
+
+            // Calculate territory (same logic as POST /api/routes)
+            const lineString = turf.lineString(
+              coordinates.map(coord => [coord[1], coord[0]]) // [lng, lat] for GeoJSON
+            );
+            const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+
+            if (buffered) {
+              const allTerritories = await storage.getAllTerritories();
+              const userTerritories = allTerritories.filter(t => t.userId === userId);
+              const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+
+              // Handle reconquest
+              for (const otherTerritory of otherTerritories) {
+                try {
+                  const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
+                  const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
+                  if (intersection) {
+                    await storage.deleteTerritoryById(otherTerritory.id);
+                    const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
+                    const newTotalArea = otherUserTerritories
+                      .filter(t => t.id !== otherTerritory.id)
+                      .reduce((sum, t) => sum + t.area, 0);
+                    await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
+                  }
+                } catch (err) {
+                  console.error('Error checking overlap:', err);
+                }
+              }
+
+              // Merge with user's existing territories
+              let finalGeometry = buffered.geometry;
+              for (const userTerritory of userTerritories) {
+                try {
+                  const userPoly = turf.polygon(userTerritory.geometry.coordinates);
+                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates), userPoly]));
+                  if (union) {
+                    finalGeometry = union.geometry;
+                    await storage.deleteTerritoryById(userTerritory.id);
+                  }
+                } catch (err) {
+                  console.error('Error merging territories:', err);
+                }
+              }
+
+              // Create new territory
+              const territory = await storage.createTerritory({
+                userId: activity.userId,
+                routeId: route.id,
+                geometry: finalGeometry,
+                area: turf.area(finalGeometry),
+              });
+
+              // Update user's total area
+              const updatedTerritories = await storage.getTerritoriesByUserId(activity.userId);
+              const totalArea = updatedTerritories.reduce((sum, t) => sum + t.area, 0);
+              await storage.updateUserTotalArea(activity.userId, totalArea);
+
+              // Mark as processed
+              await storage.updatePolarActivity(activity.id, {
+                processed: true,
+                processedAt: new Date(),
+                routeId: route.id,
+                territoryId: territory.id,
+              });
+
+              results.push({ activityId: activity.polarExerciseId, routeId: route.id, territoryId: territory.id });
+            }
+          }
+        } catch (err) {
+          console.error('Error processing Polar activity:', err);
+          await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+        }
+      }
+
+      res.json({ processed: results.length, results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

@@ -14,8 +14,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette } from 'lucide-react';
-import { SiStrava } from 'react-icons/si';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch } from 'lucide-react';
+import { SiStrava, SiPolar } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { LoginDialog } from '@/components/LoginDialog';
@@ -109,11 +109,31 @@ interface StravaActivity {
   processedAt: string | null;
 }
 
+interface PolarStatus {
+  connected: boolean;
+  polarUserId?: number;
+  lastSyncAt?: string | null;
+}
+
+interface PolarActivity {
+  id: string;
+  polarExerciseId: string;
+  userId: string;
+  name: string;
+  activityType: string;
+  distance: number;
+  duration: number;
+  startDate: string;
+  processed: boolean;
+  processedAt: string | null;
+}
+
 export default function ProfilePage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isStravaDisconnectOpen, setIsStravaDisconnectOpen] = useState(false);
+  const [isPolarDisconnectOpen, setIsPolarDisconnectOpen] = useState(false);
   const { toast } = useToast();
   const { user, isLoading, logout, login } = useSession();
 
@@ -240,9 +260,134 @@ export default function ProfilePage() {
     },
   });
 
-  // Check for Strava OAuth callback results
+  // Polar status query
+  const polarStatusKey = `/api/polar/status/${user?.id}`;
+  const { data: polarStatus, isLoading: isPolarLoading } = useQuery<PolarStatus>({
+    queryKey: [polarStatusKey],
+    enabled: !!user?.id,
+  });
+
+  // Polar activities query
+  const polarActivitiesKey = `/api/polar/activities/${user?.id}`;
+  const { data: polarActivities, isLoading: isPolarActivitiesLoading } = useQuery<PolarActivity[]>({
+    queryKey: [polarActivitiesKey],
+    enabled: !!user?.id && polarStatus?.connected,
+  });
+
+  // Polar connect mutation
+  const connectPolarMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('GET', `/api/polar/connect?userId=${user?.id}`);
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: (data) => {
+      if (data.authUrl) {
+        window.location.href = data.authUrl;
+      }
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'No se pudo conectar con Polar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Polar disconnect mutation
+  const disconnectPolarMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', '/api/polar/disconnect', { userId: user?.id });
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [polarStatusKey] });
+      toast({
+        title: 'Polar desconectado',
+        description: 'Tu cuenta de Polar ha sido desvinculada',
+      });
+      setIsPolarDisconnectOpen(false);
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'No se pudo desconectar Polar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Sync Polar activities from API
+  const syncPolarMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', `/api/polar/sync/${user?.id}`);
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+      queryClient.invalidateQueries({ queryKey: [polarStatusKey] });
+      if (data.imported > 0) {
+        toast({
+          title: 'Actividades sincronizadas',
+          description: `Se importaron ${data.imported} nuevas actividades de Polar`,
+        });
+      } else {
+        toast({
+          title: 'Sin actividades nuevas',
+          description: data.message || 'Todas tus actividades ya estan sincronizadas',
+        });
+      }
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'No se pudieron sincronizar las actividades de Polar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Process pending Polar activities
+  const processPolarMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', `/api/polar/process/${user?.id}`);
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: (data) => {
+      if (data.processed > 0) {
+        queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+        queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
+        queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
+        queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+        toast({
+          title: 'Actividades procesadas',
+          description: `Se procesaron ${data.processed} actividades de Polar`,
+        });
+      } else {
+        toast({
+          title: 'Sin actividades nuevas',
+          description: 'No hay actividades pendientes de procesar',
+        });
+      }
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'No se pudieron procesar las actividades de Polar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Check for OAuth callback results (Strava and Polar)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    
+    // Strava callbacks
     if (params.get('strava_connected') === 'true') {
       toast({
         title: 'Strava conectado',
@@ -259,6 +404,30 @@ export default function ProfilePage() {
       if (error === 'already_linked') message = 'Esta cuenta de Strava ya esta vinculada a otro usuario';
       toast({
         title: 'Error de Strava',
+        description: message,
+        variant: 'destructive',
+      });
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    // Polar callbacks
+    if (params.get('polar_connected') === 'true') {
+      toast({
+        title: 'Polar conectado',
+        description: 'Tu cuenta de Polar ha sido vinculada exitosamente',
+      });
+      if (user?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/polar/status/${user.id}`] });
+      }
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('polar_error')) {
+      const error = params.get('polar_error');
+      let message = 'Hubo un problema conectando con Polar';
+      if (error === 'denied') message = 'Acceso denegado por el usuario';
+      if (error === 'already_linked') message = 'Esta cuenta de Polar ya esta vinculada a otro usuario';
+      if (error === 'registration') message = 'Error al registrar usuario en Polar AccessLink';
+      toast({
+        title: 'Error de Polar',
         description: message,
         variant: 'destructive',
       });
@@ -554,6 +723,152 @@ export default function ProfilePage() {
             </Card>
           )}
 
+          <Card className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Watch className="h-5 w-5 text-[#D4213D]" />
+              <h3 className="font-semibold">Integracion con Polar</h3>
+            </div>
+            
+            {isPolarLoading ? (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Cargando...</span>
+              </div>
+            ) : polarStatus?.connected ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="h-12 w-12 rounded-full bg-[#D4213D] flex items-center justify-center">
+                    <Watch className="h-6 w-6 text-white" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium">Polar Flow</p>
+                    <p className="text-sm text-muted-foreground">
+                      Usuario ID: {polarStatus.polarUserId}
+                    </p>
+                  </div>
+                  <Badge variant="secondary" className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                    <Link2 className="h-3 w-3 mr-1" />
+                    Conectado
+                  </Badge>
+                </div>
+                
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => syncPolarMutation.mutate()}
+                    disabled={syncPolarMutation.isPending}
+                    data-testid="button-sync-polar"
+                  >
+                    {syncPolarMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                    )}
+                    Importar de Polar
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => processPolarMutation.mutate()}
+                    disabled={processPolarMutation.isPending}
+                    data-testid="button-process-polar"
+                  >
+                    {processPolarMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <MapPin className="h-4 w-4 mr-2" />
+                    )}
+                    Procesar territorios
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsPolarDisconnectOpen(true)}
+                    className="text-destructive"
+                    data-testid="button-disconnect-polar"
+                  >
+                    <Unlink className="h-4 w-4 mr-2" />
+                    Desconectar
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Conecta tu cuenta de Polar Flow para importar automaticamente tus entrenamientos
+                </p>
+                <Button
+                  onClick={() => connectPolarMutation.mutate()}
+                  disabled={connectPolarMutation.isPending}
+                  className="bg-[#D4213D] text-white"
+                  data-testid="button-connect-polar"
+                >
+                  {connectPolarMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Watch className="h-4 w-4 mr-2" />
+                  )}
+                  Conectar con Polar
+                </Button>
+              </div>
+            )}
+          </Card>
+
+          {polarStatus?.connected && (
+            <Card className="p-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <h3 className="font-semibold">Actividades de Polar</h3>
+                {polarActivities && polarActivities.length > 0 && (
+                  <Badge variant="secondary" className="text-xs">
+                    {polarActivities.filter(a => !a.processed).length} pendientes
+                  </Badge>
+                )}
+              </div>
+              
+              {isPolarActivitiesLoading ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Cargando actividades...</span>
+                </div>
+              ) : polarActivities && polarActivities.length > 0 ? (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {polarActivities.slice(0, 10).map((activity) => (
+                    <div 
+                      key={activity.id}
+                      className="flex items-center justify-between p-2 rounded-md bg-muted/50"
+                      data-testid={`polar-activity-${activity.id}`}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate">{activity.name}</p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>{activity.activityType}</span>
+                          <span>{(activity.distance / 1000).toFixed(2)} km</span>
+                          <span>{new Date(activity.startDate).toLocaleDateString('es-ES')}</span>
+                        </div>
+                      </div>
+                      <Badge 
+                        variant={activity.processed ? "secondary" : "outline"}
+                        className={activity.processed ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}
+                      >
+                        {activity.processed ? "Procesado" : "Pendiente"}
+                      </Badge>
+                    </div>
+                  ))}
+                  {polarActivities.length > 10 && (
+                    <p className="text-xs text-muted-foreground text-center py-2">
+                      +{polarActivities.length - 10} actividades mas
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  No hay actividades importadas. Usa "Importar de Polar" para sincronizar tus entrenamientos.
+                </p>
+              )}
+            </Card>
+          )}
+
           <div className="space-y-3">
             <Button
               variant="outline"
@@ -622,6 +937,30 @@ export default function ProfilePage() {
               disabled={disconnectStravaMutation.isPending}
             >
               {disconnectStravaMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Desconectar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={isPolarDisconnectOpen} onOpenChange={setIsPolarDisconnectOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Desconectar Polar?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Ya no se importaran tus actividades de Polar automaticamente. Tus rutas y territorios existentes no seran eliminados.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => disconnectPolarMutation.mutate()}
+              className="bg-destructive hover:bg-destructive/90"
+              disabled={disconnectPolarMutation.isPending}
+            >
+              {disconnectPolarMutation.isPending ? (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               ) : null}
               Desconectar
