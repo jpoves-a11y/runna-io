@@ -9,6 +9,10 @@ export interface Env {
   STRAVA_CLIENT_SECRET: string;
   STRAVA_WEBHOOK_VERIFY_TOKEN: string;
   STRAVA_REDIRECT_URI?: string;
+  POLAR_CLIENT_ID?: string;
+  POLAR_CLIENT_SECRET?: string;
+  WORKER_URL?: string;
+  FRONTEND_URL?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();

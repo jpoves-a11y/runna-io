@@ -796,6 +796,471 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: error.message }, 500);
     }
   });
+
+  // ==================== POLAR ====================
+
+  app.get('/api/polar/status/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      
+      if (polarAccount) {
+        return c.json({
+          connected: true,
+          polarUserId: polarAccount.polarUserId,
+          lastSyncAt: polarAccount.lastSyncAt,
+        });
+      } else {
+        return c.json({ connected: false });
+      }
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/polar/connect', async (c) => {
+    try {
+      const userId = c.req.query('userId');
+      const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
+      if (!userId || !POLAR_CLIENT_ID) {
+        return c.json({ error: "userId required and Polar not configured" }, 400);
+      }
+
+      const state = btoa(JSON.stringify({ userId, ts: Date.now() }));
+      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
+      const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
+      
+      return c.json({ authUrl });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/polar/callback', async (c) => {
+    try {
+      const code = c.req.query('code');
+      const state = c.req.query('state');
+      const authError = c.req.query('error');
+      const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
+      const POLAR_CLIENT_SECRET = c.env.POLAR_CLIENT_SECRET;
+      const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna.io';
+      
+      if (authError) {
+        return c.redirect(`${FRONTEND_URL}/profile?polar_error=denied`);
+      }
+      
+      if (!code || !state || !POLAR_CLIENT_ID || !POLAR_CLIENT_SECRET) {
+        return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid`);
+      }
+
+      let userId: string;
+      try {
+        const decoded = JSON.parse(atob(state as string));
+        userId = decoded.userId;
+      } catch {
+        return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
+      }
+
+      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
+      const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
+      
+      const tokenResponse = await fetch('https://polaraccesslink.com/v3/oauth2/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${authHeader}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code as string,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+
+      if (!tokenResponse.ok) {
+        console.error('Polar token exchange failed:', await tokenResponse.text());
+        return c.redirect(`${FRONTEND_URL}/profile?polar_error=token_exchange`);
+      }
+
+      const tokenData: any = await tokenResponse.json();
+      const { access_token, x_user_id } = tokenData;
+
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+
+      const existingAccount = await storage.getPolarAccountByPolarUserId(x_user_id);
+      if (existingAccount && existingAccount.userId !== userId) {
+        return c.redirect(`${FRONTEND_URL}/profile?polar_error=already_linked`);
+      }
+
+      try {
+        const registerResponse = await fetch('https://www.polaraccesslink.com/v3/users', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${access_token}`,
+          },
+          body: JSON.stringify({ 'member-id': userId }),
+        });
+
+        if (!registerResponse.ok && registerResponse.status !== 409) {
+          console.error('Polar user registration failed:', await registerResponse.text());
+          return c.redirect(`${FRONTEND_URL}/profile?polar_error=registration`);
+        }
+      } catch (e) {
+        console.error('Polar registration error:', e);
+      }
+
+      const polarAccountData = {
+        userId,
+        polarUserId: x_user_id,
+        accessToken: access_token,
+        memberId: userId,
+        registeredAt: new Date(),
+        lastSyncAt: null,
+      };
+
+      if (existingAccount) {
+        await storage.updatePolarAccount(userId, polarAccountData);
+      } else {
+        await storage.createPolarAccount(polarAccountData);
+      }
+
+      return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
+    } catch (error: any) {
+      console.error('Polar callback error:', error);
+      return c.redirect(`${c.env.FRONTEND_URL || 'https://runna.io'}/profile?polar_error=server`);
+    }
+  });
+
+  app.post('/api/polar/disconnect', async (c) => {
+    try {
+      const body = await c.req.json();
+      const { userId } = body;
+      if (!userId) {
+        return c.json({ error: "userId required" }, 400);
+      }
+
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      if (!polarAccount) {
+        return c.json({ error: "Polar account not connected" }, 404);
+      }
+
+      try {
+        await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+        });
+      } catch (e) {
+        console.error('Failed to delete Polar user:', e);
+      }
+
+      await storage.deletePolarAccount(userId);
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/polar/sync/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      
+      if (!polarAccount) {
+        return c.json({ error: 'Polar account not connected' }, 404);
+      }
+
+      const transactionResponse = await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (transactionResponse.status === 204) {
+        await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+        return c.json({ imported: 0, message: 'No new exercises available' });
+      }
+
+      if (!transactionResponse.ok) {
+        console.error('Polar transaction failed:', await transactionResponse.text());
+        return c.json({ error: 'Failed to create Polar transaction' }, 500);
+      }
+
+      const transaction: any = await transactionResponse.json();
+      const transactionId = transaction['transaction-id'];
+
+      const exercisesResponse = await fetch(transaction['resource-uri'], {
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!exercisesResponse.ok) {
+        console.error('Failed to list Polar exercises:', await exercisesResponse.text());
+        return c.json({ error: 'Failed to list Polar exercises' }, 500);
+      }
+
+      const exercisesData: any = await exercisesResponse.json();
+      const exerciseUrls = exercisesData.exercises || [];
+      let imported = 0;
+
+      for (const exerciseUrl of exerciseUrls) {
+        try {
+          const exerciseResponse = await fetch(exerciseUrl, {
+            headers: {
+              'Authorization': `Bearer ${polarAccount.accessToken}`,
+              'Accept': 'application/json',
+            },
+          });
+
+          if (!exerciseResponse.ok) continue;
+
+          const exercise: any = await exerciseResponse.json();
+          const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+
+          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
+          if (existing) continue;
+
+          const sport = exercise['detailed-sport-info']?.sport || exercise.sport || '';
+          const activityType = sport.toLowerCase();
+          if (!['running', 'walking', 'trail_running', 'hiking', 'jogging'].some(t => activityType.includes(t))) {
+            continue;
+          }
+
+          let summaryPolyline: string | null = null;
+          try {
+            const gpxResponse = await fetch(`${exerciseUrl}/gpx`, {
+              headers: {
+                'Authorization': `Bearer ${polarAccount.accessToken}`,
+                'Accept': 'application/gpx+xml',
+              },
+            });
+
+            if (gpxResponse.ok) {
+              const gpxText = await gpxResponse.text();
+              const coordinates = parseGpxToCoordinates(gpxText);
+              if (coordinates.length >= 2) {
+                summaryPolyline = encodePolyline(coordinates);
+              }
+            }
+          } catch (e) {
+            console.error('Failed to get GPX for exercise:', exerciseId, e);
+          }
+
+          await storage.createPolarActivity({
+            polarExerciseId: exerciseId.toString(),
+            userId,
+            routeId: null,
+            territoryId: null,
+            name: exercise.sport || 'Polar Exercise',
+            activityType: sport,
+            distance: exercise.distance || 0,
+            duration: parseDuration(exercise.duration),
+            startDate: new Date(exercise['start-time']),
+            summaryPolyline,
+            processed: false,
+            processedAt: null,
+          });
+          imported++;
+        } catch (e) {
+          console.error('Error processing Polar exercise:', e);
+        }
+      }
+
+      try {
+        await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+        });
+      } catch (e) {
+        console.error('Failed to commit Polar transaction:', e);
+      }
+
+      await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+
+      return c.json({ imported, total: exerciseUrls.length });
+    } catch (error: any) {
+      console.error('Polar sync error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/polar/activities/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const activities = await storage.getPolarActivitiesByUserId(userId);
+      return c.json(activities);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/polar/process/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const unprocessed = await storage.getUnprocessedPolarActivities(userId);
+      const results: any[] = [];
+
+      for (const activity of unprocessed) {
+        if (!activity.summaryPolyline) {
+          await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+          continue;
+        }
+
+        try {
+          const decoded = decodePolyline(activity.summaryPolyline);
+          const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+
+          if (coordinates.length >= 3) {
+            const route = await storage.createRoute({
+              userId: activity.userId,
+              name: activity.name,
+              coordinates,
+              distance: activity.distance,
+              duration: activity.duration,
+              startedAt: activity.startDate,
+              completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+            });
+
+            const lineString = turf.lineString(
+              coordinates.map(coord => [coord[1], coord[0]])
+            );
+            const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+
+            if (buffered) {
+              const allTerritories = await storage.getAllTerritories();
+              const userTerritories = allTerritories.filter(t => t.userId === userId);
+              const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+
+              for (const otherTerritory of otherTerritories) {
+                try {
+                  const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
+                  const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
+                  if (intersection) {
+                    await storage.deleteTerritoryById(otherTerritory.id);
+                    const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
+                    const newTotalArea = otherUserTerritories
+                      .filter(t => t.id !== otherTerritory.id)
+                      .reduce((sum, t) => sum + t.area, 0);
+                    await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
+                  }
+                } catch (e) {
+                  console.error('Error checking intersection:', e);
+                }
+              }
+
+              const area = turf.area(buffered) / 1000000;
+              const newTerritory = await storage.createTerritory({
+                userId,
+                routeId: route.id,
+                geometry: buffered.geometry as any,
+                area,
+              });
+
+              const totalArea = userTerritories.reduce((sum, t) => sum + t.area, 0) + area;
+              await storage.updateUserTotalArea(userId, totalArea);
+
+              results.push({
+                activityId: activity.id,
+                routeId: route.id,
+                territoryId: newTerritory.id,
+                area,
+              });
+            }
+
+            await storage.updatePolarActivity(activity.id, { 
+              routeId: route.id, 
+              processed: true, 
+              processedAt: new Date() 
+            });
+          }
+        } catch (e) {
+          console.error('Error processing Polar activity:', e);
+          await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+        }
+      }
+
+      return c.json({ processed: results.length, results });
+    } catch (error: any) {
+      console.error('Polar process error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+}
+
+// Helper to parse GPX to coordinates
+function parseGpxToCoordinates(gpxText: string): Array<[number, number]> {
+  const coordinates: Array<[number, number]> = [];
+  const trkptRegex = /<trkpt[^>]*lat="([^"]+)"[^>]*lon="([^"]+)"/g;
+  let match;
+  while ((match = trkptRegex.exec(gpxText)) !== null) {
+    const lat = parseFloat(match[1]);
+    const lon = parseFloat(match[2]);
+    if (!isNaN(lat) && !isNaN(lon)) {
+      coordinates.push([lat, lon]);
+    }
+  }
+  return coordinates;
+}
+
+// Helper to parse ISO 8601 duration to seconds
+function parseDuration(duration: string): number {
+  if (!duration) return 0;
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+  if (!match) return 0;
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseFloat(match[3] || '0');
+  return hours * 3600 + minutes * 60 + Math.round(seconds);
+}
+
+// Helper to encode polyline
+function encodePolyline(coordinates: Array<[number, number]>): string {
+  let encoded = '';
+  let prevLat = 0;
+  let prevLng = 0;
+
+  for (const [lat, lng] of coordinates) {
+    const dlat = Math.round((lat - prevLat) * 1e5);
+    const dlng = Math.round((lng - prevLng) * 1e5);
+
+    encoded += encodeValue(dlat);
+    encoded += encodeValue(dlng);
+
+    prevLat = lat;
+    prevLng = lng;
+  }
+
+  return encoded;
+}
+
+// Helper to encode a single value
+function encodeValue(val: number): string {
+  val = val << 1;
+  if (val < 0) val = ~val;
+
+  let encoded = '';
+  while (val >= 0x20) {
+    encoded += String.fromCharCode((0x20 | (val & 0x1f)) + 63);
+    val >>= 5;
+  }
+  encoded += String.fromCharCode(val + 63);
+  return encoded;
 }
 
 // Polyline decoder for Cloudflare Workers (no npm dependency)

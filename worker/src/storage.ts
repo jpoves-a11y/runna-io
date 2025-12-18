@@ -5,6 +5,8 @@ import {
   friendships,
   stravaAccounts,
   stravaActivities,
+  polarAccounts,
+  polarActivities,
   type User,
   type InsertUser,
   type Route,
@@ -17,6 +19,10 @@ import {
   type InsertStravaAccount,
   type StravaActivity,
   type InsertStravaActivity,
+  type PolarAccount,
+  type InsertPolarAccount,
+  type PolarActivity,
+  type InsertPolarActivity,
   type UserWithStats,
   type TerritoryWithUser,
   type RouteWithTerritory,
@@ -285,5 +291,70 @@ export class WorkerStorage {
       .from(stravaActivities)
       .where(eq(stravaActivities.userId, userId))
       .orderBy(desc(stravaActivities.startDate));
+  }
+
+  // ==================== POLAR ====================
+
+  async getPolarAccountByUserId(userId: string): Promise<PolarAccount | undefined> {
+    const [account] = await this.db.select().from(polarAccounts).where(eq(polarAccounts.userId, userId));
+    return account || undefined;
+  }
+
+  async getPolarAccountByPolarUserId(polarUserId: number): Promise<PolarAccount | undefined> {
+    const [account] = await this.db.select().from(polarAccounts).where(eq(polarAccounts.polarUserId, polarUserId));
+    return account || undefined;
+  }
+
+  async createPolarAccount(data: InsertPolarAccount): Promise<PolarAccount> {
+    const [account] = await this.db.insert(polarAccounts).values(data).returning();
+    return account;
+  }
+
+  async updatePolarAccount(userId: string, data: Partial<InsertPolarAccount>): Promise<PolarAccount> {
+    const [account] = await this.db
+      .update(polarAccounts)
+      .set(data)
+      .where(eq(polarAccounts.userId, userId))
+      .returning();
+    return account;
+  }
+
+  async deletePolarAccount(userId: string): Promise<void> {
+    await this.db.delete(polarAccounts).where(eq(polarAccounts.userId, userId));
+  }
+
+  async getPolarActivityByPolarId(polarExerciseId: string): Promise<PolarActivity | undefined> {
+    const [activity] = await this.db.select().from(polarActivities).where(eq(polarActivities.polarExerciseId, polarExerciseId));
+    return activity || undefined;
+  }
+
+  async createPolarActivity(data: InsertPolarActivity): Promise<PolarActivity> {
+    const [activity] = await this.db.insert(polarActivities).values(data).returning();
+    return activity;
+  }
+
+  async updatePolarActivity(id: string, data: Partial<InsertPolarActivity>): Promise<PolarActivity> {
+    const [activity] = await this.db
+      .update(polarActivities)
+      .set(data)
+      .where(eq(polarActivities.id, id))
+      .returning();
+    return activity;
+  }
+
+  async getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]> {
+    return await this.db
+      .select()
+      .from(polarActivities)
+      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = false`)
+      .orderBy(desc(polarActivities.startDate));
+  }
+
+  async getPolarActivitiesByUserId(userId: string): Promise<PolarActivity[]> {
+    return await this.db
+      .select()
+      .from(polarActivities)
+      .where(eq(polarActivities.userId, userId))
+      .orderBy(desc(polarActivities.startDate));
   }
 }
