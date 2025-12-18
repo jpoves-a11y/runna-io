@@ -34,3 +34,6 @@
     - Implemented 7 Polar API endpoints (connect, callback, sync, process, disconnect, activities, status)
     - Added GPX parsing and polyline encoding/decoding for Polar data
     - Integrated Polar workout import with territory calculation
+[x] 28. Configured POLAR, STRAVA secrets in Replit environment
+[x] 29. Created PostgreSQL database in Replit
+[x] 30. Pushed Drizzle schema to database - Dec 18, 2025 (20:37 UTC)
