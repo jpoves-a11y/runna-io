@@ -853,11 +853,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const POLAR_CLIENT_SECRET = c.env.POLAR_CLIENT_SECRET;
       const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
       
+      console.log('Polar callback started - code:', code ? 'present' : 'missing', 'state:', state ? 'present' : 'missing', 'error:', authError);
+      
       if (authError) {
+        console.log('Auth error detected:', authError);
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=denied`);
       }
       
       if (!code || !state || !POLAR_CLIENT_ID || !POLAR_CLIENT_SECRET) {
+        console.error('Missing required params - code:', !!code, 'state:', !!state, 'CLIENT_ID:', !!POLAR_CLIENT_ID, 'CLIENT_SECRET:', !!POLAR_CLIENT_SECRET);
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid`);
       }
 
@@ -865,13 +869,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       try {
         const decoded = JSON.parse(atob(state as string));
         userId = decoded.userId;
-      } catch {
+        console.log('State decoded - userId:', userId);
+      } catch (e) {
+        console.error('State decode error:', e);
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
       }
 
       const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
       
+      console.log('Exchanging code for token...');
       const tokenResponse = await fetch('https://polaraccesslink.com/v3/oauth2/token', {
         method: 'POST',
         headers: {
@@ -886,22 +893,27 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       });
 
       if (!tokenResponse.ok) {
-        console.error('Polar token exchange failed:', await tokenResponse.text());
+        const errorText = await tokenResponse.text();
+        console.error('Polar token exchange failed:', errorText);
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=token_exchange`);
       }
 
       const tokenData: any = await tokenResponse.json();
       const { access_token, x_user_id } = tokenData;
+      console.log('Token received - x_user_id:', x_user_id);
 
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
 
+      console.log('Checking for existing account...');
       const existingAccount = await storage.getPolarAccountByPolarUserId(x_user_id);
       if (existingAccount && existingAccount.userId !== userId) {
+        console.log('Account already linked to different user');
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=already_linked`);
       }
 
       try {
+        console.log('Registering user with Polar...');
         const registerResponse = await fetch('https://www.polaraccesslink.com/v3/users', {
           method: 'POST',
           headers: {
@@ -912,9 +924,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         });
 
         if (!registerResponse.ok && registerResponse.status !== 409) {
-          console.error('Polar user registration failed:', await registerResponse.text());
+          const errorText = await registerResponse.text();
+          console.error('Polar user registration failed:', errorText);
           return c.redirect(`${FRONTEND_URL}/profile?polar_error=registration`);
         }
+        console.log('User registered or already exists');
       } catch (e) {
         console.error('Polar registration error:', e);
       }
@@ -928,12 +942,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         lastSyncAt: null,
       };
 
+      console.log('Saving account to database...');
       if (existingAccount) {
         await storage.updatePolarAccount(userId, polarAccountData);
+        console.log('Account updated');
       } else {
         await storage.createPolarAccount(polarAccountData);
+        console.log('Account created');
       }
 
+      console.log('Polar callback success - redirecting to:', `${FRONTEND_URL}/profile?polar_connected=true`);
       return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
     } catch (error: any) {
       console.error('Polar callback error:', error);
