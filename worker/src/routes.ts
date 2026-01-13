@@ -845,7 +845,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const authError = c.req.query('error');
       const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
       const POLAR_CLIENT_SECRET = c.env.POLAR_CLIENT_SECRET;
-      const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna.io';
+      const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
       
       if (authError) {
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=denied`);
@@ -931,7 +931,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
     } catch (error: any) {
       console.error('Polar callback error:', error);
-      return c.redirect(`${c.env.FRONTEND_URL || 'https://runna.io'}/profile?polar_error=server`);
+      return c.redirect(`${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/profile?polar_error=server`);
     }
   });
 
