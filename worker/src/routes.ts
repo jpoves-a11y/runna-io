@@ -829,7 +829,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       const state = btoa(JSON.stringify({ userId, ts: Date.now() }));
-      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.workers.dev'}/api/polar/callback`;
+      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
       
       return c.json({ authUrl });
@@ -863,7 +863,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
       }
 
-      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.workers.dev'}/api/polar/callback`;
+      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
       
       const tokenResponse = await fetch('https://polaraccesslink.com/v3/oauth2/token', {
