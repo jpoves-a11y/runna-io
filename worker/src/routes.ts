@@ -824,7 +824,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     try {
       const userId = c.req.query('userId');
       const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
+      
+      console.log('Polar connect request - userId:', userId, 'POLAR_CLIENT_ID:', POLAR_CLIENT_ID ? 'configured' : 'NOT configured');
+      
       if (!userId || !POLAR_CLIENT_ID) {
+        console.error('Missing userId or POLAR_CLIENT_ID');
         return c.json({ error: "userId required and Polar not configured" }, 400);
       }
 
@@ -832,8 +836,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
       
+      console.log('Generated authUrl:', authUrl);
       return c.json({ authUrl });
     } catch (error: any) {
+      console.error('Polar connect error:', error);
       return c.json({ error: error.message }, 500);
     }
   });
