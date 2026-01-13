@@ -399,7 +399,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     try {
       const userId = c.req.query('userId');
       const STRAVA_CLIENT_ID = c.env.STRAVA_CLIENT_ID;
-      const STRAVA_REDIRECT_URI = 'https://runna-io-api.runna-io-api.workers.dev/api/strava/callback';
+      const STRAVA_REDIRECT_URI = 'https://runna-io-api.workers.dev/api/strava/callback';
 
       
       if (!userId || !STRAVA_CLIENT_ID) {
@@ -443,7 +443,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
-            const STRAVA_REDIRECT_URI = 'https://runna-io-api.runna-io-api.workers.dev/api/strava/callback';
+            const STRAVA_REDIRECT_URI = 'https://runna-io-api.workers.dev/api/strava/callback';
       
       const params = new URLSearchParams({
         client_id: STRAVA_CLIENT_ID!,
@@ -829,7 +829,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       const state = btoa(JSON.stringify({ userId, ts: Date.now() }));
-      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
+      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.workers.dev'}/api/polar/callback`;
       const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
       
       return c.json({ authUrl });
@@ -863,7 +863,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
       }
 
-      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
+      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.workers.dev'}/api/polar/callback`;
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
       
       const tokenResponse = await fetch('https://polaraccesslink.com/v3/oauth2/token', {
@@ -1201,6 +1201,134 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: error.message }, 500);
     }
   });
+  app.get('/api/polar/debug/:userId', async (c) => {
+  try {
+    const userId = c.req.param('userId');
+    console.log('🔍 [DEBUG] Starting Polar data check for user:', userId);
+
+    const db = createDb(c.env.DATABASE_URL);
+    const storage = new WorkerStorage(db);
+
+    // 1. Get account
+    const polarAccount = await storage.getPolarAccountByUserId(userId);
+    if (!polarAccount) {
+      return c.json({ error: 'No Polar account' }, 404);
+    }
+
+    console.log('✅ Account found');
+    console.log('  Token:', polarAccount.accessToken?.substring(0, 20) + '...');
+
+    // 2. Fetch exercises DIRECTAMENTE
+    console.log('\n🔍 [DEBUG EXERCISES]');
+    const exercisesResponse = await fetch(
+      'https://www.polaraccesslink.com/v3/exercises',
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    console.log('Status:', exercisesResponse.status);
+    const exercisesText = await exercisesResponse.text();
+    console.log('Response length:', exercisesText.length);
+    console.log('Response preview:', exercisesText.substring(0, 500));
+
+    let exercises = [];
+    if (exercisesText.length > 0) {
+      try {
+        exercises = JSON.parse(exercisesText);
+        console.log('Parsed exercises:', exercises.length);
+        if (exercises.length > 0) {
+          console.log('\nFirst exercise sample:');
+          console.log(JSON.stringify(exercises[0], null, 2));
+        }
+      } catch (e) {
+        console.error('❌ Failed to parse exercises:', e);
+      }
+    }
+
+    // 3. Fetch daily activities DIRECTAMENTE
+    console.log('\n🔍 [DEBUG DAILY ACTIVITIES]');
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const fromStr = from.toISOString().split('T')[0];
+    const toStr = to.toISOString().split('T')[0];
+
+    console.log('Date range:', fromStr, 'to', toStr);
+
+    const activitiesResponse = await fetch(
+      `https://www.polaraccesslink.com/v3/users/activities?from=${fromStr}&to=${toStr}`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    console.log('Status:', activitiesResponse.status);
+    const activitiesText = await activitiesResponse.text();
+    console.log('Response length:', activitiesText.length);
+    console.log('Response preview:', activitiesText.substring(0, 500));
+
+    let activities = [];
+    if (activitiesText.length > 0) {
+      try {
+        const activitiesData = JSON.parse(activitiesText);
+        activities = Array.isArray(activitiesData) ? activitiesData : activitiesData.activities || [];
+        console.log('Parsed activities:', activities.length);
+        if (activities.length > 0) {
+          console.log('\nFirst activity sample:');
+          console.log(JSON.stringify(activities[0], null, 2));
+        }
+      } catch (e) {
+        console.error('❌ Failed to parse activities:', e);
+      }
+    }
+
+    // 4. Check what's already in DB
+    console.log('\n🔍 [DEBUG DATABASE]');
+    const dbActivities = await storage.getPolarActivitiesByUserId(userId);
+    console.log('Activities in DB:', dbActivities.length);
+    if (dbActivities.length > 0) {
+      console.log('First DB activity:');
+      console.log(JSON.stringify(dbActivities[0], null, 2).substring(0, 300));
+    }
+
+    // Return summary
+    return c.json({
+      summary: {
+        polarAccountFound: !!polarAccount,
+        tokenValid: !!polarAccount.accessToken,
+        exercisesFromAPI: {
+          count: exercises.length,
+          status: exercisesResponse.status,
+          sample: exercises.length > 0 ? exercises[0] : null,
+        },
+        activitiesFromAPI: {
+          count: activities.length,
+          status: activitiesResponse.status,
+          dateRange: `${fromStr} to ${toStr}`,
+          sample: activities.length > 0 ? activities[0] : null,
+        },
+        databaseActivities: {
+          count: dbActivities.length,
+          all: dbActivities,
+        },
+      },
+      logs: 'Check Cloudflare Real-time tail for full logs',
+    });
+
+  } catch (error: any) {
+    console.error('❌ [DEBUG ERROR]:', error.message);
+    console.error(error.stack);
+    return c.json({ error: error.message, stack: error.stack }, 500);
+  }
+});
 }
 
 // Helper to parse GPX to coordinates

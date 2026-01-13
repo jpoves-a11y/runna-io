@@ -3,7 +3,7 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 // URL de la API - usar variable de entorno VITE_API_BASE_URL para Cloudflare Pages
 // En desarrollo local (Replit), usar '' para llamadas relativas al mismo servidor
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 
-  (import.meta.env.PROD ? 'https://runna-io-api.runna-io-api.workers.dev' : '');
+  (import.meta.env.PROD ? 'https://runna-io-api.workers.dev' : '');
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
