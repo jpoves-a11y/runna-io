@@ -277,16 +277,23 @@ export default function ProfilePage() {
   // Polar connect mutation
   const connectPolarMutation = useMutation({
     mutationFn: async () => {
+      console.log('Polar connect mutation started - userId:', user?.id);
       const response = await apiRequest('GET', `/api/polar/connect?userId=${user?.id}`);
       const data = await response.json();
+      console.log('Polar connect response:', data);
       return data;
     },
     onSuccess: (data) => {
+      console.log('Polar connect success - data:', data);
       if (data.authUrl) {
+        console.log('Redirecting to:', data.authUrl);
         window.location.href = data.authUrl;
+      } else {
+        console.error('No authUrl in response');
       }
     },
-    onError: () => {
+    onError: (error) => {
+      console.error('Polar connect error:', error);
       toast({
         title: 'Error',
         description: 'No se pudo conectar con Polar',
