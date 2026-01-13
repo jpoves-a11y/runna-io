@@ -879,7 +879,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
       
       console.log('Exchanging code for token...');
-      const tokenResponse = await fetch('https://api.polar.sh/v1/oauth2/token', {
+      const tokenResponse = await fetch('https://www.polaraccesslink.com/v3/oauth2/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
