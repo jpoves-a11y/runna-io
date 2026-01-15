@@ -420,7 +420,7 @@ export class WorkerStorage {
     return account || undefined;
   }
 
-  async getPolarAccountByPolarUserId(polarUserId: string): Promise<PolarAccount | undefined> {
+  async getPolarAccountByPolarUserId(polarUserId: number): Promise<PolarAccount | undefined> {
     const [account] = await this.db.select().from(polarAccounts).where(eq(polarAccounts.polarUserId, polarUserId));
     return account || undefined;
   }
@@ -476,6 +476,23 @@ export class WorkerStorage {
       .from(polarActivities)
       .where(eq(polarActivities.userId, userId))
       .orderBy(desc(polarActivities.startDate));
+  }
+
+  async getPolarActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {
+    const [aggregate] = await this.db
+      .select({
+        total: sql<number>`count(*)`,
+        unprocessed: sql<number>`sum(case when ${polarActivities.processed} = false then 1 else 0 end)` as any,
+        lastStartDate: sql<Date | null>`max(${polarActivities.startDate})`,
+      })
+      .from(polarActivities)
+      .where(eq(polarActivities.userId, userId));
+
+    return {
+      total: Number(aggregate?.total || 0),
+      unprocessed: Number(aggregate?.unprocessed || 0),
+      lastStartDate: aggregate?.lastStartDate || null,
+    };
   }
 
   // New friendship methods for friend-only competition

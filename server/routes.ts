@@ -996,11 +996,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const redirectUri = getPolarRedirectUri();
       const authHeader = Buffer.from(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`).toString('base64');
       
-      const tokenResponse = await fetch('https://polaraccesslink.com/v3/oauth2/token', {
+      const tokenResponse = await fetch('https://polarremote.com/v2/oauth2/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Authorization': `Basic ${authHeader}`,
+          'Accept': 'application/json',
         },
         body: new URLSearchParams({
           grant_type: 'authorization_code',
@@ -1015,10 +1016,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const tokenData = await tokenResponse.json();
-      const { access_token, x_user_id } = tokenData;
+      const { access_token, x_user_id } = tokenData as { access_token: string; x_user_id: number | string };
+      const normalizedPolarUserId = Number(x_user_id);
+
+      if (!Number.isFinite(normalizedPolarUserId)) {
+        console.error('Invalid x_user_id returned by Polar:', x_user_id);
+        return res.redirect('/profile?polar_error=invalid_user');
+      }
 
       // Check if this Polar account is already linked to another user
-      const existingAccount = await storage.getPolarAccountByPolarUserId(x_user_id);
+      const existingAccount = await storage.getPolarAccountByPolarUserId(normalizedPolarUserId);
       if (existingAccount && existingAccount.userId !== userId) {
         return res.redirect('/profile?polar_error=already_linked');
       }
@@ -1032,7 +1039,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             'Authorization': `Bearer ${access_token}`,
           },
           body: JSON.stringify({
-            'member-id': userId,
+            'member-id': normalizedPolarUserId,
           }),
         });
 
@@ -1048,9 +1055,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Create or update Polar account
       const polarAccountData = {
         userId,
-        polarUserId: x_user_id,
+        polarUserId: normalizedPolarUserId,
         accessToken: access_token,
-        memberId: userId,
+        memberId: normalizedPolarUserId.toString(),
         registeredAt: new Date(),
         lastSyncAt: null,
       };

@@ -1276,6 +1276,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // ==================== POLAR ====================
 
+  const triggerPolarBackfill = async (env: any, userId: string) => {
+    const baseUrl = env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
+    try {
+      const res = await fetch(`${baseUrl}/api/polar/sync-full/${userId}`, { method: 'POST' });
+      console.log(`[BACKFILL] kickoff user=${userId} status=${res.status}`);
+    } catch (err) {
+      console.error('[BACKFILL] kickoff failed', err);
+    }
+  };
+
   app.get('/api/polar/status/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
@@ -1284,10 +1294,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const polarAccount = await storage.getPolarAccountByUserId(userId);
       
       if (polarAccount) {
+        const stats = await storage.getPolarActivityStats(userId);
         return c.json({
           connected: true,
           polarUserId: polarAccount.polarUserId,
           lastSyncAt: polarAccount.lastSyncAt,
+          totalActivities: stats.total,
+          pendingActivities: stats.unprocessed,
+          lastActivityStart: stats.lastStartDate,
         });
       } else {
         return c.json({ connected: false });
@@ -1374,13 +1388,19 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       const tokenData: any = await tokenResponse.json();
       const { access_token, x_user_id } = tokenData;
+      const normalizedPolarUserId = Number(x_user_id);
       console.log('Token received - x_user_id:', x_user_id);
+
+      if (!Number.isFinite(normalizedPolarUserId)) {
+        console.error('Invalid x_user_id received:', x_user_id);
+        return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_user`);
+      }
 
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
 
       console.log('Checking for existing account...');
-      const existingAccount = await storage.getPolarAccountByPolarUserId(x_user_id);
+      const existingAccount = await storage.getPolarAccountByPolarUserId(normalizedPolarUserId);
       if (existingAccount && existingAccount.userId !== userId) {
         console.log('Account already linked to different user');
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=already_linked`);
@@ -1410,9 +1430,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       const polarAccountData = {
         userId,
-        polarUserId: x_user_id.toString(),
+        polarUserId: normalizedPolarUserId,
         accessToken: access_token,
-        memberId: x_user_id.toString(),
+        memberId: normalizedPolarUserId.toString(),
         lastSyncAt: null,
       };
 
@@ -1423,6 +1443,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       } else {
         await storage.createPolarAccount(polarAccountData);
         console.log('Account created');
+      }
+
+      if (c.executionCtx) {
+        c.executionCtx.waitUntil(triggerPolarBackfill(c.env, userId));
       }
 
       console.log('Polar callback success - redirecting to:', `${FRONTEND_URL}/profile?polar_connected=true`);
@@ -1716,7 +1740,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  // Full sync - get all exercises from Polar history (last 90 days)
+  // Full sync - get all exercises from Polar history (last 365 days)
   app.post('/api/polar/sync-full/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
@@ -1730,14 +1754,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       console.log(`\n🔄 [FULL SYNC] Starting full historical sync for user: ${userId}`);
 
-      // Get exercises from last 90 days for full history
+      // Get exercises from last 365 days for full history
       const toDate = new Date();
-      const fromDate = new Date(toDate.getTime() - 90 * 24 * 60 * 60 * 1000);
+      const fromDate = new Date(toDate.getTime() - 365 * 24 * 60 * 60 * 1000);
       
       const fromStr = fromDate.toISOString().split('T')[0];
       const toStr = toDate.toISOString().split('T')[0];
       
-      console.log(`📅 Full sync: Fetching exercises from ${fromStr} to ${toStr} (90 days)`);
+      console.log(`📅 Full sync: Fetching exercises from ${fromStr} to ${toStr} (365 days)`);
 
       const exercisesResponse = await fetch(
         `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
