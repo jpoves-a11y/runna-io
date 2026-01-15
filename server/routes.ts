@@ -154,7 +154,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         try {
           // Create a buffer around the route to represent conquered territory
           const lineString = turf.lineString(
-            routeData.coordinates.map(coord => [coord[1], coord[0]]) // [lng, lat] for GeoJSON
+            routeData.coordinates.map((coord: any) => [coord[1], coord[0]]) // [lng, lat] for GeoJSON
           );
           
           // Buffer of 50 meters around the route
@@ -166,9 +166,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Check for overlaps with existing territories
             const allTerritories = await storage.getAllTerritories();
             const userTerritories = allTerritories.filter(t => t.userId === routeData.userId);
-            const otherTerritories = allTerritories.filter(t => t.userId !== routeData.userId);
+            
+            // Get friend IDs for reconquest filtering
+            const friendIds = await storage.getFriendIds(routeData.userId);
+            
+            // Only allow reconquering territories from friends
+            const otherTerritories = allTerritories.filter(t => 
+              t.userId !== routeData.userId && friendIds.includes(t.userId)
+            );
 
-            // Handle reconquest - remove overlapping territories from other users
+            // Handle reconquest - remove overlapping territories from friends only
             for (const otherTerritory of otherTerritories) {
               try {
                 const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
@@ -194,33 +201,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             // Merge with user's existing territories if they overlap
             let finalGeometry = buffered.geometry;
+            
             for (const userTerritory of userTerritories) {
               try {
                 const userPoly = turf.polygon(userTerritory.geometry.coordinates);
                 const union = turf.union(
-                  turf.featureCollection([turf.polygon(finalGeometry.coordinates), userPoly])
+                  turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly])
                 );
                 if (union) {
                   finalGeometry = union.geometry;
-                  await storage.deleteTerritoryById(userTerritory.id);
                 }
               } catch (err) {
                 console.error('Error merging territories:', err);
               }
             }
 
-            // Create new territory
-            const territory = await storage.createTerritory({
-              userId: routeData.userId,
-              routeId: route.id,
-              geometry: finalGeometry,
-              area: turf.area(finalGeometry),
-            });
+            // Update or create unified territory for user
+            const territory = await storage.updateTerritoryGeometry(
+              routeData.userId,
+              route.id,
+              finalGeometry as any,
+              turf.area(finalGeometry)
+            );
 
             // Update user's total area
-            const updatedTerritories = await storage.getTerritoriesByUserId(routeData.userId);
-            const totalArea = updatedTerritories.reduce((sum, t) => sum + t.area, 0);
-            await storage.updateUserTotalArea(routeData.userId, totalArea);
+            await storage.updateUserTotalArea(routeData.userId, turf.area(finalGeometry));
 
             res.json({ route, territory });
           } else {
@@ -263,23 +268,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ==================== FRIENDSHIPS ====================
   
-  // Create friendship
+  // ==================== FRIENDS SYSTEM ====================
+  
+  // Create bidirectional friendship
   app.post("/api/friends", async (req, res) => {
     try {
-      const friendshipData = insertFriendshipSchema.parse(req.body);
+      const { userId, friendId } = req.body;
       
-      // Check if friendship already exists
-      const exists = await storage.checkFriendship(
-        friendshipData.userId,
-        friendshipData.friendId
-      );
-
-      if (exists) {
-        return res.status(400).json({ error: "Friendship already exists" });
+      if (!userId || !friendId) {
+        return res.status(400).json({ error: "userId and friendId required" });
       }
 
-      const friendship = await storage.createFriendship(friendshipData);
-      res.json(friendship);
+      if (userId === friendId) {
+        return res.status(400).json({ error: "Cannot add yourself as friend" });
+      }
+
+      await storage.createBidirectionalFriendship(userId, friendId);
+      res.json({ success: true });
     } catch (error: any) {
       res.status(400).json({ error: error.message });
     }
@@ -291,6 +296,113 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { userId } = req.params;
       const friends = await storage.getFriendsByUserId(userId);
       res.json(friends);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Delete friend (bidirectional)
+  app.delete("/api/friends/:friendId", async (req, res) => {
+    try {
+      const { friendId } = req.params;
+      const { userId } = req.body;
+
+      if (!userId) {
+        return res.status(400).json({ error: "userId required in body" });
+      }
+
+      await storage.deleteBidirectionalFriendship(userId, friendId);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Search users
+  app.get("/api/users/search", async (req, res) => {
+    try {
+      const { query, userId } = req.query;
+
+      if (!query || !userId) {
+        return res.status(400).json({ error: "query and userId required" });
+      }
+
+      const users = await storage.searchUsers(query as string, userId as string);
+      res.json(users);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get leaderboard for friends only
+  app.get("/api/leaderboard/friends/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const friends = await storage.getLeaderboardFriends(userId);
+      res.json(friends);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get territories for friends only
+  app.get("/api/territories/friends/:userId", async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const territories = await storage.getTerritoriesWithUsersByFriends(userId);
+      res.json(territories);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Create friend invite link
+  app.post("/api/friends/invite", async (req, res) => {
+    try {
+      const { userId } = req.body;
+
+      if (!userId) {
+        return res.status(400).json({ error: "userId required" });
+      }
+
+      const invite = await storage.createFriendInvite(userId);
+      const inviteUrl = `${process.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/friends/accept/${invite.token}`;
+      
+      res.json({ token: invite.token, url: inviteUrl });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Accept friend invite
+  app.post("/api/friends/accept/:token", async (req, res) => {
+    try {
+      const { token } = req.params;
+      const { userId } = req.body;
+
+      if (!userId) {
+        return res.status(400).json({ error: "userId required" });
+      }
+
+      const invite = await storage.getFriendInviteByToken(token);
+
+      if (!invite) {
+        return res.status(404).json({ error: "Invite not found or expired" });
+      }
+
+      if (new Date() > invite.expiresAt) {
+        await storage.deleteFriendInvite(invite.id);
+        return res.status(400).json({ error: "Invite expired" });
+      }
+
+      if (invite.userId === userId) {
+        return res.status(400).json({ error: "Cannot accept your own invite" });
+      }
+
+      await storage.createBidirectionalFriendship(invite.userId, userId);
+      await storage.deleteFriendInvite(invite.id);
+
+      res.json({ success: true, friendId: invite.userId });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -620,9 +732,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (buffered) {
               const allTerritories = await storage.getAllTerritories();
               const userTerritories = allTerritories.filter(t => t.userId === userId);
-              const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+              
+              // Get friend IDs for reconquest filtering (Strava)
+              const friendIds = await storage.getFriendIds(userId);
+              
+              // Only allow reconquering territories from friends
+              const otherTerritories = allTerritories.filter(t => 
+                t.userId !== userId && friendIds.includes(t.userId)
+              );
 
-              // Handle reconquest
+              // Handle reconquest (friends only)
               for (const otherTerritory of otherTerritories) {
                 try {
                   const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
@@ -642,30 +761,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
               // Merge with existing territories
               let finalGeometry = buffered.geometry;
+              
               for (const userTerritory of userTerritories) {
                 try {
                   const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates), userPoly]));
+                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly]));
                   if (union) {
                     finalGeometry = union.geometry;
-                    await storage.deleteTerritoryById(userTerritory.id);
                   }
                 } catch (err) {
                   console.error('Error merging territories:', err);
                 }
               }
 
-              const territory = await storage.createTerritory({
+              const territory = await storage.updateTerritoryGeometry(
                 userId,
-                routeId: route.id,
-                geometry: finalGeometry,
-                area: turf.area(finalGeometry),
-              });
+                route.id,
+                finalGeometry as any,
+                turf.area(finalGeometry)
+              );
 
               // Update user total area
-              const updatedTerritories = await storage.getTerritoriesByUserId(userId);
-              const totalArea = updatedTerritories.reduce((sum, t) => sum + t.area, 0);
-              await storage.updateUserTotalArea(userId, totalArea);
+              await storage.updateUserTotalArea(userId, turf.area(finalGeometry));
 
               await storage.updateStravaActivity(activity.id, {
                 processed: true,
@@ -745,6 +862,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
           continue;
         }
 
+        // IMPORTANT: /athlete/activities returns a summary without GPS data
+        // We need to fetch the detailed activity to get the polyline (GPS route)
+        let summaryPolyline = null;
+        try {
+          const detailedResponse = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}?include_all_efforts=false`,
+            {
+              headers: { 'Authorization': `Bearer ${validToken}` },
+            }
+          );
+          
+          if (detailedResponse.ok) {
+            const detailedActivity = await detailedResponse.json();
+            summaryPolyline = detailedActivity.map?.summary_polyline || null;
+          } else {
+            console.warn(`Failed to fetch detailed activity ${activity.id}:`, await detailedResponse.text());
+          }
+        } catch (err) {
+          console.warn(`Error fetching detailed Strava activity ${activity.id}:`, err);
+        }
+
+        // Only import activities that have GPS data (polyline)
+        // Activities without GPS won't be useful for territory calculation
+        if (!summaryPolyline) {
+          console.log(`Skipping activity ${activity.id} - no GPS data (polyline)`);
+          continue;
+        }
+
         // Store the activity
         await storage.createStravaActivity({
           stravaActivityId: activity.id,
@@ -756,7 +901,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           distance: activity.distance,
           duration: activity.moving_time,
           startDate: new Date(activity.start_date),
-          summaryPolyline: activity.map?.summary_polyline || null,
+          summaryPolyline,
           processed: false,
           processedAt: null,
         });
@@ -1175,9 +1320,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (buffered) {
               const allTerritories = await storage.getAllTerritories();
               const userTerritories = allTerritories.filter(t => t.userId === userId);
-              const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+              
+              // Get friend IDs for reconquest filtering (Polar)
+              const friendIds = await storage.getFriendIds(userId);
+              
+              // Only allow reconquering territories from friends
+              const otherTerritories = allTerritories.filter(t => 
+                t.userId !== userId && friendIds.includes(t.userId)
+              );
 
-              // Handle reconquest
+              // Handle reconquest (friends only)
               for (const otherTerritory of otherTerritories) {
                 try {
                   const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
@@ -1197,31 +1349,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
               // Merge with user's existing territories
               let finalGeometry = buffered.geometry;
+              
               for (const userTerritory of userTerritories) {
                 try {
                   const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates), userPoly]));
+                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly]));
                   if (union) {
                     finalGeometry = union.geometry;
-                    await storage.deleteTerritoryById(userTerritory.id);
                   }
                 } catch (err) {
                   console.error('Error merging territories:', err);
                 }
               }
 
-              // Create new territory
-              const territory = await storage.createTerritory({
-                userId: activity.userId,
-                routeId: route.id,
-                geometry: finalGeometry,
-                area: turf.area(finalGeometry),
-              });
+              // Update unified territory
+              const territory = await storage.updateTerritoryGeometry(
+                activity.userId,
+                route.id,
+                finalGeometry as any,
+                turf.area(finalGeometry)
+              );
 
               // Update user's total area
-              const updatedTerritories = await storage.getTerritoriesByUserId(activity.userId);
-              const totalArea = updatedTerritories.reduce((sum, t) => sum + t.area, 0);
-              await storage.updateUserTotalArea(activity.userId, totalArea);
+              await storage.updateUserTotalArea(activity.userId, turf.area(finalGeometry));
 
               // Mark as processed
               await storage.updatePolarActivity(activity.id, {

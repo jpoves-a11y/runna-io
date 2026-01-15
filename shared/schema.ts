@@ -28,7 +28,7 @@ export const routes = pgTable("routes", {
 export const territories = pgTable("territories", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  routeId: varchar("route_id").notNull().references(() => routes.id, { onDelete: 'cascade' }),
+  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'cascade' }),
   geometry: jsonb("geometry").notNull().$type<any>(), // GeoJSON polygon
   area: real("area").notNull(), // square meters
   conqueredAt: timestamp("conquered_at").notNull().defaultNow(),
@@ -38,6 +38,31 @@ export const friendships = pgTable("friendships", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   friendId: varchar("friend_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const friendInvites = pgTable("friend_invites", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: varchar("token").notNull().unique(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+export const friendRequests = pgTable("friend_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  senderId: varchar("sender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  recipientId: varchar("recipient_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  status: varchar("status").notNull().default('pending'), // pending, accepted, rejected
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  endpoint: text("endpoint").notNull().unique(),
+  p256dh: text("p256dh").notNull(),
+  auth: text("auth").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -106,6 +131,7 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   routes: many(routes),
   territories: many(territories),
   friendships: many(friendships),
+  friendInvites: many(friendInvites),
   polarAccount: one(polarAccounts),
   polarActivities: many(polarActivities),
   stravaAccount: one(stravaAccounts),
@@ -164,6 +190,13 @@ export const friendshipsRelations = relations(friendships, ({ one }) => ({
   }),
 }));
 
+export const friendInvitesRelations = relations(friendInvites, ({ one }) => ({
+  user: one(users, {
+    fields: [friendInvites.userId],
+    references: [users.id],
+  }),
+}));
+
 export const stravaAccountsRelations = relations(stravaAccounts, ({ one }) => ({
   user: one(users, {
     fields: [stravaAccounts.userId],
@@ -207,6 +240,17 @@ export const insertFriendshipSchema = createInsertSchema(friendships).omit({
   createdAt: true,
 });
 
+export const insertFriendInviteSchema = createInsertSchema(friendInvites).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertFriendRequestSchema = createInsertSchema(friendRequests).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+});
+
 export const insertPolarAccountSchema = createInsertSchema(polarAccounts).omit({
   id: true,
   createdAt: true,
@@ -227,6 +271,11 @@ export const insertStravaActivitySchema = createInsertSchema(stravaActivities).o
   createdAt: true,
 });
 
+export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -240,6 +289,12 @@ export type InsertTerritory = z.infer<typeof insertTerritorySchema>;
 export type Friendship = typeof friendships.$inferSelect;
 export type InsertFriendship = z.infer<typeof insertFriendshipSchema>;
 
+export type FriendInvite = typeof friendInvites.$inferSelect;
+export type InsertFriendInvite = z.infer<typeof insertFriendInviteSchema>;
+
+export type FriendRequest = typeof friendRequests.$inferSelect;
+export type InsertFriendRequest = z.infer<typeof insertFriendRequestSchema>;
+
 export type PolarAccount = typeof polarAccounts.$inferSelect;
 export type InsertPolarAccount = z.infer<typeof insertPolarAccountSchema>;
 
@@ -251,6 +306,9 @@ export type InsertStravaAccount = z.infer<typeof insertStravaAccountSchema>;
 
 export type StravaActivity = typeof stravaActivities.$inferSelect;
 export type InsertStravaActivity = z.infer<typeof insertStravaActivitySchema>;
+
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
 
 // Extended types for frontend
 export type UserWithStats = User & {

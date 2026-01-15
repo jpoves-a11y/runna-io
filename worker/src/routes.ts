@@ -214,6 +214,93 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Upload avatar image
+  app.post('/api/user/avatar', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const formData = await c.req.formData();
+      const userId = formData.get('userId') as string;
+      const file = formData.get('avatar') as File;
+
+      if (!file || !userId) {
+        return c.json({ error: 'Missing file or userId' }, 400);
+      }
+
+      // Validate file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        return c.json({ error: 'File size must be less than 5MB' }, 400);
+      }
+
+      // Convert to base64 for storage (avoid spread on large arrays)
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+
+      // Log file info for debugging
+      try {
+        console.log('Uploading avatar:', { name: (file as any).name, type: file.type, size: file.size });
+      } catch (e) {}
+
+      // Efficient base64 encoder avoiding large apply/call and huge intermediate strings
+      const base64Encode = (input: Uint8Array) => {
+        const lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        const output: string[] = [];
+        const len = input.length;
+        let i = 0;
+        for (; i + 2 < len; i += 3) {
+          const n = (input[i] << 16) | (input[i + 1] << 8) | (input[i + 2]);
+          output.push(
+            lookup[(n >> 18) & 63],
+            lookup[(n >> 12) & 63],
+            lookup[(n >> 6) & 63],
+            lookup[n & 63]
+          );
+          // avoid extremely large arrays growing too big in memory by flushing occasionally
+          if (output.length > 16384) {
+            output.push('');
+          }
+        }
+        if (i < len) {
+          const a = input[i];
+          const b = i + 1 < len ? input[i + 1] : 0;
+          const n = (a << 16) | (b << 8);
+          output.push(lookup[(n >> 18) & 63]);
+          output.push(lookup[(n >> 12) & 63]);
+          output.push(i + 1 < len ? lookup[(n >> 6) & 63] : '=');
+          output.push('=');
+        }
+        return output.join('');
+      };
+
+      const base64 = base64Encode(bytes);
+      const dataUrl = `data:${file.type};base64,${base64}`;
+
+      const updatedUser = await storage.updateUser(userId, { avatar: dataUrl });
+      return c.json({ success: true, avatar: dataUrl });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Delete avatar
+  app.delete('/api/user/avatar', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { userId } = body;
+
+      if (!userId) {
+        return c.json({ error: 'Missing userId' }, 400);
+      }
+
+      const updatedUser = await storage.updateUser(userId, { avatar: null });
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.get('/api/leaderboard', async (c) => {
     try {
       const db = createDb(c.env.DATABASE_URL);
@@ -258,6 +345,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 );
 
                 if (intersection) {
+                  // Send notification before deleting
+                  const { notifyTerritoryLoss } = await import('./notifications');
+                  await notifyTerritoryLoss(storage, otherTerritory.userId, routeData.userId, c.env);
+                  
                   await storage.deleteTerritoryById(otherTerritory.id);
                   
                   const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
@@ -280,23 +371,20 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 );
                 if (union) {
                   finalGeometry = union.geometry as any;
-                  await storage.deleteTerritoryById(userTerritory.id);
                 }
               } catch (err) {
                 console.error('Error merging territories:', err);
               }
             }
 
-            const territory = await storage.createTerritory({
-              userId: routeData.userId,
-              routeId: route.id,
-              geometry: finalGeometry as any,
-              area: turf.area(finalGeometry),
-            });
+            const territory = await storage.updateTerritoryGeometry(
+              routeData.userId,
+              route.id,
+              finalGeometry as any,
+              turf.area(finalGeometry)
+            );
 
-            const updatedTerritories = await storage.getTerritoriesByUserId(routeData.userId);
-            const totalArea = updatedTerritories.reduce((sum, t) => sum + t.area, 0);
-            await storage.updateUserTotalArea(routeData.userId, totalArea);
+            await storage.updateUserTotalArea(routeData.userId, territory.area);
 
             return c.json({ route, territory });
           } else {
@@ -337,24 +425,40 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // ==================== FRIENDS SYSTEM ====================
+
   app.post('/api/friends', async (c) => {
     try {
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
-      const friendshipData = insertFriendshipSchema.parse(body);
+      const { userId, friendId } = body;
       
-      const exists = await storage.checkFriendship(
-        friendshipData.userId,
-        friendshipData.friendId
-      );
-
-      if (exists) {
-        return c.json({ error: "Friendship already exists" }, 400);
+      if (!userId || !friendId) {
+        return c.json({ error: "userId and friendId required" }, 400);
       }
 
-      const friendship = await storage.createFriendship(friendshipData);
-      return c.json(friendship);
+      if (userId === friendId) {
+        return c.json({ error: "Cannot add yourself as friend" }, 400);
+      }
+
+      // Check if already friends
+      const alreadyFriends = await storage.checkFriendship(userId, friendId);
+      if (alreadyFriends) {
+        return c.json({ error: "Already friends" }, 400);
+      }
+
+      // Create friend request instead of direct friendship
+      const request = await storage.createFriendRequest({
+        senderId: userId,
+        recipientId: friendId,
+      });
+
+      // Send push notification to recipient
+      const { notifyFriendRequest } = await import('./notifications');
+      await notifyFriendRequest(storage, friendId, userId, c.env);
+
+      return c.json({ success: true, requestId: request.id });
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
     }
@@ -367,6 +471,353 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const userId = c.req.param('userId');
       const friends = await storage.getFriendsByUserId(userId);
       return c.json(friends);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.delete('/api/friends/:friendId', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const friendId = c.req.param('friendId');
+      const body = await c.req.json();
+      const { userId } = body;
+
+      if (!userId) {
+        return c.json({ error: "userId required in body" }, 400);
+      }
+
+      await storage.deleteBidirectionalFriendship(userId, friendId);
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Friend requests endpoints
+  app.get('/api/friends/requests/:userId', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const userId = c.req.param('userId');
+      const requests = await storage.getFriendRequestsByRecipient(userId);
+      
+      // Enrich with sender info
+      const enrichedRequests = await Promise.all(
+        requests.map(async (req) => {
+          const sender = await storage.getUser(req.senderId);
+          return {
+            ...req,
+            sender: sender ? {
+              id: sender.id,
+              name: sender.name,
+              username: sender.username,
+              avatar: sender.avatar,
+              color: sender.color,
+            } : null,
+          };
+        })
+      );
+
+      return c.json(enrichedRequests);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get friend requests sent by a user
+  app.get('/api/friends/requests/sent/:userId', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const userId = c.req.param('userId');
+      
+      const requests = await storage.getFriendRequestsBySender(userId);
+      
+      // Enrich with recipient info
+      const enrichedRequests = await Promise.all(
+        requests.map(async (req) => {
+          const recipient = await storage.getUser(req.recipientId);
+          return {
+            ...req,
+            recipient: recipient ? {
+              id: recipient.id,
+              name: recipient.name,
+              username: recipient.username,
+              avatar: recipient.avatar,
+              color: recipient.color,
+            } : null,
+          };
+        })
+      );
+
+      return c.json(enrichedRequests);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/friends/requests/:requestId/accept', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const requestId = c.req.param('requestId');
+      const body = await c.req.json();
+      const { userId } = body;
+
+      const request = await storage.getFriendRequestById(requestId);
+      if (!request) {
+        return c.json({ error: "Request not found" }, 404);
+      }
+
+      if (request.recipientId !== userId) {
+        return c.json({ error: "Unauthorized" }, 403);
+      }
+
+      if (request.status !== 'pending') {
+        return c.json({ error: "Request already processed" }, 400);
+      }
+
+      // Create bidirectional friendship
+      await storage.createBidirectionalFriendship(request.senderId, request.recipientId);
+      
+      // Update request status
+      await storage.updateFriendRequestStatus(requestId, 'accepted');
+
+      // Send notification to sender
+      const { notifyFriendRequestAccepted } = await import('./notifications');
+      await notifyFriendRequestAccepted(storage, request.senderId, userId, c.env);
+
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/friends/requests/:requestId/reject', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const requestId = c.req.param('requestId');
+      const body = await c.req.json();
+      const { userId } = body;
+
+      const request = await storage.getFriendRequestById(requestId);
+      if (!request) {
+        return c.json({ error: "Request not found" }, 404);
+      }
+
+      if (request.recipientId !== userId) {
+        return c.json({ error: "Unauthorized" }, 403);
+      }
+
+      // Update request status
+      await storage.updateFriendRequestStatus(requestId, 'rejected');
+
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/users/search', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const query = c.req.query('query');
+      const userId = c.req.query('userId');
+
+      if (!query || !userId) {
+        return c.json({ error: "query and userId required" }, 400);
+      }
+
+      const users = await storage.searchUsers(query, userId);
+      return c.json(users);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get aggregated stats for a user
+  app.get('/api/users/:id/stats', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const userId = c.req.param('id');
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return c.json({ error: 'User not found' }, 404);
+      }
+
+      // Total area (stored on users.totalArea)
+      const totalArea = user.totalArea || 0;
+
+      // Activities: count saved routes
+      const routes = await storage.getRoutesByUserId(userId);
+      const activitiesCount = routes.length;
+
+      // Last activity: most recent route completion or strava activity
+      const stravaActs = await storage.getStravaActivitiesByUserId(userId);
+      const lastRouteDate = routes.length > 0 ? new Date(routes[0].completedAt) : null;
+      const lastStravaDate = stravaActs.length > 0 ? new Date(stravaActs[0].startDate) : null;
+      let lastActivity: string | null = null;
+      if (lastRouteDate && lastStravaDate) {
+        lastActivity = (lastRouteDate > lastStravaDate ? lastRouteDate : lastStravaDate).toISOString();
+      } else if (lastRouteDate) {
+        lastActivity = lastRouteDate.toISOString();
+      } else if (lastStravaDate) {
+        lastActivity = lastStravaDate.toISOString();
+      }
+
+      // Note: historical "stolen/robbed" area is not currently recorded in the DB.
+      // Return null for those fields so the client can display N/A.
+      const stats = {
+        user: {
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          avatar: user.avatar,
+          color: user.color,
+        },
+        totalArea, // in m²
+        activitiesCount,
+        lastActivity, // ISO string or null
+        areaStolen: null,
+        areaRobbed: null,
+      };
+
+      return c.json(stats);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/leaderboard/friends/:userId', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const userId = c.req.param('userId');
+      const friends = await storage.getLeaderboardFriends(userId);
+      return c.json(friends);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/territories/friends/:userId', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const userId = c.req.param('userId');
+      const territories = await storage.getTerritoriesWithUsersByFriends(userId);
+      return c.json(territories);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/friends/invite', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { userId } = body;
+
+      if (!userId) {
+        return c.json({ error: "userId required" }, 400);
+      }
+
+      const invite = await storage.createFriendInvite(userId);
+      const inviteUrl = `${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/friends/accept/${invite.token}`;
+      
+      return c.json({ token: invite.token, url: inviteUrl });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/friends/accept/:token', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const token = c.req.param('token');
+      const body = await c.req.json();
+      const { userId } = body;
+
+      if (!userId) {
+        return c.json({ error: "userId required" }, 400);
+      }
+
+      const invite = await storage.getFriendInviteByToken(token);
+
+      if (!invite) {
+        return c.json({ error: "Invite not found or expired" }, 404);
+      }
+
+      if (new Date() > invite.expiresAt) {
+        await storage.deleteFriendInvite(invite.id);
+        return c.json({ error: "Invite expired" }, 400);
+      }
+
+      if (invite.userId === userId) {
+        return c.json({ error: "Cannot accept your own invite" }, 400);
+      }
+
+      await storage.createBidirectionalFriendship(invite.userId, userId);
+      await storage.deleteFriendInvite(invite.id);
+
+      // Send notification to the person who created the invite
+      const { notifyFriendRequestAccepted } = await import('./notifications');
+      await notifyFriendRequestAccepted(storage, invite.userId, userId, c.env);
+
+      return c.json({ success: true, friendId: invite.userId });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // ==================== PUSH NOTIFICATIONS ====================
+
+  app.post('/api/push/subscribe', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { userId, endpoint, keys } = body;
+
+      if (!userId || !endpoint || !keys?.p256dh || !keys?.auth) {
+        return c.json({ error: 'Missing required fields' }, 400);
+      }
+
+      await storage.createPushSubscription({
+        userId,
+        endpoint,
+        p256dh: keys.p256dh,
+        auth: keys.auth,
+      });
+
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('Error subscribing to push:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/push/unsubscribe', async (c) => {
+    try {
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { userId } = body;
+
+      if (!userId) {
+        return c.json({ error: 'userId required' }, 400);
+      }
+
+      await storage.deletePushSubscriptionsByUserId(userId);
+      return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -399,7 +850,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     try {
       const userId = c.req.query('userId');
       const STRAVA_CLIENT_ID = c.env.STRAVA_CLIENT_ID;
-      const STRAVA_REDIRECT_URI = 'https://runna-io-api.workers.dev/api/strava/callback';
+      const STRAVA_REDIRECT_URI = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/strava/callback`;
 
       
       if (!userId || !STRAVA_CLIENT_ID) {
@@ -443,17 +894,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
-            const STRAVA_REDIRECT_URI = 'https://runna-io-api.workers.dev/api/strava/callback';
-      
       const params = new URLSearchParams({
         client_id: STRAVA_CLIENT_ID!,
         client_secret: STRAVA_CLIENT_SECRET!,
         code: code as string,
         grant_type: 'authorization_code',
-        redirect_uri: STRAVA_REDIRECT_URI,
       });
 
-      const tokenResponse = await fetch('https://www.strava.com/oauth/token', {
+      const tokenResponse = await fetch('https://www.strava.com/api/v3/oauth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params.toString(),
@@ -650,6 +1098,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
                   const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
                   if (intersection) {
+                    // Send notification for Strava activity
+                    const { notifyTerritoryLoss } = await import('./notifications');
+                    await notifyTerritoryLoss(storage, otherTerritory.userId, userId, c.env);
+                    
                     await storage.deleteTerritoryById(otherTerritory.id);
                     const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
                     const newTotalArea = otherUserTerritories
@@ -669,23 +1121,20 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly]));
                   if (union) {
                     finalGeometry = union.geometry as any;
-                    await storage.deleteTerritoryById(userTerritory.id);
                   }
                 } catch (err) {
                   console.error('Error merging territories:', err);
                 }
               }
 
-              const territory = await storage.createTerritory({
+              const territory = await storage.updateTerritoryGeometry(
                 userId,
-                routeId: route.id,
-                geometry: finalGeometry as any,
-                area: turf.area(finalGeometry),
-              });
+                route.id,
+                finalGeometry as any,
+                turf.area(finalGeometry)
+              );
 
-              const updatedTerritories = await storage.getTerritoriesByUserId(userId);
-              const totalArea = updatedTerritories.reduce((sum, t) => sum + t.area, 0);
-              await storage.updateUserTotalArea(userId, totalArea);
+              await storage.updateUserTotalArea(userId, territory.area);
 
               await storage.updateStravaActivity(activity.id, {
                 processed: true,
@@ -769,6 +1218,34 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           continue;
         }
 
+        // IMPORTANT: /athlete/activities returns a summary without GPS data
+        // We need to fetch the detailed activity to get the polyline (GPS route)
+        let summaryPolyline = null;
+        try {
+          const detailedResponse = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}?include_all_efforts=false`,
+            {
+              headers: { 'Authorization': `Bearer ${validToken}` },
+            }
+          );
+          
+          if (detailedResponse.ok) {
+            const detailedActivity = await detailedResponse.json();
+            summaryPolyline = detailedActivity.map?.summary_polyline || null;
+          } else {
+            console.warn(`Failed to fetch detailed activity ${activity.id}:`, await detailedResponse.text());
+          }
+        } catch (err) {
+          console.warn(`Error fetching detailed Strava activity ${activity.id}:`, err);
+        }
+
+        // Only import activities that have GPS data (polyline)
+        // Activities without GPS won't be useful for territory calculation
+        if (!summaryPolyline) {
+          console.log(`Skipping activity ${activity.id} - no GPS data (polyline)`);
+          continue;
+        }
+
         // Store the activity
         await storage.createStravaActivity({
           stravaActivityId: activity.id,
@@ -780,7 +1257,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           distance: activity.distance,
           duration: activity.moving_time,
           startDate: new Date(activity.start_date),
-          summaryPolyline: activity.map?.summary_polyline || null,
+          summaryPolyline,
           processed: false,
           processedAt: null,
         });
@@ -879,17 +1356,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
       
       console.log('Exchanging code for token...');
-      const tokenResponse = await fetch('https://www.polaraccesslink.com/v3/oauth2/token', {
+      const tokenResponse = await fetch('https://polarremote.com/v2/oauth2/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
           'Authorization': `Basic ${authHeader}`,
+          'Accept': 'application/json',
         },
-        body: new URLSearchParams({
-          grant_type: 'authorization_code',
-          code: code as string,
-          redirect_uri: redirectUri,
-        }).toString(),
+        body: `grant_type=authorization_code&code=${code}&redirect_uri=${encodeURIComponent(redirectUri)}`,
       });
 
       if (!tokenResponse.ok) {
@@ -913,14 +1387,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       try {
-        console.log('Registering user with Polar...');
+        console.log('Registering user with Polar using x_user_id:', x_user_id);
         const registerResponse = await fetch('https://www.polaraccesslink.com/v3/users', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/xml',
             'Authorization': `Bearer ${access_token}`,
+            'Accept': 'application/json',
           },
-          body: JSON.stringify({ 'member-id': userId }),
+          body: `<?xml version="1.0" encoding="UTF-8"?><register><member-id>${x_user_id}</member-id></register>`,
         });
 
         if (!registerResponse.ok && registerResponse.status !== 409) {
@@ -935,10 +1410,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       const polarAccountData = {
         userId,
-        polarUserId: x_user_id,
+        polarUserId: x_user_id.toString(),
         accessToken: access_token,
-        memberId: userId,
-        registeredAt: new Date(),
+        memberId: x_user_id.toString(),
         lastSyncAt: null,
       };
 
@@ -1002,42 +1476,76 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: 'Polar account not connected' }, 404);
       }
 
-      const transactionResponse = await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${polarAccount.accessToken}`,
-          'Accept': 'application/json',
-        },
-      });
+      console.log(`\n🔄 [SYNC] Starting Polar sync for user: ${userId}`);
 
-      if (transactionResponse.status === 204) {
+      // MÉTODO DIRECTO: Obtener ejercicios del último mes
+      const toDate = new Date();
+      const fromDate = new Date(toDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+      
+      const fromStr = fromDate.toISOString().split('T')[0];
+      const toStr = toDate.toISOString().split('T')[0];
+      
+      console.log(`📅 Fetching exercises from ${fromStr} to ${toStr}`);
+
+      const exercisesResponse = await fetch(
+        `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${polarAccount.accessToken}`,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      // 401 means access token expired
+      if (exercisesResponse.status === 401) {
+        console.error('Polar token expired for user:', userId);
+        await storage.deletePolarAccount(userId);
+        return c.json({ error: 'Polar token expired - please reconnect' }, 401);
+      }
+
+      if (exercisesResponse.status === 204) {
+        console.log('No new exercises (204 No Content)');
         await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
-        return c.json({ imported: 0, message: 'No new exercises available' });
+        return c.json({ imported: 0, total: 0, message: 'No new exercises available' });
       }
-
-      if (!transactionResponse.ok) {
-        console.error('Polar transaction failed:', await transactionResponse.text());
-        return c.json({ error: 'Failed to create Polar transaction' }, 500);
-      }
-
-      const transaction: any = await transactionResponse.json();
-      const transactionId = transaction['transaction-id'];
-
-      const exercisesResponse = await fetch(transaction['resource-uri'], {
-        headers: {
-          'Authorization': `Bearer ${polarAccount.accessToken}`,
-          'Accept': 'application/json',
-        },
-      });
 
       if (!exercisesResponse.ok) {
-        console.error('Failed to list Polar exercises:', await exercisesResponse.text());
-        return c.json({ error: 'Failed to list Polar exercises' }, 500);
+        const errorText = await exercisesResponse.text();
+        console.error('Polar transaction failed:', exercisesResponse.status, errorText);
+        return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
       }
 
-      const exercisesData: any = await exercisesResponse.json();
-      const exerciseUrls = exercisesData.exercises || [];
+      const transactionData: any = await exercisesResponse.json();
+      const transactionId = transactionData['transaction-id'];
+      const resourceUri = transactionData['resource-uri'];
+      
+      console.log(`Transaction ID: ${transactionId}`);
+      console.log(`Resource URI: ${resourceUri}`);
+
+      // Obtener lista de ejercicios
+      const listResponse = await fetch(resourceUri, {
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!listResponse.ok) {
+        const errorText = await listResponse.text();
+        console.error('Failed to list exercises:', listResponse.status, errorText);
+        return c.json({ error: 'Failed to list exercises' }, 500);
+      }
+
+      const listData: any = await listResponse.json();
+      const exerciseUrls = listData.exercises || [];
+      console.log(`📊 Found ${exerciseUrls.length} exercises`);
+      
       let imported = 0;
+      let skipped = 0;
+      let errors = 0;
 
       for (const exerciseUrl of exerciseUrls) {
         try {
@@ -1048,23 +1556,73 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             },
           });
 
-          if (!exerciseResponse.ok) continue;
+          if (!exerciseResponse.ok) {
+            console.warn(`Failed to fetch exercise ${exerciseUrl}: ${exerciseResponse.status}`);
+            continue;
+          }
 
           const exercise: any = await exerciseResponse.json();
           const exerciseId = exercise.id || exerciseUrl.split('/').pop();
 
-          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
-          if (existing) continue;
+          console.log(`\n📍 Exercise: ${exerciseId}`);
+          console.log(`   URL: ${exerciseUrl}`);
 
-          const sport = exercise['detailed-sport-info']?.sport || exercise.sport || '';
-          const activityType = sport.toLowerCase();
-          if (!['running', 'walking', 'trail_running', 'hiking', 'jogging'].some(t => activityType.includes(t))) {
+          // Verificar si ya existe
+          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
+          if (existing) {
+            console.log(`   ⏭️  Ya importada`);
+            skipped++;
             continue;
           }
 
+          // Extraer deporte de múltiples campos
+          const sport = 
+            exercise['detailed-sport-info']?.sport || 
+            exercise['sport-info']?.sport ||
+            exercise.sport || 
+            exercise.type ||
+            exercise['sport-id'] ||
+            '';
+          
+          const activityType = String(sport).toLowerCase().trim();
+          const distance = Number(exercise.distance) || 0;
+          const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
+          const startTime = exercise['start-time'];
+          
+          console.log(`   Sport: "${sport}" (type: "${activityType}")`);
+          console.log(`   Distance: ${distance}m | Duration: ${duration}s`);
+          console.log(`   Start: ${startTime}`);
+
+          // FILTRO MEJORADO: Sin restricciones si tiene datos básicos
+          // Solo rechaza si claramente NO es una actividad de movimiento
+          const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
+          const isExcluded = excludeTypes.some(t => activityType.includes(t));
+          
+          if (isExcluded) {
+            console.log(`   ❌ Skipped: tipo excluido (${sport})`);
+            skipped++;
+            continue;
+          }
+
+          // Validar distancia mínima - pero menos restrictivo
+          if (distance < 100) {
+            console.log(`   ❌ Skipped: distancia muy corta (${distance}m < 100m)`);
+            skipped++;
+            continue;
+          }
+
+          // Validar duración mínima - pero menos restrictivo
+          if (duration < 60) {
+            console.log(`   ❌ Skipped: duración muy corta (${duration}s < 60s)`);
+            skipped++;
+            continue;
+          }
+
+          // Intentar obtener GPX
           let summaryPolyline: string | null = null;
           try {
-            const gpxResponse = await fetch(`${exerciseUrl}/gpx`, {
+            const gpxUrl = `${exerciseUrl}/gpx`;
+            const gpxResponse = await fetch(gpxUrl, {
               headers: {
                 'Authorization': `Bearer ${polarAccount.accessToken}`,
                 'Accept': 'application/gpx+xml',
@@ -1073,47 +1631,73 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
             if (gpxResponse.ok) {
               const gpxText = await gpxResponse.text();
-              const coordinates = parseGpxToCoordinates(gpxText);
-              if (coordinates.length >= 2) {
-                summaryPolyline = encodePolyline(coordinates);
+              if (gpxText && gpxText.length > 0) {
+                const coordinates = parseGpxToCoordinates(gpxText);
+                console.log(`   📍 GPX: ${coordinates.length} coordinates`);
+                
+                if (coordinates.length >= 2) {
+                  summaryPolyline = encodePolyline(coordinates);
+                  console.log(`   ✅ Polyline encoded`);
+                } else {
+                  console.log(`   ⚠️  GPX has ${coordinates.length} coordinates (need ≥2)`);
+                }
               }
+            } else {
+              console.log(`   ℹ️  No GPX (${gpxResponse.status})`);
             }
           } catch (e) {
-            console.error('Failed to get GPX for exercise:', exerciseId, e);
+            console.error(`   ❌ GPX error: ${e}`);
           }
 
+          // Guardar actividad en BD
           await storage.createPolarActivity({
             polarExerciseId: exerciseId.toString(),
             userId,
             routeId: null,
             territoryId: null,
-            name: exercise.sport || 'Polar Exercise',
+            name: `${sport} (${(distance/1000).toFixed(2)}km)`,
             activityType: sport,
-            distance: exercise.distance || 0,
-            duration: parseDuration(exercise.duration),
-            startDate: new Date(exercise['start-time']),
+            distance: distance,
+            duration: duration,
+            startDate: new Date(startTime),
             summaryPolyline,
             processed: false,
             processedAt: null,
           });
+          
+          console.log(`   ✅ IMPORTED!`);
           imported++;
         } catch (e) {
-          console.error('Error processing Polar exercise:', e);
+          console.error(`   ❌ Error: ${e}`);
+          errors++;
         }
       }
 
+      // Comprometer la transacción
       try {
-        await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`, {
-          method: 'PUT',
-          headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
-        });
+        await fetch(
+          `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
+          {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+          }
+        );
+        console.log('✅ Transaction committed');
       } catch (e) {
-        console.error('Failed to commit Polar transaction:', e);
+        console.error('⚠️  Transaction commit failed:', e);
       }
 
       await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
 
-      return c.json({ imported, total: exerciseUrls.length });
+      console.log(`\n📊 SYNC RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
+
+      return c.json({ 
+        imported, 
+        total: exerciseUrls.length, 
+        skipped,
+        errors,
+        message: `${imported} importadas de ${exerciseUrls.length}` 
+      });
     } catch (error: any) {
       console.error('Polar sync error:', error);
       return c.json({ error: error.message }, 500);
@@ -1132,6 +1716,234 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Full sync - get all exercises from Polar history (last 90 days)
+  app.post('/api/polar/sync-full/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = createDb(c.env.DATABASE_URL);
+      const storage = new WorkerStorage(db);
+      const polarAccount = await storage.getPolarAccountByUserId(userId);
+      
+      if (!polarAccount) {
+        return c.json({ error: 'Polar account not connected' }, 404);
+      }
+
+      console.log(`\n🔄 [FULL SYNC] Starting full historical sync for user: ${userId}`);
+
+      // Get exercises from last 90 days for full history
+      const toDate = new Date();
+      const fromDate = new Date(toDate.getTime() - 90 * 24 * 60 * 60 * 1000);
+      
+      const fromStr = fromDate.toISOString().split('T')[0];
+      const toStr = toDate.toISOString().split('T')[0];
+      
+      console.log(`📅 Full sync: Fetching exercises from ${fromStr} to ${toStr} (90 days)`);
+
+      const exercisesResponse = await fetch(
+        `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${polarAccount.accessToken}`,
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (exercisesResponse.status === 401) {
+        console.error('Polar token expired for user:', userId);
+        await storage.deletePolarAccount(userId);
+        return c.json({ error: 'Polar token expired - please reconnect' }, 401);
+      }
+
+      if (exercisesResponse.status === 204) {
+        console.log('No exercises found in history');
+        return c.json({ imported: 0, total: 0, message: 'No exercises in history' });
+      }
+
+      if (!exercisesResponse.ok) {
+        const errorText = await exercisesResponse.text();
+        console.error('Polar transaction failed:', exercisesResponse.status, errorText);
+        return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
+      }
+
+      const transactionData: any = await exercisesResponse.json();
+      const transactionId = transactionData['transaction-id'];
+      const resourceUri = transactionData['resource-uri'];
+      
+      console.log(`Transaction ID: ${transactionId}`);
+
+      const listResponse = await fetch(resourceUri, {
+        headers: {
+          'Authorization': `Bearer ${polarAccount.accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!listResponse.ok) {
+        const errorText = await listResponse.text();
+        console.error('Failed to list exercises:', listResponse.status, errorText);
+        return c.json({ error: 'Failed to list exercises' }, 500);
+      }
+
+      const listData: any = await listResponse.json();
+      const exerciseUrls = listData.exercises || [];
+      console.log(`📊 Full sync: Found ${exerciseUrls.length} exercises in last 90 days`);
+      
+      let imported = 0;
+      let skipped = 0;
+      let errors = 0;
+      let duplicates = 0;
+
+      for (const exerciseUrl of exerciseUrls) {
+        try {
+          const exerciseResponse = await fetch(exerciseUrl, {
+            headers: {
+              'Authorization': `Bearer ${polarAccount.accessToken}`,
+              'Accept': 'application/json',
+            },
+          });
+
+          if (!exerciseResponse.ok) {
+            console.warn(`⚠️  Failed to fetch exercise: ${exerciseResponse.status}`);
+            errors++;
+            continue;
+          }
+
+          const exercise: any = await exerciseResponse.json();
+          const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+
+          console.log(`\n📍 Exercise: ${exerciseId}`);
+
+          // Check if already exists
+          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
+          if (existing) {
+            console.log(`   ⏭️  Already imported`);
+            duplicates++;
+            continue;
+          }
+
+          // Extract sport from multiple fields
+          const sport = 
+            exercise['detailed-sport-info']?.sport || 
+            exercise['sport-info']?.sport ||
+            exercise.sport || 
+            exercise.type ||
+            exercise['sport-id'] ||
+            '';
+          
+          const activityType = String(sport).toLowerCase().trim();
+          const distance = Number(exercise.distance) || 0;
+          const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
+          const startTime = exercise['start-time'];
+          
+          console.log(`   Sport: "${sport}"`);
+          console.log(`   Distance: ${distance}m | Duration: ${duration}s`);
+
+          const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
+          const isExcluded = excludeTypes.some(t => activityType.includes(t));
+          
+          if (isExcluded) {
+            console.log(`   ❌ Excluded type`);
+            skipped++;
+            continue;
+          }
+
+          if (distance < 100) {
+            console.log(`   ❌ Distance too short (${distance}m)`);
+            skipped++;
+            continue;
+          }
+
+          if (duration < 60) {
+            console.log(`   ❌ Duration too short (${duration}s)`);
+            skipped++;
+            continue;
+          }
+
+          // Try to get GPX
+          let summaryPolyline: string | null = null;
+          try {
+            const gpxUrl = `${exerciseUrl}/gpx`;
+            const gpxResponse = await fetch(gpxUrl, {
+              headers: {
+                'Authorization': `Bearer ${polarAccount.accessToken}`,
+                'Accept': 'application/gpx+xml',
+              },
+            });
+
+            if (gpxResponse.ok) {
+              const gpxText = await gpxResponse.text();
+              if (gpxText && gpxText.length > 0) {
+                const coordinates = parseGpxToCoordinates(gpxText);
+                console.log(`   📍 GPX: ${coordinates.length} coordinates`);
+                
+                if (coordinates.length >= 2) {
+                  summaryPolyline = encodePolyline(coordinates);
+                  console.log(`   ✅ Polyline encoded`);
+                }
+              }
+            } else {
+              console.log(`   ℹ️  No GPX`);
+            }
+          } catch (e) {
+            console.error(`   ❌ GPX error: ${e}`);
+          }
+
+          await storage.createPolarActivity({
+            polarExerciseId: exerciseId.toString(),
+            userId,
+            routeId: null,
+            territoryId: null,
+            name: `${sport} (${(distance/1000).toFixed(2)}km)`,
+            activityType: sport,
+            distance: distance,
+            duration: duration,
+            startDate: new Date(startTime),
+            summaryPolyline,
+            processed: false,
+            processedAt: null,
+          });
+          
+          console.log(`   ✅ IMPORTED!`);
+          imported++;
+        } catch (e) {
+          console.error(`   ❌ Error: ${e}`);
+          errors++;
+        }
+      }
+
+      // Commit transaction
+      try {
+        await fetch(
+          `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
+          {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+          }
+        );
+        console.log('✅ Transaction committed');
+      } catch (e) {
+        console.error('⚠️  Transaction commit failed:', e);
+      }
+
+      console.log(`\n📊 FULL SYNC RESULT: ${imported} imported, ${duplicates} duplicates, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
+
+      return c.json({ 
+        imported, 
+        total: exerciseUrls.length, 
+        duplicates,
+        skipped,
+        errors,
+        message: `Full sync: ${imported} nuevas de ${exerciseUrls.length}` 
+      });
+    } catch (error: any) {
+      console.error('Polar full sync error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.post('/api/polar/process/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
@@ -1142,6 +1954,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       for (const activity of unprocessed) {
         if (!activity.summaryPolyline) {
+          console.log(`Skipping Polar activity ${activity.id} - no GPS data available`);
           await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
           continue;
         }
@@ -1150,69 +1963,88 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const decoded = decodePolyline(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
-          if (coordinates.length >= 3) {
-            const route = await storage.createRoute({
-              userId: activity.userId,
-              name: activity.name,
-              coordinates,
-              distance: activity.distance,
-              duration: activity.duration,
-              startedAt: activity.startDate,
-              completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
-            });
+          if (coordinates.length < 3) {
+            console.log(`Skipping Polar activity ${activity.id} - insufficient coordinates (${coordinates.length})`);
+            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            continue;
+          }
 
-            const lineString = turf.lineString(
-              coordinates.map(coord => [coord[1], coord[0]])
-            );
-            const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+          const route = await storage.createRoute({
+            userId: activity.userId,
+            name: activity.name,
+            coordinates,
+            distance: activity.distance,
+            duration: activity.duration,
+            startedAt: activity.startDate,
+            completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+          });
 
-            if (buffered) {
-              const allTerritories = await storage.getAllTerritories();
-              const userTerritories = allTerritories.filter(t => t.userId === userId);
-              const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+          const lineString = turf.lineString(
+            coordinates.map(coord => [coord[1], coord[0]])
+          );
+          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
 
-              for (const otherTerritory of otherTerritories) {
-                try {
-                  const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
-                  const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
-                  if (intersection) {
-                    await storage.deleteTerritoryById(otherTerritory.id);
-                    const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
-                    const newTotalArea = otherUserTerritories
-                      .filter(t => t.id !== otherTerritory.id)
-                      .reduce((sum, t) => sum + t.area, 0);
-                    await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
-                  }
-                } catch (e) {
-                  console.error('Error checking intersection:', e);
+          if (buffered) {
+            const allTerritories = await storage.getAllTerritories();
+            const userTerritories = allTerritories.filter(t => t.userId === userId);
+            const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+
+            for (const otherTerritory of otherTerritories) {
+              try {
+                const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
+                const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
+                if (intersection) {
+                  // Send notification for Polar activity
+                  const { notifyTerritoryLoss } = await import('./notifications');
+                  await notifyTerritoryLoss(storage, otherTerritory.userId, userId, c.env);
+                  
+                  await storage.deleteTerritoryById(otherTerritory.id);
+                  const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
+                  const newTotalArea = otherUserTerritories
+                    .filter(t => t.id !== otherTerritory.id)
+                    .reduce((sum, t) => sum + t.area, 0);
+                  await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
                 }
+              } catch (e) {
+                console.error('Error checking intersection:', e);
               }
-
-              const area = turf.area(buffered) / 1000000;
-              const newTerritory = await storage.createTerritory({
-                userId,
-                routeId: route.id,
-                geometry: buffered.geometry as any,
-                area,
-              });
-
-              const totalArea = userTerritories.reduce((sum, t) => sum + t.area, 0) + area;
-              await storage.updateUserTotalArea(userId, totalArea);
-
-              results.push({
-                activityId: activity.id,
-                routeId: route.id,
-                territoryId: newTerritory.id,
-                area,
-              });
             }
 
-            await storage.updatePolarActivity(activity.id, { 
-              routeId: route.id, 
-              processed: true, 
-              processedAt: new Date() 
+            let finalGeometry = buffered.geometry;
+            for (const userTerritory of userTerritories) {
+              try {
+                const userPoly = turf.polygon(userTerritory.geometry.coordinates);
+                const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly]));
+                if (union) {
+                  finalGeometry = union.geometry as any;
+                }
+              } catch (err) {
+                console.error('Error merging territories:', err);
+              }
+            }
+
+            const territory = await storage.updateTerritoryGeometry(
+              userId,
+              route.id,
+              finalGeometry as any,
+              turf.area(finalGeometry)
+            );
+
+            await storage.updateUserTotalArea(userId, territory.area);
+
+            results.push({
+              activityId: activity.id,
+              routeId: route.id,
+              territoryId: territory.id,
+              area: territory.area,
             });
           }
+
+          await storage.updatePolarActivity(activity.id, { 
+            routeId: route.id, 
+            processed: true, 
+            processedAt: new Date() 
+          });
         } catch (e) {
           console.error('Error processing Polar activity:', e);
           await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
@@ -1225,6 +2057,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: error.message }, 500);
     }
   });
+
   app.get('/api/polar/debug/:userId', async (c) => {
   try {
     const userId = c.req.param('userId');

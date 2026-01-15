@@ -10,9 +10,10 @@ interface MapViewProps {
   territories: TerritoryWithUser[];
   center?: { lat: number; lng: number };
   onLocationFound?: (coords: { lat: number; lng: number }) => void;
+  onTerritoryClick?: (userId: string) => void;
 }
 
-export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound }: MapViewProps) {
+export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound, onTerritoryClick }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -90,22 +91,82 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
         className: 'territory-polygon',
       });
 
-      // Improved popup styling
+      // Beautiful popup styling
       polygon.bindPopup(`
-        <div class="p-3 min-w-[200px]">
-          <div class="flex items-center gap-2 mb-2">
-            <div class="w-4 h-4 rounded-full" style="background-color: ${territory.user.color}"></div>
-            <strong class="text-base">${territory.user.name}</strong>
-          </div>
-          <div class="text-sm text-muted-foreground">
-            <div class="flex items-center justify-between">
-              <span>Área conquistada:</span>
-              <span class="font-semibold text-foreground">${(territory.area / 1000000).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km²</span>
+        <div class="territory-popup" style="min-width: 240px; font-family: system-ui, -apple-system, sans-serif;">
+          <div style="
+            background: linear-gradient(135deg, ${territory.user.color}15 0%, ${territory.user.color}05 100%);
+            border-left: 4px solid ${territory.user.color};
+            padding: 16px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+          ">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+              <div style="
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                background: ${territory.user.color};
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 2px 8px ${territory.user.color}40;
+                font-weight: bold;
+                color: white;
+                font-size: 16px;
+              ">
+                ${territory.user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+              </div>
+              <div style="flex: 1;">
+                <div style="font-weight: 600; font-size: 16px; color: #1a1a1a; margin-bottom: 2px; cursor: pointer; hover: text-decoration: underline;" class="territory-user-name" data-user-id="${territory.user.id}">
+                  ${territory.user.name}
+                </div>
+                <div style="font-size: 13px; color: #666; display: flex; align-items: center; gap: 4px;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                    <circle cx="12" cy="10" r="3"></circle>
+                  </svg>
+                  Territorio conquistado
+                </div>
+              </div>
             </div>
+            <div style="
+              background: white;
+              padding: 12px;
+              border-radius: 8px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+              margin-bottom: 12px;
+            ">
+              <span style="color: #666; font-size: 14px; font-weight: 500;">Área total</span>
+              <div style="display: flex; align-items: baseline; gap: 4px;">
+                <span style="font-size: 20px; font-weight: 700; color: ${territory.user.color};">
+                  ${(territory.area / 1000000).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <span style="font-size: 14px; font-weight: 600; color: #666;">km²</span>
+              </div>
+            </div>
+            <button class="view-profile-btn" data-user-id="${territory.user.id}" style="
+              width: 100%;
+              padding: 10px;
+              background: ${territory.user.color};
+              color: white;
+              border: none;
+              border-radius: 6px;
+              font-weight: 600;
+              font-size: 14px;
+              cursor: pointer;
+              transition: opacity 0.2s;
+            ">
+              Ver perfil completo
+            </button>
           </div>
         </div>
       `, {
         className: 'custom-popup',
+        maxWidth: 280,
       });
 
       // Add hover effect
@@ -125,7 +186,31 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound 
 
       polygon.addTo(mapRef.current);
     });
-  }, [territories]);
+
+    // Add event listener for popup buttons
+    const handlePopupButtonClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.classList.contains('view-profile-btn') || target.classList.contains('territory-user-name')) {
+        const userId = target.getAttribute('data-user-id');
+        if (userId && onTerritoryClick) {
+          onTerritoryClick(userId);
+          mapRef.current?.closePopup();
+        }
+      }
+    };
+
+    // Attach event listener to document for popup interactions
+    const popupContainer = document.querySelector('.leaflet-popup-pane');
+    if (popupContainer) {
+      popupContainer.addEventListener('click', handlePopupButtonClick);
+    }
+
+    return () => {
+      if (popupContainer) {
+        popupContainer.removeEventListener('click', handlePopupButtonClick);
+      }
+    };
+  }, [territories, onTerritoryClick]);
 
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();

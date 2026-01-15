@@ -1,42 +1,68 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { FriendsList } from '@/components/FriendsList';
+import { PendingRequests } from '@/components/PendingRequests';
+import SentRequests from '@/components/SentRequests';
 import { LoadingState } from '@/components/LoadingState';
 import { LoginDialog } from '@/components/LoginDialog';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
+import { UserSearchDialog } from '@/components/UserSearchDialog';
+import { InviteFriendDialog } from '@/components/InviteFriendDialog';
 import { Button } from '@/components/ui/button';
 import { User } from 'lucide-react';
 import { useSession } from '@/hooks/use-session';
+import { apiRequest, queryClient } from '@/lib/queryClient';
+import { useToast } from '@/hooks/use-toast';
 import type { UserWithStats } from '@shared/schema';
+import UserInfoDialog from '@/components/UserInfoDialog';
 
 export default function FriendsPage() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isInviteDialogOpen, setIsInviteDialogOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
   const { user: currentUser, isLoading: userLoading, login } = useSession();
+  const { toast } = useToast();
 
   const { data: friends = [], isLoading } = useQuery<UserWithStats[]>({
     queryKey: ['/api/friends', currentUser?.id],
     enabled: !!currentUser?.id,
   });
 
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+  const removeFriendMutation = useMutation({
+    mutationFn: async (friendId: string) => {
+      if (!currentUser) throw new Error('No user logged in');
+      return await apiRequest('DELETE', `/api/friends/${friendId}`, {
+        userId: currentUser.id,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/friends', currentUser?.id] });
+      toast({
+        title: '✅ Amigo eliminado',
+        description: 'Se ha eliminado de tu lista de amigos',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'No se pudo eliminar el amigo',
+        variant: 'destructive',
+      });
+    },
+  });
+
   const handleAddFriend = () => {
     setIsAddDialogOpen(true);
   };
 
-  const handleViewTerritory = (userId: string) => {
-    console.log('View territory for user:', userId);
+  const handleInviteFriend = () => {
+    setIsInviteDialogOpen(true);
   };
 
-  const handleSearch = () => {
-    console.log('Searching for:', searchQuery);
+  const handleRemoveFriend = (friendId: string) => {
+    removeFriendMutation.mutate(friendId);
   };
 
   if (userLoading) {
@@ -67,39 +93,41 @@ export default function FriendsPage() {
 
   return (
     <>
-      <FriendsList
-        friends={friends}
-        onAddFriend={handleAddFriend}
-        onViewTerritory={handleViewTerritory}
-      />
-
-      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Añadir amigo</DialogTitle>
-            <DialogDescription>
-              Busca usuarios por nombre de usuario para añadirlos como amigos
-            </DialogDescription>
-          </DialogHeader>
+      <div className="flex flex-col h-full overflow-hidden">
+        <div className="flex-1 overflow-y-auto">
+          {currentUser && (
+            <div className="p-3 md:p-4 space-y-3 bg-muted/30">
+              <PendingRequests userId={currentUser.id} />
+              <SentRequests userId={currentUser.id} />
+            </div>
+          )}
           
-          <div className="space-y-4 py-4">
-            <Input
-              placeholder="Buscar por @usuario..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              data-testid="input-search-friend"
-            />
-            
-            <Button
-              onClick={handleSearch}
-              className="w-full"
-              data-testid="button-search"
-            >
-              Buscar
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+          <FriendsList
+            friends={friends}
+            onAddFriend={handleAddFriend}
+            onInviteFriend={handleInviteFriend}
+            onRemoveFriend={handleRemoveFriend}
+            onUserClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
+          />
+        </div>
+      </div>
+
+      {currentUser && (
+        <>
+          <UserSearchDialog
+            open={isAddDialogOpen}
+            onOpenChange={setIsAddDialogOpen}
+            currentUserId={currentUser.id}
+          />
+          <InviteFriendDialog
+            open={isInviteDialogOpen}
+            onOpenChange={setIsInviteDialogOpen}
+            userId={currentUser.id}
+          />
+
+          <UserInfoDialog userId={selectedUserId} open={isDialogOpen} onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }} />
+        </>
+      )}
     </>
   );
 }

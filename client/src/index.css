@@ -433,4 +433,87 @@
       opacity: 0.8;
     }
   }
+
+  /* Mobile optimizations */
+  @media (max-width: 768px) {
+    /* Improve tap targets */
+    button, a, input, select, textarea {
+      min-height: 44px;
+      min-width: 44px;
+    }
+
+    /* Prevent text size adjustment on orientation change */
+    html {
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+
+    /* Prevent overscroll bounce/white space */
+    html, body {
+      overscroll-behavior-y: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+  /* Page transition animations for swipe navigation */
+  .page-enter {
+    transition: transform 220ms ease, opacity 220ms ease;
+    transform: translateX(0);
+    opacity: 1;
+  }
+  .page-exit-left {
+    transition: transform 160ms ease, opacity 160ms ease;
+    transform: translateX(-12%);
+    opacity: 0.0;
+  }
+  .page-exit-right {
+    transition: transform 160ms ease, opacity 160ms ease;
+    transform: translateX(12%);
+    opacity: 0.0;
+  }
+
+    /* Smooth scrolling on mobile */
+    * {
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Better touch response */
+    * {
+      touch-action: manipulation;
+    }
+
+    /* Prevent double-tap zoom */
+    a, button, input, select, textarea {
+      touch-action: manipulation;
+    }
+
+    /* Remove tap highlight on mobile webkit */
+    * {
+      -webkit-tap-highlight-color: transparent;
+      -webkit-touch-callout: none;
+    }
+  }
+
+  /* Custom tap highlight for buttons */
+  button:active, a:active {
+    opacity: 0.8;
+    transform: scale(0.98);
+    transition: all 0.1s ease;
+  }
+
+  /* Improve scrolling performance */
+  .scroll-smooth {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Safe area insets for notched devices */
+  @supports (padding: max(0px)) {
+    .safe-bottom {
+      padding-bottom: max(env(safe-area-inset-bottom), 1rem);
+    }
+    
+    .safe-top {
+      padding-top: max(env(safe-area-inset-top), 1rem);
+    }
+  }
 }

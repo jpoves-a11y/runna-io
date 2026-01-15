@@ -3,6 +3,7 @@ import {
   routes,
   territories,
   friendships,
+  friendInvites,
   polarAccounts,
   polarActivities,
   stravaAccounts,
@@ -15,6 +16,8 @@ import {
   type InsertTerritory,
   type Friendship,
   type InsertFriendship,
+  type FriendInvite,
+  type InsertFriendInvite,
   type PolarAccount,
   type InsertPolarAccount,
   type PolarActivity,
@@ -102,15 +105,7 @@ export class DatabaseStorage implements IStorage {
 
   async getAllUsersWithStats(): Promise<UserWithStats[]> {
     const allUsers = await db
-      .select({
-        id: users.id,
-        username: users.username,
-        name: users.name,
-        color: users.color,
-        avatar: users.avatar,
-        totalArea: users.totalArea,
-        createdAt: users.createdAt,
-      })
+      .select()
       .from(users)
       .orderBy(desc(users.totalArea));
 
@@ -153,7 +148,7 @@ export class DatabaseStorage implements IStorage {
   async createRoute(insertRoute: InsertRoute): Promise<Route> {
     const [route] = await db
       .insert(routes)
-      .values(insertRoute)
+      .values(insertRoute as any)
       .returning();
     return route;
   }
@@ -240,6 +235,28 @@ export class DatabaseStorage implements IStorage {
 
   async deleteTerritoryById(id: string): Promise<void> {
     await db.delete(territories).where(eq(territories.id, id));
+  }
+
+  async updateTerritoryGeometry(
+    userId: string, 
+    routeId: string | null,
+    geometry: any, 
+    area: number
+  ): Promise<Territory> {
+    // Delete all existing territories for the user
+    await db.delete(territories).where(eq(territories.userId, userId));
+    
+    // Create new unified territory
+    const [territory] = await db
+      .insert(territories)
+      .values({
+        userId,
+        routeId,
+        geometry,
+        area,
+      })
+      .returning();
+    return territory;
   }
 
   // Friendships
@@ -381,6 +398,163 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(stravaActivities)
       .where(eq(stravaActivities.userId, userId))
       .orderBy(desc(stravaActivities.startDate));
+  }
+
+  // New friendship methods for friend-only competition
+  async getLeaderboardFriends(userId: string): Promise<UserWithStats[]> {
+    // Get friend IDs
+    const userFriendships = await db
+      .select({ friendId: friendships.friendId })
+      .from(friendships)
+      .where(eq(friendships.userId, userId));
+
+    const friendIds = userFriendships.map((f) => f.friendId);
+    
+    // Include the user themselves in the list
+    const allIds = [userId, ...friendIds];
+    
+    // Get all friends + user with stats, ordered by totalArea
+    const friends = await db
+      .select()
+      .from(users)
+      .where(sql`${users.id} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`)
+      .orderBy(desc(users.totalArea));
+
+    // Calculate rank and friendCount
+    const friendsWithStats: UserWithStats[] = [];
+    for (let i = 0; i < friends.length; i++) {
+      const friend = friends[i];
+      const [{ count }] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(friendships)
+        .where(eq(friendships.userId, friend.id));
+      
+      friendsWithStats.push({
+        ...friend,
+        rank: i + 1,
+        friendCount: Number(count) || 0,
+      });
+    }
+
+    return friendsWithStats;
+  }
+
+  async getTerritoriesWithUsersByFriends(userId: string): Promise<TerritoryWithUser[]> {
+    // Get friend IDs
+    const userFriendships = await db
+      .select({ friendId: friendships.friendId })
+      .from(friendships)
+      .where(eq(friendships.userId, userId));
+
+    const friendIds = userFriendships.map((f) => f.friendId);
+    
+    // Include the user themselves in the list
+    const allIds = [userId, ...friendIds];
+
+    // Get territories belonging to friends + user
+    const territoryData = await db
+      .select({
+        id: territories.id,
+        userId: territories.userId,
+        routeId: territories.routeId,
+        geometry: territories.geometry,
+        area: territories.area,
+        conqueredAt: territories.conqueredAt,
+        userName: users.name,
+        userUsername: users.username,
+        userColor: users.color,
+      })
+      .from(territories)
+      .leftJoin(users, eq(territories.userId, users.id))
+      .where(sql`${territories.userId} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`);
+
+    return territoryData.map((t) => ({
+      id: t.id,
+      userId: t.userId,
+      routeId: t.routeId,
+      geometry: t.geometry,
+      area: t.area,
+      conqueredAt: t.conqueredAt,
+      user: {
+        id: t.userId,
+        username: t.userUsername || '',
+        name: t.userName || '',
+        color: t.userColor || '#000000',
+      },
+    }));
+  }
+
+  async searchUsers(query: string, currentUserId: string, limit: number = 20): Promise<User[]> {
+    const lowerQuery = query.toLowerCase();
+    return await db
+      .select()
+      .from(users)
+      .where(
+        sql`(LOWER(${users.username}) LIKE ${`%${lowerQuery}%`} OR LOWER(${users.name}) LIKE ${`%${lowerQuery}%`}) AND ${users.id} != ${currentUserId}`
+      )
+      .limit(limit);
+  }
+
+  async createBidirectionalFriendship(userId: string, friendId: string): Promise<void> {
+    // Check if friendship already exists
+    const existing = await db
+      .select()
+      .from(friendships)
+      .where(
+        sql`(${friendships.userId} = ${userId} AND ${friendships.friendId} = ${friendId}) OR (${friendships.userId} = ${friendId} AND ${friendships.friendId} = ${userId})`
+      );
+
+    if (existing.length > 0) {
+      return; // Already friends
+    }
+
+    // Create both directions
+    await db.insert(friendships).values([
+      { userId, friendId },
+      { userId: friendId, friendId: userId },
+    ]);
+  }
+
+  async deleteBidirectionalFriendship(userId: string, friendId: string): Promise<void> {
+    await db
+      .delete(friendships)
+      .where(
+        sql`(${friendships.userId} = ${userId} AND ${friendships.friendId} = ${friendId}) OR (${friendships.userId} = ${friendId} AND ${friendships.friendId} = ${userId})`
+      );
+  }
+
+  async createFriendInvite(userId: string): Promise<FriendInvite> {
+    const token = crypto.randomUUID();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    
+    const [invite] = await db
+      .insert(friendInvites)
+      .values({ userId, token, expiresAt })
+      .returning();
+    
+    return invite;
+  }
+
+  async getFriendInviteByToken(token: string): Promise<FriendInvite | undefined> {
+    const [invite] = await db
+      .select()
+      .from(friendInvites)
+      .where(eq(friendInvites.token, token));
+    
+    return invite || undefined;
+  }
+
+  async deleteFriendInvite(id: string): Promise<void> {
+    await db.delete(friendInvites).where(eq(friendInvites.id, id));
+  }
+
+  async getFriendIds(userId: string): Promise<string[]> {
+    const userFriendships = await db
+      .select({ friendId: friendships.friendId })
+      .from(friendships)
+      .where(eq(friendships.userId, userId));
+    
+    return userFriendships.map(f => f.friendId);
   }
 }
 

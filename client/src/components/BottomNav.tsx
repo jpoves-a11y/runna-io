@@ -1,10 +1,11 @@
-import { Map, Trophy, Activity, User } from 'lucide-react';
+import { Map, Trophy, Activity, User, Users } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 
 const navItems = [
   { path: '/', label: 'Mapa', icon: Map },
   { path: '/rankings', label: 'Rankings', icon: Trophy },
   { path: '/activity', label: 'Actividad', icon: Activity },
+  { path: '/friends', label: 'Amigos', icon: Users },
   { path: '/profile', label: 'Perfil', icon: User },
 ];
 
@@ -36,10 +37,10 @@ export function BottomNav() {
               key={item.path}
               href={item.path}
               data-testid={`nav-${item.label.toLowerCase()}`}
-              className="flex-1 flex items-center justify-center"
+              className="flex-1 flex items-center justify-center min-h-[48px]"
             >
               <div
-                className={`flex flex-col items-center justify-center gap-0.5 py-1.5 px-4 rounded-2xl transition-all duration-300 ${
+                className={`flex flex-col items-center justify-center gap-0.5 py-2 px-4 rounded-2xl transition-all duration-300 touch-manipulation ${
                   isActive 
                     ? 'text-primary bg-primary/10' 
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted/30 active:scale-95'

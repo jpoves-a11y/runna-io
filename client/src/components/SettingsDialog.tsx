@@ -140,7 +140,7 @@ export function SettingsDialog({ open, onOpenChange, user }: SettingsDialogProps
             <div className="flex items-center gap-4">
               <div className="relative group">
                 <Avatar className="h-24 w-24 ring-2 ring-offset-2 transition-all duration-300 group-hover:scale-110"
-                  style={{ ringColor: selectedColor }}
+                  style={{ '--tw-ring-color': selectedColor } as React.CSSProperties}
                 >
                   <AvatarImage src={previewUrl || undefined} />
                   <AvatarFallback style={{ backgroundColor: selectedColor }}>

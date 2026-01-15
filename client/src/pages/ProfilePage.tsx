@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -14,11 +14,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch } from 'lucide-react';
-import { SiStrava, SiPolar } from 'react-icons/si';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera } from 'lucide-react';
+import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { LoginDialog } from '@/components/LoginDialog';
+import { NotificationToggle } from '@/components/NotificationToggle';
+import { AvatarDialog } from '@/components/AvatarDialog';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
@@ -134,10 +136,33 @@ export default function ProfilePage() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isStravaDisconnectOpen, setIsStravaDisconnectOpen] = useState(false);
   const [isPolarDisconnectOpen, setIsPolarDisconnectOpen] = useState(false);
+  const [isAvatarDialogOpen, setIsAvatarDialogOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const touchStartY = useRef<number>(0);
+  const pullToRefreshThreshold = 80;
   const { toast } = useToast();
   const { user, isLoading, logout, login } = useSession();
 
   // Strava status query - use explicit queryFn to build correct URL
+  const handleRefresh = async () => {
+    if (isRefreshing || !user?.id) return;
+    
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] }),
+        queryClient.invalidateQueries({ queryKey: [stravaStatusKey] }),
+        queryClient.invalidateQueries({ queryKey: [stravaActivitiesKey] }),
+        queryClient.invalidateQueries({ queryKey: [polarStatusKey] }),
+        queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] }),
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   const stravaStatusKey = `/api/strava/status/${user?.id}`;
   const { data: stravaStatus, isLoading: isStravaLoading } = useQuery<StravaStatus>({
     queryKey: [stravaStatusKey],
@@ -277,8 +302,15 @@ export default function ProfilePage() {
   // Polar connect mutation
   const connectPolarMutation = useMutation({
     mutationFn: async () => {
-      console.log('Polar connect mutation started - userId:', user?.id);
-      const response = await apiRequest('GET', `/api/polar/connect?userId=${user?.id}`);
+      if (!user?.id) {
+        throw new Error('Debes iniciar sesión para conectar con Polar');
+      }
+      console.log('Polar connect mutation started - userId:', user.id);
+      const response = await apiRequest('GET', `/api/polar/connect?userId=${user.id}`);
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Error al conectar con Polar');
+      }
       const data = await response.json();
       console.log('Polar connect response:', data);
       return data;
@@ -290,14 +322,19 @@ export default function ProfilePage() {
         window.location.href = data.authUrl;
       } else {
         console.error('No authUrl in response');
+        toast({
+          title: "Error",
+          description: "No se recibió URL de autorización",
+          variant: "destructive",
+        });
       }
     },
     onError: (error) => {
       console.error('Polar connect error:', error);
       toast({
-        title: 'Error',
-        description: 'No se pudo conectar con Polar',
-        variant: 'destructive',
+        title: "Error al conectar Polar",
+        description: error instanceof Error ? error.message : "Inténtalo de nuevo",
+        variant: "destructive",
       });
     },
   });
@@ -352,6 +389,37 @@ export default function ProfilePage() {
       toast({
         title: 'Error',
         description: 'No se pudieron sincronizar las actividades de Polar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Full sync - import historical activities from Polar
+  const fullSyncPolarMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('POST', `/api/polar/sync-full/${user?.id}`);
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+      queryClient.invalidateQueries({ queryKey: [polarStatusKey] });
+      if (data.imported > 0) {
+        toast({
+          title: 'Historial sincronizado',
+          description: `Se importaron ${data.imported} actividades del historial de Polar (${data.duplicates} duplicadas)`,
+        });
+      } else {
+        toast({
+          title: 'Sin actividades nuevas en historial',
+          description: `${data.duplicates} actividades ya estaban importadas`,
+        });
+      }
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'No se pudo sincronizar el historial de Polar',
         variant: 'destructive',
       });
     },
@@ -488,8 +556,54 @@ export default function ProfilePage() {
       .slice(0, 2);
   };
 
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (scrollRef.current && scrollRef.current.scrollTop === 0) {
+      touchStartY.current = e.touches[0].clientY;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!scrollRef.current) return;
+    
+    const touchY = e.touches[0].clientY;
+    const pullDistance = touchY - touchStartY.current;
+    
+    // Only prevent default when at top and pulling down
+    if (scrollRef.current.scrollTop === 0 && pullDistance > 0) {
+      e.preventDefault();
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!scrollRef.current || scrollRef.current.scrollTop > 0) return;
+    
+    const touchY = e.changedTouches[0].clientY;
+    const pullDistance = touchY - touchStartY.current;
+    
+    if (pullDistance > pullToRefreshThreshold) {
+      handleRefresh();
+    }
+    
+    touchStartY.current = 0;
+  };
+
   return (
-    <ScrollArea className="h-full w-full">
+    <div 
+      ref={scrollRef}
+      className="h-full w-full overflow-y-auto"
+      style={{ overscrollBehaviorY: 'none' }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      {isRefreshing && (
+        <div className="flex justify-center py-2 bg-primary/5">
+          <div className="flex items-center gap-2 text-sm text-primary">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            Actualizando...
+          </div>
+        </div>
+      )}
       <div className="flex flex-col min-h-full max-w-lg mx-auto w-full px-0">
         <div className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5">
           <div className="flex items-center gap-3">
@@ -505,18 +619,24 @@ export default function ProfilePage() {
 
         <div className="p-4 pb-24 space-y-4">
           <div className="flex flex-col items-center text-center gap-4">
-            <div className="relative group">
-              <Avatar className="h-28 w-28 ring-4 ring-offset-4"
+            <button 
+              onClick={() => setIsAvatarDialogOpen(true)}
+              className="relative group cursor-pointer focus:outline-none focus:ring-4 focus:ring-primary/50 rounded-full transition-all"
+            >
+              <Avatar className="h-28 w-28 ring-4 ring-offset-4 transition-transform group-hover:scale-105 group-active:scale-95"
                 style={{ '--tw-ring-color': user.color } as React.CSSProperties}
               >
-                <AvatarImage src={user.avatar || undefined} />
+                <AvatarImage src={user.avatar || undefined} className="object-cover" />
                 <AvatarFallback style={{ backgroundColor: user.color }}>
                   <span className="text-white text-3xl font-bold">
                     {getInitials(user.name)}
                   </span>
                 </AvatarFallback>
               </Avatar>
-            </div>
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 rounded-full transition-opacity flex items-center justify-center">
+                <Camera className="h-8 w-8 text-white" />
+              </div>
+            </button>
             
             <div>
               <h2 className="text-2xl font-bold">{user.name}</h2>
@@ -575,6 +695,16 @@ export default function ProfilePage() {
                 </p>
               </div>
             </div>
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold">Notificaciones</h3>
+            </div>
+            <p className="text-sm text-muted-foreground mb-4">
+              Recibe alertas cuando te conquistan territorio
+            </p>
+            <NotificationToggle />
           </Card>
 
           <Card className="p-4">
@@ -772,7 +902,21 @@ export default function ProfilePage() {
                     ) : (
                       <RefreshCw className="h-4 w-4 mr-2" />
                     )}
-                    Importar de Polar
+                    Importar nuevas
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fullSyncPolarMutation.mutate()}
+                    disabled={fullSyncPolarMutation.isPending}
+                    data-testid="button-full-sync-polar"
+                  >
+                    {fullSyncPolarMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                    )}
+                    Importar historial (90 días)
                   </Button>
                   <Button
                     variant="outline"
@@ -906,6 +1050,15 @@ export default function ProfilePage() {
         user={user}
       />
 
+      <AvatarDialog
+        open={isAvatarDialogOpen}
+        onOpenChange={setIsAvatarDialogOpen}
+        currentAvatar={user.avatar}
+        userName={user.name}
+        userColor={user.color}
+        userId={user.id}
+      />
+
       <AlertDialog open={isLogoutDialogOpen} onOpenChange={setIsLogoutDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -975,6 +1128,6 @@ export default function ProfilePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </ScrollArea>
+    </div>
   );
 }

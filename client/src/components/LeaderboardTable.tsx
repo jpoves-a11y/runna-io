@@ -8,9 +8,10 @@ import type { UserWithStats } from '@shared/schema';
 interface LeaderboardTableProps {
   users: UserWithStats[];
   currentUserId?: string;
+  onUserClick?: (userId: string) => void;
 }
 
-export function LeaderboardTable({ users, currentUserId }: LeaderboardTableProps) {
+export function LeaderboardTable({ users, currentUserId, onUserClick }: LeaderboardTableProps) {
   const getRankIcon = (rank: number) => {
     switch (rank) {
       case 1:
@@ -75,7 +76,8 @@ export function LeaderboardTable({ users, currentUserId }: LeaderboardTableProps
             return (
               <Card
                 key={user.id}
-                className={`p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg animate-slide-up ${
+                onClick={() => onUserClick?.(user.id)}
+                className={`p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg animate-slide-up cursor-pointer ${
                   isCurrentUser
                     ? 'border-primary border-2 shadow-primary/20'
                     : 'border-card-border hover-elevate'
