@@ -1276,16 +1276,6 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // ==================== POLAR ====================
 
-  const triggerPolarBackfill = async (env: any, userId: string) => {
-    const baseUrl = env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
-    try {
-      const res = await fetch(`${baseUrl}/api/polar/sync-full/${userId}`, { method: 'POST' });
-      console.log(`[BACKFILL] kickoff user=${userId} status=${res.status}`);
-    } catch (err) {
-      console.error('[BACKFILL] kickoff failed', err);
-    }
-  };
-
   app.get('/api/polar/status/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
@@ -1445,9 +1435,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         console.log('Account created');
       }
 
-      if (c.executionCtx) {
-        c.executionCtx.waitUntil(triggerPolarBackfill(c.env, userId));
-      }
+      // Trigger initial sync in background (don't wait for it)
+      console.log('[BACKFILL] Triggering initial Polar sync...');
+      const baseUrl = c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
+      fetch(`${baseUrl}/api/polar/sync/${userId}`, { method: 'POST' })
+        .then(res => console.log(`[BACKFILL] Initial sync triggered: ${res.status}`))
+        .catch(err => console.error('[BACKFILL] Initial sync failed:', err));
 
       console.log('Polar callback success - redirecting to:', `${FRONTEND_URL}/profile?polar_connected=true`);
       return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
@@ -1497,10 +1490,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const polarAccount = await storage.getPolarAccountByUserId(userId);
       
       if (!polarAccount) {
+        console.error('[SYNC] No Polar account found for user:', userId);
         return c.json({ error: 'Polar account not connected' }, 404);
       }
 
       console.log(`\n🔄 [SYNC] Starting Polar sync for user: ${userId}`);
+      console.log('[SYNC] Polar User ID:', polarAccount.polarUserId);
+      console.log('[SYNC] Has access token:', !!polarAccount.accessToken);
 
       // MÉTODO DIRECTO: Obtener ejercicios del último mes
       const toDate = new Date();
@@ -1511,6 +1507,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       
       console.log(`📅 Fetching exercises from ${fromStr} to ${toStr}`);
 
+      console.log('[SYNC] Creating transaction...');
       const exercisesResponse = await fetch(
         `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
         {
@@ -1523,22 +1520,24 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         }
       );
 
+      console.log('[SYNC] Transaction response status:', exercisesResponse.status);
+
       // 401 means access token expired
       if (exercisesResponse.status === 401) {
-        console.error('Polar token expired for user:', userId);
+        console.error('[SYNC] Polar token expired for user:', userId);
         await storage.deletePolarAccount(userId);
         return c.json({ error: 'Polar token expired - please reconnect' }, 401);
       }
 
       if (exercisesResponse.status === 204) {
-        console.log('No new exercises (204 No Content)');
+        console.log('[SYNC] No new exercises (204 No Content)');
         await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
         return c.json({ imported: 0, total: 0, message: 'No new exercises available' });
       }
 
       if (!exercisesResponse.ok) {
         const errorText = await exercisesResponse.text();
-        console.error('Polar transaction failed:', exercisesResponse.status, errorText);
+        console.error('[SYNC] Polar transaction failed:', exercisesResponse.status, errorText);
         return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
       }
 
@@ -1546,10 +1545,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const transactionId = transactionData['transaction-id'];
       const resourceUri = transactionData['resource-uri'];
       
-      console.log(`Transaction ID: ${transactionId}`);
-      console.log(`Resource URI: ${resourceUri}`);
+      console.log(`[SYNC] Transaction ID: ${transactionId}`);
+      console.log(`[SYNC] Resource URI: ${resourceUri}`);
 
       // Obtener lista de ejercicios
+      console.log('[SYNC] Fetching exercise list...');
       const listResponse = await fetch(resourceUri, {
         headers: {
           'Authorization': `Bearer ${polarAccount.accessToken}`,
@@ -1559,13 +1559,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       if (!listResponse.ok) {
         const errorText = await listResponse.text();
-        console.error('Failed to list exercises:', listResponse.status, errorText);
+        console.error('[SYNC] Failed to list exercises:', listResponse.status, errorText);
         return c.json({ error: 'Failed to list exercises' }, 500);
       }
 
       const listData: any = await listResponse.json();
       const exerciseUrls = listData.exercises || [];
-      console.log(`📊 Found ${exerciseUrls.length} exercises`);
+      console.log(`[SYNC] 📊 Found ${exerciseUrls.length} exercises in transaction`);
       
       let imported = 0;
       let skipped = 0;
@@ -1573,6 +1573,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       for (const exerciseUrl of exerciseUrls) {
         try {
+          console.log(`\n[SYNC] Fetching exercise: ${exerciseUrl}`);
           const exerciseResponse = await fetch(exerciseUrl, {
             headers: {
               'Authorization': `Bearer ${polarAccount.accessToken}`,
@@ -1613,9 +1614,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
           const startTime = exercise['start-time'];
           
-          console.log(`   Sport: "${sport}" (type: "${activityType}")`);
-          console.log(`   Distance: ${distance}m | Duration: ${duration}s`);
-          console.log(`   Start: ${startTime}`);
+          console.log(`[SYNC]    Sport: "${sport}" (type: "${activityType}")`);
+          console.log(`[SYNC]    Distance: ${distance}m | Duration: ${duration}s`);
+          console.log(`[SYNC]    Start: ${startTime}`);
 
           // FILTRO MEJORADO: Sin restricciones si tiene datos básicos
           // Solo rechaza si claramente NO es una actividad de movimiento
@@ -1623,21 +1624,21 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const isExcluded = excludeTypes.some(t => activityType.includes(t));
           
           if (isExcluded) {
-            console.log(`   ❌ Skipped: tipo excluido (${sport})`);
+            console.log(`[SYNC]    ❌ Skipped: tipo excluido (${sport})`);
             skipped++;
             continue;
           }
 
           // Validar distancia mínima - pero menos restrictivo
           if (distance < 100) {
-            console.log(`   ❌ Skipped: distancia muy corta (${distance}m < 100m)`);
+            console.log(`[SYNC]    ❌ Skipped: distancia muy corta (${distance}m < 100m)`);
             skipped++;
             continue;
           }
 
           // Validar duración mínima - pero menos restrictivo
           if (duration < 60) {
-            console.log(`   ❌ Skipped: duración muy corta (${duration}s < 60s)`);
+            console.log(`[SYNC]    ❌ Skipped: duración muy corta (${duration}s < 60s)`);
             skipped++;
             continue;
           }
@@ -1646,6 +1647,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           let summaryPolyline: string | null = null;
           try {
             const gpxUrl = `${exerciseUrl}/gpx`;
+            console.log(`[SYNC]    Fetching GPX from: ${gpxUrl}`);
             const gpxResponse = await fetch(gpxUrl, {
               headers: {
                 'Authorization': `Bearer ${polarAccount.accessToken}`,
@@ -1653,27 +1655,30 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               },
             });
 
+            console.log(`[SYNC]    GPX response status: ${gpxResponse.status}`);
             if (gpxResponse.ok) {
               const gpxText = await gpxResponse.text();
+              console.log(`[SYNC]    GPX length: ${gpxText.length} chars`);
               if (gpxText && gpxText.length > 0) {
                 const coordinates = parseGpxToCoordinates(gpxText);
-                console.log(`   📍 GPX: ${coordinates.length} coordinates`);
+                console.log(`[SYNC]    📍 GPX: ${coordinates.length} coordinates`);
                 
                 if (coordinates.length >= 2) {
                   summaryPolyline = encodePolyline(coordinates);
-                  console.log(`   ✅ Polyline encoded`);
+                  console.log(`[SYNC]    ✅ Polyline encoded (${summaryPolyline.length} chars)`);
                 } else {
-                  console.log(`   ⚠️  GPX has ${coordinates.length} coordinates (need ≥2)`);
+                  console.log(`[SYNC]    ⚠️  GPX has ${coordinates.length} coordinates (need ≥2)`);
                 }
               }
             } else {
-              console.log(`   ℹ️  No GPX (${gpxResponse.status})`);
+              console.log(`[SYNC]    ℹ️  No GPX (${gpxResponse.status})`);
             }
           } catch (e) {
-            console.error(`   ❌ GPX error: ${e}`);
+            console.error(`[SYNC]    ❌ GPX error: ${e}`);
           }
 
           // Guardar actividad en BD
+          console.log(`[SYNC]    Saving to database...`);
           await storage.createPolarActivity({
             polarExerciseId: exerciseId.toString(),
             userId,
@@ -1689,15 +1694,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             processedAt: null,
           });
           
-          console.log(`   ✅ IMPORTED!`);
+          console.log(`[SYNC]    ✅ IMPORTED!`);
           imported++;
         } catch (e) {
-          console.error(`   ❌ Error: ${e}`);
+          console.error(`[SYNC]    ❌ Error processing exercise: ${e}`);
           errors++;
         }
       }
 
       // Comprometer la transacción
+      console.log('[SYNC] Committing transaction...');
       try {
         await fetch(
           `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
@@ -1706,14 +1712,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
           }
         );
-        console.log('✅ Transaction committed');
+        console.log('[SYNC] ✅ Transaction committed');
       } catch (e) {
-        console.error('⚠️  Transaction commit failed:', e);
+        console.error('[SYNC] ⚠️  Transaction commit failed:', e);
       }
 
       await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
 
-      console.log(`\n📊 SYNC RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
+      console.log(`\n[SYNC] 📊 RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
 
       return c.json({ 
         imported, 
