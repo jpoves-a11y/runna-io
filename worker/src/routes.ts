@@ -1435,12 +1435,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         console.log('Account created');
       }
 
-      // Trigger initial sync in background (don't wait for it)
+      // Trigger initial full + incremental sync in background (best effort)
       console.log('[BACKFILL] Triggering initial Polar sync...');
       const baseUrl = c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
+      fetch(`${baseUrl}/api/polar/sync-full/${userId}`, { method: 'POST' })
+        .then(res => console.log(`[BACKFILL] Initial full sync triggered: ${res.status}`))
+        .catch(err => console.error('[BACKFILL] Initial full sync failed:', err));
       fetch(`${baseUrl}/api/polar/sync/${userId}`, { method: 'POST' })
-        .then(res => console.log(`[BACKFILL] Initial sync triggered: ${res.status}`))
-        .catch(err => console.error('[BACKFILL] Initial sync failed:', err));
+        .then(res => console.log(`[BACKFILL] Initial incremental sync triggered: ${res.status}`))
+        .catch(err => console.error('[BACKFILL] Initial incremental sync failed:', err));
 
       console.log('Polar callback success - redirecting to:', `${FRONTEND_URL}/profile?polar_connected=true`);
       return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
@@ -1482,13 +1485,50 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/polar/sync/:userId', async (c) => {
+  // Manual reset of Polar exercise transactions (support/debug)
+  app.post('/api/polar/transactions/reset/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
       const polarAccount = await storage.getPolarAccountByUserId(userId);
-      
+
+      if (!polarAccount) {
+        return c.json({ error: 'Polar account not connected' }, 404);
+      }
+
+      const status = await resetPolarTransactions(polarAccount);
+      return c.json({ resetStatus: status });
+    } catch (error: any) {
+      console.error('[RESET] error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  const resetPolarTransactions = async (polarAccount: { polarUserId: number; accessToken: string; }) => {
+    try {
+      const res = await fetch(`https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+      });
+      console.log('[SYNC] Reset transactions status:', res.status);
+      return res.status;
+    } catch (err) {
+      console.error('[SYNC] Reset transactions failed:', err);
+      return null;
+    }
+  };
+
+  app.post('/api/polar/sync/:userId', async (c) => {
+    const userId = c.req.param('userId');
+    const db = createDb(c.env.DATABASE_URL);
+    const storage = new WorkerStorage(db);
+    const polarAccount = await storage.getPolarAccountByUserId(userId);
+    let transactionId: string | null = null;
+    let lastResponse: any = null;
+    let shouldUpdateSyncAt = false;
+
+    try {
       if (!polarAccount) {
         console.error('[SYNC] No Polar account found for user:', userId);
         return c.json({ error: 'Polar account not connected' }, 404);
@@ -1498,239 +1538,252 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       console.log('[SYNC] Polar User ID:', polarAccount.polarUserId);
       console.log('[SYNC] Has access token:', !!polarAccount.accessToken);
 
-      // MÉTODO DIRECTO: Obtener ejercicios del último mes
+      // MÉTODO DIRECTO: Obtener ejercicios del último mes (Polar no usa el rango aquí, pero lo logueamos)
       const toDate = new Date();
       const fromDate = new Date(toDate.getTime() - 30 * 24 * 60 * 60 * 1000);
-      
       const fromStr = fromDate.toISOString().split('T')[0];
       const toStr = toDate.toISOString().split('T')[0];
-      
       console.log(`📅 Fetching exercises from ${fromStr} to ${toStr}`);
 
-      console.log('[SYNC] Creating transaction...');
-      const exercisesResponse = await fetch(
-        `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${polarAccount.accessToken}`,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      console.log('[SYNC] Transaction response status:', exercisesResponse.status);
-
-      // 401 means access token expired
-      if (exercisesResponse.status === 401) {
-        console.error('[SYNC] Polar token expired for user:', userId);
-        await storage.deletePolarAccount(userId);
-        return c.json({ error: 'Polar token expired - please reconnect' }, 401);
-      }
-
-      if (exercisesResponse.status === 204) {
-        console.log('[SYNC] No new exercises (204 No Content)');
-        await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
-        return c.json({ imported: 0, total: 0, message: 'No new exercises available' });
-      }
-
-      if (!exercisesResponse.ok) {
-        const errorText = await exercisesResponse.text();
-        console.error('[SYNC] Polar transaction failed:', exercisesResponse.status, errorText);
-        return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
-      }
-
-      const transactionData: any = await exercisesResponse.json();
-      const transactionId = transactionData['transaction-id'];
-      const resourceUri = transactionData['resource-uri'];
-      
-      console.log(`[SYNC] Transaction ID: ${transactionId}`);
-      console.log(`[SYNC] Resource URI: ${resourceUri}`);
-
-      // Obtener lista de ejercicios
-      console.log('[SYNC] Fetching exercise list...');
-      const listResponse = await fetch(resourceUri, {
-        headers: {
-          'Authorization': `Bearer ${polarAccount.accessToken}`,
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!listResponse.ok) {
-        const errorText = await listResponse.text();
-        console.error('[SYNC] Failed to list exercises:', listResponse.status, errorText);
-        return c.json({ error: 'Failed to list exercises' }, 500);
-      }
-
-      const listData: any = await listResponse.json();
-      const exerciseUrls = listData.exercises || [];
-      console.log(`[SYNC] 📊 Found ${exerciseUrls.length} exercises in transaction`);
-      
-      let imported = 0;
-      let skipped = 0;
-      let errors = 0;
-
-      for (const exerciseUrl of exerciseUrls) {
-        try {
-          console.log(`\n[SYNC] Fetching exercise: ${exerciseUrl}`);
-          const exerciseResponse = await fetch(exerciseUrl, {
+      // Intentar transacción con un posible reset + retry
+      for (let attempt = 0; attempt < 2; attempt++) {
+        console.log('[SYNC] Creating transaction... attempt', attempt + 1);
+        const exercisesResponse = await fetch(
+          `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
+          {
+            method: 'POST',
             headers: {
               'Authorization': `Bearer ${polarAccount.accessToken}`,
               'Accept': 'application/json',
+              'Content-Type': 'application/json',
             },
-          });
-
-          if (!exerciseResponse.ok) {
-            console.warn(`Failed to fetch exercise ${exerciseUrl}: ${exerciseResponse.status}`);
-            continue;
           }
+        );
 
-          const exercise: any = await exerciseResponse.json();
-          const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+        console.log('[SYNC] Transaction response status:', exercisesResponse.status);
 
-          console.log(`\n📍 Exercise: ${exerciseId}`);
-          console.log(`   URL: ${exerciseUrl}`);
+        if (exercisesResponse.status === 401) {
+          console.error('[SYNC] Polar token expired for user:', userId);
+          await storage.deletePolarAccount(userId);
+          return c.json({ error: 'Polar token expired - please reconnect' }, 401);
+        }
 
-          // Verificar si ya existe
-          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
-          if (existing) {
-            console.log(`   ⏭️  Ya importada`);
-            skipped++;
-            continue;
+        if (exercisesResponse.status === 204 || exercisesResponse.status === 409) {
+          console.warn('[SYNC] No data / conflict (status', exercisesResponse.status, ') - attempting reset');
+          const resetStatus = await resetPolarTransactions(polarAccount);
+          console.log('[SYNC] Reset result status:', resetStatus);
+          if (attempt === 0) {
+            continue; // retry once after reset
           }
+          shouldUpdateSyncAt = true;
+          return c.json({ imported: 0, total: 0, message: 'No exercises available after reset' });
+        }
 
-          // Extraer deporte de múltiples campos
-          const sport = 
-            exercise['detailed-sport-info']?.sport || 
-            exercise['sport-info']?.sport ||
-            exercise.sport || 
-            exercise.type ||
-            exercise['sport-id'] ||
-            '';
-          
-          const activityType = String(sport).toLowerCase().trim();
-          const distance = Number(exercise.distance) || 0;
-          const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
-          const startTime = exercise['start-time'];
-          
-          console.log(`[SYNC]    Sport: "${sport}" (type: "${activityType}")`);
-          console.log(`[SYNC]    Distance: ${distance}m | Duration: ${duration}s`);
-          console.log(`[SYNC]    Start: ${startTime}`);
+        if (!exercisesResponse.ok) {
+          const errorText = await exercisesResponse.text();
+          console.error('[SYNC] Polar transaction failed:', exercisesResponse.status, errorText);
+          return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
+        }
 
-          // FILTRO MEJORADO: Sin restricciones si tiene datos básicos
-          // Solo rechaza si claramente NO es una actividad de movimiento
-          const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
-          const isExcluded = excludeTypes.some(t => activityType.includes(t));
-          
-          if (isExcluded) {
-            console.log(`[SYNC]    ❌ Skipped: tipo excluido (${sport})`);
-            skipped++;
-            continue;
-          }
+        const transactionData: any = await exercisesResponse.json();
+        transactionId = transactionData['transaction-id'];
+        const resourceUri = transactionData['resource-uri'];
+        
+        console.log(`[SYNC] Transaction ID: ${transactionId}`);
+        console.log(`[SYNC] Resource URI: ${resourceUri}`);
 
-          // Validar distancia mínima - pero menos restrictivo
-          if (distance < 100) {
-            console.log(`[SYNC]    ❌ Skipped: distancia muy corta (${distance}m < 100m)`);
-            skipped++;
-            continue;
-          }
+        // Obtener lista de ejercicios
+        console.log('[SYNC] Fetching exercise list...');
+        const listResponse = await fetch(resourceUri, {
+          headers: {
+            'Authorization': `Bearer ${polarAccount.accessToken}`,
+            'Accept': 'application/json',
+          },
+        });
 
-          // Validar duración mínima - pero menos restrictivo
-          if (duration < 60) {
-            console.log(`[SYNC]    ❌ Skipped: duración muy corta (${duration}s < 60s)`);
-            skipped++;
-            continue;
-          }
+        if (!listResponse.ok) {
+          const errorText = await listResponse.text();
+          console.error('[SYNC] Failed to list exercises:', listResponse.status, errorText);
+          throw new Error('Failed to list exercises');
+        }
 
-          // Intentar obtener GPX
-          let summaryPolyline: string | null = null;
+        const listData: any = await listResponse.json();
+        const exerciseUrls = listData.exercises || [];
+        console.log(`[SYNC] 📊 Found ${exerciseUrls.length} exercises in transaction`);
+        
+        let imported = 0;
+        let skipped = 0;
+        let errors = 0;
+
+        for (const exerciseUrl of exerciseUrls) {
           try {
-            const gpxUrl = `${exerciseUrl}/gpx`;
-            console.log(`[SYNC]    Fetching GPX from: ${gpxUrl}`);
-            const gpxResponse = await fetch(gpxUrl, {
+            console.log(`\n[SYNC] Fetching exercise: ${exerciseUrl}`);
+            const exerciseResponse = await fetch(exerciseUrl, {
               headers: {
                 'Authorization': `Bearer ${polarAccount.accessToken}`,
-                'Accept': 'application/gpx+xml',
+                'Accept': 'application/json',
               },
             });
 
-            console.log(`[SYNC]    GPX response status: ${gpxResponse.status}`);
-            if (gpxResponse.ok) {
-              const gpxText = await gpxResponse.text();
-              console.log(`[SYNC]    GPX length: ${gpxText.length} chars`);
-              if (gpxText && gpxText.length > 0) {
-                const coordinates = parseGpxToCoordinates(gpxText);
-                console.log(`[SYNC]    📍 GPX: ${coordinates.length} coordinates`);
-                
-                if (coordinates.length >= 2) {
-                  summaryPolyline = encodePolyline(coordinates);
-                  console.log(`[SYNC]    ✅ Polyline encoded (${summaryPolyline.length} chars)`);
-                } else {
-                  console.log(`[SYNC]    ⚠️  GPX has ${coordinates.length} coordinates (need ≥2)`);
-                }
-              }
-            } else {
-              console.log(`[SYNC]    ℹ️  No GPX (${gpxResponse.status})`);
+            if (!exerciseResponse.ok) {
+              console.warn(`Failed to fetch exercise ${exerciseUrl}: ${exerciseResponse.status}`);
+              continue;
             }
+
+            const exercise: any = await exerciseResponse.json();
+            const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+
+            console.log(`\n📍 Exercise: ${exerciseId}`);
+            console.log(`   URL: ${exerciseUrl}`);
+
+            // Verificar si ya existe
+            const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
+            if (existing) {
+              console.log(`   ⏭️  Ya importada`);
+              skipped++;
+              continue;
+            }
+
+            // Extraer deporte de múltiples campos
+            const sport = 
+              exercise['detailed-sport-info']?.sport || 
+              exercise['sport-info']?.sport ||
+              exercise.sport || 
+              exercise.type ||
+              exercise['sport-id'] ||
+              '';
+            
+            const activityType = String(sport).toLowerCase().trim();
+            const distance = Number(exercise.distance) || 0;
+            const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
+            const startTime = exercise['start-time'];
+            
+            console.log(`[SYNC]    Sport: "${sport}" (type: "${activityType}")`);
+            console.log(`[SYNC]    Distance: ${distance}m | Duration: ${duration}s`);
+            console.log(`[SYNC]    Start: ${startTime}`);
+
+            const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
+            const isExcluded = excludeTypes.some(t => activityType.includes(t));
+            
+            if (isExcluded) {
+              console.log(`[SYNC]    ❌ Skipped: tipo excluido (${sport})`);
+              skipped++;
+              continue;
+            }
+
+            if (distance < 100) {
+              console.log(`[SYNC]    ❌ Skipped: distancia muy corta (${distance}m < 100m)`);
+              skipped++;
+              continue;
+            }
+
+            if (duration < 60) {
+              console.log(`[SYNC]    ❌ Skipped: duración muy corta (${duration}s < 60s)`);
+              skipped++;
+              continue;
+            }
+
+            // Intentar obtener GPX
+            let summaryPolyline: string | null = null;
+            try {
+              const gpxUrl = `${exerciseUrl}/gpx`;
+              console.log(`[SYNC]    Fetching GPX from: ${gpxUrl}`);
+              const gpxResponse = await fetch(gpxUrl, {
+                headers: {
+                  'Authorization': `Bearer ${polarAccount.accessToken}`,
+                  'Accept': 'application/gpx+xml',
+                },
+              });
+
+              console.log(`[SYNC]    GPX response status: ${gpxResponse.status}`);
+              if (gpxResponse.ok) {
+                const gpxText = await gpxResponse.text();
+                console.log(`[SYNC]    GPX length: ${gpxText.length} chars`);
+                if (gpxText && gpxText.length > 0) {
+                  const coordinates = parseGpxToCoordinates(gpxText);
+                  console.log(`[SYNC]    📍 GPX: ${coordinates.length} coordinates`);
+                  
+                  if (coordinates.length >= 2) {
+                    summaryPolyline = encodePolyline(coordinates);
+                    console.log(`[SYNC]    ✅ Polyline encoded (${summaryPolyline.length} chars)`);
+                  } else {
+                    console.log(`[SYNC]    ⚠️  GPX has ${coordinates.length} coordinates (need ≥2)`);
+                  }
+                }
+              } else {
+                console.log(`[SYNC]    ℹ️  No GPX (${gpxResponse.status})`);
+              }
+            } catch (e) {
+              console.error(`[SYNC]    ❌ GPX error: ${e}`);
+            }
+
+            // Guardar actividad en BD
+            console.log(`[SYNC]    Saving to database...`);
+            await storage.createPolarActivity({
+              polarExerciseId: exerciseId.toString(),
+              userId,
+              routeId: null,
+              territoryId: null,
+              name: `${sport} (${(distance/1000).toFixed(2)}km)`,
+              activityType: sport,
+              distance: distance,
+              duration: duration,
+              startDate: new Date(startTime),
+              summaryPolyline,
+              processed: false,
+              processedAt: null,
+            });
+            
+            console.log(`[SYNC]    ✅ IMPORTED!`);
+            imported++;
           } catch (e) {
-            console.error(`[SYNC]    ❌ GPX error: ${e}`);
+            console.error(`[SYNC]    ❌ Error processing exercise: ${e}`);
+            errors++;
           }
-
-          // Guardar actividad en BD
-          console.log(`[SYNC]    Saving to database...`);
-          await storage.createPolarActivity({
-            polarExerciseId: exerciseId.toString(),
-            userId,
-            routeId: null,
-            territoryId: null,
-            name: `${sport} (${(distance/1000).toFixed(2)}km)`,
-            activityType: sport,
-            distance: distance,
-            duration: duration,
-            startDate: new Date(startTime),
-            summaryPolyline,
-            processed: false,
-            processedAt: null,
-          });
-          
-          console.log(`[SYNC]    ✅ IMPORTED!`);
-          imported++;
-        } catch (e) {
-          console.error(`[SYNC]    ❌ Error processing exercise: ${e}`);
-          errors++;
         }
+
+        lastResponse = { 
+          imported, 
+          total: exerciseUrls.length, 
+          skipped,
+          errors,
+          message: `${imported} importadas de ${exerciseUrls.length}` 
+        };
+
+        console.log(`\n[SYNC] 📊 RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
+        return c.json(lastResponse);
       }
 
-      // Comprometer la transacción
-      console.log('[SYNC] Committing transaction...');
-      try {
-        await fetch(
-          `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
-          {
-            method: 'PUT',
-            headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
-          }
-        );
-        console.log('[SYNC] ✅ Transaction committed');
-      } catch (e) {
-        console.error('[SYNC] ⚠️  Transaction commit failed:', e);
-      }
-
-      await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
-
-      console.log(`\n[SYNC] 📊 RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
-
-      return c.json({ 
-        imported, 
-        total: exerciseUrls.length, 
-        skipped,
-        errors,
-        message: `${imported} importadas de ${exerciseUrls.length}` 
-      });
+      // Si llegamos aquí, no hubo transacción exitosa
+      return c.json({ imported: 0, total: 0, message: 'No exercises available' });
     } catch (error: any) {
       console.error('Polar sync error:', error);
       return c.json({ error: error.message }, 500);
+    } finally {
+      if (transactionId && polarAccount) {
+        console.log('[SYNC] Committing/closing transaction...');
+        try {
+          await fetch(
+            `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
+            {
+              method: 'PUT',
+              headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+            }
+          );
+          console.log('[SYNC] ✅ Transaction committed');
+        } catch (e) {
+          console.error('[SYNC] ⚠️  Transaction commit failed, attempting reset:', e);
+          await resetPolarTransactions(polarAccount);
+        }
+      }
+
+      if (polarAccount) {
+        try {
+          await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+        } catch (e) {
+          console.error('[SYNC] Failed to update lastSyncAt:', e);
+        }
+      }
     }
   });
 
@@ -1748,229 +1801,251 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // Full sync - get all exercises from Polar history (last 365 days)
   app.post('/api/polar/sync-full/:userId', async (c) => {
+    const userId = c.req.param('userId');
+    const db = createDb(c.env.DATABASE_URL);
+    const storage = new WorkerStorage(db);
+    const polarAccount = await storage.getPolarAccountByUserId(userId);
+    let transactionId: string | null = null;
+
     try {
-      const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
-      const storage = new WorkerStorage(db);
-      const polarAccount = await storage.getPolarAccountByUserId(userId);
-      
       if (!polarAccount) {
         return c.json({ error: 'Polar account not connected' }, 404);
       }
 
       console.log(`\n🔄 [FULL SYNC] Starting full historical sync for user: ${userId}`);
 
-      // Get exercises from last 365 days for full history
+      // Get exercises from last 365 days for full history (Polar no usa este rango en la transacción, pero se loguea)
       const toDate = new Date();
       const fromDate = new Date(toDate.getTime() - 365 * 24 * 60 * 60 * 1000);
-      
       const fromStr = fromDate.toISOString().split('T')[0];
       const toStr = toDate.toISOString().split('T')[0];
-      
       console.log(`📅 Full sync: Fetching exercises from ${fromStr} to ${toStr} (365 days)`);
 
-      const exercisesResponse = await fetch(
-        `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${polarAccount.accessToken}`,
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      if (exercisesResponse.status === 401) {
-        console.error('Polar token expired for user:', userId);
-        await storage.deletePolarAccount(userId);
-        return c.json({ error: 'Polar token expired - please reconnect' }, 401);
-      }
-
-      if (exercisesResponse.status === 204) {
-        console.log('No exercises found in history');
-        return c.json({ imported: 0, total: 0, message: 'No exercises in history' });
-      }
-
-      if (!exercisesResponse.ok) {
-        const errorText = await exercisesResponse.text();
-        console.error('Polar transaction failed:', exercisesResponse.status, errorText);
-        return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
-      }
-
-      const transactionData: any = await exercisesResponse.json();
-      const transactionId = transactionData['transaction-id'];
-      const resourceUri = transactionData['resource-uri'];
-      
-      console.log(`Transaction ID: ${transactionId}`);
-
-      const listResponse = await fetch(resourceUri, {
-        headers: {
-          'Authorization': `Bearer ${polarAccount.accessToken}`,
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!listResponse.ok) {
-        const errorText = await listResponse.text();
-        console.error('Failed to list exercises:', listResponse.status, errorText);
-        return c.json({ error: 'Failed to list exercises' }, 500);
-      }
-
-      const listData: any = await listResponse.json();
-      const exerciseUrls = listData.exercises || [];
-      console.log(`📊 Full sync: Found ${exerciseUrls.length} exercises in last 90 days`);
-      
-      let imported = 0;
-      let skipped = 0;
-      let errors = 0;
-      let duplicates = 0;
-
-      for (const exerciseUrl of exerciseUrls) {
-        try {
-          const exerciseResponse = await fetch(exerciseUrl, {
+      // Intentar transacción con posible reset+retry
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const exercisesResponse = await fetch(
+          `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions`,
+          {
+            method: 'POST',
             headers: {
               'Authorization': `Bearer ${polarAccount.accessToken}`,
               'Accept': 'application/json',
+              'Content-Type': 'application/json',
             },
-          });
-
-          if (!exerciseResponse.ok) {
-            console.warn(`⚠️  Failed to fetch exercise: ${exerciseResponse.status}`);
-            errors++;
-            continue;
           }
+        );
 
-          const exercise: any = await exerciseResponse.json();
-          const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+        console.log('[FULL SYNC] Transaction response status:', exercisesResponse.status);
 
-          console.log(`\n📍 Exercise: ${exerciseId}`);
+        if (exercisesResponse.status === 401) {
+          console.error('Polar token expired for user:', userId);
+          await storage.deletePolarAccount(userId);
+          return c.json({ error: 'Polar token expired - please reconnect' }, 401);
+        }
 
-          // Check if already exists
-          const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
-          if (existing) {
-            console.log(`   ⏭️  Already imported`);
-            duplicates++;
-            continue;
+        if (exercisesResponse.status === 204 || exercisesResponse.status === 409) {
+          console.warn('[FULL SYNC] No data/conflict (status', exercisesResponse.status, ') - attempting reset');
+          const resetStatus = await resetPolarTransactions(polarAccount);
+          console.log('[FULL SYNC] Reset result status:', resetStatus);
+          if (attempt === 0) {
+            continue; // retry once after reset
           }
+          await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+          return c.json({ imported: 0, total: 0, message: 'No exercises available after reset' });
+        }
 
-          // Extract sport from multiple fields
-          const sport = 
-            exercise['detailed-sport-info']?.sport || 
-            exercise['sport-info']?.sport ||
-            exercise.sport || 
-            exercise.type ||
-            exercise['sport-id'] ||
-            '';
-          
-          const activityType = String(sport).toLowerCase().trim();
-          const distance = Number(exercise.distance) || 0;
-          const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
-          const startTime = exercise['start-time'];
-          
-          console.log(`   Sport: "${sport}"`);
-          console.log(`   Distance: ${distance}m | Duration: ${duration}s`);
+        if (!exercisesResponse.ok) {
+          const errorText = await exercisesResponse.text();
+          console.error('Polar transaction failed:', exercisesResponse.status, errorText);
+          return c.json({ error: `Failed to get exercises: ${exercisesResponse.status}` }, 500);
+        }
 
-          const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
-          const isExcluded = excludeTypes.some(t => activityType.includes(t));
-          
-          if (isExcluded) {
-            console.log(`   ❌ Excluded type`);
-            skipped++;
-            continue;
-          }
+        const transactionData: any = await exercisesResponse.json();
+        transactionId = transactionData['transaction-id'];
+        const resourceUri = transactionData['resource-uri'];
+        
+        console.log(`[FULL SYNC] Transaction ID: ${transactionId}`);
 
-          if (distance < 100) {
-            console.log(`   ❌ Distance too short (${distance}m)`);
-            skipped++;
-            continue;
-          }
+        const listResponse = await fetch(resourceUri, {
+          headers: {
+            'Authorization': `Bearer ${polarAccount.accessToken}`,
+            'Accept': 'application/json',
+          },
+        });
 
-          if (duration < 60) {
-            console.log(`   ❌ Duration too short (${duration}s)`);
-            skipped++;
-            continue;
-          }
+        if (!listResponse.ok) {
+          const errorText = await listResponse.text();
+          console.error('Failed to list exercises:', listResponse.status, errorText);
+          throw new Error('Failed to list exercises');
+        }
 
-          // Try to get GPX
-          let summaryPolyline: string | null = null;
+        const listData: any = await listResponse.json();
+        const exerciseUrls = listData.exercises || [];
+        console.log(`📊 Full sync: Found ${exerciseUrls.length} exercises in last 365 days`);
+        
+        let imported = 0;
+        let skipped = 0;
+        let errors = 0;
+        let duplicates = 0;
+
+        for (const exerciseUrl of exerciseUrls) {
           try {
-            const gpxUrl = `${exerciseUrl}/gpx`;
-            const gpxResponse = await fetch(gpxUrl, {
+            const exerciseResponse = await fetch(exerciseUrl, {
               headers: {
                 'Authorization': `Bearer ${polarAccount.accessToken}`,
-                'Accept': 'application/gpx+xml',
+                'Accept': 'application/json',
               },
             });
 
-            if (gpxResponse.ok) {
-              const gpxText = await gpxResponse.text();
-              if (gpxText && gpxText.length > 0) {
-                const coordinates = parseGpxToCoordinates(gpxText);
-                console.log(`   📍 GPX: ${coordinates.length} coordinates`);
-                
-                if (coordinates.length >= 2) {
-                  summaryPolyline = encodePolyline(coordinates);
-                  console.log(`   ✅ Polyline encoded`);
-                }
-              }
-            } else {
-              console.log(`   ℹ️  No GPX`);
+            if (!exerciseResponse.ok) {
+              console.warn(`⚠️  Failed to fetch exercise: ${exerciseResponse.status}`);
+              errors++;
+              continue;
             }
+
+            const exercise: any = await exerciseResponse.json();
+            const exerciseId = exercise.id || exerciseUrl.split('/').pop();
+
+            console.log(`\n📍 Exercise: ${exerciseId}`);
+
+            // Check if already exists
+            const existing = await storage.getPolarActivityByPolarId(exerciseId.toString());
+            if (existing) {
+              console.log(`   ⏭️  Already imported`);
+              duplicates++;
+              continue;
+            }
+
+            // Extract sport from multiple fields
+            const sport = 
+              exercise['detailed-sport-info']?.sport || 
+              exercise['sport-info']?.sport ||
+              exercise.sport || 
+              exercise.type ||
+              exercise['sport-id'] ||
+              '';
+            
+            const activityType = String(sport).toLowerCase().trim();
+            const distance = Number(exercise.distance) || 0;
+            const duration = exercise.duration ? parseDuration(exercise.duration) : 0;
+            const startTime = exercise['start-time'];
+            
+            console.log(`   Sport: "${sport}"`);
+            console.log(`   Distance: ${distance}m | Duration: ${duration}s`);
+
+            const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
+            const isExcluded = excludeTypes.some(t => activityType.includes(t));
+            
+            if (isExcluded) {
+              console.log(`   ❌ Excluded type`);
+              skipped++;
+              continue;
+            }
+
+            if (distance < 100) {
+              console.log(`   ❌ Distance too short (${distance}m)`);
+              skipped++;
+              continue;
+            }
+
+            if (duration < 60) {
+              console.log(`   ❌ Duration too short (${duration}s)`);
+              skipped++;
+              continue;
+            }
+
+            // Try to get GPX
+            let summaryPolyline: string | null = null;
+            try {
+              const gpxUrl = `${exerciseUrl}/gpx`;
+              const gpxResponse = await fetch(gpxUrl, {
+                headers: {
+                  'Authorization': `Bearer ${polarAccount.accessToken}`,
+                  'Accept': 'application/gpx+xml',
+                },
+              });
+
+              if (gpxResponse.ok) {
+                const gpxText = await gpxResponse.text();
+                if (gpxText && gpxText.length > 0) {
+                  const coordinates = parseGpxToCoordinates(gpxText);
+                  console.log(`   📍 GPX: ${coordinates.length} coordinates`);
+                  
+                  if (coordinates.length >= 2) {
+                    summaryPolyline = encodePolyline(coordinates);
+                    console.log(`   ✅ Polyline encoded`);
+                  }
+                }
+              } else {
+                console.log(`   ℹ️  No GPX`);
+              }
+            } catch (e) {
+              console.error(`   ❌ GPX error: ${e}`);
+            }
+
+            await storage.createPolarActivity({
+              polarExerciseId: exerciseId.toString(),
+              userId,
+              routeId: null,
+              territoryId: null,
+              name: `${sport} (${(distance/1000).toFixed(2)}km)`,
+              activityType: sport,
+              distance: distance,
+              duration: duration,
+              startDate: new Date(startTime),
+              summaryPolyline,
+              processed: false,
+              processedAt: null,
+            });
+            
+            console.log(`   ✅ IMPORTED!`);
+            imported++;
           } catch (e) {
-            console.error(`   ❌ GPX error: ${e}`);
+            console.error(`   ❌ Error: ${e}`);
+            errors++;
           }
-
-          await storage.createPolarActivity({
-            polarExerciseId: exerciseId.toString(),
-            userId,
-            routeId: null,
-            territoryId: null,
-            name: `${sport} (${(distance/1000).toFixed(2)}km)`,
-            activityType: sport,
-            distance: distance,
-            duration: duration,
-            startDate: new Date(startTime),
-            summaryPolyline,
-            processed: false,
-            processedAt: null,
-          });
-          
-          console.log(`   ✅ IMPORTED!`);
-          imported++;
-        } catch (e) {
-          console.error(`   ❌ Error: ${e}`);
-          errors++;
         }
+
+        console.log(`\n📊 FULL SYNC RESULT: ${imported} imported, ${duplicates} duplicates, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
+
+        return c.json({ 
+          imported, 
+          total: exerciseUrls.length, 
+          duplicates,
+          skipped,
+          errors,
+          message: `Full sync: ${imported} nuevas de ${exerciseUrls.length}` 
+        });
       }
 
-      // Commit transaction
-      try {
-        await fetch(
-          `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
-          {
-            method: 'PUT',
-            headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
-          }
-        );
-        console.log('✅ Transaction committed');
-      } catch (e) {
-        console.error('⚠️  Transaction commit failed:', e);
-      }
-
-      console.log(`\n📊 FULL SYNC RESULT: ${imported} imported, ${duplicates} duplicates, ${skipped} skipped, ${errors} errors out of ${exerciseUrls.length} total`);
-
-      return c.json({ 
-        imported, 
-        total: exerciseUrls.length, 
-        duplicates,
-        skipped,
-        errors,
-        message: `Full sync: ${imported} nuevas de ${exerciseUrls.length}` 
-      });
+      return c.json({ imported: 0, total: 0, message: 'No exercises available' });
     } catch (error: any) {
       console.error('Polar full sync error:', error);
       return c.json({ error: error.message }, 500);
+    } finally {
+      if (transactionId && polarAccount) {
+        try {
+          await fetch(
+            `https://www.polaraccesslink.com/v3/users/${polarAccount.polarUserId}/exercise-transactions/${transactionId}`,
+            {
+              method: 'PUT',
+              headers: { 'Authorization': `Bearer ${polarAccount.accessToken}` },
+            }
+          );
+          console.log('[FULL SYNC] ✅ Transaction committed');
+        } catch (e) {
+          console.error('[FULL SYNC] ⚠️  Transaction commit failed, attempting reset:', e);
+          await resetPolarTransactions(polarAccount);
+        }
+      }
+
+      if (polarAccount) {
+        try {
+          await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+        } catch (e) {
+          console.error('[FULL SYNC] Failed to update lastSyncAt:', e);
+        }
+      }
     }
   });
 
