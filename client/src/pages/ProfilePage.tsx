@@ -394,37 +394,6 @@ export default function ProfilePage() {
     },
   });
 
-  // Full sync - import historical activities from Polar
-  const fullSyncPolarMutation = useMutation({
-    mutationFn: async () => {
-      const response = await apiRequest('POST', `/api/polar/sync-full/${user?.id}`);
-      const data = await response.json();
-      return data;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
-      queryClient.invalidateQueries({ queryKey: [polarStatusKey] });
-      if (data.imported > 0) {
-        toast({
-          title: 'Historial sincronizado',
-          description: `Se importaron ${data.imported} actividades del historial de Polar (${data.duplicates} duplicadas)`,
-        });
-      } else {
-        toast({
-          title: 'Sin actividades nuevas en historial',
-          description: `${data.duplicates} actividades ya estaban importadas`,
-        });
-      }
-    },
-    onError: () => {
-      toast({
-        title: 'Error',
-        description: 'No se pudo sincronizar el historial de Polar',
-        variant: 'destructive',
-      });
-    },
-  });
-
   // Process pending Polar activities
   const processPolarMutation = useMutation({
     mutationFn: async () => {
@@ -903,20 +872,6 @@ export default function ProfilePage() {
                       <RefreshCw className="h-4 w-4 mr-2" />
                     )}
                     Importar nuevas
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => fullSyncPolarMutation.mutate()}
-                    disabled={fullSyncPolarMutation.isPending}
-                    data-testid="button-full-sync-polar"
-                  >
-                    {fullSyncPolarMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-4 w-4 mr-2" />
-                    )}
-                    Importar historial (90 días)
                   </Button>
                   <Button
                     variant="outline"
