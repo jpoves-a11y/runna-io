@@ -98,7 +98,11 @@ function App() {
     const dx = t.clientX - touchStartX.current;
     const dy = t.clientY - touchStartY.current;
 
-    if (!isSwiping.current && Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy)) {
+    // Disable horizontal swipe navigation on map page (/) to allow map interaction
+    const currentPath = (location || '/').split('?')[0];
+    const isMapPage = currentPath === '' || currentPath === '/';
+
+    if (!isSwiping.current && Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy) && !isMapPage) {
       isSwiping.current = true;
     }
 
