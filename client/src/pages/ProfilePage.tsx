@@ -407,21 +407,29 @@ export default function ProfilePage() {
         queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
         queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
         queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
-        toast({
-          title: 'Actividades procesadas',
-          description: `Se procesaron ${data.processed} actividades de Polar`,
-        });
+        
+        if (data.remaining > 0) {
+          toast({
+            title: 'Procesamiento en lotes',
+            description: `${data.processed} procesadas, ${data.remaining} pendientes. Haz click de nuevo para continuar.`,
+          });
+        } else {
+          toast({
+            title: 'Actividades procesadas',
+            description: data.message || `Se procesaron ${data.processed} actividades de Polar`,
+          });
+        }
       } else {
         toast({
           title: 'Sin actividades nuevas',
-          description: 'No hay actividades pendientes de procesar',
+          description: data.message || 'No hay actividades pendientes de procesar',
         });
       }
     },
-    onError: () => {
+    onError: (error: any) => {
       toast({
         title: 'Error',
-        description: 'No se pudieron procesar las actividades de Polar',
+        description: error.message || 'No se pudieron procesar las actividades de Polar',
         variant: 'destructive',
       });
     },

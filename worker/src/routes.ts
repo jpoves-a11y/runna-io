@@ -2050,30 +2050,52 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   app.post('/api/polar/process/:userId', async (c) => {
+    const startTime = Date.now();
+    const MAX_PROCESSING_TIME = 25000; // 25 seconds limit to avoid timeout
+    
     try {
       const userId = c.req.param('userId');
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
       const unprocessed = await storage.getUnprocessedPolarActivities(userId);
-      const results: any[] = [];
+      
+      console.log(`[PROCESS] Starting - ${unprocessed.length} unprocessed Polar activities for user ${userId}`);
+      
+      if (unprocessed.length === 0) {
+        return c.json({ processed: 0, results: [], message: 'No activities to process' });
+      }
 
-      for (const activity of unprocessed) {
+      const results: any[] = [];
+      const BATCH_SIZE = 5; // Process max 5 at a time to avoid timeout
+      const toBatch = unprocessed.slice(0, BATCH_SIZE);
+      
+      console.log(`[PROCESS] Processing batch of ${toBatch.length} activities (${unprocessed.length - toBatch.length} remaining)`);
+
+      for (const activity of toBatch) {
+        // Check timeout
+        if (Date.now() - startTime > MAX_PROCESSING_TIME) {
+          console.warn(`[PROCESS] Timeout approaching - stopping at ${results.length} processed`);
+          break;
+        }
+
         if (!activity.summaryPolyline) {
-          console.log(`Skipping Polar activity ${activity.id} - no GPS data available`);
+          console.log(`[PROCESS] Skipping activity ${activity.id} - no GPS data`);
           await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
           continue;
         }
 
         try {
+          console.log(`[PROCESS] Processing activity ${activity.id}: ${activity.name}`);
           const decoded = decodePolyline(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
           if (coordinates.length < 3) {
-            console.log(`Skipping Polar activity ${activity.id} - insufficient coordinates (${coordinates.length})`);
+            console.log(`[PROCESS] Skipping activity ${activity.id} - insufficient coordinates (${coordinates.length})`);
             await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
             continue;
           }
 
+          console.log(`[PROCESS] Creating route for activity ${activity.id}`);
           const route = await storage.createRoute({
             userId: activity.userId,
             name: activity.name,
@@ -2083,25 +2105,36 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             startedAt: activity.startDate,
             completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
           });
+          console.log(`[PROCESS] Route created: ${route.id}`);
 
+          console.log(`[PROCESS] Calculating territory buffer...`);
           const lineString = turf.lineString(
             coordinates.map(coord => [coord[1], coord[0]])
           );
           const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+          console.log(`[PROCESS] Buffer calculated`);
 
           if (buffered) {
+            console.log(`[PROCESS] Fetching all territories...`);
             const allTerritories = await storage.getAllTerritories();
             const userTerritories = allTerritories.filter(t => t.userId === userId);
             const otherTerritories = allTerritories.filter(t => t.userId !== userId);
+            console.log(`[PROCESS] Found ${userTerritories.length} user territories, ${otherTerritories.length} other territories`);
 
+            console.log(`[PROCESS] Checking intersections with other territories...`);
             for (const otherTerritory of otherTerritories) {
               try {
                 const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
                 const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
                 if (intersection) {
+                  console.log(`[PROCESS] Territory intersection detected - removing territory ${otherTerritory.id}`);
                   // Send notification for Polar activity
-                  const { notifyTerritoryLoss } = await import('./notifications');
-                  await notifyTerritoryLoss(storage, otherTerritory.userId, userId, c.env);
+                  try {
+                    const { notifyTerritoryLoss } = await import('./notifications');
+                    await notifyTerritoryLoss(storage, otherTerritory.userId, userId, c.env);
+                  } catch (notifErr) {
+                    console.error('[PROCESS] Failed to send notification:', notifErr);
+                  }
                   
                   await storage.deleteTerritoryById(otherTerritory.id);
                   const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
@@ -2111,10 +2144,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
                 }
               } catch (e) {
-                console.error('Error checking intersection:', e);
+                console.error('[PROCESS] Error checking intersection:', e);
               }
             }
 
+            console.log(`[PROCESS] Merging with user's existing territories...`);
             let finalGeometry = buffered.geometry;
             for (const userTerritory of userTerritories) {
               try {
@@ -2124,16 +2158,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   finalGeometry = union.geometry as any;
                 }
               } catch (err) {
-                console.error('Error merging territories:', err);
+                console.error('[PROCESS] Error merging territories:', err);
               }
             }
 
+            console.log(`[PROCESS] Updating territory geometry...`);
             const territory = await storage.updateTerritoryGeometry(
               userId,
               route.id,
               finalGeometry as any,
               turf.area(finalGeometry)
             );
+            console.log(`[PROCESS] Territory updated: ${territory.id}, area: ${territory.area}`);
 
             await storage.updateUserTotalArea(userId, territory.area);
 
@@ -2150,16 +2186,34 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             processed: true, 
             processedAt: new Date() 
           });
+          console.log(`[PROCESS] ✅ Activity ${activity.id} processed successfully`);
         } catch (e) {
-          console.error('Error processing Polar activity:', e);
+          console.error(`[PROCESS] ❌ Error processing activity ${activity.id}:`, e);
           await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
         }
       }
 
-      return c.json({ processed: results.length, results });
+      const remaining = unprocessed.length - toBatch.length;
+      const processingTime = Date.now() - startTime;
+      console.log(`[PROCESS] Completed in ${processingTime}ms - ${results.length} processed, ${remaining} remaining`);
+
+      return c.json({ 
+        processed: results.length, 
+        results,
+        remaining,
+        processingTime,
+        message: remaining > 0 ? `${results.length} procesadas, ${remaining} pendientes. Ejecuta de nuevo para continuar.` : `${results.length} procesadas correctamente`
+      });
     } catch (error: any) {
-      console.error('Polar process error:', error);
-      return c.json({ error: error.message }, 500);
+      const processingTime = Date.now() - startTime;
+      console.error('[PROCESS] ❌ Critical error:', error);
+      // Return partial success if we processed anything
+      return c.json({ 
+        error: error.message,
+        processed: 0,
+        processingTime,
+        message: 'Error al procesar actividades. Por favor intenta de nuevo.'
+      }, 500);
     }
   });
 

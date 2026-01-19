@@ -1288,23 +1288,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Process pending Polar activities
   app.post("/api/polar/process/:userId", async (req, res) => {
+    const startTime = Date.now();
+    const MAX_PROCESSING_TIME = 25000; // 25 seconds limit
+    
     try {
       const { userId } = req.params;
       const unprocessed = await storage.getUnprocessedPolarActivities(userId);
-      const results: any[] = [];
+      
+      console.log(`[PROCESS] Starting - ${unprocessed.length} unprocessed Polar activities for user ${userId}`);
+      
+      if (unprocessed.length === 0) {
+        return res.json({ processed: 0, results: [], message: 'No activities to process' });
+      }
 
-      for (const activity of unprocessed) {
+      const results: any[] = [];
+      const BATCH_SIZE = 5; // Process max 5 at a time
+      const toBatch = unprocessed.slice(0, BATCH_SIZE);
+      
+      console.log(`[PROCESS] Processing batch of ${toBatch.length} activities (${unprocessed.length - toBatch.length} remaining)`);
+
+      for (const activity of toBatch) {
+        // Check timeout
+        if (Date.now() - startTime > MAX_PROCESSING_TIME) {
+          console.warn(`[PROCESS] Timeout approaching - stopping at ${results.length} processed`);
+          break;
+        }
+
         if (!activity.summaryPolyline) {
-          // Skip activities without GPS data
+          console.log(`[PROCESS] Skipping activity ${activity.id} - no GPS data`);
           await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
           continue;
         }
 
         try {
+          console.log(`[PROCESS] Processing activity ${activity.id}: ${activity.name}`);
           // Decode polyline to coordinates
           const polyline = await import('@mapbox/polyline');
           const decoded = polyline.decode(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+
+          if (coordinates.length < 3) {
+            console.log(`[PROCESS] Skipping activity ${activity.id} - insufficient coordinates (${coordinates.length})`);
+            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            continue;
+          }
 
           if (coordinates.length >= 3) {
             // Create route
@@ -1325,6 +1352,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
 
             if (buffered) {
+              console.log(`[PROCESS] Fetching all territories...`);
               const allTerritories = await storage.getAllTerritories();
               const userTerritories = allTerritories.filter(t => t.userId === userId);
               
@@ -1335,13 +1363,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
               const otherTerritories = allTerritories.filter(t => 
                 t.userId !== userId && friendIds.includes(t.userId)
               );
+              console.log(`[PROCESS] Found ${userTerritories.length} user territories, ${otherTerritories.length} friend territories`);
 
+              console.log(`[PROCESS] Checking intersections with friend territories...`);
               // Handle reconquest (friends only)
               for (const otherTerritory of otherTerritories) {
                 try {
                   const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
                   const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
                   if (intersection) {
+                    console.log(`[PROCESS] Friend territory intersection detected - removing territory ${otherTerritory.id}`);
                     await storage.deleteTerritoryById(otherTerritory.id);
                     const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
                     const newTotalArea = otherUserTerritories
@@ -1350,10 +1381,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
                   }
                 } catch (err) {
-                  console.error('Error checking overlap:', err);
+                  console.error('[PROCESS] Error checking overlap:', err);
                 }
               }
 
+              console.log(`[PROCESS] Merging with user's existing territories...`);
               // Merge with user's existing territories
               let finalGeometry = buffered.geometry;
               
@@ -1365,10 +1397,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
                     finalGeometry = union.geometry;
                   }
                 } catch (err) {
-                  console.error('Error merging territories:', err);
+                  console.error('[PROCESS] Error merging territories:', err);
                 }
               }
 
+              console.log(`[PROCESS] Updating territory geometry...`);
               // Update unified territory
               const territory = await storage.updateTerritoryGeometry(
                 activity.userId,
@@ -1376,6 +1409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 finalGeometry as any,
                 turf.area(finalGeometry)
               );
+              console.log(`[PROCESS] Territory updated: ${territory.id}, area: ${territory.area}`);
 
               // Update user's total area
               await storage.updateUserTotalArea(activity.userId, turf.area(finalGeometry));
@@ -1389,17 +1423,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
               });
 
               results.push({ activityId: activity.polarExerciseId, routeId: route.id, territoryId: territory.id });
+              console.log(`[PROCESS] ✅ Activity ${activity.id} processed successfully`);
             }
           }
         } catch (err) {
-          console.error('Error processing Polar activity:', err);
+          console.error(`[PROCESS] ❌ Error processing activity ${activity.id}:`, err);
           await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
         }
       }
 
-      res.json({ processed: results.length, results });
+      const remaining = unprocessed.length - toBatch.length;
+      const processingTime = Date.now() - startTime;
+      console.log(`[PROCESS] Completed in ${processingTime}ms - ${results.length} processed, ${remaining} remaining`);
+
+      res.json({ 
+        processed: results.length, 
+        results,
+        remaining,
+        processingTime,
+        message: remaining > 0 ? `${results.length} procesadas, ${remaining} pendientes. Ejecuta de nuevo para continuar.` : `${results.length} procesadas correctamente`
+      });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      const processingTime = Date.now() - startTime;
+      console.error('[PROCESS] ❌ Critical error:', error);
+      res.status(500).json({ 
+        error: error.message,
+        processed: 0,
+        processingTime,
+        message: 'Error al procesar actividades. Por favor intenta de nuevo.'
+      });
     }
   });
 
