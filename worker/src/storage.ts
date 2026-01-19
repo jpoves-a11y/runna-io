@@ -1,3 +1,4 @@
+import * as turf from '@turf/turf';
 import {
   users,
   routes,
@@ -200,6 +201,137 @@ export class WorkerStorage {
 
   async deleteTerritoryById(id: string): Promise<void> {
     await this.db.delete(territories).where(eq(territories.id, id));
+  }
+
+  async subtractFromTerritory(
+    territoryId: string,
+    subtractionGeometry: any
+  ): Promise<{ updatedTerritory: Territory | null; stolenArea: number }> {
+    const [territory] = await this.db
+      .select()
+      .from(territories)
+      .where(eq(territories.id, territoryId));
+    
+    if (!territory) {
+      throw new Error('Territory not found');
+    }
+
+    const originalPoly = turf.polygon(territory.geometry.coordinates);
+    const subtractionPoly = turf.polygon(subtractionGeometry.coordinates);
+    
+    // Calculate the intersection (what's being stolen)
+    const intersection = turf.intersect(
+      turf.featureCollection([originalPoly, subtractionPoly])
+    );
+    
+    if (!intersection) {
+      // No overlap, return unchanged territory
+      return { updatedTerritory: territory, stolenArea: 0 };
+    }
+    
+    const stolenArea = turf.area(intersection);
+    
+    // Calculate the difference (what remains)
+    const difference = turf.difference(
+      turf.featureCollection([originalPoly, subtractionPoly])
+    );
+    
+    if (!difference) {
+      // Entire territory was conquered, delete it
+      await this.db.delete(territories).where(eq(territories.id, territoryId));
+      return { updatedTerritory: null, stolenArea };
+    }
+    
+    // Update the territory with the remaining geometry
+    const newArea = turf.area(difference);
+    const [updatedTerritory] = await this.db
+      .update(territories)
+      .set({
+        geometry: difference.geometry,
+        area: newArea,
+      })
+      .where(eq(territories.id, territoryId))
+      .returning();
+    
+    return { updatedTerritory, stolenArea };
+  }
+
+  async addOrMergeTerritory(
+    userId: string,
+    routeId: string,
+    newGeometry: any,
+    userTerritories: Territory[]
+  ): Promise<{
+    territory: Territory;
+    totalArea: number;
+    newArea: number;
+    existingArea: number;
+  }> {
+    const newPoly = turf.polygon(newGeometry.coordinates);
+    let newArea = turf.area(newGeometry);
+    let existingAreaInBuffer = 0;
+
+    // Calculate how much of the buffer overlaps with existing user territories
+    for (const userTerritory of userTerritories) {
+      try {
+        const userPoly = turf.polygon(userTerritory.geometry.coordinates);
+        const overlap = turf.intersect(
+          turf.featureCollection([newPoly, userPoly])
+        );
+        
+        if (overlap) {
+          existingAreaInBuffer += turf.area(overlap);
+        }
+      } catch (err) {
+        console.error('[TERRITORY] Error calculating overlap with existing territory:', err);
+      }
+    }
+
+    // True new area = buffer area - overlap with own territories
+    const actualNewArea = newArea - existingAreaInBuffer;
+
+    // Merge all territories into one unified geometry
+    let finalGeometry = newGeometry;
+    for (const userTerritory of userTerritories) {
+      try {
+        const userPoly = turf.polygon(userTerritory.geometry.coordinates);
+        const union = turf.union(
+          turf.featureCollection([
+            turf.polygon(finalGeometry.coordinates),
+            userPoly
+          ])
+        );
+        if (union) {
+          finalGeometry = union.geometry;
+        }
+      } catch (err) {
+        console.error('[TERRITORY] Error merging territories:', err);
+      }
+    }
+
+    // Delete all old territories
+    await this.db
+      .delete(territories)
+      .where(eq(territories.userId, userId));
+
+    // Create new unified territory
+    const [territory] = await this.db
+      .insert(territories)
+      .values({
+        userId,
+        routeId,
+        geometry: finalGeometry,
+        area: turf.area(finalGeometry),
+        conqueredAt: new Date(),
+      })
+      .returning();
+
+    return {
+      territory,
+      totalArea: turf.area(finalGeometry),
+      newArea: actualNewArea,
+      existingArea: existingAreaInBuffer,
+    };
   }
 
   async updateTerritoryGeometry(

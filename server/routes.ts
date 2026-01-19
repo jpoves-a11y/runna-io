@@ -6,6 +6,91 @@ import * as turf from "@turf/turf";
 import { seedDatabase } from "./seed";
 import bcrypt from "bcryptjs";
 
+// Helper function to process territory conquest for a new route
+async function processTerritoryConquest(
+  userId: string,
+  routeId: string,
+  bufferedGeometry: any
+): Promise<{
+  territory: any;
+  totalArea: number;
+  newAreaConquered: number;
+  areaStolen: number;
+}> {
+  const allTerritories = await storage.getAllTerritories();
+  const userTerritories = allTerritories.filter(t => t.userId === userId);
+  
+  // Get friend IDs to determine who can be conquered
+  const friendIds = await storage.getFriendIds(userId);
+  const enemyTerritories = allTerritories.filter(t => 
+    t.userId !== userId && friendIds.includes(t.userId)
+  );
+
+  let totalStolenArea = 0;
+
+  // Step 1: Handle enemy territory conquest
+  console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
+  
+  for (const enemyTerritory of enemyTerritories) {
+    try {
+      const result = await storage.subtractFromTerritory(
+        enemyTerritory.id,
+        bufferedGeometry
+      );
+
+      if (result.stolenArea > 0) {
+        totalStolenArea += result.stolenArea;
+        
+        console.log(
+          `[TERRITORY] Stole ${(result.stolenArea/1000000).toFixed(4)} km² from user ${enemyTerritory.userId}`
+        );
+
+        // Update victim's total area
+        const victimTerritories = await storage.getTerritoriesByUserId(
+          enemyTerritory.userId
+        );
+        const victimTotalArea = victimTerritories.reduce(
+          (sum, t) => sum + t.area,
+          0
+        );
+        await storage.updateUserTotalArea(
+          enemyTerritory.userId,
+          victimTotalArea
+        );
+      }
+    } catch (err) {
+      console.error('[TERRITORY] Error processing enemy territory:', err);
+    }
+  }
+
+  // Step 2: Merge with user's existing territories and calculate new area
+  console.log('[TERRITORY] Merging with existing user territories...');
+  
+  const result = await storage.addOrMergeTerritory(
+    userId,
+    routeId,
+    bufferedGeometry,
+    userTerritories
+  );
+
+  // Step 3: Update user's total area
+  await storage.updateUserTotalArea(userId, result.totalArea);
+
+  console.log(`[TERRITORY] Conquest complete:
+    - Total area: ${(result.totalArea/1000000).toFixed(4)} km²
+    - New area: ${(result.newArea/1000000).toFixed(4)} km²
+    - Area stolen: ${(totalStolenArea/1000000).toFixed(4)} km²
+    - Existing area in route: ${(result.existingArea/1000000).toFixed(4)} km²
+  `);
+
+  return {
+    territory: result.territory,
+    totalArea: result.totalArea,
+    newAreaConquered: result.newArea,
+    areaStolen: totalStolenArea,
+  };
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   
   // ==================== SEED ====================
@@ -161,73 +246,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
           
           if (buffered) {
-            const area = turf.area(buffered); // Area in square meters
-            
-            // Check for overlaps with existing territories
-            const allTerritories = await storage.getAllTerritories();
-            const userTerritories = allTerritories.filter(t => t.userId === routeData.userId);
-            
-            // Get friend IDs for reconquest filtering
-            const friendIds = await storage.getFriendIds(routeData.userId);
-            
-            // Only allow reconquering territories from friends
-            const otherTerritories = allTerritories.filter(t => 
-              t.userId !== routeData.userId && friendIds.includes(t.userId)
-            );
-
-            // Handle reconquest - remove overlapping territories from friends only
-            for (const otherTerritory of otherTerritories) {
-              try {
-                const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
-                const intersection = turf.intersect(
-                  turf.featureCollection([buffered, otherPoly])
-                );
-
-                if (intersection) {
-                  // Remove the conquered territory
-                  await storage.deleteTerritoryById(otherTerritory.id);
-                  
-                  // Update other user's total area
-                  const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
-                  const newTotalArea = otherUserTerritories
-                    .filter(t => t.id !== otherTerritory.id)
-                    .reduce((sum, t) => sum + t.area, 0);
-                  await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
-                }
-              } catch (err) {
-                console.error('Error checking overlap:', err);
-              }
-            }
-
-            // Merge with user's existing territories if they overlap
-            let finalGeometry = buffered.geometry;
-            
-            for (const userTerritory of userTerritories) {
-              try {
-                const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-                const union = turf.union(
-                  turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly])
-                );
-                if (union) {
-                  finalGeometry = union.geometry;
-                }
-              } catch (err) {
-                console.error('Error merging territories:', err);
-              }
-            }
-
-            // Update or create unified territory for user
-            const territory = await storage.updateTerritoryGeometry(
+            const conquestResult = await processTerritoryConquest(
               routeData.userId,
               route.id,
-              finalGeometry as any,
-              turf.area(finalGeometry)
+              buffered.geometry
             );
 
-            // Update user's total area
-            await storage.updateUserTotalArea(routeData.userId, turf.area(finalGeometry));
-
-            res.json({ route, territory });
+            res.json({ 
+              route, 
+              territory: conquestResult.territory,
+              metrics: {
+                totalArea: conquestResult.totalArea,
+                newAreaConquered: conquestResult.newAreaConquered,
+                areaStolen: conquestResult.areaStolen,
+              }
+            });
           } else {
             res.json({ route });
           }
@@ -730,68 +763,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
 
             if (buffered) {
-              const allTerritories = await storage.getAllTerritories();
-              const userTerritories = allTerritories.filter(t => t.userId === userId);
-              
-              // Get friend IDs for reconquest filtering (Strava)
-              const friendIds = await storage.getFriendIds(userId);
-              
-              // Only allow reconquering territories from friends
-              const otherTerritories = allTerritories.filter(t => 
-                t.userId !== userId && friendIds.includes(t.userId)
-              );
-
-              // Handle reconquest (friends only)
-              for (const otherTerritory of otherTerritories) {
-                try {
-                  const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
-                  const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
-                  if (intersection) {
-                    await storage.deleteTerritoryById(otherTerritory.id);
-                    const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
-                    const newTotalArea = otherUserTerritories
-                      .filter(t => t.id !== otherTerritory.id)
-                      .reduce((sum, t) => sum + t.area, 0);
-                    await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
-                  }
-                } catch (err) {
-                  console.error('Error checking overlap:', err);
-                }
-              }
-
-              // Merge with existing territories
-              let finalGeometry = buffered.geometry;
-              
-              for (const userTerritory of userTerritories) {
-                try {
-                  const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly]));
-                  if (union) {
-                    finalGeometry = union.geometry;
-                  }
-                } catch (err) {
-                  console.error('Error merging territories:', err);
-                }
-              }
-
-              const territory = await storage.updateTerritoryGeometry(
+              const conquestResult = await processTerritoryConquest(
                 userId,
                 route.id,
-                finalGeometry as any,
-                turf.area(finalGeometry)
+                buffered.geometry
               );
-
-              // Update user total area
-              await storage.updateUserTotalArea(userId, turf.area(finalGeometry));
 
               await storage.updateStravaActivity(activity.id, {
                 processed: true,
                 processedAt: new Date(),
                 routeId: route.id,
-                territoryId: territory.id,
+                territoryId: conquestResult.territory.id,
               });
 
-              results.push({ activityId: activity.stravaActivityId, routeId: route.id, territoryId: territory.id });
+              results.push({ 
+                activityId: activity.stravaActivityId, 
+                routeId: route.id, 
+                territoryId: conquestResult.territory.id,
+                metrics: {
+                  totalArea: conquestResult.totalArea,
+                  newAreaConquered: conquestResult.newAreaConquered,
+                  areaStolen: conquestResult.areaStolen,
+                }
+              });
             }
           }
         } catch (err) {
@@ -1352,77 +1346,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
             const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
 
             if (buffered) {
-              console.log(`[PROCESS] Fetching all territories...`);
-              const allTerritories = await storage.getAllTerritories();
-              const userTerritories = allTerritories.filter(t => t.userId === userId);
+              console.log(`[PROCESS] Processing territory conquest...`);
               
-              // Get friend IDs for reconquest filtering (Polar)
-              const friendIds = await storage.getFriendIds(userId);
-              
-              // Only allow reconquering territories from friends
-              const otherTerritories = allTerritories.filter(t => 
-                t.userId !== userId && friendIds.includes(t.userId)
-              );
-              console.log(`[PROCESS] Found ${userTerritories.length} user territories, ${otherTerritories.length} friend territories`);
-
-              console.log(`[PROCESS] Checking intersections with friend territories...`);
-              // Handle reconquest (friends only)
-              for (const otherTerritory of otherTerritories) {
-                try {
-                  const otherPoly = turf.polygon(otherTerritory.geometry.coordinates);
-                  const intersection = turf.intersect(turf.featureCollection([buffered, otherPoly]));
-                  if (intersection) {
-                    console.log(`[PROCESS] Friend territory intersection detected - removing territory ${otherTerritory.id}`);
-                    await storage.deleteTerritoryById(otherTerritory.id);
-                    const otherUserTerritories = await storage.getTerritoriesByUserId(otherTerritory.userId);
-                    const newTotalArea = otherUserTerritories
-                      .filter(t => t.id !== otherTerritory.id)
-                      .reduce((sum, t) => sum + t.area, 0);
-                    await storage.updateUserTotalArea(otherTerritory.userId, newTotalArea);
-                  }
-                } catch (err) {
-                  console.error('[PROCESS] Error checking overlap:', err);
-                }
-              }
-
-              console.log(`[PROCESS] Merging with user's existing territories...`);
-              // Merge with user's existing territories
-              let finalGeometry = buffered.geometry;
-              
-              for (const userTerritory of userTerritories) {
-                try {
-                  const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-                  const union = turf.union(turf.featureCollection([turf.polygon(finalGeometry.coordinates as any), userPoly]));
-                  if (union) {
-                    finalGeometry = union.geometry;
-                  }
-                } catch (err) {
-                  console.error('[PROCESS] Error merging territories:', err);
-                }
-              }
-
-              console.log(`[PROCESS] Updating territory geometry...`);
-              // Update unified territory
-              const territory = await storage.updateTerritoryGeometry(
-                activity.userId,
+              const conquestResult = await processTerritoryConquest(
+                userId,
                 route.id,
-                finalGeometry as any,
-                turf.area(finalGeometry)
+                buffered.geometry
               );
-              console.log(`[PROCESS] Territory updated: ${territory.id}, area: ${territory.area}`);
 
-              // Update user's total area
-              await storage.updateUserTotalArea(activity.userId, turf.area(finalGeometry));
+              console.log(`[PROCESS] Territory updated: ${conquestResult.territory.id}, area: ${conquestResult.territory.area}`);
 
               // Mark as processed
               await storage.updatePolarActivity(activity.id, {
                 processed: true,
                 processedAt: new Date(),
                 routeId: route.id,
-                territoryId: territory.id,
+                territoryId: conquestResult.territory.id,
               });
 
-              results.push({ activityId: activity.polarExerciseId, routeId: route.id, territoryId: territory.id });
+              results.push({ 
+                activityId: activity.polarExerciseId, 
+                routeId: route.id, 
+                territoryId: conquestResult.territory.id,
+                metrics: {
+                  totalArea: conquestResult.totalArea,
+                  newAreaConquered: conquestResult.newAreaConquered,
+                  areaStolen: conquestResult.areaStolen,
+                }
+              });
               console.log(`[PROCESS] ✅ Activity ${activity.id} processed successfully`);
             }
           }
