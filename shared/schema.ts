@@ -6,6 +6,7 @@ import { z } from "zod";
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
+  email: varchar("email").notNull().unique(),
   name: text("name").notNull(),
   password: text("password").notNull().default(''), // Hashed password (empty for legacy users)
   color: text("color").notNull(), // Hex color for territory visualization
@@ -32,6 +33,15 @@ export const territories = pgTable("territories", {
   geometry: jsonb("geometry").notNull().$type<any>(), // GeoJSON polygon
   area: real("area").notNull(), // square meters
   conqueredAt: timestamp("conquered_at").notNull().defaultNow(),
+});
+
+export const conquestMetrics = pgTable("conquest_metrics", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  attackerId: varchar("attacker_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  defenderId: varchar("defender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  areaStolen: real("area_stolen").notNull(), // square meters
+  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 export const friendships = pgTable("friendships", {
@@ -126,6 +136,29 @@ export const stravaActivities = pgTable("strava_activities", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Email notifications tables
+export const emailNotifications = pgTable("email_notifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  notificationType: varchar("notification_type").notNull(), // 'friend_request', 'friend_accepted', 'territory_conquered'
+  relatedUserId: varchar("related_user_id").references(() => users.id, { onDelete: 'set null' }),
+  subject: text("subject").notNull(),
+  body: text("body").notNull(),
+  areaStolen: real("area_stolen"), // for territory_conquered type
+  emailSentAt: timestamp("email_sent_at").notNull().defaultNow(),
+  openedAt: timestamp("opened_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const emailPreferences = pgTable("email_preferences", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().unique().references(() => users.id, { onDelete: 'cascade' }),
+  friendRequestNotifications: boolean("friend_request_notifications").notNull().default(true),
+  friendAcceptedNotifications: boolean("friend_accepted_notifications").notNull().default(true),
+  territoryConqueredNotifications: boolean("territory_conquered_notifications").notNull().default(true),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   routes: many(routes),
@@ -175,6 +208,21 @@ export const territoriesRelations = relations(territories, ({ one }) => ({
   }),
   route: one(routes, {
     fields: [territories.routeId],
+    references: [routes.id],
+  }),
+}));
+
+export const conquestMetricsRelations = relations(conquestMetrics, ({ one }) => ({
+  attacker: one(users, {
+    fields: [conquestMetrics.attackerId],
+    references: [users.id],
+  }),
+  defender: one(users, {
+    fields: [conquestMetrics.defenderId],
+    references: [users.id],
+  }),
+  route: one(routes, {
+    fields: [conquestMetrics.routeId],
     references: [routes.id],
   }),
 }));
@@ -276,6 +324,11 @@ export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions
   createdAt: true,
 });
 
+export const insertConquestMetricSchema = createInsertSchema(conquestMetrics).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -309,6 +362,17 @@ export type InsertStravaActivity = z.infer<typeof insertStravaActivitySchema>;
 
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
+
+export type ConquestMetric = typeof conquestMetrics.$inferSelect;
+export type InsertConquestMetric = z.infer<typeof insertConquestMetricSchema>;
+
+export type EmailNotification = typeof emailNotifications.$inferSelect;
+export const insertEmailNotificationSchema = createInsertSchema(emailNotifications);
+export type InsertEmailNotification = z.infer<typeof insertEmailNotificationSchema>;
+
+export type EmailPreferences = typeof emailPreferences.$inferSelect;
+export const insertEmailPreferencesSchema = createInsertSchema(emailPreferences);
+export type InsertEmailPreferences = z.infer<typeof insertEmailPreferencesSchema>;
 
 // Extended types for frontend
 export type UserWithStats = User & {

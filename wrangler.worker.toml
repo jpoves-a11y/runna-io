@@ -13,6 +13,7 @@ compatibility_flags = ["nodejs_compat"]
 # Variables de entorno
 [vars]
 ENVIRONMENT = "production"
+RESEND_API_KEY = "***REMOVED***"
 
 # Para desplegar el Worker:
 # 1. cd worker && npm install && cd ..

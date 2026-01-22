@@ -481,6 +481,14 @@
       touch-action: manipulation;
     }
 
+    /* Keep map gestures working despite global touch-action tweaks */
+    .leaflet-container,
+    .leaflet-pane,
+    .leaflet-map-pane,
+    .leaflet-interactive {
+      touch-action: pan-x pan-y !important;
+    }
+
     /* Prevent double-tap zoom */
     a, button, input, select, textarea {
       touch-action: manipulation;

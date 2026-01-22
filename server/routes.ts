@@ -45,6 +45,18 @@ async function processTerritoryConquest(
           `[TERRITORY] Stole ${(result.stolenArea/1000000).toFixed(4)} km² from user ${enemyTerritory.userId}`
         );
 
+        // Record conquest metric
+        try {
+          await storage.recordConquestMetric(
+            userId,
+            enemyTerritory.userId,
+            result.stolenArea,
+            routeId
+          );
+        } catch (metricErr) {
+          console.error('[TERRITORY] Failed to record conquest metric:', metricErr);
+        }
+
         // Update victim's total area
         const victimTerritories = await storage.getTerritoriesByUserId(
           enemyTerritory.userId

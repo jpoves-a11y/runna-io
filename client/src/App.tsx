@@ -16,15 +16,17 @@ import NotFound from "@/pages/not-found";
 
 function Router() {
   return (
-    <Switch>
-      <Route path="/" component={MapPage} />
-      <Route path="/rankings" component={RankingsPage} />
-      <Route path="/activity" component={ActivityPage} />
-      <Route path="/profile" component={ProfilePage} />
-      <Route path="/friends" component={FriendsPage} />
-      <Route path="/friends/accept/:token" component={AcceptFriendInvitePage} />
-      <Route component={NotFound} />
-    </Switch>
+    <div className="w-full h-full">
+      <Switch>
+        <Route path="/" component={MapPage} />
+        <Route path="/rankings" component={RankingsPage} />
+        <Route path="/activity" component={ActivityPage} />
+        <Route path="/profile" component={ProfilePage} />
+        <Route path="/friends" component={FriendsPage} />
+        <Route path="/friends/accept/:token" component={AcceptFriendInvitePage} />
+        <Route component={NotFound} />
+      </Switch>
+    </div>
   );
 }
 
@@ -86,6 +88,11 @@ function App() {
   const tabs = ['/', '/rankings', '/activity', '/friends', '/profile'];
 
   const handleTouchStart = (e: React.TouchEvent) => {
+    // Don't handle touch events on map page - let map handle them directly
+    const currentPath = (location || '/').split('?')[0];
+    const isMapPage = currentPath === '' || currentPath === '/';
+    if (isMapPage) return;
+
     const t = e.touches[0];
     touchStartX.current = t.clientX;
     touchStartY.current = t.clientY;
@@ -94,15 +101,16 @@ function App() {
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
+    // Don't handle touch events on map page - let map handle them directly
+    const currentPath = (location || '/').split('?')[0];
+    const isMapPage = currentPath === '' || currentPath === '/';
+    if (isMapPage) return;
+
     const t = e.touches[0];
     const dx = t.clientX - touchStartX.current;
     const dy = t.clientY - touchStartY.current;
 
-    // Disable horizontal swipe navigation on map page (/) to allow map interaction
-    const currentPath = (location || '/').split('?')[0];
-    const isMapPage = currentPath === '' || currentPath === '/';
-
-    if (!isSwiping.current && Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy) && !isMapPage) {
+    if (!isSwiping.current && Math.abs(dx) > 20 && Math.abs(dx) > Math.abs(dy)) {
       isSwiping.current = true;
     }
 
@@ -143,6 +151,11 @@ function App() {
   };
 
   const handleTouchEnd = (e: React.TouchEvent) => {
+    // Don't handle touch events on map page - let map handle them directly
+    const currentPath = (location || '/').split('?')[0];
+    const isMapPage = currentPath === '' || currentPath === '/';
+    if (isMapPage) return;
+
     const touch = e.changedTouches[0];
     const dx = touch.clientX - touchStartX.current;
     const dy = touch.clientY - touchStartY.current;
@@ -153,8 +166,7 @@ function App() {
     }
 
     if (isSwiping.current && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy)) {
-      const currentPath = (location || '/').split('?')[0];
-      const currentIndex = tabs.indexOf(currentPath === '' ? '/' : currentPath);
+      const currentIndex = tabs.indexOf(isMapPage ? '/' : currentPath);
       if (dx > 0) {
         const prev = tabs[Math.max(0, currentIndex - 1)];
         if (prev && prev !== location) animateAndNavigate(prev, 'right');

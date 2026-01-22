@@ -3,17 +3,18 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Button } from '@/components/ui/button';
 import { ZoomIn, ZoomOut, Layers, Navigation } from 'lucide-react';
-import type { TerritoryWithUser } from '@shared/schema';
+import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 import { DEFAULT_CENTER, getCurrentPosition } from '@/lib/geolocation';
 
 interface MapViewProps {
   territories: TerritoryWithUser[];
+  routes?: RouteWithTerritory[];
   center?: { lat: number; lng: number };
   onLocationFound?: (coords: { lat: number; lng: number }) => void;
   onTerritoryClick?: (userId: string) => void;
 }
 
-export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound, onTerritoryClick }: MapViewProps) {
+export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -40,7 +41,31 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound,
     tileLayerRef.current = lightTiles;
     mapRef.current = map;
 
+    // Ensure the map renders correctly after layout/gesture changes
+    const invalidate = () => {
+      requestAnimationFrame(() => {
+        map.invalidateSize();
+      });
+    };
+
+    invalidate();
+
+    const handleResize = () => invalidate();
+
+    // Track container resize (swipe animations change layout size briefly)
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && mapContainer.current) {
+      resizeObserver = new ResizeObserver(() => invalidate());
+      resizeObserver.observe(mapContainer.current);
+    }
+
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+
     return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
       map.remove();
       mapRef.current = null;
     };
@@ -72,6 +97,38 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound,
       if (layer instanceof L.Polygon) {
         mapRef.current?.removeLayer(layer);
       }
+    });
+
+    // Clear existing polyline layers
+    mapRef.current.eachLayer((layer) => {
+      if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
+        mapRef.current?.removeLayer(layer);
+      }
+    });
+
+    // Add route polylines with reduced opacity (user's territories)
+    routes.forEach((route) => {
+      if (!mapRef.current || !route.territory || !route.coordinates) return;
+
+      // Convert coordinates from [lat, lng] to [lat, lng] for Leaflet
+      const routeCoordinates = (route.coordinates as any).map((coord: any) => {
+        if (Array.isArray(coord)) {
+          return [coord[0], coord[1]] as [number, number];
+        }
+        return [coord.lat || 0, coord.lng || 0] as [number, number];
+      });
+
+      if (routeCoordinates.length < 2) return;
+
+      const polyline = L.polyline(routeCoordinates, {
+        color: route.territory.user.color,
+        weight: 2,
+        opacity: 0.4,
+        smoothFactor: 1.0,
+        className: 'route-polyline',
+      });
+
+      polyline.addTo(mapRef.current);
     });
 
     // Add territory polygons with improved styling
@@ -210,7 +267,7 @@ export function MapView({ territories, center = DEFAULT_CENTER, onLocationFound,
         popupContainer.removeEventListener('click', handlePopupButtonClick);
       }
     };
-  }, [territories, onTerritoryClick]);
+  }, [territories, routes, onTerritoryClick]);
 
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();

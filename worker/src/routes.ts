@@ -3,6 +3,7 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute } from '../../shared/schema';
 import * as turf from '@turf/turf';
+import { EmailService } from './email';
 import type { Env } from './index';
 
 async function hashPassword(password: string): Promise<string> {
@@ -61,6 +62,46 @@ async function processTerritoryConquest(
         console.log(
           `[TERRITORY] Stole ${(result.stolenArea/1000000).toFixed(4)} km² from user ${enemyTerritory.userId}`
         );
+
+        // Record conquest metric
+        try {
+          await storage.recordConquestMetric(
+            userId,
+            enemyTerritory.userId,
+            result.stolenArea,
+            routeId
+          );
+        } catch (metricErr) {
+          console.error('[TERRITORY] Failed to record conquest metric:', metricErr);
+        }
+
+        // Send email notification
+        try {
+          const attacker = await storage.getUser(userId);
+          const defender = await storage.getUser(enemyTerritory.userId);
+          const emailService = new EmailService(env.RESEND_API_KEY);
+          
+          if (attacker && defender && defender.email) {
+            await emailService.sendTerritoryConqueredEmail(
+              defender.email,
+              attacker.name,
+              attacker.username,
+              result.stolenArea
+            );
+            
+            await emailService.recordNotification(
+              storage,
+              enemyTerritory.userId,
+              'territory_conquered',
+              userId,
+              `¡${attacker.name} te conquistó ${(result.stolenArea/1000000).toFixed(2)} km²!`,
+              `${attacker.name} (@${attacker.username}) ha conquistado ${(result.stolenArea/1000000).toFixed(2)} km² de tu territorio.`,
+              result.stolenArea
+            );
+          }
+        } catch (emailErr) {
+          console.error('[TERRITORY] Failed to send conquest email:', emailErr);
+        }
 
         // Send notification
         if (env && !victimsNotified.includes(enemyTerritory.userId)) {
@@ -232,20 +273,24 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
-      const { username, password } = body;
+      const { username, email, password } = body;
+      const identifier = username || email;
       
-      if (!username || !password) {
-        return c.json({ error: "Username y password son requeridos" }, 400);
+      if (!identifier || !password) {
+        return c.json({ error: "Usuario o correo y password son requeridos" }, 400);
       }
       
-      const user = await storage.getUserByUsername(username);
+      const user = identifier.includes('@')
+        ? await storage.getUserByEmail(identifier)
+        : await storage.getUserByUsername(identifier);
+
       if (!user) {
         return c.json({ error: "Usuario no encontrado" }, 401);
       }
 
       const isValid = await verifyPassword(password, user.password);
       if (!isValid) {
-        return c.json({ error: "ContraseÃ±a incorrecta" }, 401);
+        return c.json({ error: "Contraseña incorrecta" }, 401);
       }
 
       const { password: _, ...userWithoutPassword } = user;
@@ -260,18 +305,26 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const db = createDb(c.env.DATABASE_URL);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
-      const { password, ...userData } = body;
+      const { password, email, ...userData } = body;
+      
+      if (!email || !email.includes('@')) {
+        return c.json({ error: "Email válido requerido" }, 400);
+      }
       
       if (!password || password.length < 4) {
-        return c.json({ error: "La contraseÃ±a debe tener al menos 4 caracteres" }, 400);
+        return c.json({ error: "La contraseña debe tener al menos 4 caracteres" }, 400);
       }
 
       const hashedPassword = await hashPassword(password);
       const validatedData = insertUserSchema.parse({
         ...userData,
+        email,
         password: hashedPassword,
       });
       const user = await storage.createUser(validatedData);
+      
+      // Create email preferences for new user
+      await storage.createEmailPreferences(user.id);
       
       const { password: _, ...userWithoutPassword } = user;
       return c.json(userWithoutPassword);
@@ -525,6 +578,35 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const { notifyFriendRequest } = await import('./notifications');
       await notifyFriendRequest(storage, friendId, userId, c.env);
 
+      // Send email notification
+      try {
+        const sender = await storage.getUser(userId);
+        const recipient = await storage.getUser(friendId);
+        const emailService = new EmailService(c.env.RESEND_API_KEY);
+        
+        if (sender && recipient && recipient.email) {
+          const prefs = await storage.getEmailPreferences(friendId);
+          if (!prefs || prefs.friendRequestNotifications) {
+            await emailService.sendFriendRequestEmail(
+              recipient.email,
+              sender.name,
+              sender.username
+            );
+            
+            await emailService.recordNotification(
+              storage,
+              friendId,
+              'friend_request',
+              userId,
+              `¡${sender.name} te envió una solicitud de amistad!`,
+              `${sender.name} (@${sender.username}) te ha enviado una solicitud de amistad en Runna.io.`
+            );
+          }
+        }
+      } catch (emailErr) {
+        console.error('[EMAIL] Failed to send friend request email:', emailErr);
+      }
+
       return c.json({ success: true, requestId: request.id });
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
@@ -655,6 +737,35 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       // Send notification to sender
       const { notifyFriendRequestAccepted } = await import('./notifications');
       await notifyFriendRequestAccepted(storage, request.senderId, userId, c.env);
+
+      // Send email notification
+      try {
+        const sender = await storage.getUser(request.senderId);
+        const recipient = await storage.getUser(userId);
+        const emailService = new EmailService(c.env.RESEND_API_KEY);
+        
+        if (sender && sender.email && recipient) {
+          const prefs = await storage.getEmailPreferences(request.senderId);
+          if (!prefs || prefs.friendAcceptedNotifications) {
+            await emailService.sendFriendAcceptedEmail(
+              sender.email,
+              recipient.name,
+              recipient.username
+            );
+            
+            await emailService.recordNotification(
+              storage,
+              request.senderId,
+              'friend_accepted',
+              userId,
+              `¡${recipient.name} aceptó tu solicitud de amistad!`,
+              `${recipient.name} (@${recipient.username}) aceptó tu solicitud de amistad. Ahora son amigos en Runna.io!`
+            );
+          }
+        }
+      } catch (emailErr) {
+        console.error('[EMAIL] Failed to send friend accepted email:', emailErr);
+      }
 
       return c.json({ success: true });
     } catch (error: any) {

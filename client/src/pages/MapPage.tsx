@@ -15,7 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
-import type { TerritoryWithUser } from '@shared/schema';
+import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 
 export default function MapPage() {
   const [, setLocation] = useLocation();
@@ -61,6 +61,12 @@ export default function MapPage() {
   const { data: friendTerritories = [], isLoading: isLoadingFriendTerritories } = useQuery<TerritoryWithUser[]>({
     queryKey: ['/api/territories/friends', currentUser?.id],
     enabled: friendsOnly && !!currentUser?.id,
+  });
+
+  // Fetch routes for the current user to display route traces
+  const { data: userRoutes = [] } = useQuery<RouteWithTerritory[]>({
+    queryKey: ['/api/routes', currentUser?.id],
+    enabled: !!currentUser?.id,
   });
 
   const territories = friendsOnly ? friendTerritories : allTerritories;
@@ -151,6 +157,7 @@ export default function MapPage() {
     <div className="relative w-full h-full animate-fade-in">
       <MapView 
         territories={territories} 
+        routes={userRoutes}
         center={userLocation || DEFAULT_CENTER}
         onTerritoryClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
       />

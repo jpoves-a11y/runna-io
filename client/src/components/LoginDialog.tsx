@@ -26,6 +26,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [registerUsername, setRegisterUsername] = useState('');
+  const [registerEmail, setRegisterEmail] = useState('');
   const [registerName, setRegisterName] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
@@ -57,9 +58,10 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   });
 
   const registerMutation = useMutation({
-    mutationFn: async (data: { username: string; name: string; password: string }) => {
+    mutationFn: async (data: { username: string; email: string; name: string; password: string }) => {
       const response = await apiRequest('POST', '/api/users', {
         username: data.username,
+        email: data.email,
         name: data.name,
         password: data.password,
         color: getRandomUserColor(),
@@ -77,6 +79,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       setRegisterUsername('');
       setRegisterName('');
       setRegisterPassword('');
+        setRegisterEmail('');
     },
     onError: (error: Error) => {
       toast({
@@ -108,10 +111,18 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   };
 
   const handleRegister = () => {
-    if (!registerUsername.trim() || !registerName.trim()) {
+    if (!registerUsername.trim() || !registerName.trim() || !registerEmail.trim()) {
       toast({
         title: 'Error',
         description: 'Completa todos los campos',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!registerEmail.includes('@')) {
+      toast({
+        title: 'Error',
+        description: 'Ingresa un email válido',
         variant: 'destructive',
       });
       return;
@@ -125,7 +136,8 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       return;
     }
     registerMutation.mutate({ 
-      username: registerUsername, 
+      username: registerUsername,
+      email: registerEmail,
       name: registerName,
       password: registerPassword,
     });
@@ -220,6 +232,18 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
                 value={registerUsername}
                 onChange={(e) => setRegisterUsername(e.target.value)}
                 data-testid="input-register-username"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="register-email">Correo electrónico</Label>
+              <Input
+                id="register-email"
+                type="email"
+                placeholder="tu@correo.com"
+                value={registerEmail}
+                onChange={(e) => setRegisterEmail(e.target.value)}
+                data-testid="input-register-email"
               />
             </div>
 

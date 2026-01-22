@@ -11,6 +11,9 @@ import {
   stravaActivities,
   polarAccounts,
   polarActivities,
+  conquestMetrics,
+  emailNotifications,
+  emailPreferences,
   type User,
   type InsertUser,
   type Route,
@@ -33,6 +36,12 @@ import {
   type InsertPolarAccount,
   type PolarActivity,
   type InsertPolarActivity,
+  type ConquestMetric,
+  type InsertConquestMetric,
+  type EmailNotification,
+  type InsertEmailNotification,
+  type EmailPreferences,
+  type InsertEmailPreferences,
   type UserWithStats,
   type TerritoryWithUser,
   type RouteWithTerritory,
@@ -50,6 +59,11 @@ export class WorkerStorage {
 
   async getUserByUsername(username: string): Promise<User | undefined> {
     const [user] = await this.db.select().from(users).where(eq(users.username, username));
+    return user || undefined;
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await this.db.select().from(users).where(eq(users.email, email));
     return user || undefined;
   }
 
@@ -782,5 +796,91 @@ export class WorkerStorage {
       .where(eq(friendships.userId, userId));
     
     return userFriendships.map(f => f.friendId);
+  }
+
+  async recordConquestMetric(
+    attackerId: string,
+    defenderId: string,
+    areaStolen: number,
+    routeId?: string
+  ): Promise<ConquestMetric> {
+    const [metric] = await this.db
+      .insert(conquestMetrics)
+      .values({
+        attackerId,
+        defenderId,
+        areaStolen,
+        routeId,
+      })
+      .returning();
+    
+    return metric;
+  }
+
+  async getConquestMetricsBetweenUsers(userId1: string, userId2: string): Promise<{
+    totalFromFirstToSecond: number;
+    totalFromSecondToFirst: number;
+  }> {
+    // Get area stolen from user2 to user1
+    const fromUser1ToUser2 = await this.db
+      .select({ total: sql<number>`SUM(${conquestMetrics.areaStolen})` })
+      .from(conquestMetrics)
+      .where(
+        sql`${conquestMetrics.attackerId} = ${userId1} AND ${conquestMetrics.defenderId} = ${userId2}`
+      );
+
+    // Get area stolen from user1 to user2
+    const fromUser2ToUser1 = await this.db
+      .select({ total: sql<number>`SUM(${conquestMetrics.areaStolen})` })
+      .from(conquestMetrics)
+      .where(
+        sql`${conquestMetrics.attackerId} = ${userId2} AND ${conquestMetrics.defenderId} = ${userId1}`
+      );
+
+    return {
+      totalFromFirstToSecond: fromUser1ToUser2[0]?.total || 0,
+      totalFromSecondToFirst: fromUser2ToUser1[0]?.total || 0,
+    };
+  }
+
+  // Email Notifications
+  async recordEmailNotification(data: InsertEmailNotification): Promise<EmailNotification> {
+    const [notification] = await this.db
+      .insert(emailNotifications)
+      .values(data)
+      .returning();
+    
+    return notification;
+  }
+
+  async getEmailPreferences(userId: string): Promise<EmailPreferences | undefined> {
+    const [prefs] = await this.db
+      .select()
+      .from(emailPreferences)
+      .where(eq(emailPreferences.userId, userId));
+    
+    return prefs || undefined;
+  }
+
+  async createEmailPreferences(userId: string): Promise<EmailPreferences> {
+    const [prefs] = await this.db
+      .insert(emailPreferences)
+      .values({ userId })
+      .returning();
+    
+    return prefs;
+  }
+
+  async updateEmailPreferences(
+    userId: string,
+    data: Partial<InsertEmailPreferences>
+  ): Promise<EmailPreferences> {
+    const [updated] = await this.db
+      .update(emailPreferences)
+      .set(data)
+      .where(eq(emailPreferences.userId, userId))
+      .returning();
+    
+    return updated;
   }
 }
