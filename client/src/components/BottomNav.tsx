@@ -23,11 +23,11 @@ export function BottomNav() {
     <nav 
       className="fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur-xl border-t border-border/50 z-50 shadow-lg shadow-black/5 dark:shadow-black/20"
       style={{ 
-        height: 'calc(4rem + env(safe-area-inset-bottom, 0px))',
-        paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))'
+        height: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)'
       }}
     >
-      <div className="flex items-stretch justify-around h-[4rem]">
+      <div className="flex items-stretch justify-around h-[3.5rem]">
         {navItems.map((item) => {
           const isActive = isPathActive(item.path);
           const Icon = item.icon;
