@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -6,6 +6,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+
+// Keys para localStorage
+const PENDING_VERIFICATION_KEY = 'runna_pending_verification';
+const RESEND_COOLDOWN_KEY = 'runna_resend_cooldown';
 import {
   Sheet,
   SheetContent,
@@ -46,7 +50,57 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const [showVerification, setShowVerification] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  const [pendingEmail, setPendingEmail] = useState<string>('');
+  const [resendCooldown, setResendCooldown] = useState(0);
   const { toast } = useToast();
+
+  // Cargar verificación pendiente de localStorage al abrir el diálogo
+  useEffect(() => {
+    if (open) {
+      const saved = localStorage.getItem(PENDING_VERIFICATION_KEY);
+      if (saved) {
+        try {
+          const { userId, email, timestamp } = JSON.parse(saved);
+          // Solo restaurar si es de las últimas 10 minutos (código válido)
+          const tenMinutes = 10 * 60 * 1000;
+          if (Date.now() - timestamp < tenMinutes) {
+            setPendingUserId(userId);
+            setPendingEmail(email);
+            setShowVerification(true);
+          } else {
+            // Expirado, limpiar
+            localStorage.removeItem(PENDING_VERIFICATION_KEY);
+          }
+        } catch (e) {
+          localStorage.removeItem(PENDING_VERIFICATION_KEY);
+        }
+      }
+      
+      // Verificar cooldown de reenvío
+      const cooldownEnd = localStorage.getItem(RESEND_COOLDOWN_KEY);
+      if (cooldownEnd) {
+        const remaining = Math.ceil((parseInt(cooldownEnd) - Date.now()) / 1000);
+        if (remaining > 0) {
+          setResendCooldown(remaining);
+        } else {
+          localStorage.removeItem(RESEND_COOLDOWN_KEY);
+        }
+      }
+    }
+  }, [open]);
+
+  // Contador regresivo para cooldown
+  useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => {
+        setResendCooldown(resendCooldown - 1);
+        if (resendCooldown - 1 <= 0) {
+          localStorage.removeItem(RESEND_COOLDOWN_KEY);
+        }
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendCooldown]);
 
   const loginMutation = useMutation({
     mutationFn: async (data: { username: string; password: string }) => {
@@ -86,9 +140,15 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
     },
     onSuccess: (user) => {
       if (user.requiresVerification) {
-        // Mostrar pantalla de verificación
+        // Guardar estado de verificación pendiente
         setPendingUserId(user.id);
+        setPendingEmail(registerEmail);
         setShowVerification(true);
+        localStorage.setItem(PENDING_VERIFICATION_KEY, JSON.stringify({
+          userId: user.id,
+          email: registerEmail,
+          timestamp: Date.now(),
+        }));
         toast({
           title: 'Código enviado',
           description: `Revisa tu email ${registerEmail}`,
@@ -120,6 +180,9 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
     },
     onSuccess: () => {
       if (pendingUserId) {
+        // Limpiar localStorage al verificar
+        localStorage.removeItem(PENDING_VERIFICATION_KEY);
+        localStorage.removeItem(RESEND_COOLDOWN_KEY);
         onLogin(pendingUserId);
         toast({
           title: '¡Email verificado!',
@@ -144,6 +207,10 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       return response.json();
     },
     onSuccess: () => {
+      // Iniciar cooldown de 60 segundos
+      const cooldownEnd = Date.now() + 60 * 1000;
+      localStorage.setItem(RESEND_COOLDOWN_KEY, cooldownEnd.toString());
+      setResendCooldown(60);
       toast({
         title: 'Código reenviado',
         description: 'Revisa tu email',
@@ -158,7 +225,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
     },
   });
 
-  const resetForm = () => {
+  const resetForm = (clearStorage = true) => {
     setRegisterUsername('');
     setRegisterName('');
     setRegisterPassword('');
@@ -167,6 +234,11 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
     setShowVerification(false);
     setVerificationCode('');
     setPendingUserId(null);
+    setPendingEmail('');
+    if (clearStorage) {
+      localStorage.removeItem(PENDING_VERIFICATION_KEY);
+      localStorage.removeItem(RESEND_COOLDOWN_KEY);
+    }
   };
 
   const handleLogin = () => {
@@ -232,10 +304,14 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
 
   // Si estamos verificando, mostrar pantalla de código
   if (showVerification && pendingUserId) {
+    // Email a mostrar: pendingEmail si existe, si no registerEmail
+    const emailToShow = pendingEmail || registerEmail;
+    
     return (
       <Dialog open={open} onOpenChange={(isOpen) => {
+        // Al cerrar, no limpiar localStorage para que recuerde al volver
         if (!isOpen) {
-          resetForm();
+          resetForm(false); // No limpiar storage
         }
         onOpenChange(isOpen);
       }}>
@@ -247,7 +323,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
             </DialogTitle>
             <DialogDescription className="text-center">
               Hemos enviado un código de 6 dígitos a<br />
-              <strong>{registerEmail}</strong>
+              <strong>{emailToShow}</strong>
             </DialogDescription>
           </DialogHeader>
 
@@ -278,10 +354,12 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
                 variant="ghost"
                 size="sm"
                 onClick={() => resendMutation.mutate(pendingUserId)}
-                disabled={resendMutation.isPending}
+                disabled={resendMutation.isPending || resendCooldown > 0}
               >
                 <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? 'animate-spin' : ''}`} />
-                Reenviar código
+                {resendCooldown > 0 
+                  ? `Reenviar en ${resendCooldown}s` 
+                  : 'Reenviar código'}
               </Button>
             </div>
 
