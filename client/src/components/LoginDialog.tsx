@@ -165,7 +165,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md rounded-2xl mx-4">
+      <DialogContent className="w-[calc(100%-2rem)] max-w-md rounded-2xl">
         <DialogHeader className="text-center">
           <DialogTitle className="flex items-center justify-center gap-2 text-2xl">
             <div className="relative">
@@ -179,9 +179,9 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
         </DialogHeader>
         
         <Tabs defaultValue="login" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="login">Iniciar sesion</TabsTrigger>
-            <TabsTrigger value="register">Registrarse</TabsTrigger>
+          <TabsList className="grid w-full grid-cols-2 h-12 p-1 rounded-xl">
+            <TabsTrigger value="login" className="rounded-lg h-full">Iniciar sesión</TabsTrigger>
+            <TabsTrigger value="register" className="rounded-lg h-full">Registrarse</TabsTrigger>
           </TabsList>
           
           <TabsContent value="login" className="space-y-4">
@@ -292,35 +292,34 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
               </div>
             </div>
 
-            <div className="flex items-start space-x-3 pt-3 pb-1 px-3 bg-muted/30 rounded-xl">
-              <Checkbox 
-                id="accept-terms" 
-                checked={acceptedTerms}
-                onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
-                className="mt-0.5"
-                data-testid="checkbox-accept-terms"
-              />
-              <div className="flex-1">
+            <div className="bg-muted/40 rounded-xl p-4">
+              <div className="flex items-start gap-3">
+                <Checkbox 
+                  id="accept-terms" 
+                  checked={acceptedTerms}
+                  onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
+                  className="mt-1 shrink-0"
+                  data-testid="checkbox-accept-terms"
+                />
                 <label
                   htmlFor="accept-terms"
-                  className="text-sm text-foreground leading-relaxed cursor-pointer"
+                  className="text-sm text-foreground cursor-pointer"
                 >
-                  He leído y acepto los{' '}
+                  Acepto los{' '}
                   <button 
                     type="button"
-                    className="text-primary font-medium hover:underline"
+                    className="text-primary font-semibold hover:underline"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
                       setShowTerms(true);
                     }}
                   >
-                    Términos y Condiciones
-                  </button>{' '}
-                  y la{' '}
+                    Términos
+                  </button>{' '}y la{' '}
                   <button 
                     type="button"
-                    className="text-primary font-medium hover:underline"
+                    className="text-primary font-semibold hover:underline"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -330,10 +329,10 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
                     Política de Privacidad
                   </button>
                 </label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Debes tener al menos 14 años para usar Runna.io
-                </p>
               </div>
+              <p className="text-xs text-muted-foreground mt-2 ml-7">
+                Debes tener al menos 14 años
+              </p>
             </div>
 
             <Button
