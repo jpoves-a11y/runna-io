@@ -583,7 +583,10 @@ export default function ProfilePage() {
         </div>
       )}
       <div className="flex flex-col min-h-full max-w-lg mx-auto w-full px-0">
-        <div className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5">
+        <div 
+          className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5"
+          style={{ paddingTop: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
+        >
           <div className="flex items-center gap-3">
             <div className="relative p-2 rounded-xl bg-primary/10">
               <User className="h-6 w-6 text-primary" />

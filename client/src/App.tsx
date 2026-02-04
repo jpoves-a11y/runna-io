@@ -62,7 +62,7 @@ function StartActivityButton() {
     <button
       className="fixed z-[9999] flex items-center justify-center shadow-2xl transition-all duration-300 active:scale-95"
       style={{
-        bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px) + 12px)',
+        bottom: 'calc(5.5rem + env(safe-area-inset-bottom, 0px) + 12px)',
         left: '50%',
         transform: 'translateX(-50%)',
         width: '60px',
@@ -188,7 +188,7 @@ function App() {
           <main
             ref={(el) => (mainRef.current = el)}
             className={`flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-            style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
+            style={{ paddingBottom: 'calc(4rem + env(safe-area-inset-bottom, 0px))' }}
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}

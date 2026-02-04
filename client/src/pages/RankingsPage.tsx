@@ -106,7 +106,10 @@ export default function RankingsPage() {
           </div>
         </div>
       )}
-      <div className="p-3 sm:p-4 border-b border-border bg-card/50 backdrop-blur-sm">
+      <div 
+        className="p-3 sm:p-4 border-b border-border bg-card/50 backdrop-blur-sm"
+        style={{ paddingTop: 'calc(0.75rem + env(safe-area-inset-top, 0px))' }}
+      >
         <div className="flex items-center gap-2 sm:gap-3">
           <Switch
             id="friends-toggle"
