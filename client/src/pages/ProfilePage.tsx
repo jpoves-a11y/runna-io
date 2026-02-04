@@ -21,6 +21,7 @@ import { SettingsDialog } from '@/components/SettingsDialog';
 import { LoginDialog } from '@/components/LoginDialog';
 import { NotificationToggle } from '@/components/NotificationToggle';
 import { AvatarDialog } from '@/components/AvatarDialog';
+import { ConquestStats } from '@/components/ConquestStats';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
@@ -652,6 +653,9 @@ export default function ProfilePage() {
               <p className="text-sm text-muted-foreground">amigos</p>
             </Card>
           </div>
+
+          {/* Conquest Stats */}
+          <ConquestStats userId={user.id} />
 
           <Card className="p-4">
             <div className="flex items-center gap-2 mb-3">

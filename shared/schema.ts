@@ -1,162 +1,163 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, real, jsonb, integer, boolean, bigint } from "drizzle-orm/pg-core";
+import { sqliteTable, text, real, integer, primaryKey } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
   username: text("username").notNull().unique(),
-  email: varchar("email").notNull().unique(),
+  email: text("email").notNull().unique(),
   name: text("name").notNull(),
   password: text("password").notNull().default(''), // Hashed password (empty for legacy users)
   color: text("color").notNull(), // Hex color for territory visualization
   avatar: text("avatar"), // Avatar URL or placeholder
   totalArea: real("total_area").notNull().default(0), // Total m² conquered
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const routes = pgTable("routes", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+export const routes = sqliteTable("routes", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   name: text("name").notNull(),
-  coordinates: jsonb("coordinates").notNull().$type<Array<[number, number]>>(), // Array of [lat, lng]
+  coordinates: text("coordinates").notNull(), // JSON string of Array<[number, number]>
   distance: real("distance").notNull(), // meters
   duration: integer("duration").notNull(), // seconds
-  startedAt: timestamp("started_at").notNull(),
-  completedAt: timestamp("completed_at").notNull(),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at").notNull(),
+  ranTogetherWith: text("ran_together_with"), // JSON array of user IDs who ran together
 });
 
-export const territories = pgTable("territories", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'cascade' }),
-  geometry: jsonb("geometry").notNull().$type<any>(), // GeoJSON polygon
+export const territories = sqliteTable("territories", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'cascade' }),
+  geometry: text("geometry").notNull(), // JSON string of GeoJSON polygon
   area: real("area").notNull(), // square meters
-  conqueredAt: timestamp("conquered_at").notNull().defaultNow(),
+  conqueredAt: text("conquered_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const conquestMetrics = pgTable("conquest_metrics", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  attackerId: varchar("attacker_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  defenderId: varchar("defender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+export const conquestMetrics = sqliteTable("conquest_metrics", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  attackerId: text("attacker_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  defenderId: text("defender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   areaStolen: real("area_stolen").notNull(), // square meters
-  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'set null' }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const friendships = pgTable("friendships", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  friendId: varchar("friend_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+export const friendships = sqliteTable("friendships", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  friendId: text("friend_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const friendInvites = pgTable("friend_invites", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  token: varchar("token").notNull().unique(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  expiresAt: timestamp("expires_at").notNull(),
+export const friendInvites = sqliteTable("friend_invites", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  token: text("token").notNull().unique(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(),
 });
 
-export const friendRequests = pgTable("friend_requests", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  senderId: varchar("sender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  recipientId: varchar("recipient_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  status: varchar("status").notNull().default('pending'), // pending, accepted, rejected
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+export const friendRequests = sqliteTable("friend_requests", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  senderId: text("sender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  recipientId: text("recipient_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  status: text("status").notNull().default('pending'), // pending, accepted, rejected
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const pushSubscriptions = pgTable("push_subscriptions", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+export const pushSubscriptions = sqliteTable("push_subscriptions", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   endpoint: text("endpoint").notNull().unique(),
   p256dh: text("p256dh").notNull(),
   auth: text("auth").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 // Polar Integration Tables
-export const polarAccounts = pgTable("polar_accounts", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
-  polarUserId: bigint("polar_user_id", { mode: "number" }).notNull().unique(),
+export const polarAccounts = sqliteTable("polar_accounts", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  polarUserId: integer("polar_user_id").notNull().unique(),
   accessToken: text("access_token").notNull(),
   memberId: text("member_id"),
-  registeredAt: timestamp("registered_at").defaultNow(),
-  lastSyncAt: timestamp("last_sync_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  registeredAt: text("registered_at").default(sql`CURRENT_TIMESTAMP`),
+  lastSyncAt: text("last_sync_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const polarActivities = pgTable("polar_activities", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  polarExerciseId: varchar("polar_exercise_id").notNull().unique(),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'set null' }),
-  territoryId: varchar("territory_id").references(() => territories.id, { onDelete: 'set null' }),
+export const polarActivities = sqliteTable("polar_activities", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  polarExerciseId: text("polar_exercise_id").notNull().unique(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  territoryId: text("territory_id").references(() => territories.id, { onDelete: 'set null' }),
   name: text("name").notNull(),
   activityType: text("activity_type").notNull(),
   distance: real("distance").notNull(),
   duration: integer("duration").notNull(),
-  startDate: timestamp("start_date").notNull(),
+  startDate: text("start_date").notNull(),
   summaryPolyline: text("summary_polyline"),
-  processed: boolean("processed").notNull().default(false),
-  processedAt: timestamp("processed_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  processed: integer("processed").notNull().default(0),
+  processedAt: text("processed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 // Strava Integration Tables
-export const stravaAccounts = pgTable("strava_accounts", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
-  stravaAthleteId: bigint("strava_athlete_id", { mode: "number" }).notNull().unique(),
+export const stravaAccounts = sqliteTable("strava_accounts", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  stravaAthleteId: integer("strava_athlete_id").notNull().unique(),
   accessToken: text("access_token").notNull(),
   refreshToken: text("refresh_token").notNull(),
-  expiresAt: timestamp("expires_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
   scope: text("scope").notNull(),
-  athleteData: jsonb("athlete_data").$type<any>(), // Strava athlete profile
-  lastSyncAt: timestamp("last_sync_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  athleteData: text("athlete_data"), // JSON string of athlete profile
+  lastSyncAt: text("last_sync_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const stravaActivities = pgTable("strava_activities", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  stravaActivityId: bigint("strava_activity_id", { mode: "number" }).notNull().unique(),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  routeId: varchar("route_id").references(() => routes.id, { onDelete: 'set null' }),
-  territoryId: varchar("territory_id").references(() => territories.id, { onDelete: 'set null' }),
+export const stravaActivities = sqliteTable("strava_activities", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  stravaActivityId: integer("strava_activity_id").notNull().unique(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  territoryId: text("territory_id").references(() => territories.id, { onDelete: 'set null' }),
   name: text("name").notNull(),
   activityType: text("activity_type").notNull(), // Run, Walk, etc.
   distance: real("distance").notNull(), // meters
   duration: integer("duration").notNull(), // seconds (moving_time)
-  startDate: timestamp("start_date").notNull(),
+  startDate: text("start_date").notNull(),
   summaryPolyline: text("summary_polyline"), // Encoded polyline from Strava
-  processed: boolean("processed").notNull().default(false),
-  processedAt: timestamp("processed_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  processed: integer("processed").notNull().default(0),
+  processedAt: text("processed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 // Email notifications tables
-export const emailNotifications = pgTable("email_notifications", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  notificationType: varchar("notification_type").notNull(), // 'friend_request', 'friend_accepted', 'territory_conquered'
-  relatedUserId: varchar("related_user_id").references(() => users.id, { onDelete: 'set null' }),
+export const emailNotifications = sqliteTable("email_notifications", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  notificationType: text("notification_type").notNull(), // 'friend_request', 'friend_accepted', 'territory_conquered'
+  relatedUserId: text("related_user_id").references(() => users.id, { onDelete: 'set null' }),
   subject: text("subject").notNull(),
   body: text("body").notNull(),
   areaStolen: real("area_stolen"), // for territory_conquered type
-  emailSentAt: timestamp("email_sent_at").notNull().defaultNow(),
-  openedAt: timestamp("opened_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  emailSentAt: text("email_sent_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  openedAt: text("opened_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const emailPreferences = pgTable("email_preferences", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().unique().references(() => users.id, { onDelete: 'cascade' }),
-  friendRequestNotifications: boolean("friend_request_notifications").notNull().default(true),
-  friendAcceptedNotifications: boolean("friend_accepted_notifications").notNull().default(true),
-  territoryConqueredNotifications: boolean("territory_conquered_notifications").notNull().default(true),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+export const emailPreferences = sqliteTable("email_preferences", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().unique().references(() => users.id, { onDelete: 'cascade' }),
+  friendRequestNotifications: integer("friend_request_notifications").notNull().default(1),
+  friendAcceptedNotifications: integer("friend_accepted_notifications").notNull().default(1),
+  territoryConqueredNotifications: integer("territory_conquered_notifications").notNull().default(1),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 // Relations
@@ -386,4 +387,5 @@ export type TerritoryWithUser = Territory & {
 
 export type RouteWithTerritory = Route & {
   territory?: Territory;
+  ranTogetherWithUsers?: Array<{ id: string; name: string }>;
 };

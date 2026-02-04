@@ -12,6 +12,8 @@ import ActivityPage from "@/pages/ActivityPage";
 import ProfilePage from "@/pages/ProfilePage";
 import FriendsPage from "@/pages/FriendsPage";
 import AcceptFriendInvitePage from "@/pages/AcceptFriendInvitePage";
+import PrivacyPage from "@/pages/PrivacyPage";
+import TermsPage from "@/pages/TermsPage";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -24,6 +26,8 @@ function Router() {
         <Route path="/profile" component={ProfilePage} />
         <Route path="/friends" component={FriendsPage} />
         <Route path="/friends/accept/:token" component={AcceptFriendInvitePage} />
+        <Route path="/privacy" component={PrivacyPage} />
+        <Route path="/terms" component={TermsPage} />
         <Route component={NotFound} />
       </Switch>
     </div>
@@ -184,7 +188,7 @@ function App() {
           <main
             ref={(el) => (mainRef.current = el)}
             className={`flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-            style={{ marginBottom: 'calc(4.5rem + env(safe-area-inset-bottom, 0px))' }}
+            style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}

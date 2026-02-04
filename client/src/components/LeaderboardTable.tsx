@@ -67,7 +67,7 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
 
       {/* Leaderboard */}
       <ScrollArea className="flex-1">
-        <div className="p-4 pb-24 space-y-2">
+        <div className="p-3 pb-24 space-y-2 sm:p-4">
           {users.map((user, index) => {
             const rank = index + 1;
             const isCurrentUser = user.id === currentUserId;
@@ -77,7 +77,7 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
               <Card
                 key={user.id}
                 onClick={() => onUserClick?.(user.id)}
-                className={`p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg animate-slide-up cursor-pointer ${
+                className={`p-3 sm:p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg animate-slide-up cursor-pointer ${
                   isCurrentUser
                     ? 'border-primary border-2 shadow-primary/20'
                     : 'border-card-border hover-elevate'
@@ -87,11 +87,11 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                 }}
                 data-testid={`leaderboard-row-${user.id}`}
               >
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2 sm:gap-4 min-w-0">
                   {/* Rank */}
-                  <div className="w-14 flex items-center justify-center relative">
+                  <div className="w-10 sm:w-14 flex items-center justify-center flex-shrink-0 relative">
                     {getRankIcon(rank) || (
-                      <span className="text-2xl font-bold text-muted-foreground">
+                      <span className="text-xl sm:text-2xl font-bold text-muted-foreground">
                         {rank}
                       </span>
                     )}
@@ -101,15 +101,15 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                   </div>
 
                   {/* Avatar */}
-                  <div className="relative">
-                    <Avatar className={`${isTopThree ? 'h-14 w-14 ring-2 ring-offset-2' : 'h-12 w-12'} transition-all duration-300`}
+                  <div className="relative flex-shrink-0">
+                    <Avatar className={`${isTopThree ? 'h-12 sm:h-14 w-12 sm:w-14 ring-2 ring-offset-2' : 'h-10 sm:h-12 w-10 sm:w-12'} transition-all duration-300`}
                       style={{
                         '--tw-ring-color': isTopThree ? user.color : 'transparent'
                       } as React.CSSProperties}
                     >
                       <AvatarImage src={user.avatar || undefined} />
                       <AvatarFallback style={{ backgroundColor: user.color }}>
-                        <span className="text-white font-semibold">
+                        <span className="text-white font-semibold text-xs sm:text-base">
                           {getInitials(user.name)}
                         </span>
                       </AvatarFallback>
@@ -123,27 +123,27 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
 
                   {/* User Info */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className={`font-semibold truncate ${isTopThree ? 'text-lg' : ''}`} data-testid={`text-name-${user.id}`}>
+                    <div className="flex items-center gap-1 sm:gap-2">
+                      <p className={`font-semibold truncate text-sm sm:text-base ${isTopThree ? 'sm:text-lg' : ''}`} data-testid={`text-name-${user.id}`}>
                         {user.name}
                       </p>
                       {isCurrentUser && (
-                        <Badge variant="secondary" className="text-xs animate-pulse">
+                        <Badge variant="secondary" className="text-xs flex-shrink-0 animate-pulse">
                           Tú
                         </Badge>
                       )}
                     </div>
-                    <p className="text-sm text-muted-foreground truncate">
+                    <p className="text-xs sm:text-sm text-muted-foreground truncate">
                       @{user.username}
                     </p>
                   </div>
 
                   {/* Area */}
-                  <div className="text-right">
-                    <p className={`font-bold ${isTopThree ? 'text-2xl' : 'text-lg'} ${rank === 1 ? 'text-white' : ''}`} data-testid={`text-area-${user.id}`}>
+                  <div className="text-right flex-shrink-0">
+                    <p className={`font-bold text-sm sm:text-lg ${isTopThree ? 'sm:text-2xl' : ''} ${rank === 1 ? 'text-white' : ''}`} data-testid={`text-area-${user.id}`}>
                       {(user.totalArea / 1000000).toLocaleString('es-ES', {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
+                        minimumFractionDigits: 1,
+                        maximumFractionDigits: 1,
                       })}
                     </p>
                     <p className={`text-xs ${rank === 1 ? 'text-white/80' : 'text-muted-foreground'}`}>km²</p>

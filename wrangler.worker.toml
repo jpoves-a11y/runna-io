@@ -10,14 +10,19 @@ main = "worker/src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Variables de entorno
+# Variables de entorno (NO secretas)
 [vars]
 ENVIRONMENT = "production"
-RESEND_API_KEY = "***REMOVED***"
+EMAIL_PROVIDER = "sendgrid"
+SENDGRID_FROM = "runna.io.service@gmail.com"
+RESEND_FROM = "onboarding@resend.dev"
+
+# NOTA: Las API keys deben configurarse como secretos:
+# wrangler secret put SENDGRID_API_KEY -c wrangler.worker.toml
+# wrangler secret put RESEND_API_KEY -c wrangler.worker.toml
+# wrangler secret put DATABASE_URL -c wrangler.worker.toml
+# wrangler secret put TURSO_AUTH_TOKEN -c wrangler.worker.toml
 
 # Para desplegar el Worker:
 # 1. cd worker && npm install && cd ..
 # 2. wrangler deploy -c wrangler.worker.toml
-#
-# Para configurar DATABASE_URL:
-# wrangler secret put DATABASE_URL -c wrangler.worker.toml

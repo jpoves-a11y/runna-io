@@ -1,4 +1,4 @@
-import { Calendar, MapPin, TrendingUp, Flame } from 'lucide-react';
+import { Calendar, MapPin, TrendingUp, Flame, Users } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -8,6 +8,14 @@ import { es } from 'date-fns/locale';
 
 interface ActivityFeedProps {
   routes: RouteWithTerritory[];
+}
+
+// Helper to safely parse dates that might be timestamps as strings
+function parseDate(value: string | number | Date): Date {
+  if (value instanceof Date) return value;
+  // Handle timestamps stored as strings (e.g., "1769690860000.0")
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  return new Date(num);
 }
 
 export function ActivityFeed({ routes }: ActivityFeedProps) {
@@ -85,7 +93,7 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
                       <span>{formatDuration(route.duration)}</span>
                       <span>•</span>
                       <span>
-                        {formatDistanceToNow(new Date(route.completedAt), {
+                        {formatDistanceToNow(parseDate(route.completedAt), {
                           addSuffix: true,
                           locale: es,
                         })}
@@ -105,6 +113,20 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
                           })} km² conquistados
                         </span>
                       </Badge>
+                    )}
+
+                    {route.ranTogetherWithUsers && route.ranTogetherWithUsers.length > 0 && (
+                      <div className="mt-2">
+                        <Badge 
+                          variant="outline" 
+                          className="gap-1.5 bg-green-500/10 border-green-500/30 text-green-700 dark:text-green-400"
+                        >
+                          <Users className="h-3 w-3" />
+                          <span className="font-medium">
+                            🏃‍♂️ Corriste junto a {route.ranTogetherWithUsers.map(u => u.name).join(', ')}, ¡mantenéis vuestros km!
+                          </span>
+                        </Badge>
+                      </div>
                     )}
                   </div>
                 </div>

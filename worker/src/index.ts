@@ -13,6 +13,11 @@ export interface Env {
   POLAR_CLIENT_SECRET?: string;
   WORKER_URL?: string;
   FRONTEND_URL?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
+  EMAIL_PROVIDER?: 'resend' | 'sendgrid';
+  SENDGRID_API_KEY?: string;
+  SENDGRID_FROM?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();

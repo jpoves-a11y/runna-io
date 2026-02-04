@@ -7,10 +7,6 @@ import { StatsOverlay } from '@/components/StatsOverlay';
 import { RouteTracker } from '@/components/RouteTracker';
 import { LoginDialog } from '@/components/LoginDialog';
 import { MapSkeleton } from '@/components/LoadingState';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
-import { Card } from '@/components/ui/card';
-import { Users } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -23,7 +19,6 @@ export default function MapPage() {
     return window.location.search.includes('tracking=true');
   });
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [friendsOnly, setFriendsOnly] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const { toast } = useToast();
@@ -53,14 +48,10 @@ export default function MapPage() {
       });
   }, []);
 
-  const { data: allTerritories = [], isLoading: isLoadingAllTerritories } = useQuery<TerritoryWithUser[]>({
-    queryKey: ['/api/territories'],
-    enabled: !friendsOnly,
-  });
-
-  const { data: friendTerritories = [], isLoading: isLoadingFriendTerritories } = useQuery<TerritoryWithUser[]>({
+  // Solo cargar territorios de amigos
+  const { data: territories = [], isLoading: territoriesLoading } = useQuery<TerritoryWithUser[]>({
     queryKey: ['/api/territories/friends', currentUser?.id],
-    enabled: friendsOnly && !!currentUser?.id,
+    enabled: !!currentUser?.id,
   });
 
   // Fetch routes for the current user to display route traces
@@ -68,9 +59,6 @@ export default function MapPage() {
     queryKey: ['/api/routes', currentUser?.id],
     enabled: !!currentUser?.id,
   });
-
-  const territories = friendsOnly ? friendTerritories : allTerritories;
-  const territoriesLoading = friendsOnly ? isLoadingFriendTerritories : isLoadingAllTerritories;
 
   const createRouteMutation = useMutation({
     mutationFn: async (routeData: {
@@ -163,29 +151,9 @@ export default function MapPage() {
       />
       
       {currentUser && (
-        <>
-          <div className="animate-slide-down">
-            <StatsOverlay user={currentUser} />
-          </div>
-          
-          <Card className="absolute bottom-4 left-4 p-3 shadow-lg backdrop-blur-sm bg-card/95 border-border animate-slide-right z-[999]">
-            <div className="flex items-center gap-2">
-              <Switch
-                id="map-friends-toggle"
-                checked={friendsOnly}
-                onCheckedChange={setFriendsOnly}
-                data-testid="switch-map-friends-only"
-              />
-              <Label
-                htmlFor="map-friends-toggle"
-                className="flex items-center gap-2 cursor-pointer text-sm font-medium whitespace-nowrap"
-              >
-                <Users className="h-4 w-4" />
-                {friendsOnly ? 'Amigos' : 'Todos'}
-              </Label>
-            </div>
-          </Card>
-        </>
+        <div className="animate-slide-down">
+          <StatsOverlay user={currentUser} />
+        </div>
       )}
       <UserInfoDialog userId={selectedUserId} open={isDialogOpen} onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }} />
     </div>

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Checkbox } from '@/components/ui/checkbox';
 import { useMutation } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
 import { useToast } from '@/hooks/use-toast';
@@ -31,6 +32,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const [registerPassword, setRegisterPassword] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const { toast } = useToast();
 
   const loginMutation = useMutation({
@@ -80,6 +82,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       setRegisterName('');
       setRegisterPassword('');
         setRegisterEmail('');
+      setAcceptedTerms(false);
     },
     onError: (error: Error) => {
       toast({
@@ -130,6 +133,19 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
     if (!registerPassword || registerPassword.length < 4) {
       toast({
         title: 'Error',
+        description: 'La contraseña debe tener al menos 4 caracteres',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (!acceptedTerms) {
+      toast({
+        title: 'Error',
+        description: 'Debes aceptar los términos y condiciones para continuar',
+        variant: 'destructive',
+      });
+      return;
+    }
         description: 'La contraseña debe tener al menos 4 caracteres',
         variant: 'destructive',
       });
@@ -272,9 +288,46 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
               </div>
             </div>
 
+            <div className="flex items-start space-x-2 pt-2">
+              <Checkbox 
+                id="accept-terms" 
+                checked={acceptedTerms}
+                onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
+                data-testid="checkbox-accept-terms"
+              />
+              <div className="grid gap-1.5 leading-none">
+                <label
+                  htmlFor="accept-terms"
+                  className="text-sm text-muted-foreground leading-relaxed cursor-pointer"
+                >
+                  He leído y acepto los{' '}
+                  <a 
+                    href="/terms" 
+                    target="_blank" 
+                    className="text-primary underline hover:no-underline"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    Términos y Condiciones
+                  </a>{' '}
+                  y la{' '}
+                  <a 
+                    href="/privacy" 
+                    target="_blank" 
+                    className="text-primary underline hover:no-underline"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    Política de Privacidad
+                  </a>
+                </label>
+                <p className="text-xs text-muted-foreground">
+                  Debes tener al menos 14 años para usar Runna.io
+                </p>
+              </div>
+            </div>
+
             <Button
               onClick={handleRegister}
-              disabled={registerMutation.isPending}
+              disabled={registerMutation.isPending || !acceptedTerms}
               className="w-full"
               data-testid="button-register"
             >

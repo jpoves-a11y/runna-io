@@ -49,6 +49,14 @@ import {
 import { eq, desc, sql } from 'drizzle-orm';
 import { type Database } from './db';
 
+// Helper function to create a turf feature from either Polygon or MultiPolygon geometry
+function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
+  if (geometry.type === 'MultiPolygon') {
+    return turf.multiPolygon(geometry.coordinates);
+  }
+  return turf.polygon(geometry.coordinates);
+}
+
 export class WorkerStorage {
   constructor(private db: Database) {}
 
@@ -126,7 +134,7 @@ export class WorkerStorage {
   async createRoute(insertRoute: InsertRoute): Promise<Route> {
     const routeValues = {
       ...insertRoute,
-      coordinates: insertRoute.coordinates as [number, number][],
+      coordinates: JSON.stringify(insertRoute.coordinates), // Convert array to JSON string for SQLite
     };
     const [route] = await this.db
       .insert(routes)
@@ -149,9 +157,41 @@ export class WorkerStorage {
           .from(territories)
           .where(eq(territories.routeId, route.id));
 
+        // Parse coordinates from JSON string (SQLite stores as text)
+        const parsedCoordinates = typeof route.coordinates === 'string'
+          ? JSON.parse(route.coordinates)
+          : route.coordinates;
+
+        // Parse ranTogetherWith from JSON and get user names
+        let ranTogetherWithUsers: Array<{ id: string; name: string }> = [];
+        if (route.ranTogetherWith) {
+          try {
+            const userIds = typeof route.ranTogetherWith === 'string'
+              ? JSON.parse(route.ranTogetherWith)
+              : route.ranTogetherWith;
+            
+            if (Array.isArray(userIds) && userIds.length > 0) {
+              // Get user info for each user ID
+              for (const userId of userIds) {
+                const [user] = await this.db
+                  .select({ id: users.id, name: users.name })
+                  .from(users)
+                  .where(eq(users.id, userId));
+                if (user) {
+                  ranTogetherWithUsers.push(user);
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Error parsing ranTogetherWith:', e);
+          }
+        }
+
         return {
           ...route,
+          coordinates: parsedCoordinates,
           territory: territory || undefined,
+          ranTogetherWithUsers,
         };
       })
     );
@@ -161,7 +201,24 @@ export class WorkerStorage {
 
   async getRoute(id: string): Promise<Route | undefined> {
     const [route] = await this.db.select().from(routes).where(eq(routes.id, id));
-    return route || undefined;
+    if (!route) return undefined;
+    
+    // Parse coordinates from JSON string (SQLite stores as text)
+    const parsedCoordinates = typeof route.coordinates === 'string'
+      ? JSON.parse(route.coordinates)
+      : route.coordinates;
+    
+    return {
+      ...route,
+      coordinates: parsedCoordinates,
+    };
+  }
+
+  async updateRouteRanTogether(routeId: string, ranTogetherWith: string[]): Promise<void> {
+    await this.db
+      .update(routes)
+      .set({ ranTogetherWith: JSON.stringify(ranTogetherWith) })
+      .where(eq(routes.id, routeId));
   }
 
   async createTerritory(insertTerritory: InsertTerritory): Promise<Territory> {
@@ -230,12 +287,18 @@ export class WorkerStorage {
       throw new Error('Territory not found');
     }
 
-    const originalPoly = turf.polygon(territory.geometry.coordinates);
-    const subtractionPoly = turf.polygon(subtractionGeometry.coordinates);
+    // Parse geometry from JSON string (SQLite stores as text)
+    const parsedGeometry = typeof territory.geometry === 'string' 
+      ? JSON.parse(territory.geometry) 
+      : territory.geometry;
+
+    // Use helper to handle both Polygon and MultiPolygon
+    const originalFeature = geometryToFeature(parsedGeometry);
+    const subtractionFeature = geometryToFeature(subtractionGeometry);
     
     // Calculate the intersection (what's being stolen)
     const intersection = turf.intersect(
-      turf.featureCollection([originalPoly, subtractionPoly])
+      turf.featureCollection([originalFeature, subtractionFeature])
     );
     
     if (!intersection) {
@@ -247,7 +310,7 @@ export class WorkerStorage {
     
     // Calculate the difference (what remains)
     const difference = turf.difference(
-      turf.featureCollection([originalPoly, subtractionPoly])
+      turf.featureCollection([originalFeature, subtractionFeature])
     );
     
     if (!difference) {
@@ -256,12 +319,12 @@ export class WorkerStorage {
       return { updatedTerritory: null, stolenArea };
     }
     
-    // Update the territory with the remaining geometry
+    // Update the territory with the remaining geometry as JSON string
     const newArea = turf.area(difference);
     const [updatedTerritory] = await this.db
       .update(territories)
       .set({
-        geometry: difference.geometry,
+        geometry: JSON.stringify(difference.geometry),
         area: newArea,
       })
       .where(eq(territories.id, territoryId))
@@ -281,16 +344,22 @@ export class WorkerStorage {
     newArea: number;
     existingArea: number;
   }> {
-    const newPoly = turf.polygon(newGeometry.coordinates);
+    // Use helper to handle both Polygon and MultiPolygon
+    const newFeature = geometryToFeature(newGeometry);
     let newArea = turf.area(newGeometry);
     let existingAreaInBuffer = 0;
 
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
       try {
-        const userPoly = turf.polygon(userTerritory.geometry.coordinates);
+        // Parse geometry from JSON string (SQLite stores as text)
+        const parsedGeometry = typeof userTerritory.geometry === 'string' 
+          ? JSON.parse(userTerritory.geometry) 
+          : userTerritory.geometry;
+        
+        const userFeature = geometryToFeature(parsedGeometry);
         const overlap = turf.intersect(
-          turf.featureCollection([newPoly, userPoly])
+          turf.featureCollection([newFeature, userFeature])
         );
         
         if (overlap) {
@@ -308,12 +377,15 @@ export class WorkerStorage {
     let finalGeometry = newGeometry;
     for (const userTerritory of userTerritories) {
       try {
-        const userPoly = turf.polygon(userTerritory.geometry.coordinates);
+        // Parse geometry from JSON string (SQLite stores as text)
+        const parsedGeometry = typeof userTerritory.geometry === 'string' 
+          ? JSON.parse(userTerritory.geometry) 
+          : userTerritory.geometry;
+        
+        const userFeature = geometryToFeature(parsedGeometry);
+        const currentFeature = geometryToFeature(finalGeometry);
         const union = turf.union(
-          turf.featureCollection([
-            turf.polygon(finalGeometry.coordinates),
-            userPoly
-          ])
+          turf.featureCollection([currentFeature, userFeature])
         );
         if (union) {
           finalGeometry = union.geometry;
@@ -328,13 +400,13 @@ export class WorkerStorage {
       .delete(territories)
       .where(eq(territories.userId, userId));
 
-    // Create new unified territory
+    // Create new unified territory with geometry as JSON string
     const [territory] = await this.db
       .insert(territories)
       .values({
         userId,
         routeId,
-        geometry: finalGeometry,
+        geometry: JSON.stringify(finalGeometry),
         area: turf.area(finalGeometry),
         conqueredAt: new Date(),
       })
@@ -357,13 +429,13 @@ export class WorkerStorage {
     // Delete all existing territories for the user
     await this.db.delete(territories).where(eq(territories.userId, userId));
 
-    // Create a single new territory with the unified geometry
+    // Create a single new territory with the unified geometry as JSON string
     const [territory] = await this.db
       .insert(territories)
       .values({
         userId,
         routeId,
-        geometry,
+        geometry: JSON.stringify(geometry),
         area,
         conqueredAt: new Date(),
       })
@@ -548,7 +620,31 @@ export class WorkerStorage {
     return await this.db
       .select()
       .from(stravaActivities)
-      .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.processed} = false`);
+      .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.processed} = 0`);
+  }
+
+  // Get activities that failed processing (route_id is NULL, regardless of processed flag)
+  async getFailedStravaActivities(userId: string): Promise<StravaActivity[]> {
+    return await this.db
+      .select()
+      .from(stravaActivities)
+      .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.routeId} IS NULL`)
+      .orderBy(desc(stravaActivities.startDate));
+  }
+
+  // Mark activity for retry by resetting processed flag
+  async resetStravaActivityForRetry(id: string): Promise<StravaActivity> {
+    const [activity] = await this.db
+      .update(stravaActivities)
+      .set({
+        processed: false,
+        processedAt: null,
+        routeId: null,
+        territoryId: null,
+      })
+      .where(eq(stravaActivities.id, id))
+      .returning();
+    return activity;
   }
 
   async getStravaActivitiesByUserId(userId: string): Promise<StravaActivity[]> {
@@ -612,8 +708,41 @@ export class WorkerStorage {
     return await this.db
       .select()
       .from(polarActivities)
-      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = false`)
+      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = 0`)
       .orderBy(desc(polarActivities.startDate));
+  }
+
+  // Get activities that failed processing (route_id is NULL, regardless of processed flag)
+  async getFailedPolarActivities(userId: string): Promise<PolarActivity[]> {
+    return await this.db
+      .select()
+      .from(polarActivities)
+      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.routeId} IS NULL`)
+      .orderBy(desc(polarActivities.startDate));
+  }
+
+  // Get ALL failed activities across ALL users (route_id IS NULL)
+  async getAllFailedPolarActivities(): Promise<PolarActivity[]> {
+    return await this.db
+      .select()
+      .from(polarActivities)
+      .where(sql`${polarActivities.routeId} IS NULL`)
+      .orderBy(desc(polarActivities.startDate));
+  }
+
+  // Mark activity for retry by resetting processed flag
+  async resetPolarActivityForRetry(id: string): Promise<PolarActivity> {
+    const [activity] = await this.db
+      .update(polarActivities)
+      .set({
+        processed: false,
+        processedAt: null,
+        routeId: null,
+        territoryId: null,
+      })
+      .where(eq(polarActivities.id, id))
+      .returning();
+    return activity;
   }
 
   async getPolarActivitiesByUserId(userId: string): Promise<PolarActivity[]> {
@@ -840,6 +969,84 @@ export class WorkerStorage {
     return {
       totalFromFirstToSecond: fromUser1ToUser2[0]?.total || 0,
       totalFromSecondToFirst: fromUser2ToUser1[0]?.total || 0,
+    };
+  }
+
+  async getUserConquestStats(userId: string): Promise<{
+    totalStolen: number;
+    totalLost: number;
+    stolenByUser: Array<{ userId: string; userName: string; userColor: string; amount: number }>;
+    lostToUser: Array<{ userId: string; userName: string; userColor: string; amount: number }>;
+  }> {
+    // Total area stolen by this user
+    const stolenResult = await this.db
+      .select({ total: sql<number>`COALESCE(SUM(${conquestMetrics.areaStolen}), 0)` })
+      .from(conquestMetrics)
+      .where(eq(conquestMetrics.attackerId, userId));
+
+    // Total area lost by this user
+    const lostResult = await this.db
+      .select({ total: sql<number>`COALESCE(SUM(${conquestMetrics.areaStolen}), 0)` })
+      .from(conquestMetrics)
+      .where(eq(conquestMetrics.defenderId, userId));
+
+    // Stolen grouped by victim
+    const stolenByUserResult = await this.db
+      .select({
+        defenderId: conquestMetrics.defenderId,
+        total: sql<number>`SUM(${conquestMetrics.areaStolen})`,
+      })
+      .from(conquestMetrics)
+      .where(eq(conquestMetrics.attackerId, userId))
+      .groupBy(conquestMetrics.defenderId);
+
+    // Lost grouped by attacker  
+    const lostToUserResult = await this.db
+      .select({
+        attackerId: conquestMetrics.attackerId,
+        total: sql<number>`SUM(${conquestMetrics.areaStolen})`,
+      })
+      .from(conquestMetrics)
+      .where(eq(conquestMetrics.defenderId, userId))
+      .groupBy(conquestMetrics.attackerId);
+
+    // Get user details for stolen
+    const stolenByUser = await Promise.all(
+      stolenByUserResult.map(async (row) => {
+        const [user] = await this.db
+          .select({ id: users.id, name: users.name, color: users.color })
+          .from(users)
+          .where(eq(users.id, row.defenderId));
+        return {
+          userId: row.defenderId,
+          userName: user?.name || 'Usuario desconocido',
+          userColor: user?.color || '#888888',
+          amount: row.total || 0,
+        };
+      })
+    );
+
+    // Get user details for lost
+    const lostToUser = await Promise.all(
+      lostToUserResult.map(async (row) => {
+        const [user] = await this.db
+          .select({ id: users.id, name: users.name, color: users.color })
+          .from(users)
+          .where(eq(users.id, row.attackerId));
+        return {
+          userId: row.attackerId,
+          userName: user?.name || 'Usuario desconocido',
+          userColor: user?.color || '#888888',
+          amount: row.total || 0,
+        };
+      })
+    );
+
+    return {
+      totalStolen: stolenResult[0]?.total || 0,
+      totalLost: lostResult[0]?.total || 0,
+      stolenByUser: stolenByUser.sort((a, b) => b.amount - a.amount),
+      lostToUser: lostToUser.sort((a, b) => b.amount - a.amount),
     };
   }
 

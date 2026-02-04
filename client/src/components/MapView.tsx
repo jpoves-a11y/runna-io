@@ -44,7 +44,9 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     // Ensure the map renders correctly after layout/gesture changes
     const invalidate = () => {
       requestAnimationFrame(() => {
-        map.invalidateSize();
+        if (mapRef.current && mapContainer.current) {
+          map.invalidateSize();
+        }
       });
     };
 
@@ -92,6 +94,13 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   useEffect(() => {
     if (!mapRef.current) return;
 
+    // Small delay to ensure DOM is properly updated
+    const timer = setTimeout(() => {
+      if (mapRef.current && mapContainer.current) {
+        mapRef.current.invalidateSize();
+      }
+    }, 0);
+
     // Clear existing territory layers
     mapRef.current.eachLayer((layer) => {
       if (layer instanceof L.Polygon) {
@@ -108,7 +117,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
 
     // Add route polylines with reduced opacity (user's territories)
     routes.forEach((route) => {
-      if (!mapRef.current || !route.territory || !route.coordinates) return;
+      if (!mapRef.current || !route.territory || !route.territory.user || !route.coordinates) return;
 
       // Convert coordinates from [lat, lng] to [lat, lng] for Leaflet
       const routeCoordinates = (route.coordinates as any).map((coord: any) => {
@@ -133,18 +142,41 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
 
     // Add territory polygons with improved styling
     territories.forEach((territory) => {
-      if (!mapRef.current || !territory.geometry?.coordinates) return;
+      if (!mapRef.current || !territory.user) return;
 
-      const coordinates = territory.geometry.coordinates[0].map((coord: number[]) => 
-        [coord[1], coord[0]] as [number, number]
-      );
+      // Parse geometry from JSON string if needed (SQLite stores as text)
+      const parsedGeometry = typeof territory.geometry === 'string' 
+        ? JSON.parse(territory.geometry) 
+        : territory.geometry;
 
-      const polygon = L.polygon(coordinates, {
+      if (!parsedGeometry?.coordinates) return;
+
+      // Handle both Polygon and MultiPolygon geometries
+      let leafletCoords: Array<Array<[number, number]>> | Array<Array<Array<[number, number]>>>;
+      
+      if (parsedGeometry.type === 'MultiPolygon') {
+        // MultiPolygon: coordinates is array of polygons, each polygon is array of rings
+        // Each ring is array of [lng, lat] coordinates
+        leafletCoords = parsedGeometry.coordinates.map((polygon: number[][][]) =>
+          polygon.map((ring: number[][]) =>
+            ring.map((coord: number[]) => [coord[1], coord[0]] as [number, number])
+          )
+        );
+      } else {
+        // Polygon: coordinates is array of rings, each ring is array of [lng, lat]
+        leafletCoords = parsedGeometry.coordinates.map((ring: number[][]) =>
+          ring.map((coord: number[]) => [coord[1], coord[0]] as [number, number])
+        );
+      }
+
+      const polygon = L.polygon(leafletCoords as any, {
         color: territory.user.color,
         fillColor: territory.user.color,
-        fillOpacity: 0.4,
+        fillOpacity: 0.35,
         weight: 3,
-        opacity: 0.8,
+        opacity: 0.9,
+        lineCap: 'round',
+        lineJoin: 'round',
         className: 'territory-polygon',
       });
 
@@ -229,14 +261,15 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       // Add hover effect
       polygon.on('mouseover', () => {
         polygon.setStyle({
-          fillOpacity: 0.6,
+          fillOpacity: 0.5,
           weight: 4,
         });
+        polygon.bringToFront();
       });
 
       polygon.on('mouseout', () => {
         polygon.setStyle({
-          fillOpacity: 0.4,
+          fillOpacity: 0.35,
           weight: 3,
         });
       });
@@ -263,6 +296,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     }
 
     return () => {
+      clearTimeout(timer);
       if (popupContainer) {
         popupContainer.removeEventListener('click', handlePopupButtonClick);
       }

@@ -59,8 +59,8 @@ export function clearWatch(watchId: number): void {
   navigator.geolocation.clearWatch(watchId);
 }
 
-// Default center for map (Madrid, Spain - can be changed)
+// Default center for map (Zaragoza, Spain)
 export const DEFAULT_CENTER: Coordinates = {
-  lat: 40.4168,
-  lng: -3.7038,
+  lat: 41.6488,
+  lng: -0.8891,
 };

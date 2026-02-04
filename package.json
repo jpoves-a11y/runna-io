@@ -18,6 +18,7 @@
     "@hono/node-server": "^1.19.7",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
+    "@libsql/client": "^0.17.0",
     "@mapbox/polyline": "^1.2.1",
     "@neondatabase/serverless": "^0.10.4",
     "@radix-ui/react-accordion": "^1.2.4",

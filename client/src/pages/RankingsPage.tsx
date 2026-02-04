@@ -106,8 +106,8 @@ export default function RankingsPage() {
           </div>
         </div>
       )}
-      <div className="p-4 border-b border-border bg-card/50 backdrop-blur-sm">
-        <div className="flex items-center gap-3">
+      <div className="p-3 sm:p-4 border-b border-border bg-card/50 backdrop-blur-sm">
+        <div className="flex items-center gap-2 sm:gap-3">
           <Switch
             id="friends-toggle"
             checked={friendsOnly}
@@ -117,10 +117,10 @@ export default function RankingsPage() {
           />
           <Label
             htmlFor="friends-toggle"
-            className="flex items-center gap-2 cursor-pointer text-sm font-medium"
+            className="flex items-center gap-2 cursor-pointer text-xs sm:text-sm font-medium"
           >
             <Users className="h-4 w-4" />
-            {friendsOnly ? 'Solo amigos' : 'Todos los usuarios'}
+            {friendsOnly ? 'Solo amigos' : 'Todos'}
           </Label>
         </div>
       </div>

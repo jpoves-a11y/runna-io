@@ -15,8 +15,11 @@ export function LoadingState({ message = 'Cargando...' }: LoadingStateProps) {
 
 export function MapSkeleton() {
   return (
-    <div className="w-full h-full bg-muted animate-pulse flex items-center justify-center">
-      <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
+    <div className="w-full h-full bg-gradient-to-br from-muted to-muted/50 flex items-center justify-center">
+      <div className="flex flex-col items-center gap-3">
+        <Loader2 className="h-12 w-12 animate-spin text-primary" />
+        <p className="text-sm text-muted-foreground">Cargando mapa...</p>
+      </div>
     </div>
   );
 }

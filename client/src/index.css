@@ -525,3 +525,30 @@
     }
   }
 }
+
+/* Territory polygon styling - stronger borders */
+.leaflet-container .territory-polygon {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Make sure territory borders are crisp */
+.leaflet-container svg path {
+  shape-rendering: geometricPrecision;
+}
+
+/* Better popup styling */
+.leaflet-popup-content-wrapper {
+  border-radius: 12px !important;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  width: auto !important;
+}
+
+.leaflet-popup-tip {
+  background: white !important;
+}

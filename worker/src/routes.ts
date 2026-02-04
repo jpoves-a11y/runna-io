@@ -6,6 +6,11 @@ import * as turf from '@turf/turf';
 import { EmailService } from './email';
 import type { Env } from './index';
 
+// Helper function to get database instance
+function getDb(env: Env) {
+  return createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN);
+}
+
 async function hashPassword(password: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(password + 'runna_salt_2024');
@@ -21,18 +26,78 @@ async function verifyPassword(password: string, hash: string): Promise<boolean> 
 }
 
 // Helper function to process territory conquest for a new route
+// Helper function to check if two time ranges overlap (activities happened together)
+function activitiesOverlapInTime(
+  activity1Start: Date | string,
+  activity1End: Date | string,
+  activity2Start: Date | string,
+  activity2End: Date | string,
+  toleranceMs: number = 30 * 60 * 1000 // 30 minutes tolerance
+): boolean {
+  const a1Start = new Date(activity1Start).getTime();
+  const a1End = new Date(activity1End).getTime();
+  const a2Start = new Date(activity2Start).getTime();
+  const a2End = new Date(activity2End).getTime();
+  
+  // Check if activities are within tolerance window of each other
+  // Either started within 30 min of each other, or ended within 30 min of each other
+  const startDiff = Math.abs(a1Start - a2Start);
+  const endDiff = Math.abs(a1End - a2End);
+  
+  return startDiff <= toleranceMs || endDiff <= toleranceMs;
+}
+
+// Helper function to check if two geometries overlap by at least a percentage
+function geometriesOverlapByPercentage(
+  geometry1: any,
+  geometry2: any,
+  minOverlapPercent: number = 0.90 // 90% overlap required
+): boolean {
+  try {
+    // Convert to features if needed
+    const feature1 = geometry1.type === 'Feature' ? geometry1 : turf.feature(geometry1);
+    const feature2 = geometry2.type === 'Feature' ? geometry2 : turf.feature(geometry2);
+    
+    // Calculate intersection
+    const intersection = turf.intersect(turf.featureCollection([feature1, feature2]));
+    
+    if (!intersection) {
+      return false; // No overlap
+    }
+    
+    // Calculate areas
+    const area1 = turf.area(feature1);
+    const area2 = turf.area(feature2);
+    const intersectionArea = turf.area(intersection);
+    
+    // Calculate overlap percentage relative to the smaller area
+    const smallerArea = Math.min(area1, area2);
+    const overlapPercent = smallerArea > 0 ? intersectionArea / smallerArea : 0;
+    
+    console.log(`[TERRITORY] Area overlap check: ${(overlapPercent * 100).toFixed(1)}% (threshold: ${minOverlapPercent * 100}%)`);
+    
+    return overlapPercent >= minOverlapPercent;
+  } catch (err) {
+    console.error('[TERRITORY] Error calculating geometry overlap:', err);
+    return false;
+  }
+}
+
 async function processTerritoryConquest(
   storage: WorkerStorage,
   userId: string,
   routeId: string,
   bufferedGeometry: any,
-  env?: any
+  env?: any,
+  activityStartedAt?: string,
+  activityCompletedAt?: string
 ): Promise<{
   territory: any;
   totalArea: number;
   newAreaConquered: number;
   areaStolen: number;
   victimsNotified: string[];
+  ranTogetherWith: string[]; // Users who ran together (no territory stolen)
 }> {
   const allTerritories = await storage.getAllTerritories();
   const userTerritories = allTerritories.filter(t => t.userId === userId);
@@ -45,12 +110,54 @@ async function processTerritoryConquest(
 
   let totalStolenArea = 0;
   const victimsNotified: string[] = [];
+  const ranTogetherWith: string[] = []; // Track users who ran together
 
   // Step 1: Handle enemy territory conquest
   console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
   
   for (const enemyTerritory of enemyTerritories) {
     try {
+      // Check if activities were done together (time + area overlap)
+      if (activityStartedAt && activityCompletedAt && enemyTerritory.routeId) {
+        try {
+          const enemyRoute = await storage.getRoute(enemyTerritory.routeId);
+          if (enemyRoute && enemyRoute.startedAt && enemyRoute.completedAt) {
+            // Check time overlap (within 30 minutes)
+            const timeOverlap = activitiesOverlapInTime(
+              activityStartedAt,
+              activityCompletedAt,
+              enemyRoute.startedAt,
+              enemyRoute.completedAt
+            );
+            
+            if (timeOverlap) {
+              // Parse enemy territory geometry
+              const enemyGeometry = typeof enemyTerritory.geometry === 'string'
+                ? JSON.parse(enemyTerritory.geometry)
+                : enemyTerritory.geometry;
+              
+              // Check area overlap (90% or more)
+              const areaOverlap = geometriesOverlapByPercentage(
+                bufferedGeometry,
+                enemyGeometry,
+                0.90
+              );
+              
+              if (areaOverlap) {
+                console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together! (time: within 30min, area: 90%+ overlap)`);
+                if (!ranTogetherWith.includes(enemyTerritory.userId)) {
+                  ranTogetherWith.push(enemyTerritory.userId);
+                }
+                continue; // Skip this territory - they ran together
+              }
+            }
+          }
+        } catch (routeErr) {
+          console.error('[TERRITORY] Error checking enemy route:', routeErr);
+          // Continue with normal conquest if we can't check
+        }
+      }
+      
       const result = await storage.subtractFromTerritory(
         enemyTerritory.id,
         bufferedGeometry
@@ -79,7 +186,10 @@ async function processTerritoryConquest(
         try {
           const attacker = await storage.getUser(userId);
           const defender = await storage.getUser(enemyTerritory.userId);
-          const emailService = new EmailService(env.RESEND_API_KEY);
+          const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+          const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
+          const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
+          const emailService = new EmailService(apiKey!, fromEmail, provider as any);
           
           if (attacker && defender && defender.email) {
             await emailService.sendTerritoryConqueredEmail(
@@ -155,6 +265,7 @@ async function processTerritoryConquest(
     - New area: ${(result.newArea/1000000).toFixed(4)} km²
     - Area stolen: ${(totalStolenArea/1000000).toFixed(4)} km²
     - Existing area in route: ${(result.existingArea/1000000).toFixed(4)} km²
+    - Ran together with: ${ranTogetherWith.length > 0 ? ranTogetherWith.join(', ') : 'none'}
   `);
 
   return {
@@ -163,7 +274,39 @@ async function processTerritoryConquest(
     newAreaConquered: result.newArea,
     areaStolen: totalStolenArea,
     victimsNotified,
+    ranTogetherWith,
   };
+}
+
+function coerceDate(value: string | number | Date): Date | null {
+  const date = value instanceof Date
+    ? value
+    : typeof value === 'number'
+      ? new Date(value)
+      : new Date(Number(value) || value);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// Simplify coordinates to reduce CPU usage in turf.js operations
+// Uses Douglas-Peucker-like algorithm with distance threshold
+function simplifyCoordinates(coords: Array<[number, number]>, maxPoints: number = 200): Array<[number, number]> {
+  if (coords.length <= maxPoints) return coords;
+  
+  // Sample evenly distributed points
+  const step = Math.ceil(coords.length / maxPoints);
+  const simplified: Array<[number, number]> = [];
+  
+  for (let i = 0; i < coords.length; i += step) {
+    simplified.push(coords[i]);
+  }
+  
+  // Always include the last point
+  if (simplified[simplified.length - 1] !== coords[coords.length - 1]) {
+    simplified.push(coords[coords.length - 1]);
+  }
+  
+  return simplified;
 }
 
 // Helper to refresh Strava access token if expired
@@ -227,7 +370,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   
   app.post('/api/seed', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       
       const existingUsers = await storage.getAllUsersWithStats();
@@ -252,7 +395,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/current-user/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const user = await storage.getUser(userId);
@@ -270,7 +413,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/auth/login', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { username, email, password } = body;
@@ -302,7 +445,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/users', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { password, email, ...userData } = body;
@@ -325,6 +468,17 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       
       // Create email preferences for new user
       await storage.createEmailPreferences(user.id);
+
+      // Send welcome email (non-blocking failure)
+      try {
+        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any);
+        await emailService.sendWelcomeEmail(user.email, user.name);
+      } catch (err) {
+        console.error('[EMAIL] Failed to send welcome email:', err);
+      }
       
       const { password: _, ...userWithoutPassword } = user;
       return c.json(userWithoutPassword);
@@ -335,7 +489,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/user/:id', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const id = c.req.param('id');
       const user = await storage.getUser(id);
@@ -355,7 +509,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.patch('/api/users/:id', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const id = c.req.param('id');
       const body = await c.req.json();
@@ -376,7 +530,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Upload avatar image
   app.post('/api/user/avatar', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const formData = await c.req.formData();
       const userId = formData.get('userId') as string;
@@ -444,7 +598,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Delete avatar
   app.delete('/api/user/avatar', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { userId } = body;
@@ -462,7 +616,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/leaderboard', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const users = await storage.getAllUsersWithStats();
       return c.json(users);
@@ -473,7 +627,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/routes', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const routeData = insertRouteSchema.parse(body);
@@ -483,8 +637,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       if (routeData.coordinates.length >= 3) {
         try {
           const coords = routeData.coordinates as [number, number][];
+          const simplifiedCoords = simplifyCoordinates(coords, 150);
           const lineString = turf.lineString(
-            coords.map((coord: [number, number]) => [coord[1], coord[0]])
+            simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
           );
           
           const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
@@ -495,8 +650,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               routeData.userId,
               route.id,
               buffered.geometry,
-              c.env
+              c.env,
+              routeData.startedAt,
+              routeData.completedAt
             );
+
+            // Save ran together info to the route
+            if (conquestResult.ranTogetherWith.length > 0) {
+              await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
+            }
 
             return c.json({ 
               route, 
@@ -505,6 +667,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 totalArea: conquestResult.totalArea,
                 newAreaConquered: conquestResult.newAreaConquered,
                 areaStolen: conquestResult.areaStolen,
+                ranTogetherWith: conquestResult.ranTogetherWith,
               }
             });
           } else {
@@ -524,7 +687,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/routes/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const routes = await storage.getRoutesByUserId(userId);
@@ -536,10 +699,23 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/territories', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const territories = await storage.getAllTerritories();
       return c.json(territories);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get user conquest stats (km stolen/lost)
+  app.get('/api/conquest-stats/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const stats = await storage.getUserConquestStats(userId);
+      return c.json(stats);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -549,7 +725,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/friends', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { userId, friendId } = body;
@@ -582,7 +758,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       try {
         const sender = await storage.getUser(userId);
         const recipient = await storage.getUser(friendId);
-        const emailService = new EmailService(c.env.RESEND_API_KEY);
+        const provider2 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+        const apiKey2 = provider2 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+        const fromEmail2 = provider2 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any);
         
         if (sender && recipient && recipient.email) {
           const prefs = await storage.getEmailPreferences(friendId);
@@ -615,7 +794,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/friends/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const friends = await storage.getFriendsByUserId(userId);
@@ -627,7 +806,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.delete('/api/friends/:friendId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const friendId = c.req.param('friendId');
       const body = await c.req.json();
@@ -647,7 +826,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Friend requests endpoints
   app.get('/api/friends/requests/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const requests = await storage.getFriendRequestsByRecipient(userId);
@@ -678,7 +857,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Get friend requests sent by a user
   app.get('/api/friends/requests/sent/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       
@@ -709,7 +888,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/friends/requests/:requestId/accept', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const requestId = c.req.param('requestId');
       const body = await c.req.json();
@@ -742,7 +921,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       try {
         const sender = await storage.getUser(request.senderId);
         const recipient = await storage.getUser(userId);
-        const emailService = new EmailService(c.env.RESEND_API_KEY);
+        const provider3 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+        const apiKey3 = provider3 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+        const fromEmail3 = provider3 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any);
         
         if (sender && sender.email && recipient) {
           const prefs = await storage.getEmailPreferences(request.senderId);
@@ -775,7 +957,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/friends/requests/:requestId/reject', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const requestId = c.req.param('requestId');
       const body = await c.req.json();
@@ -801,7 +983,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/users/search', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const query = c.req.query('query');
       const userId = c.req.query('userId');
@@ -820,7 +1002,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Get aggregated stats for a user
   app.get('/api/users/:id/stats', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('id');
 
@@ -874,7 +1056,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/leaderboard/friends/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const friends = await storage.getLeaderboardFriends(userId);
@@ -886,7 +1068,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/territories/friends/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const territories = await storage.getTerritoriesWithUsersByFriends(userId);
@@ -898,7 +1080,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/friends/invite', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { userId } = body;
@@ -918,7 +1100,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/friends/accept/:token', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const token = c.req.param('token');
       const body = await c.req.json();
@@ -960,7 +1142,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/push/subscribe', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { userId, endpoint, keys } = body;
@@ -985,7 +1167,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/push/unsubscribe', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
       const { userId } = body;
@@ -1005,20 +1187,84 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.get('/api/strava/status/:userId', async (c) => {
     try {
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const stravaAccount = await storage.getStravaAccountByUserId(userId);
       
       if (stravaAccount) {
+        const failedActivities = await storage.getFailedStravaActivities(userId);
         return c.json({
           connected: true,
           athleteData: stravaAccount.athleteData,
           lastSyncAt: stravaAccount.lastSyncAt,
+          failedActivities: failedActivities.length,
         });
       } else {
         return c.json({ connected: false });
       }
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get failed activities for a user
+  app.get('/api/strava/failed/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const failedActivities = await storage.getFailedStravaActivities(userId);
+      return c.json(failedActivities);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Retry processing a failed activity
+  app.post('/api/strava/retry/:activityId', async (c) => {
+    try {
+      const activityId = c.req.param('activityId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      
+      // Reset the activity for retry
+      const activity = await storage.resetStravaActivityForRetry(activityId);
+      
+      console.log(`[STRAVA] Activity ${activityId} reset for retry`);
+      return c.json({ message: 'Activity reset for retry', activity });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Retry processing all failed activities for a user
+  app.post('/api/strava/retry-all/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      
+      // Get all failed activities
+      const failedActivities = await storage.getFailedStravaActivities(userId);
+      console.log(`[STRAVA] Retrying ${failedActivities.length} failed activities for user ${userId}`);
+      
+      // Reset all for retry
+      let retryCount = 0;
+      for (const activity of failedActivities) {
+        try {
+          await storage.resetStravaActivityForRetry(activity.id);
+          retryCount++;
+        } catch (err) {
+          console.error(`[STRAVA] Failed to reset activity ${activity.id}:`, err);
+        }
+      }
+      
+      return c.json({ 
+        message: `${retryCount}/${failedActivities.length} activities reset for retry`,
+        retryCount,
+        totalFailed: failedActivities.length,
+      });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -1093,7 +1339,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const tokenData: any = await tokenResponse.json();
       const { access_token, refresh_token, expires_at, athlete } = tokenData;
 
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
 
       const existingAccount = await storage.getStravaAccountByAthleteId(athlete.id);
@@ -1134,7 +1380,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "userId required" }, 400);
       }
 
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
 
       const stravaAccount = await storage.getStravaAccountByUserId(userId);
@@ -1177,7 +1423,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const { object_type, aspect_type, object_id, owner_id } = body;
       
       if (object_type === 'activity' && aspect_type === 'create') {
-        const db = createDb(c.env.DATABASE_URL);
+        const db = getDb(c.env);
         const storage = new WorkerStorage(db);
         const stravaAccount = await storage.getStravaAccountByAthleteId(owner_id);
         
@@ -1235,7 +1481,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.post('/api/strava/process/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const unprocessed = await storage.getUnprocessedStravaActivities(userId);
       const results: any[] = [];
@@ -1247,6 +1493,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         }
 
         try {
+          const startDate = coerceDate(activity.startDate);
+          if (!startDate) {
+            console.log(`[PROCESS] Skipping activity ${activity.id} - invalid start date`);
+            await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+            continue;
+          }
+
           const decoded = decodePolyline(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
@@ -1257,12 +1510,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               coordinates,
               distance: activity.distance,
               duration: activity.duration,
-              startedAt: activity.startDate,
-              completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+              startedAt: startDate,
+              completedAt: new Date(startDate.getTime() + activity.duration * 1000),
             });
 
+            const startedAtStr = startDate.toISOString();
+            const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+
+            const simplifiedCoords = simplifyCoordinates(coordinates, 150);
             const lineString = turf.lineString(
-              coordinates.map(coord => [coord[1], coord[0]])
+              simplifiedCoords.map(coord => [coord[1], coord[0]])
             );
             const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
 
@@ -1272,8 +1529,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 userId,
                 route.id,
                 buffered.geometry,
-                c.env
+                c.env,
+                startedAtStr,
+                completedAtStr
               );
+
+              // Save ran together info to the route
+              if (conquestResult.ranTogetherWith.length > 0) {
+                await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
+              }
 
               await storage.updateStravaActivity(activity.id, {
                 processed: true,
@@ -1290,6 +1554,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   totalArea: conquestResult.totalArea,
                   newAreaConquered: conquestResult.newAreaConquered,
                   areaStolen: conquestResult.areaStolen,
+                  ranTogetherWith: conquestResult.ranTogetherWith,
                 }
               });
             }
@@ -1310,7 +1575,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.get('/api/strava/activities/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const activities = await storage.getStravaActivitiesByUserId(userId);
       return c.json(activities);
@@ -1323,7 +1588,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.post('/api/strava/sync/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const stravaAccount = await storage.getStravaAccountByUserId(userId);
       
@@ -1427,23 +1692,129 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.get('/api/polar/status/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const polarAccount = await storage.getPolarAccountByUserId(userId);
       
       if (polarAccount) {
         const stats = await storage.getPolarActivityStats(userId);
+        const failedActivities = await storage.getFailedPolarActivities(userId);
         return c.json({
           connected: true,
           polarUserId: polarAccount.polarUserId,
           lastSyncAt: polarAccount.lastSyncAt,
           totalActivities: stats.total,
           pendingActivities: stats.unprocessed,
+          failedActivities: failedActivities.length,
           lastActivityStart: stats.lastStartDate,
         });
       } else {
         return c.json({ connected: false });
       }
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get failed activities for a user
+  app.get('/api/polar/failed/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const failedActivities = await storage.getFailedPolarActivities(userId);
+      return c.json(failedActivities);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Retry processing all failed activities for a user
+  app.post('/api/polar/retry-all/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      
+      // Get all failed activities
+      const failedActivities = await storage.getFailedPolarActivities(userId);
+      console.log(`[POLAR] Retrying ${failedActivities.length} failed activities for user ${userId}`);
+      
+      // Reset all for retry
+      let retryCount = 0;
+      for (const activity of failedActivities) {
+        try {
+          await storage.resetPolarActivityForRetry(activity.id);
+          retryCount++;
+        } catch (err) {
+          console.error(`[POLAR] Failed to reset activity ${activity.id}:`, err);
+        }
+      }
+      
+      return c.json({ 
+        message: `${retryCount}/${failedActivities.length} activities reset for retry`,
+        retryCount,
+        totalFailed: failedActivities.length,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // DIAGNOSTIC: Get ALL failed activities across ALL users (route_id IS NULL)
+  app.get('/api/polar/failed-all', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const failedActivities = await storage.getAllFailedPolarActivities();
+      
+      // Group by userId for reporting
+      const byUser: Record<string, number> = {};
+      for (const act of failedActivities) {
+        byUser[act.userId] = (byUser[act.userId] || 0) + 1;
+      }
+      
+      return c.json({
+        totalFailed: failedActivities.length,
+        byUser,
+        activities: failedActivities.map(a => ({
+          id: a.id,
+          userId: a.userId,
+          name: a.name,
+          processed: a.processed,
+          routeId: a.routeId,
+          territoryId: a.territoryId,
+        })),
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GLOBAL: Retry ALL failed activities for ALL users
+  app.post('/api/polar/retry-all-global', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      
+      const failedActivities = await storage.getAllFailedPolarActivities();
+      console.log(`[POLAR] Globally retrying ${failedActivities.length} failed activities`);
+      
+      let retryCount = 0;
+      for (const activity of failedActivities) {
+        try {
+          await storage.resetPolarActivityForRetry(activity.id);
+          retryCount++;
+        } catch (err) {
+          console.error(`[POLAR] Failed to reset activity ${activity.id}:`, err);
+        }
+      }
+      
+      return c.json({ 
+        message: `${retryCount}/${failedActivities.length} activities reset for retry globally`,
+        retryCount,
+        totalFailed: failedActivities.length,
+      });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -1534,7 +1905,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_user`);
       }
 
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
 
       console.log('Checking for existing account...');
@@ -1609,7 +1980,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "userId required" }, 400);
       }
 
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
 
       const polarAccount = await storage.getPolarAccountByUserId(userId);
@@ -1637,7 +2008,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.post('/api/polar/transactions/reset/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const polarAccount = await storage.getPolarAccountByUserId(userId);
 
@@ -1669,7 +2040,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   app.post('/api/polar/sync/:userId', async (c) => {
     const userId = c.req.param('userId');
-    const db = createDb(c.env.DATABASE_URL);
+    const db = getDb(c.env);
     const storage = new WorkerStorage(db);
     const polarAccount = await storage.getPolarAccountByUserId(userId);
     let transactionId: string | null = null;
@@ -1938,7 +2309,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.get('/api/polar/activities/:userId', async (c) => {
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const activities = await storage.getPolarActivitiesByUserId(userId);
       return c.json(activities);
@@ -1950,7 +2321,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Full sync - get all exercises from Polar history (last 365 days)
   app.post('/api/polar/sync-full/:userId', async (c) => {
     const userId = c.req.param('userId');
-    const db = createDb(c.env.DATABASE_URL);
+    const db = getDb(c.env);
     const storage = new WorkerStorage(db);
     const polarAccount = await storage.getPolarAccountByUserId(userId);
     let transactionId: string | null = null;
@@ -2203,7 +2574,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     
     try {
       const userId = c.req.param('userId');
-      const db = createDb(c.env.DATABASE_URL);
+      const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const unprocessed = await storage.getUnprocessedPolarActivities(userId);
       
@@ -2214,7 +2585,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       const results: any[] = [];
-      const BATCH_SIZE = 5; // Process max 5 at a time to avoid timeout
+      const BATCH_SIZE = 1; // Process 1 at a time to avoid Worker CPU limits
       const toBatch = unprocessed.slice(0, BATCH_SIZE);
       
       console.log(`[PROCESS] Processing batch of ${toBatch.length} activities (${unprocessed.length - toBatch.length} remaining)`);
@@ -2234,6 +2605,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
         try {
           console.log(`[PROCESS] Processing activity ${activity.id}: ${activity.name}`);
+          const startDate = coerceDate(activity.startDate);
+          if (!startDate) {
+            console.log(`[PROCESS] Skipping activity ${activity.id} - invalid start date`);
+            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            continue;
+          }
+
           const decoded = decodePolyline(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
@@ -2250,14 +2628,21 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             coordinates,
             distance: activity.distance,
             duration: activity.duration,
-            startedAt: activity.startDate,
-            completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+            startedAt: startDate,
+            completedAt: new Date(startDate.getTime() + activity.duration * 1000),
           });
           console.log(`[PROCESS] Route created: ${route.id}`);
 
-          console.log(`[PROCESS] Calculating territory buffer...`);
+          const startedAtStr = startDate.toISOString();
+          const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+
+          console.log(`[PROCESS] Calculating territory buffer (${coordinates.length} coords)...`);
+          // Simplify coordinates to avoid Worker CPU limits
+          const simplifiedCoords = simplifyCoordinates(coordinates, 150);
+          console.log(`[PROCESS] Simplified to ${simplifiedCoords.length} coords`);
+          
           const lineString = turf.lineString(
-            coordinates.map(coord => [coord[1], coord[0]])
+            simplifiedCoords.map(coord => [coord[1], coord[0]])
           );
           const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
           console.log(`[PROCESS] Buffer calculated`);
@@ -2270,8 +2655,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               userId,
               route.id,
               buffered.geometry,
-              c.env
+              c.env,
+              startedAtStr,
+              completedAtStr
             );
+
+            // Save ran together info to the route
+            if (conquestResult.ranTogetherWith.length > 0) {
+              await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
+            }
 
             console.log(`[PROCESS] Territory updated: ${conquestResult.territory.id}, area: ${conquestResult.territory.area}`);
 
@@ -2284,6 +2676,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 totalArea: conquestResult.totalArea,
                 newAreaConquered: conquestResult.newAreaConquered,
                 areaStolen: conquestResult.areaStolen,
+                ranTogetherWith: conquestResult.ranTogetherWith,
               }
             });
           }
@@ -2329,7 +2722,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     const userId = c.req.param('userId');
     console.log('🔍 [DEBUG] Starting Polar data check for user:', userId);
 
-    const db = createDb(c.env.DATABASE_URL);
+    const db = getDb(c.env);
     const storage = new WorkerStorage(db);
 
     // 1. Get account
