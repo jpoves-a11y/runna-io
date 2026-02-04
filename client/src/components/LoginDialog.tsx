@@ -296,23 +296,29 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
                   className="text-sm text-muted-foreground leading-relaxed cursor-pointer"
                 >
                   He leído y acepto los{' '}
-                  <a 
-                    href="/terms" 
-                    target="_blank" 
+                  <button 
+                    type="button"
                     className="text-primary underline hover:no-underline"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      window.open('/terms', '_blank', 'noopener,noreferrer');
+                    }}
                   >
                     Términos y Condiciones
-                  </a>{' '}
+                  </button>{' '}
                   y la{' '}
-                  <a 
-                    href="/privacy" 
-                    target="_blank" 
+                  <button 
+                    type="button"
                     className="text-primary underline hover:no-underline"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      window.open('/privacy', '_blank', 'noopener,noreferrer');
+                    }}
                   >
                     Política de Privacidad
-                  </a>
+                  </button>
                 </label>
                 <p className="text-xs text-muted-foreground">
                   Debes tener al menos 14 años para usar Runna.io
