@@ -22,8 +22,8 @@ export function BottomNav() {
   };
 
   // En PWA standalone, usar un padding mínimo (4px) en vez del safe-area completo
-  const bottomPadding = isStandalone ? '4px' : 'env(safe-area-inset-bottom, 0px)';
-  const navHeight = isStandalone ? 'calc(3.5rem + 4px)' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))';
+  const bottomPadding = isStandalone ? '0px' : 'env(safe-area-inset-bottom, 0px)';
+  const navHeight = isStandalone ? '3.5rem' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))';
 
   return (
     <nav 

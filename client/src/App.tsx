@@ -61,7 +61,7 @@ function StartActivityButton() {
   if (!showButton) return null;
   
   // En PWA standalone, usar offset menor
-  const bottomOffset = isStandalone ? 'calc(4.5rem + 12px)' : 'calc(5rem + env(safe-area-inset-bottom, 0px) + 12px)';
+  const bottomOffset = isStandalone ? 'calc(4rem + 12px)' : 'calc(5rem + env(safe-area-inset-bottom, 0px) + 12px)';
   
   return (
     <button
@@ -98,7 +98,7 @@ function App() {
   const tabs = ['/', '/rankings', '/activity', '/friends', '/profile'];
 
   // En PWA standalone, usar padding menor
-  const mainPaddingBottom = isStandalone ? 'calc(3.5rem + 4px)' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))';
+  const mainPaddingBottom = isStandalone ? '3.5rem' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))';
 
   const handleTouchStart = (e: React.TouchEvent) => {
     // Don't handle touch events on map page - let map handle them directly
