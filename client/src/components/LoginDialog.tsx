@@ -146,11 +146,6 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       });
       return;
     }
-        description: 'La contraseña debe tener al menos 4 caracteres',
-        variant: 'destructive',
-      });
-      return;
-    }
     registerMutation.mutate({ 
       username: registerUsername,
       email: registerEmail,
