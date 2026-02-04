@@ -165,16 +165,16 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-2xl">
+      <DialogContent className="sm:max-w-md rounded-2xl mx-4">
+        <DialogHeader className="text-center">
+          <DialogTitle className="flex items-center justify-center gap-2 text-2xl">
             <div className="relative">
               <Sparkles className="h-6 w-6 text-primary" />
             </div>
             Runna.io
           </DialogTitle>
-          <DialogDescription>
-            Inicia sesion o crea una cuenta para empezar a conquistar
+          <DialogDescription className="text-center">
+            Inicia sesión o crea una cuenta para empezar a conquistar
           </DialogDescription>
         </DialogHeader>
         
@@ -292,22 +292,23 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
               </div>
             </div>
 
-            <div className="flex items-start space-x-2 pt-2">
+            <div className="flex items-start space-x-3 pt-3 pb-1 px-3 bg-muted/30 rounded-xl">
               <Checkbox 
                 id="accept-terms" 
                 checked={acceptedTerms}
                 onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
+                className="mt-0.5"
                 data-testid="checkbox-accept-terms"
               />
-              <div className="grid gap-1.5 leading-none">
+              <div className="flex-1">
                 <label
                   htmlFor="accept-terms"
-                  className="text-sm text-muted-foreground leading-relaxed cursor-pointer"
+                  className="text-sm text-foreground leading-relaxed cursor-pointer"
                 >
                   He leído y acepto los{' '}
                   <button 
                     type="button"
-                    className="text-primary underline hover:no-underline"
+                    className="text-primary font-medium hover:underline"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -319,7 +320,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
                   y la{' '}
                   <button 
                     type="button"
-                    className="text-primary underline hover:no-underline"
+                    className="text-primary font-medium hover:underline"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -329,7 +330,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
                     Política de Privacidad
                   </button>
                 </label>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground mt-1">
                   Debes tener al menos 14 años para usar Runna.io
                 </p>
               </div>
