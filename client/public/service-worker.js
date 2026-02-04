@@ -1,5 +1,5 @@
 // Runna.io Service Worker
-const CACHE_NAME = 'runna-io-v3';
+const CACHE_NAME = 'runna-io-v4';
 const urlsToCache = [
   '/',
   '/manifest.json',
