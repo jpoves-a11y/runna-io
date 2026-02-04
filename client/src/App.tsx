@@ -6,7 +6,6 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { BottomNav } from "@/components/BottomNav";
 import { Play } from "lucide-react";
-import { useStandalone } from "@/hooks/use-standalone";
 import MapPage from "@/pages/MapPage";
 import RankingsPage from "@/pages/RankingsPage";
 import ActivityPage from "@/pages/ActivityPage";
@@ -37,7 +36,6 @@ function Router() {
 
 function StartActivityButton() {
   const [location] = useLocation();
-  const isStandalone = useStandalone();
   const [showButton, setShowButton] = useState(() => {
     return (location === '/' || location.startsWith('/?')) && !window.location.search.includes('tracking=true');
   });
@@ -60,14 +58,11 @@ function StartActivityButton() {
   
   if (!showButton) return null;
   
-  // En PWA standalone, usar offset menor
-  const bottomOffset = isStandalone ? 'calc(4rem + 12px)' : 'calc(5rem + env(safe-area-inset-bottom, 0px) + 12px)';
-  
   return (
     <button
-      className="fixed z-[9999] flex items-center justify-center shadow-2xl transition-all duration-300 active:scale-95"
+      className="play-button-pwa fixed z-[9999] flex items-center justify-center shadow-2xl transition-all duration-300 active:scale-95"
       style={{
-        bottom: bottomOffset,
+        bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px) + 12px)',
         left: '50%',
         transform: 'translateX(-50%)',
         width: '60px',
@@ -86,7 +81,6 @@ function StartActivityButton() {
 
 function App() {
   const [location, setLocation] = useLocation();
-  const isStandalone = useStandalone();
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const isSwiping = useRef(false);
@@ -96,9 +90,6 @@ function App() {
 
   // Match the order used in BottomNav
   const tabs = ['/', '/rankings', '/activity', '/friends', '/profile'];
-
-  // En PWA standalone, usar padding menor
-  const mainPaddingBottom = isStandalone ? '3.5rem' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))';
 
   const handleTouchStart = (e: React.TouchEvent) => {
     // Don't handle touch events on map page - let map handle them directly
@@ -196,8 +187,8 @@ function App() {
         <div className="fixed inset-0 flex flex-col bg-background">
           <main
             ref={(el) => (mainRef.current = el)}
-            className={`flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-            style={{ paddingBottom: mainPaddingBottom }}
+            className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
+            style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}

@@ -1,6 +1,5 @@
 import { Map, Trophy, Activity, User, Users } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
-import { useStandalone } from '@/hooks/use-standalone';
 
 const navItems = [
   { path: '/', label: 'Mapa', icon: Map },
@@ -12,7 +11,6 @@ const navItems = [
 
 export function BottomNav() {
   const [location] = useLocation();
-  const isStandalone = useStandalone();
 
   const isPathActive = (path: string) => {
     if (path === '/') {
@@ -21,19 +19,15 @@ export function BottomNav() {
     return location === path;
   };
 
-  // En PWA standalone, usar un padding mínimo (4px) en vez del safe-area completo
-  const bottomPadding = isStandalone ? '0px' : 'env(safe-area-inset-bottom, 0px)';
-  const navHeight = isStandalone ? '3.5rem' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))';
-
   return (
     <nav 
-      className="fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur-xl border-t border-border/50 z-50 shadow-lg shadow-black/5 dark:shadow-black/20"
+      className="bottom-nav-pwa fixed bottom-0 left-0 right-0 bg-background/95 backdrop-blur-xl border-t border-border/50 z-50 shadow-lg shadow-black/5 dark:shadow-black/20"
       style={{ 
-        height: navHeight,
-        paddingBottom: bottomPadding
+        height: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))',
+        paddingBottom: 'env(safe-area-inset-bottom, 0px)'
       }}
     >
-      <div className="flex items-stretch justify-around h-[3.5rem]">
+      <div className="nav-inner flex items-stretch justify-around h-[3.5rem]">
         {navItems.map((item) => {
           const isActive = isPathActive(item.path);
           const Icon = item.icon;

@@ -552,3 +552,29 @@
 .leaflet-popup-tip {
   background: white !important;
 }
+
+/* PWA Standalone: reducir altura de la barra de navegación inferior */
+@media (display-mode: standalone) {
+  .bottom-nav-pwa {
+    height: 3rem !important;
+    padding-bottom: 0 !important;
+  }
+  .bottom-nav-pwa .nav-inner {
+    height: 3rem !important;
+  }
+  .main-content-pwa {
+    padding-bottom: 3rem !important;
+  }
+  .play-button-pwa {
+    bottom: calc(3.5rem + 12px) !important;
+  }
+}
+
+/* iOS PWA standalone */
+@media (display-mode: standalone) and (-webkit-device-pixel-ratio: 2),
+       (display-mode: standalone) and (-webkit-device-pixel-ratio: 3) {
+  .bottom-nav-pwa {
+    height: 3rem !important;
+    padding-bottom: 0 !important;
+  }
+}
