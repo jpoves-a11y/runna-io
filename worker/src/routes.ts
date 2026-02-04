@@ -458,18 +458,87 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "La contraseña debe tener al menos 4 caracteres" }, 400);
       }
 
+      // Generar código de verificación de 6 dígitos
+      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutos
+
       const hashedPassword = await hashPassword(password);
       const validatedData = insertUserSchema.parse({
         ...userData,
         email,
         password: hashedPassword,
       });
-      const user = await storage.createUser(validatedData);
+      const user = await storage.createUser({
+        ...validatedData,
+        emailVerified: false,
+        verificationCode,
+        verificationCodeExpiresAt: expiresAt,
+      });
       
       // Create email preferences for new user
       await storage.createEmailPreferences(user.id);
 
-      // Send welcome email (non-blocking failure)
+      // Enviar código de verificación por email
+      try {
+        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any);
+        await emailService.sendVerificationCode(user.email, user.name, verificationCode);
+      } catch (err) {
+        console.error('[EMAIL] Failed to send verification code:', err);
+      }
+      
+      const { password: _, verificationCode: __, ...userWithoutSensitive } = user as any;
+      return c.json({ ...userWithoutSensitive, requiresVerification: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 400);
+    }
+  });
+
+  // Endpoint para verificar código de email
+  app.post('/api/auth/verify-email', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const { userId, code } = await c.req.json();
+
+      if (!userId || !code) {
+        return c.json({ error: "userId y code son requeridos" }, 400);
+      }
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return c.json({ error: "Usuario no encontrado" }, 404);
+      }
+
+      const userAny = user as any;
+      if (userAny.emailVerified) {
+        return c.json({ success: true, message: "Email ya verificado" });
+      }
+
+      if (!userAny.verificationCode || !userAny.verificationCodeExpiresAt) {
+        return c.json({ error: "No hay código de verificación pendiente" }, 400);
+      }
+
+      const now = new Date();
+      const expiresAt = new Date(userAny.verificationCodeExpiresAt);
+      if (now > expiresAt) {
+        return c.json({ error: "El código ha expirado. Solicita uno nuevo." }, 400);
+      }
+
+      if (userAny.verificationCode !== code) {
+        return c.json({ error: "Código incorrecto" }, 400);
+      }
+
+      // Verificar usuario
+      await storage.updateUser(userId, {
+        emailVerified: true,
+        verificationCode: null,
+        verificationCodeExpiresAt: null,
+      } as any);
+
+      // Enviar email de bienvenida ahora que está verificado
       try {
         const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
         const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
@@ -479,11 +548,58 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       } catch (err) {
         console.error('[EMAIL] Failed to send welcome email:', err);
       }
-      
-      const { password: _, ...userWithoutPassword } = user;
-      return c.json(userWithoutPassword);
+
+      return c.json({ success: true, message: "Email verificado correctamente" });
     } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Endpoint para reenviar código de verificación
+  app.post('/api/auth/resend-verification', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const { userId } = await c.req.json();
+
+      if (!userId) {
+        return c.json({ error: "userId es requerido" }, 400);
+      }
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return c.json({ error: "Usuario no encontrado" }, 404);
+      }
+
+      const userAny = user as any;
+      if (userAny.emailVerified) {
+        return c.json({ success: true, message: "Email ya verificado" });
+      }
+
+      // Generar nuevo código
+      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+      await storage.updateUser(userId, {
+        verificationCode,
+        verificationCodeExpiresAt: expiresAt,
+      } as any);
+
+      // Enviar código
+      try {
+        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any);
+        await emailService.sendVerificationCode(user.email, user.name, verificationCode);
+      } catch (err) {
+        console.error('[EMAIL] Failed to resend verification code:', err);
+        return c.json({ error: "No se pudo enviar el código" }, 500);
+      }
+
+      return c.json({ success: true, message: "Código reenviado" });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
     }
   });
 

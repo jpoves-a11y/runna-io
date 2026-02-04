@@ -21,7 +21,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useMutation } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
 import { useToast } from '@/hooks/use-toast';
-import { LogIn, UserPlus, Sparkles, Eye, EyeOff, X } from 'lucide-react';
+import { LogIn, UserPlus, Sparkles, Eye, EyeOff, X, Mail, RefreshCw } from 'lucide-react';
 import { getRandomUserColor } from '@/lib/colors';
 
 interface LoginDialogProps {
@@ -42,6 +42,10 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
+  // Estado para verificación de email
+  const [showVerification, setShowVerification] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const { toast } = useToast();
 
   const loginMutation = useMutation({
@@ -81,17 +85,24 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       return response.json();
     },
     onSuccess: (user) => {
-      onLogin(user.id);
-      toast({
-        title: 'Cuenta creada',
-        description: 'Bienvenido a Runna.io!',
-      });
-      onOpenChange(false);
-      setRegisterUsername('');
-      setRegisterName('');
-      setRegisterPassword('');
-        setRegisterEmail('');
-      setAcceptedTerms(false);
+      if (user.requiresVerification) {
+        // Mostrar pantalla de verificación
+        setPendingUserId(user.id);
+        setShowVerification(true);
+        toast({
+          title: 'Código enviado',
+          description: `Revisa tu email ${registerEmail}`,
+        });
+      } else {
+        // Usuario verificado directamente (usuarios antiguos)
+        onLogin(user.id);
+        toast({
+          title: 'Cuenta creada',
+          description: 'Bienvenido a Runna.io!',
+        });
+        onOpenChange(false);
+        resetForm();
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -101,6 +112,62 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       });
     },
   });
+
+  const verifyMutation = useMutation({
+    mutationFn: async (data: { userId: string; code: string }) => {
+      const response = await apiRequest('POST', '/api/auth/verify-email', data);
+      return response.json();
+    },
+    onSuccess: () => {
+      if (pendingUserId) {
+        onLogin(pendingUserId);
+        toast({
+          title: '¡Email verificado!',
+          description: 'Bienvenido a Runna.io!',
+        });
+        onOpenChange(false);
+        resetForm();
+      }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'Código incorrecto',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const resendMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      const response = await apiRequest('POST', '/api/auth/resend-verification', { userId });
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: 'Código reenviado',
+        description: 'Revisa tu email',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'No se pudo reenviar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const resetForm = () => {
+    setRegisterUsername('');
+    setRegisterName('');
+    setRegisterPassword('');
+    setRegisterEmail('');
+    setAcceptedTerms(false);
+    setShowVerification(false);
+    setVerificationCode('');
+    setPendingUserId(null);
+  };
 
   const handleLogin = () => {
     if (!loginUsername.trim()) {
@@ -162,6 +229,70 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       password: registerPassword,
     });
   };
+
+  // Si estamos verificando, mostrar pantalla de código
+  if (showVerification && pendingUserId) {
+    return (
+      <Dialog open={open} onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          resetForm();
+        }
+        onOpenChange(isOpen);
+      }}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-md rounded-2xl">
+          <DialogHeader className="text-center">
+            <DialogTitle className="flex items-center justify-center gap-2 text-2xl">
+              <Mail className="h-6 w-6 text-primary" />
+              Verifica tu email
+            </DialogTitle>
+            <DialogDescription className="text-center">
+              Hemos enviado un código de 6 dígitos a<br />
+              <strong>{registerEmail}</strong>
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-4">
+            <div className="space-y-2">
+              <Label htmlFor="verification-code">Código de verificación</Label>
+              <Input
+                id="verification-code"
+                placeholder="123456"
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="text-center text-2xl tracking-[0.5em] font-bold"
+                maxLength={6}
+                inputMode="numeric"
+              />
+            </div>
+
+            <Button
+              onClick={() => verifyMutation.mutate({ userId: pendingUserId, code: verificationCode })}
+              disabled={verifyMutation.isPending || verificationCode.length !== 6}
+              className="w-full"
+            >
+              {verifyMutation.isPending ? 'Verificando...' : 'Verificar'}
+            </Button>
+
+            <div className="text-center">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => resendMutation.mutate(pendingUserId)}
+                disabled={resendMutation.isPending}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${resendMutation.isPending ? 'animate-spin' : ''}`} />
+                Reenviar código
+              </Button>
+            </div>
+
+            <p className="text-xs text-muted-foreground text-center">
+              El código expira en 10 minutos
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -3,6 +3,9 @@ import type { WorkerStorage } from './storage';
 
 type EmailProvider = 'resend' | 'sendgrid';
 
+// URL base de la aplicación
+const APP_URL = 'https://runna-io.pages.dev';
+
 export class EmailService {
   private resend?: Resend;
   private provider: EmailProvider = 'resend';
@@ -81,7 +84,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 30px 0;">
-              <a href="https://runna.io/friends" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+              <a href="${APP_URL}/friends" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
                 Ver solicitud
               </a>
             </div>
@@ -120,7 +123,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 30px 0;">
-              <a href="https://runna.io" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+              <a href="${APP_URL}" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
                 Ir a Runna.io
               </a>
             </div>
@@ -167,7 +170,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 30px 0;">
-              <a href="https://runna.io" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+              <a href="${APP_URL}" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
                 Ver mapa
               </a>
             </div>
@@ -221,7 +224,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 24px 0;">
-              <a href="https://runna.io" style="display: inline-block; background: #2563eb; color: white; padding: 14px 22px; border-radius: 10px; text-decoration: none; font-weight: 700; box-shadow: 0 10px 30px rgba(37, 99, 235, 0.25);">
+              <a href="${APP_URL}" style="display: inline-block; background: #2563eb; color: white; padding: 14px 22px; border-radius: 10px; text-decoration: none; font-weight: 700; box-shadow: 0 10px 30px rgba(37, 99, 235, 0.25);">
                 Abrir Runna.io
               </a>
             </div>
@@ -264,6 +267,51 @@ export class EmailService {
       });
     } catch (error) {
       console.error('[EMAIL] Failed to record notification:', error);
+    }
+  }
+
+  async sendVerificationCode(
+    recipientEmail: string,
+    recipientName: string,
+    code: string
+  ): Promise<boolean> {
+    try {
+      await this.send(
+        recipientEmail,
+        `Tu código de verificación: ${code}`,
+        `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="text-align: center; margin-bottom: 30px;">
+              <h1 style="color: #1a1a1a; margin: 0;">✨ Verifica tu cuenta</h1>
+            </div>
+            
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; text-align: center;">
+              <p style="font-size: 16px; color: #555; margin: 0 0 15px 0;">
+                Hola <strong>${recipientName}</strong>, usa este código para verificar tu email:
+              </p>
+              <div style="background: #1a1a1a; color: white; font-size: 32px; font-weight: bold; letter-spacing: 8px; padding: 20px 30px; border-radius: 12px; display: inline-block;">
+                ${code}
+              </div>
+              <p style="font-size: 14px; color: #888; margin: 15px 0 0 0;">
+                El código expira en 10 minutos
+              </p>
+            </div>
+
+            <p style="color: #666; font-size: 14px; text-align: center;">
+              Si no solicitaste este código, ignora este email.
+            </p>
+
+            <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
+              © 2026 Runna.io. Todos los derechos reservados.
+            </p>
+          </div>
+        `
+      );
+      console.log('[EMAIL] Verification code sent to', recipientEmail);
+      return true;
+    } catch (error) {
+      console.error('[EMAIL] Failed to send verification code:', error);
+      return false;
     }
   }
 }

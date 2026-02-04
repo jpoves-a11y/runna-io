@@ -12,6 +12,9 @@ export const users = sqliteTable("users", {
   color: text("color").notNull(), // Hex color for territory visualization
   avatar: text("avatar"), // Avatar URL or placeholder
   totalArea: real("total_area").notNull().default(0), // Total m² conquered
+  emailVerified: integer("email_verified", { mode: 'boolean' }).notNull().default(false),
+  verificationCode: text("verification_code"), // 6-digit code
+  verificationCodeExpiresAt: text("verification_code_expires_at"), // ISO timestamp
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
