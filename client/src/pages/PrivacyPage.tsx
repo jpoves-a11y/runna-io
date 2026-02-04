@@ -6,7 +6,7 @@ export default function PrivacyPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background overflow-y-auto overflow-x-hidden h-screen" style={{ WebkitOverflowScrolling: 'touch' }}>
       <div className="container max-w-4xl mx-auto px-4 py-8">
         <header className="text-center mb-12 pb-6 border-b-2 border-primary">
           <h1 className="text-3xl font-bold mb-2">🏃 Runna.io</h1>
@@ -211,7 +211,7 @@ export default function PrivacyPage() {
           </div>
         </section>
 
-        <footer className="text-center pt-8 border-t text-muted-foreground text-sm">
+        <footer className="text-center pt-8 pb-16 border-t text-muted-foreground text-sm" style={{ paddingBottom: 'max(4rem, env(safe-area-inset-bottom))' }}>
           <p>© 2026 Javier Poves Ruiz - Runna.io</p>
           <p className="mt-2">
             <a href="/" className="text-primary hover:underline">← Volver a Runna.io</a>
