@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'wouter';
 import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -14,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera, Plus } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -132,6 +133,7 @@ interface PolarActivity {
 }
 
 export default function ProfilePage() {
+  const [, navigate] = useLocation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
@@ -431,6 +433,47 @@ export default function ProfilePage() {
       toast({
         title: 'Error',
         description: error.message || 'No se pudieron procesar las actividades de Polar',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Combined: Import + Process + Redirect to map with animation
+  const addNewActivityMutation = useMutation({
+    mutationFn: async () => {
+      if (!user?.id) throw new Error('No user logged in');
+      
+      // 1. Sync activities from Polar
+      const syncRes = await apiRequest('POST', `/api/polar/sync/${user.id}`);
+      const syncData = await syncRes.json();
+      
+      if (!syncData.imported || syncData.imported === 0) {
+        throw new Error('No se importaron actividades nuevas');
+      }
+
+      // 2. Process all pending activities
+      const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
+      const processData = await processRes.json();
+
+      return { syncData, processData };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
+      queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+      
+      toast({
+        title: 'Actividad añadida',
+        description: 'Redirigiendo al mapa para verla importada...',
+      });
+      
+      navigate('/?animateLatestActivity=true');
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'No se pudo añadir la actividad',
         variant: 'destructive',
       });
     },
@@ -877,30 +920,16 @@ export default function ProfilePage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => syncPolarMutation.mutate()}
-                    disabled={syncPolarMutation.isPending}
-                    data-testid="button-sync-polar"
+                    onClick={() => addNewActivityMutation.mutate()}
+                    disabled={addNewActivityMutation.isPending}
+                    data-testid="button-add-new-activity"
                   >
-                    {syncPolarMutation.isPending ? (
+                    {addNewActivityMutation.isPending ? (
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     ) : (
-                      <RefreshCw className="h-4 w-4 mr-2" />
+                      <Plus className="h-4 w-4 mr-2" />
                     )}
-                    Importar nuevas
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => processPolarMutation.mutate()}
-                    disabled={processPolarMutation.isPending}
-                    data-testid="button-process-polar"
-                  >
-                    {processPolarMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <MapPin className="h-4 w-4 mr-2" />
-                    )}
-                    Procesar territorios
+                    Añadir Nueva Actividad
                   </Button>
                   <Button
                     variant="ghost"

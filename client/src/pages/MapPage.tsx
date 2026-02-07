@@ -7,17 +7,25 @@ import { StatsOverlay } from '@/components/StatsOverlay';
 import { RouteTracker } from '@/components/RouteTracker';
 import { LoginDialog } from '@/components/LoginDialog';
 import { MapSkeleton } from '@/components/LoadingState';
+import { ActivityAnimationView } from '@/components/ActivityAnimationView';
+import { ConquestResultModal } from '@/components/ConquestResultModal';
 import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
-import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
+import type { TerritoryWithUser, RouteWithTerritory, Route } from '@shared/schema';
 
 export default function MapPage() {
   const [, setLocation] = useLocation();
   const [isTracking, setIsTracking] = useState(() => {
     return window.location.search.includes('tracking=true');
   });
+  const [isAnimating, setIsAnimating] = useState(() => {
+    return window.location.search.includes('animateLatestActivity=true');
+  });
+  const [latestRoute, setLatestRoute] = useState<Route | null>(null);
+  const [conquestResult, setConquestResult] = useState<any>(null);
+  const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
@@ -32,6 +40,14 @@ export default function MapPage() {
     };
     window.addEventListener('popstate', checkTracking);
     return () => window.removeEventListener('popstate', checkTracking);
+  }, []);
+
+  useEffect(() => {
+    const checkAnimation = () => {
+      setIsAnimating(window.location.search.includes('animateLatestActivity=true'));
+    };
+    window.addEventListener('popstate', checkAnimation);
+    return () => window.removeEventListener('popstate', checkAnimation);
   }, []);
 
   useEffect(() => {
@@ -59,6 +75,27 @@ export default function MapPage() {
     queryKey: ['/api/routes', currentUser?.id],
     enabled: !!currentUser?.id,
   });
+
+  // When animating, get the latest route with detailed data
+  const { data: latestRouteData } = useQuery({
+    queryKey: ['/api/routes', currentUser?.id, 'latest'],
+    queryFn: async () => {
+      const routes = await queryClient.getQueryData(['/api/routes', currentUser?.id]);
+      if (Array.isArray(routes) && routes.length > 0) {
+        // Sort by creation date and get the most recent
+        const sorted = [...routes].sort((a: any, b: any) => new Date(b.createdAt || b.startedAt).getTime() - new Date(a.createdAt || a.startedAt).getTime());
+        return sorted[0];
+      }
+      return null;
+    },
+    enabled: !!currentUser?.id && isAnimating,
+  });
+
+  useEffect(() => {
+    if (latestRouteData) {
+      setLatestRoute(latestRouteData as Route);
+    }
+  }, [latestRouteData]);
 
   const createRouteMutation = useMutation({
     mutationFn: async (routeData: {
@@ -128,6 +165,33 @@ export default function MapPage() {
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
+  if (isAnimating && latestRoute) {
+    return (
+      <div className="w-full h-full flex flex-col">
+        <ActivityAnimationView
+          route={latestRoute}
+          userColor={currentUser?.color || '#000000'}
+          onComplete={() => {
+            // Calculate conquest results from latest route
+            // Get any conquest data from the route
+            const newArea = (latestRoute.routeArea || 0) / 1000000;
+            const previousArea = (currentUser?.totalArea || 0) / 1000000 - newArea;
+            
+            // For now, show a simple modal without victims
+            // In a real implementation, you'd fetch conquest details from API
+            setConquestResult({
+              newArea,
+              previousArea,
+              victims: []
+            });
+            setIsResultModalOpen(true);
+          }}
+          animationDuration={7000}
+        />
+      </div>
+    );
+  }
+
   if (isTracking) {
     return (
       <RouteTracker
@@ -156,6 +220,22 @@ export default function MapPage() {
         </div>
       )}
       <UserInfoDialog userId={selectedUserId} open={isDialogOpen} onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }} />
+      <ConquestResultModal
+        open={isResultModalOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            // Reset animation state and go back to normal map view
+            window.history.replaceState({}, '', '/');
+            setIsAnimating(false);
+            setLatestRoute(null);
+            setConquestResult(null);
+          }
+          setIsResultModalOpen(open);
+        }}
+        newAreaKm2={conquestResult?.newArea || 0}
+        previousAreaKm2={conquestResult?.previousArea || 0}
+        victims={conquestResult?.victims || []}
+      />
     </div>
   );
 }

@@ -58,21 +58,27 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   useEffect(() => {
     if (open) {
       const saved = localStorage.getItem(PENDING_VERIFICATION_KEY);
+      console.log('[LoginDialog] Dialog opened, saved verification:', saved);
       if (saved) {
         try {
           const { userId, email, timestamp } = JSON.parse(saved);
           // Solo restaurar si es de las últimas 10 minutos (código válido)
           const tenMinutes = 10 * 60 * 1000;
-          if (Date.now() - timestamp < tenMinutes) {
+          const timeElapsed = Date.now() - timestamp;
+          console.log('[LoginDialog] Time elapsed:', timeElapsed, 'ms, valid:', timeElapsed < tenMinutes);
+          if (timeElapsed < tenMinutes) {
             setPendingUserId(userId);
             setPendingEmail(email);
             setShowVerification(true);
+            console.log('[LoginDialog] Restored verification state for', email);
           } else {
             // Expirado, limpiar
             localStorage.removeItem(PENDING_VERIFICATION_KEY);
+            console.log('[LoginDialog] Verification expired, cleared');
           }
         } catch (e) {
           localStorage.removeItem(PENDING_VERIFICATION_KEY);
+          console.error('[LoginDialog] Error parsing saved verification:', e);
         }
       }
       
@@ -144,11 +150,13 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
         setPendingUserId(user.id);
         setPendingEmail(registerEmail);
         setShowVerification(true);
-        localStorage.setItem(PENDING_VERIFICATION_KEY, JSON.stringify({
+        const verificationData = {
           userId: user.id,
           email: registerEmail,
           timestamp: Date.now(),
-        }));
+        };
+        localStorage.setItem(PENDING_VERIFICATION_KEY, JSON.stringify(verificationData));
+        console.log('[LoginDialog] Saved verification state:', verificationData);
         toast({
           title: 'Código enviado',
           description: `Revisa tu email ${registerEmail}`,

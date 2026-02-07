@@ -1,0 +1,127 @@
+CHANGES NEEDED FOR ProfilePage.tsx:
+
+1. After line 1 (import from react), add:
+   import { useLocation } from 'wouter';
+
+2. Line 17, update Lucide imports - add Plus icon:
+   Change: import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera }
+   To: import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera, Plus }
+
+3. Line 134 (export default function), add navigation hook:
+   Change: export default function ProfilePage() {
+   To: export default function ProfilePage() {
+        const [, navigate] = useLocation();
+
+4. After processPolarMutation definition (around line 425), add new mutation:
+   
+   // Combined: Import + Process + Redirect to map with animation
+   const addNewActivityMutation = useMutation({
+     mutationFn: async () => {
+       if (!user?.id) throw new Error('No user logged in');
+       
+       // 1. Sync activities from Polar
+       const syncRes = await apiRequest('POST', `/api/polar/sync/${user.id}`);
+       const syncData = await syncRes.json();
+       
+       if (!syncData.imported || syncData.imported === 0) {
+         throw new Error('No se importaron actividades nuevas');
+       }
+
+       // 2. Process all pending activities
+       const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
+       const processData = await processRes.json();
+
+       return { syncData, processData };
+     },
+     onSuccess: (data) => {
+       queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+       queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
+       queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
+       queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+       
+       toast({
+         title: 'Actividad añadida',
+         description: 'Redirigiendo al mapa para ver la animación...',
+       });
+       
+       // Redirect to map with animation flag
+       navigate('/?animateLatestActivity=true');
+     },
+     onError: (error: any) => {
+       toast({
+         title: 'Error',
+         description: error.message || 'No se pudo añadir la actividad',
+         variant: 'destructive',
+       });
+     },
+   });
+
+5. In Polar section (around line 876), replace the two buttons with ONE button:
+   OLD:
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => syncPolarMutation.mutate()}
+                    disabled={syncPolarMutation.isPending}
+                    data-testid="button-sync-polar"
+                  >
+                    {syncPolarMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                    )}
+                    Importar nuevas
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => processPolarMutation.mutate()}
+                    disabled={processPolarMutation.isPending}
+                    data-testid="button-process-polar"
+                  >
+                    {processPolarMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <MapPin className="h-4 w-4 mr-2" />
+                    )}
+                    Procesar territorios
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsPolarDisconnectOpen(true)}
+                    className="text-destructive"
+                    data-testid="button-disconnect-polar"
+                  >
+                    <Unlink className="h-4 w-4 mr-2" />
+                    Desconectar
+                  </Button>
+                </div>
+
+   NEW:
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    className="flex-1"
+                    onClick={() => addNewActivityMutation.mutate()}
+                    disabled={addNewActivityMutation.isPending}
+                    data-testid="button-add-new-activity"
+                  >
+                    {addNewActivityMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4 mr-2" />
+                    )}
+                    Añadir Nueva Actividad
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsPolarDisconnectOpen(true)}
+                    className="text-destructive"
+                    data-testid="button-disconnect-polar"
+                  >
+                    <Unlink className="h-4 w-4 mr-2" />
+                    Desconectar
+                  </Button>
+                </div>

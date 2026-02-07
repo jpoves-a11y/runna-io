@@ -4,9 +4,7 @@ import { LeaderboardTable } from '@/components/LeaderboardTable';
 import UserInfoDialog from '@/components/UserInfoDialog';
 import { LeaderboardSkeleton } from '@/components/LoadingState';
 import { useSession } from '@/hooks/use-session';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
-import { Users, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { queryClient } from '@/lib/queryClient';
 import type { UserWithStats } from '@shared/schema';
 
@@ -14,31 +12,21 @@ export default function RankingsPage() {
   const { user: currentUser } = useSession();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [friendsOnly, setFriendsOnly] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef<number>(0);
   const pullToRefreshThreshold = 80;
 
-  const { data: allUsers = [], isLoading: isLoadingAll } = useQuery<UserWithStats[]>({
-    queryKey: ['/api/leaderboard'],
-    enabled: !friendsOnly,
-  });
-
-  const { data: friendUsers = [], isLoading: isLoadingFriends } = useQuery<UserWithStats[]>({
+  const { data: users = [], isLoading } = useQuery<UserWithStats[]>({
     queryKey: ['/api/leaderboard/friends', currentUser?.id],
-    enabled: friendsOnly && !!currentUser?.id,
+    enabled: !!currentUser?.id,
   });
-
-  const users = friendsOnly ? friendUsers : allUsers;
-  const isLoading = friendsOnly ? isLoadingFriends : isLoadingAll;
 
   const handleRefresh = async () => {
     if (isRefreshing) return;
     
     setIsRefreshing(true);
     try {
-      await queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
       await queryClient.invalidateQueries({ queryKey: ['/api/leaderboard/friends', currentUser?.id] });
       await new Promise(resolve => setTimeout(resolve, 500));
     } finally {
@@ -110,22 +98,7 @@ export default function RankingsPage() {
         className="p-3 sm:p-4 border-b border-border bg-card/50 backdrop-blur-sm"
         style={{ paddingTop: 'calc(0.75rem + env(safe-area-inset-top, 0px))' }}
       >
-        <div className="flex items-center gap-2 sm:gap-3">
-          <Switch
-            id="friends-toggle"
-            checked={friendsOnly}
-            onCheckedChange={setFriendsOnly}
-            disabled={!currentUser}
-            data-testid="switch-friends-only"
-          />
-          <Label
-            htmlFor="friends-toggle"
-            className="flex items-center gap-2 cursor-pointer text-xs sm:text-sm font-medium"
-          >
-            <Users className="h-4 w-4" />
-            {friendsOnly ? 'Solo amigos' : 'Todos'}
-          </Label>
-        </div>
+        <h2 className="text-lg font-semibold">Ranking de Amigos</h2>
       </div>
       <div className="flex-1 overflow-hidden">
         <LeaderboardTable
