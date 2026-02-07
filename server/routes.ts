@@ -1281,6 +1281,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     return hours * 3600 + minutes * 60 + Math.round(seconds);
   }
 
+  function parseRouteCoordinates(raw: unknown): Array<[number, number]> {
+    if (Array.isArray(raw)) {
+      return raw as Array<[number, number]>;
+    }
+
+    if (typeof raw === 'string') {
+      let parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed);
+      }
+
+      if (Array.isArray(parsed)) {
+        if (parsed.length > 0 && Array.isArray(parsed[0])) {
+          return parsed as Array<[number, number]>;
+        }
+        if (parsed.length > 0 && typeof parsed[0] === 'object') {
+          return (parsed as Array<{ value?: [number, number] }>).
+            map((item) => item.value)
+            .filter((value): value is [number, number] => Array.isArray(value) && value.length === 2);
+        }
+      }
+    }
+
+    return [];
+  }
+
   // Get all Polar activities for a user
   app.get("/api/polar/activities/:userId", async (req, res) => {
     try {
@@ -1288,6 +1314,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const activities = await storage.getPolarActivitiesByUserId(userId);
       res.json(activities);
     } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Delete a Polar activity and revert its territory contribution
+  app.delete("/api/polar/activities/:userId/:activityId", async (req, res) => {
+    try {
+      const { userId, activityId } = req.params;
+      const activity = await storage.getPolarActivityById(activityId);
+
+      if (!activity) {
+        return res.status(404).json({ error: 'Actividad no encontrada' });
+      }
+
+      if (activity.userId !== userId) {
+        return res.status(403).json({ error: 'No autorizado' });
+      }
+
+      const routeId = activity.routeId;
+
+      await storage.deletePolarActivityById(activityId);
+
+      if (routeId) {
+        await storage.deleteConquestMetricsByRouteId(routeId);
+        await storage.deleteRouteById(routeId);
+      }
+
+      const remainingRoutes = await storage.getRoutesByUserId(userId);
+      let mergedGeometry: any = null;
+
+      for (const route of remainingRoutes) {
+        const coordinates = parseRouteCoordinates(route.coordinates);
+        if (coordinates.length < 3) continue;
+
+        const lineString = turf.lineString(
+          coordinates.map((coord) => [coord[1], coord[0]])
+        );
+        const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+
+        if (!buffered) continue;
+
+        if (!mergedGeometry) {
+          mergedGeometry = buffered.geometry;
+          continue;
+        }
+
+        const union = turf.union(
+          turf.featureCollection([
+            turf.polygon(mergedGeometry.coordinates),
+            turf.polygon(buffered.geometry.coordinates),
+          ])
+        );
+
+        if (union) {
+          mergedGeometry = union.geometry;
+        }
+      }
+
+      if (!mergedGeometry) {
+        await storage.deleteTerritoriesByUserId(userId);
+        await storage.updateUserTotalArea(userId, 0);
+        return res.json({ success: true, totalArea: 0 });
+      }
+
+      const totalArea = turf.area(mergedGeometry);
+      await storage.updateTerritoryGeometry(userId, null, mergedGeometry, totalArea);
+      await storage.updateUserTotalArea(userId, totalArea);
+
+      res.json({ success: true, totalArea });
+    } catch (error: any) {
+      console.error('Error deleting Polar activity:', error);
       res.status(500).json({ error: error.message });
     }
   });

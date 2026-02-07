@@ -75,10 +75,21 @@ export interface IStorage {
   updatePolarAccount(userId: string, data: Partial<PolarAccount>): Promise<PolarAccount>;
   deletePolarAccount(userId: string): Promise<void>;
   getPolarActivityByPolarId(polarExerciseId: string): Promise<PolarActivity | undefined>;
+  getPolarActivityById(id: string): Promise<PolarActivity | undefined>;
   createPolarActivity(activity: InsertPolarActivity): Promise<PolarActivity>;
   updatePolarActivity(id: string, data: Partial<PolarActivity>): Promise<PolarActivity>;
+  deletePolarActivityById(id: string): Promise<void>;
   getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]>;
   getPolarActivitiesByUserId(userId: string): Promise<PolarActivity[]>;
+
+  // Routes cleanup
+  deleteRouteById(routeId: string): Promise<void>;
+
+  // Territories cleanup
+  deleteTerritoriesByUserId(userId: string): Promise<void>;
+
+  // Conquest metrics cleanup
+  deleteConquestMetricsByRouteId(routeId: string): Promise<void>;
 
   // Strava
   getStravaAccountByUserId(userId: string): Promise<StravaAccount | undefined>;
@@ -471,6 +482,11 @@ export class DatabaseStorage implements IStorage {
     return activity || undefined;
   }
 
+  async getPolarActivityById(id: string): Promise<PolarActivity | undefined> {
+    const [activity] = await db.select().from(polarActivities).where(eq(polarActivities.id, id));
+    return activity || undefined;
+  }
+
   async createPolarActivity(activity: InsertPolarActivity): Promise<PolarActivity> {
     const [created] = await db.insert(polarActivities).values(activity).returning();
     return created;
@@ -479,6 +495,10 @@ export class DatabaseStorage implements IStorage {
   async updatePolarActivity(id: string, data: Partial<PolarActivity>): Promise<PolarActivity> {
     const [updated] = await db.update(polarActivities).set(data).where(eq(polarActivities.id, id)).returning();
     return updated;
+  }
+
+  async deletePolarActivityById(id: string): Promise<void> {
+    await db.delete(polarActivities).where(eq(polarActivities.id, id));
   }
 
   async getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]> {
@@ -491,6 +511,18 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(polarActivities)
       .where(eq(polarActivities.userId, userId))
       .orderBy(desc(polarActivities.startDate));
+  }
+
+  async deleteRouteById(routeId: string): Promise<void> {
+    await db.delete(routes).where(eq(routes.id, routeId));
+  }
+
+  async deleteTerritoriesByUserId(userId: string): Promise<void> {
+    await db.delete(territories).where(eq(territories.userId, userId));
+  }
+
+  async deleteConquestMetricsByRouteId(routeId: string): Promise<void> {
+    await db.delete(conquestMetrics).where(eq(conquestMetrics.routeId, routeId));
   }
 
   // Strava

@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera, Plus } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera, Plus, Trash2 } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -139,6 +139,9 @@ export default function ProfilePage() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isStravaDisconnectOpen, setIsStravaDisconnectOpen] = useState(false);
   const [isPolarDisconnectOpen, setIsPolarDisconnectOpen] = useState(false);
+  const [isPolarDeleteOpen, setIsPolarDeleteOpen] = useState(false);
+  const [polarActivityToDelete, setPolarActivityToDelete] = useState<PolarActivity | null>(null);
+  const [deletingPolarActivityId, setDeletingPolarActivityId] = useState<string | null>(null);
   const [isAvatarDialogOpen, setIsAvatarDialogOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -476,6 +479,39 @@ export default function ProfilePage() {
         description: error.message || 'No se pudo añadir la actividad',
         variant: 'destructive',
       });
+    },
+  });
+
+  const deletePolarActivityMutation = useMutation({
+    mutationFn: async (activityId: string) => {
+      const response = await apiRequest('DELETE', `/api/polar/activities/${user?.id}/${activityId}`);
+      const data = await response.json();
+      return data;
+    },
+    onMutate: (activityId) => {
+      setDeletingPolarActivityId(activityId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
+      queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+      setIsPolarDeleteOpen(false);
+      setPolarActivityToDelete(null);
+      toast({
+        title: 'Actividad eliminada',
+        description: 'Se ha recalculado tu territorio con las actividades restantes',
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'No se pudo eliminar la actividad',
+        variant: 'destructive',
+      });
+    },
+    onSettled: () => {
+      setDeletingPolarActivityId(null);
     },
   });
 
@@ -997,12 +1033,31 @@ export default function ProfilePage() {
                           <span>{new Date(activity.startDate).toLocaleDateString('es-ES')}</span>
                         </div>
                       </div>
-                      <Badge 
-                        variant={activity.processed ? "secondary" : "outline"}
-                        className={activity.processed ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}
-                      >
-                        {activity.processed ? "Procesado" : "Pendiente"}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge 
+                          variant={activity.processed ? "secondary" : "outline"}
+                          className={activity.processed ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}
+                        >
+                          {activity.processed ? "Procesado" : "Pendiente"}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive"
+                          onClick={() => {
+                            setPolarActivityToDelete(activity);
+                            setIsPolarDeleteOpen(true);
+                          }}
+                          disabled={deletingPolarActivityId === activity.id}
+                          data-testid={`polar-activity-delete-${activity.id}`}
+                        >
+                          {deletingPolarActivityId === activity.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   ))}
                   {polarActivities.length > 10 && (
@@ -1123,6 +1178,36 @@ export default function ProfilePage() {
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               ) : null}
               Desconectar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={isPolarDeleteOpen} onOpenChange={setIsPolarDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Eliminar actividad de Polar?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esto eliminara la actividad importada y recalculara tu territorio. Podras reimportarla con "Añadir Nueva Actividad".
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPolarActivityToDelete(null)}>
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (polarActivityToDelete?.id) {
+                  deletePolarActivityMutation.mutate(polarActivityToDelete.id);
+                }
+              }}
+              className="bg-destructive hover:bg-destructive/90"
+              disabled={deletePolarActivityMutation.isPending}
+            >
+              {deletePolarActivityMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Eliminar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

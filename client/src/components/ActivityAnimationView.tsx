@@ -23,14 +23,15 @@ export function ActivityAnimationView({
   const [displayArea, setDisplayArea] = useState(0);
   const [isComplete, setIsComplete] = useState(false);
   
-  // Parse route coordinates
+  // Parse route coordinates (supports geom or coordinates string)
   const coordinates = (() => {
     try {
       if (typeof route.geom === 'string') {
         const parsed = JSON.parse(route.geom);
         if (parsed.type === 'LineString') {
           return parsed.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]);
-        } else if (parsed.type === 'FeatureCollection') {
+        }
+        if (parsed.type === 'FeatureCollection') {
           const feature = parsed.features[0];
           if (feature.geometry.type === 'LineString') {
             return feature.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]);
@@ -38,6 +39,25 @@ export function ActivityAnimationView({
         }
         return parsed.coordinates || [];
       }
+
+      if (typeof route.coordinates === 'string') {
+        let parsed: unknown = JSON.parse(route.coordinates);
+        if (typeof parsed === 'string') {
+          parsed = JSON.parse(parsed);
+        }
+
+        if (Array.isArray(parsed)) {
+          if (parsed.length > 0 && Array.isArray(parsed[0])) {
+            return parsed as Array<[number, number]>;
+          }
+          if (parsed.length > 0 && typeof parsed[0] === 'object') {
+            return (parsed as Array<{ value?: [number, number] }>).
+              map((item) => item.value)
+              .filter((value): value is [number, number] => Array.isArray(value) && value.length === 2);
+          }
+        }
+      }
+
       return [];
     } catch (e) {
       console.error('Error parsing route geometry:', e);
@@ -52,7 +72,7 @@ export function ActivityAnimationView({
         const next = Math.min(prev + 100 / (animationDuration / 100), 100);
         
         // Calculate area progression proportionally
-        const routeArea = route.routeArea || 0;
+        const routeArea = route.routeArea || (route as any).territory?.area || 0;
         setDisplayArea((next / 100) * routeArea);
 
         if (next >= 100) {
@@ -66,7 +86,7 @@ export function ActivityAnimationView({
     }, 100);
 
     return () => clearInterval(interval);
-  }, [animationDuration, route.routeArea, onComplete]);
+  }, [animationDuration, route.routeArea, onComplete, route]);
 
   // Calculate animated polyline points
   const animatedCoordinates = coordinates.slice(0, Math.ceil((progress / 100) * coordinates.length));
