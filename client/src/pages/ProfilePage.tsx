@@ -29,6 +29,23 @@ import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 
+// Parse date string safely (handles ISO, Polar format, and legacy format)
+function safeFormatDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return 'Sin fecha';
+  try {
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date.toLocaleDateString('es-ES');
+    }
+    // Fallback: extract date from YYYY-MM-DD pattern
+    const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (match) return `${match[3]}/${match[2]}/${match[1]}`;
+    return dateStr;
+  } catch {
+    return dateStr || 'Sin fecha';
+  }
+}
+
 // Convert hex color to readable Spanish name based on HSL
 function getColorName(hex: string): string {
   if (!hex || hex.length < 7) return 'Color personalizado';
@@ -1119,7 +1136,7 @@ export default function ProfilePage() {
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <span>{activity.activityType}</span>
                           <span>{(activity.distance / 1000).toFixed(2)} km</span>
-                          <span>{new Date(activity.startDate).toLocaleDateString('es-ES')}</span>
+                          <span>{safeFormatDate(activity.startDate)}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">

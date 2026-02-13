@@ -2302,6 +2302,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           }
 
           // Save to database
+          const startDateISO = startTime ? new Date(startTime).toISOString() : new Date().toISOString();
           await storage.createPolarActivity({
             polarExerciseId: exerciseId.toString(),
             userId,
@@ -2311,7 +2312,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             activityType: sport,
             distance: distance,
             duration: duration,
-            startDate: new Date(startTime),
+            startDate: startDateISO,
             summaryPolyline,
             processed: false,
             processedAt: null,
