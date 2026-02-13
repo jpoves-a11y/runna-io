@@ -1,0 +1,8 @@
+# ===========================================
+# PROXY WORKER - Serves Pages content via workers.dev
+# ===========================================
+# Bypasses ISP blocking of *.pages.dev domains
+
+name = "runna-io-web"
+main = "worker-proxy/src/index.ts"
+compatibility_date = "2024-01-01"

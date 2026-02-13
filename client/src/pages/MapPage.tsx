@@ -20,11 +20,10 @@ export default function MapPage() {
   const [isTracking, setIsTracking] = useState(() => {
     return window.location.search.includes('tracking=true');
   });
-  const [isAnimating, setIsAnimating] = useState(() => {
-    return window.location.search.includes('animateLatestActivity=true');
-  });
+  const [isAnimating, setIsAnimating] = useState(false);
   const [latestRoute, setLatestRoute] = useState<Route | null>(null);
   const [conquestResult, setConquestResult] = useState<any>(null);
+  const [conquestData, setConquestData] = useState<any>(null);
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -44,8 +43,23 @@ export default function MapPage() {
 
   useEffect(() => {
     const checkAnimation = () => {
-      setIsAnimating(window.location.search.includes('animateLatestActivity=true'));
+      const animating = window.location.search.includes('animateLatestActivity=true');
+      setIsAnimating(animating);
+      if (animating) {
+        // Read conquest data from sessionStorage (saved by ProfilePage)
+        try {
+          const stored = sessionStorage.getItem('lastConquestResult');
+          if (stored) {
+            setConquestData(JSON.parse(stored));
+            sessionStorage.removeItem('lastConquestResult');
+          }
+        } catch (e) {
+          console.error('Error reading conquest data:', e);
+        }
+      }
     };
+    // Run on mount too
+    checkAnimation();
     window.addEventListener('popstate', checkAnimation);
     return () => window.removeEventListener('popstate', checkAnimation);
   }, []);
@@ -171,17 +185,16 @@ export default function MapPage() {
         <ActivityAnimationView
           route={latestRoute}
           userColor={currentUser?.color || '#000000'}
+          territoryArea={conquestData?.territoryArea || 0}
           onComplete={() => {
-            // Calculate conquest results from latest route
-            // Get any conquest data from the route
-            const newArea = (latestRoute.routeArea || 0) / 1000000;
-            const previousArea = (currentUser?.totalArea || 0) / 1000000 - newArea;
+            // Use real conquest data from the process API
+            const newArea = (conquestData?.newAreaConquered || 0) / 1000000;
+            const totalArea = (conquestData?.totalArea || currentUser?.totalArea || 0) / 1000000;
+            const previousArea = totalArea - newArea;
             
-            // For now, show a simple modal without victims
-            // In a real implementation, you'd fetch conquest details from API
             setConquestResult({
               newArea,
-              previousArea,
+              previousArea: Math.max(0, previousArea),
               victims: []
             });
             setIsResultModalOpen(true);
@@ -229,6 +242,7 @@ export default function MapPage() {
             setIsAnimating(false);
             setLatestRoute(null);
             setConquestResult(null);
+            setConquestData(null);
           }
           setIsResultModalOpen(open);
         }}

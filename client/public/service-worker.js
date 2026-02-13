@@ -1,17 +1,8 @@
-// Runna.io Service Worker
-const CACHE_NAME = 'runna-io-v13';
-const urlsToCache = [
-  '/',
-  '/manifest.json',
-  '/favicon.png'
-];
+// Runna.io Service Worker - Minimal version to avoid caching issues
+const CACHE_NAME = 'runna-io-v16';
 
 // Install event
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(urlsToCache))
-  );
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
@@ -31,30 +22,11 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch event - Network first, fallback to cache
+// Fetch event - Simple pass-through, no caching
 self.addEventListener('fetch', (event) => {
-  // Skip non-GET requests
-  if (event.request.method !== 'GET') return;
-  
-  // Skip API requests
-  if (event.request.url.includes('/api/')) return;
-  
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        // Clone and cache the response
-        if (response.status === 200) {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
-        }
-        return response;
-      })
-      .catch(() => {
-        return caches.match(event.request);
-      })
-  );
+  // Let the browser handle all requests normally
+  // This prevents caching issues
+  return;
 });
 
 // Push notification event

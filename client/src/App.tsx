@@ -5,7 +5,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { BottomNav } from "@/components/BottomNav";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Play } from "lucide-react";
+
+// Log app initialization
+console.log('App.tsx loading...');
+console.log('API_BASE:', import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? 'https://runna-io-api.runna-io-api.workers.dev' : ''));
 import MapPage from "@/pages/MapPage";
 import RankingsPage from "@/pages/RankingsPage";
 import ActivityPage from "@/pages/ActivityPage";
@@ -182,33 +187,35 @@ function App() {
   };
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <div className="fixed inset-0 flex flex-col bg-background">
-          <main
-            ref={(el) => (mainRef.current = el)}
-            className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-            style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-          >
-            {isRefreshing && (
-              <div className="absolute inset-x-0 top-0 flex items-center justify-center z-50 h-12 bg-white/80">
-                <svg className="animate-spin h-6 w-6 text-gray-700" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a12 12 0 100 24v-4l-3 3 3 3v-4a8 8 0 01-8-8z" />
-                </svg>
-              </div>
-            )}
-            <Router />
-          </main>
-          <BottomNav />
-        </div>
-        <StartActivityButton />
-        <Toaster />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <div className="fixed inset-0 flex flex-col bg-background">
+            <main
+              ref={(el) => (mainRef.current = el)}
+              className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
+              style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+            >
+              {isRefreshing && (
+                <div className="absolute inset-x-0 top-0 flex items-center justify-center z-50 h-12 bg-white/80">
+                  <svg className="animate-spin h-6 w-6 text-gray-700" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a12 12 0 100 24v-4l-3 3 3 3v-4a8 8 0 01-8-8z" />
+                  </svg>
+                </div>
+              )}
+              <Router />
+            </main>
+            <BottomNav />
+          </div>
+          <StartActivityButton />
+          <Toaster />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 

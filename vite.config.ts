@@ -9,16 +9,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   plugins: [
     react(),
-    runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
+    ...(process.env.NODE_ENV !== "production"
       ? [
-          await import("@replit/vite-plugin-cartographer").then((m) =>
-            m.cartographer(),
-          ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
-          ),
+          runtimeErrorOverlay(),
+          ...(process.env.REPL_ID !== undefined
+            ? [
+                await import("@replit/vite-plugin-cartographer").then((m) =>
+                  m.cartographer(),
+                ),
+                await import("@replit/vite-plugin-dev-banner").then((m) =>
+                  m.devBanner(),
+                ),
+              ]
+            : []),
         ]
       : []),
   ],

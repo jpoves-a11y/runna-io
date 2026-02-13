@@ -23,6 +23,7 @@ import { LoginDialog } from '@/components/LoginDialog';
 import { NotificationToggle } from '@/components/NotificationToggle';
 import { AvatarDialog } from '@/components/AvatarDialog';
 import { ConquestStats } from '@/components/ConquestStats';
+import { ActivityPreviewDialog } from '@/components/ActivityPreviewDialog';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
@@ -128,6 +129,7 @@ interface PolarActivity {
   distance: number;
   duration: number;
   startDate: string;
+  summaryPolyline: string | null;
   processed: boolean;
   processedAt: string | null;
 }
@@ -143,6 +145,10 @@ export default function ProfilePage() {
   const [polarActivityToDelete, setPolarActivityToDelete] = useState<PolarActivity | null>(null);
   const [deletingPolarActivityId, setDeletingPolarActivityId] = useState<string | null>(null);
   const [isAvatarDialogOpen, setIsAvatarDialogOpen] = useState(false);
+  const [showActivityPreview, setShowActivityPreview] = useState(false);
+  const [pendingActivities, setPendingActivities] = useState<PolarActivity[]>([]);
+  const [currentPreviewIndex, setCurrentPreviewIndex] = useState(0);
+  const [isProcessingActivity, setIsProcessingActivity] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef<number>(0);
@@ -441,46 +447,129 @@ export default function ProfilePage() {
     },
   });
 
-  // Combined: Import + Process + Redirect to map with animation
+  // Step 1: Sync from Polar, then show preview dialog for unprocessed activities
   const addNewActivityMutation = useMutation({
     mutationFn: async () => {
       if (!user?.id) throw new Error('No user logged in');
       
-      // 1. Sync activities from Polar
+      // Sync activities from Polar (no processing yet)
       const syncRes = await apiRequest('POST', `/api/polar/sync/${user.id}`);
       const syncData = await syncRes.json();
-      
-      if (!syncData.imported || syncData.imported === 0) {
-        throw new Error('No se importaron actividades nuevas');
-      }
-
-      // 2. Process all pending activities
-      const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
-      const processData = await processRes.json();
-
-      return { syncData, processData };
+      return syncData;
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
-      queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+    onSuccess: async (syncData) => {
+      // Refresh polar activities list to get newly synced ones
+      await queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
       
-      toast({
-        title: 'Actividad añadida',
-        description: 'Redirigiendo al mapa para verla importada...',
+      // Wait for refetch to complete and get updated data
+      const updatedActivities = await queryClient.fetchQuery<PolarActivity[]>({
+        queryKey: [polarActivitiesKey],
       });
       
-      navigate('/?animateLatestActivity=true');
+      // Filter unprocessed activities (these need preview)
+      const unprocessed = (updatedActivities || []).filter(a => !a.processed && a.summaryPolyline);
+      
+      if (unprocessed.length === 0) {
+        // Check activities without GPS
+        const noGps = (updatedActivities || []).filter(a => !a.processed && !a.summaryPolyline);
+        if (noGps.length > 0) {
+          toast({
+            title: 'Sin datos GPS',
+            description: `Se encontraron ${noGps.length} actividades pero ninguna tiene datos de ruta GPS.`,
+          });
+        } else if (!syncData.imported || syncData.imported === 0) {
+          toast({
+            title: 'Sin actividades nuevas',
+            description: 'No se encontraron actividades nuevas en Polar Flow.',
+          });
+        } else {
+          toast({
+            title: 'Actividades ya procesadas',
+            description: 'Todas las actividades ya han sido importadas.',
+          });
+        }
+        return;
+      }
+
+      // Show preview dialog for unprocessed activities
+      setPendingActivities(unprocessed);
+      setCurrentPreviewIndex(0);
+      setShowActivityPreview(true);
     },
     onError: (error: any) => {
       toast({
         title: 'Error',
-        description: error.message || 'No se pudo añadir la actividad',
+        description: error.message || 'No se pudo sincronizar con Polar',
         variant: 'destructive',
       });
     },
   });
+
+  // Step 2: Process a single activity and navigate to map with animation
+  const handleAcceptActivity = async () => {
+    if (!user?.id) return;
+    
+    setIsProcessingActivity(true);
+    try {
+      const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
+      const processData = await processRes.json();
+      
+      // Store conquest data for the map animation
+      if (processData.results && processData.results.length > 0) {
+        const result = processData.results[0];
+        sessionStorage.setItem('lastConquestResult', JSON.stringify({
+          newAreaConquered: result.metrics?.newAreaConquered || result.area || 0,
+          totalArea: result.metrics?.totalArea || 0,
+          areaStolen: result.metrics?.areaStolen || 0,
+          routeId: result.routeId,
+          territoryArea: result.area || 0,
+        }));
+      }
+      
+      // Invalidate queries so map has fresh data
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['/api/territories'] }),
+        queryClient.invalidateQueries({ queryKey: ['/api/territories/friends', user.id] }),
+        queryClient.invalidateQueries({ queryKey: ['/api/routes', user.id] }),
+        queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] }),
+        queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] }),
+      ]);
+      
+      setShowActivityPreview(false);
+      setPendingActivities([]);
+      setCurrentPreviewIndex(0);
+      
+      toast({
+        title: 'Actividad importada',
+        description: 'Redirigiendo al mapa...',
+      });
+      
+      navigate('/?animateLatestActivity=true');
+    } catch (error: any) {
+      toast({
+        title: 'Error al procesar',
+        description: error.message || 'No se pudo procesar la actividad',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsProcessingActivity(false);
+    }
+  };
+
+  const handleSkipActivity = () => {
+    if (currentPreviewIndex < pendingActivities.length - 1) {
+      setCurrentPreviewIndex(prev => prev + 1);
+    } else {
+      // No more activities to preview
+      setShowActivityPreview(false);
+      setPendingActivities([]);
+      setCurrentPreviewIndex(0);
+      toast({
+        title: 'Vista previa cerrada',
+        description: 'Puedes importar las actividades pendientes más tarde.',
+      });
+    }
+  };
 
   const deletePolarActivityMutation = useMutation({
     mutationFn: async (activityId: string) => {
@@ -1212,6 +1301,23 @@ export default function ProfilePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ActivityPreviewDialog
+        open={showActivityPreview}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowActivityPreview(false);
+            setPendingActivities([]);
+            setCurrentPreviewIndex(0);
+          }
+        }}
+        activity={pendingActivities[currentPreviewIndex] || null}
+        currentIndex={currentPreviewIndex}
+        totalCount={pendingActivities.length}
+        onAccept={handleAcceptActivity}
+        onSkip={handleSkipActivity}
+        isProcessing={isProcessingActivity}
+      />
     </div>
   );
 }

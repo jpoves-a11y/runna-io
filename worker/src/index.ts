@@ -25,14 +25,15 @@ const app = new Hono<{ Bindings: Env }>();
 app.use('*', logger());
 app.use('*', cors({
   origin: (origin) => {
-    // Allow requests from any Cloudflare Pages subdomain or localhost
+    // Allow requests from any Cloudflare Pages subdomain, proxy worker, or localhost
     const allowedOrigins = [
       'https://runna-io.pages.dev',
+      'https://runna-io-web.runna-io-api.workers.dev',
       'http://localhost:5000',
       'http://localhost:3000',
     ];
     // Also allow any *.runna-io.pages.dev subdomain (preview deployments)
-    if (origin && (allowedOrigins.includes(origin) || origin.endsWith('.runna-io.pages.dev'))) {
+    if (origin && (allowedOrigins.includes(origin) || origin.endsWith('.runna-io.pages.dev') || origin.endsWith('.workers.dev'))) {
       return origin;
     }
     // For other origins, return the first allowed origin
@@ -40,7 +41,7 @@ app.use('*', cors({
   },
   allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
+  credentials: false,
 }));
 
 registerRoutes(app);

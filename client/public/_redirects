@@ -1,0 +1,12 @@
+# Cache static assets
+/assets/* /assets/:splat 200
+
+# Static files
+/favicon.png /favicon.png 200
+/icon-192.png /icon-192.png 200
+/icon-512.png /icon-512.png 200
+/manifest.json /manifest.json 200
+/service-worker.js /service-worker.js 200
+
+# SPA routing - serve index.html for all routes not matching above
+/* /index.html 200

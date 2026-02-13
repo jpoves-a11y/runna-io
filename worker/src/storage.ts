@@ -46,7 +46,7 @@ import {
   type TerritoryWithUser,
   type RouteWithTerritory,
 } from '../../shared/schema';
-import { eq, desc, sql } from 'drizzle-orm';
+import { eq, desc, sql, and } from 'drizzle-orm';
 import { type Database } from './db';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
@@ -751,6 +751,62 @@ export class WorkerStorage {
       .from(polarActivities)
       .where(eq(polarActivities.userId, userId))
       .orderBy(desc(polarActivities.startDate));
+  }
+
+  async findPolarActivityByAttributes(userId: string, distance: number, startDate: string): Promise<PolarActivity | undefined> {
+    // Find a polar activity with matching userId and startDate (exact) and approximate distance
+    const activities = await this.db
+      .select()
+      .from(polarActivities)
+      .where(and(eq(polarActivities.userId, userId), eq(polarActivities.startDate, startDate)));
+    
+    for (const act of activities) {
+      const distDiff = Math.abs(act.distance - distance);
+      const threshold = Math.max(distance * 0.02, 10); // 2% tolerance or 10m
+      if (distDiff <= threshold) {
+        return act;
+      }
+    }
+    return undefined;
+  }
+
+  async getPolarActivityById(id: string): Promise<PolarActivity | undefined> {
+    const [activity] = await this.db.select().from(polarActivities).where(eq(polarActivities.id, id));
+    return activity || undefined;
+  }
+
+  async deletePolarActivityById(id: string): Promise<void> {
+    await this.db.delete(polarActivities).where(eq(polarActivities.id, id));
+  }
+
+  async deleteConquestMetricsByRouteId(routeId: string): Promise<void> {
+    await this.db.delete(conquestMetrics).where(eq(conquestMetrics.routeId, routeId));
+  }
+
+  async deleteRouteById(id: string): Promise<void> {
+    await this.db.delete(routes).where(eq(routes.id, id));
+  }
+
+  async findRouteByAttributes(userId: string, name: string, distance: number): Promise<Route | null> {
+    // Find a route matching by userId, name, and approximate distance (within 1%)
+    const userRoutes = await this.db
+      .select()
+      .from(routes)
+      .where(and(eq(routes.userId, userId), eq(routes.name, name)));
+    
+    // Find the closest match by distance
+    for (const route of userRoutes) {
+      const distDiff = Math.abs(route.distance - distance);
+      const threshold = Math.max(distance * 0.01, 1); // 1% tolerance or 1m minimum
+      if (distDiff <= threshold) {
+        return route;
+      }
+    }
+    return null;
+  }
+
+  async deleteTerritoriesByUserId(userId: string): Promise<void> {
+    await this.db.delete(territories).where(eq(territories.userId, userId));
   }
 
   async getPolarActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {

@@ -10,6 +10,7 @@ interface ActivityAnimationViewProps {
   userColor: string;
   onComplete: () => void;
   animationDuration?: number; // in milliseconds
+  territoryArea?: number; // area in m² from process API
 }
 
 export function ActivityAnimationView({
@@ -17,6 +18,7 @@ export function ActivityAnimationView({
   userColor,
   onComplete,
   animationDuration = 7000, // 7 seconds default
+  territoryArea,
 }: ActivityAnimationViewProps) {
   const mapRef = useRef(null);
   const [progress, setProgress] = useState(0);
@@ -72,7 +74,7 @@ export function ActivityAnimationView({
         const next = Math.min(prev + 100 / (animationDuration / 100), 100);
         
         // Calculate area progression proportionally
-        const routeArea = route.routeArea || (route as any).territory?.area || 0;
+        const routeArea = territoryArea || (route as any).territory?.area || 0;
         setDisplayArea((next / 100) * routeArea);
 
         if (next >= 100) {
@@ -86,7 +88,7 @@ export function ActivityAnimationView({
     }, 100);
 
     return () => clearInterval(interval);
-  }, [animationDuration, route.routeArea, onComplete, route]);
+  }, [animationDuration, territoryArea, onComplete, route]);
 
   // Calculate animated polyline points
   const animatedCoordinates = coordinates.slice(0, Math.ceil((progress / 100) * coordinates.length));
