@@ -23,10 +23,9 @@ interface FriendsListProps {
   onInviteFriend: () => void;
   onRemoveFriend: (friendId: string) => void;
   onUserClick?: (userId: string) => void;
-  pendingRequestsSlot?: React.ReactNode;
 }
 
-export function FriendsList({ friends, onAddFriend, onInviteFriend, onRemoveFriend, onUserClick, pendingRequestsSlot }: FriendsListProps) {
+export function FriendsList({ friends, onAddFriend, onInviteFriend, onRemoveFriend, onUserClick }: FriendsListProps) {
   const [friendToRemove, setFriendToRemove] = useState<UserWithStats | null>(null);
 
   const getInitials = (name: string) => {
@@ -54,14 +53,7 @@ export function FriendsList({ friends, onAddFriend, onInviteFriend, onRemoveFrie
       {/* Header */}
       <div 
         className="p-4 md:p-6 border-b border-border bg-gradient-to-br from-primary/5 to-transparent animate-slide-down"
-        style={{ paddingTop: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
       >
-        {/* Pending/Sent requests slot */}
-        {pendingRequestsSlot && (
-          <div className="space-y-3 mb-4">
-            {pendingRequestsSlot}
-          </div>
-        )}
         <h1 className="text-2xl md:text-3xl font-bold flex items-center gap-2 md:gap-3 mb-4">
           <div className="relative">
             <Users className="h-6 w-6 md:h-8 md:w-8 text-primary" />

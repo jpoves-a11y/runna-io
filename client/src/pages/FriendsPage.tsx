@@ -94,19 +94,22 @@ export default function FriendsPage() {
   return (
     <>
       <div className="flex flex-col h-full overflow-hidden">
-        <div className="flex-1 overflow-y-auto">
+        <div 
+          className="flex-1 overflow-y-auto"
+          style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+        >
+          {currentUser && (
+            <div className="p-3 md:p-4 space-y-3 bg-muted/30">
+              <PendingRequests userId={currentUser.id} />
+              <SentRequests userId={currentUser.id} />
+            </div>
+          )}
           <FriendsList
             friends={friends}
             onAddFriend={handleAddFriend}
             onInviteFriend={handleInviteFriend}
             onRemoveFriend={handleRemoveFriend}
             onUserClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
-            pendingRequestsSlot={currentUser ? (
-              <>
-                <PendingRequests userId={currentUser.id} />
-                <SentRequests userId={currentUser.id} />
-              </>
-            ) : undefined}
           />
         </div>
       </div>
