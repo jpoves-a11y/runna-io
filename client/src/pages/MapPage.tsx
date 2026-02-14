@@ -13,7 +13,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
-import type { TerritoryWithUser, RouteWithTerritory, Route } from '@shared/schema';
+import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 
 export default function MapPage() {
   const [, setLocation] = useLocation();
@@ -21,7 +21,6 @@ export default function MapPage() {
     return window.location.search.includes('tracking=true');
   });
   const [isAnimating, setIsAnimating] = useState(false);
-  const [latestRoute, setLatestRoute] = useState<Route | null>(null);
   const [conquestResult, setConquestResult] = useState<any>(null);
   const [conquestData, setConquestData] = useState<any>(null);
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
@@ -89,27 +88,6 @@ export default function MapPage() {
     queryKey: ['/api/routes', currentUser?.id],
     enabled: !!currentUser?.id,
   });
-
-  // When animating, get the latest route with detailed data
-  const { data: latestRouteData } = useQuery({
-    queryKey: ['/api/routes', currentUser?.id, 'latest'],
-    queryFn: async () => {
-      const routes = await queryClient.getQueryData(['/api/routes', currentUser?.id]);
-      if (Array.isArray(routes) && routes.length > 0) {
-        // Sort by creation date and get the most recent
-        const sorted = [...routes].sort((a: any, b: any) => new Date(b.createdAt || b.startedAt).getTime() - new Date(a.createdAt || a.startedAt).getTime());
-        return sorted[0];
-      }
-      return null;
-    },
-    enabled: !!currentUser?.id && isAnimating,
-  });
-
-  useEffect(() => {
-    if (latestRouteData) {
-      setLatestRoute(latestRouteData as Route);
-    }
-  }, [latestRouteData]);
 
   const createRouteMutation = useMutation({
     mutationFn: async (routeData: {
@@ -179,13 +157,19 @@ export default function MapPage() {
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
-  if (isAnimating && latestRoute) {
+  if (isAnimating && conquestData?.summaryPolyline) {
     return (
       <div className="w-full h-full flex flex-col">
         <ActivityAnimationView
-          route={latestRoute}
-          userColor={currentUser?.color || '#000000'}
+          summaryPolyline={conquestData.summaryPolyline}
+          distance={conquestData.distance || 0}
+          userColor={currentUser?.color || '#D4213D'}
           territoryArea={conquestData?.territoryArea || 0}
+          onClose={() => {
+            window.history.replaceState({}, '', '/');
+            setIsAnimating(false);
+            setConquestData(null);
+          }}
           onComplete={() => {
             // Use real conquest data from the process API
             const newArea = (conquestData?.newAreaConquered || 0) / 1000000;
@@ -232,7 +216,7 @@ export default function MapPage() {
           <StatsOverlay user={currentUser} />
         </div>
       )}
-      <UserInfoDialog userId={selectedUserId} open={isDialogOpen} onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }} />
+      <UserInfoDialog userId={selectedUserId} currentUserId={currentUser?.id} open={isDialogOpen} onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }} />
       <ConquestResultModal
         open={isResultModalOpen}
         onOpenChange={(open) => {
@@ -240,7 +224,6 @@ export default function MapPage() {
             // Reset animation state and go back to normal map view
             window.history.replaceState({}, '', '/');
             setIsAnimating(false);
-            setLatestRoute(null);
             setConquestResult(null);
             setConquestData(null);
           }

@@ -157,10 +157,19 @@ export class WorkerStorage {
           .from(territories)
           .where(eq(territories.routeId, route.id));
 
-        // Parse coordinates from JSON string (SQLite stores as text)
-        const parsedCoordinates = typeof route.coordinates === 'string'
-          ? JSON.parse(route.coordinates)
-          : route.coordinates;
+        // Parse coordinates safely (SQLite stores as text)
+        let parsedCoordinates: Array<[number, number]> = [];
+        if (Array.isArray(route.coordinates)) {
+          parsedCoordinates = route.coordinates as Array<[number, number]>;
+        } else if (typeof route.coordinates === 'string') {
+          try {
+            const parsed = JSON.parse(route.coordinates) as Array<[number, number]>;
+            parsedCoordinates = Array.isArray(parsed) ? parsed : [];
+          } catch (e) {
+            console.error('Error parsing route coordinates:', e);
+            parsedCoordinates = [];
+          }
+        }
 
         // Parse ranTogetherWith from JSON and get user names
         let ranTogetherWithUsers: Array<{ id: string; name: string }> = [];

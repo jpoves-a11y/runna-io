@@ -10,20 +10,12 @@ console.log('Root element found:', !!rootElement);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
-    // Force unregister any stale service workers first
-    try {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      for (const reg of registrations) {
-        await reg.unregister();
-        console.log('SW anterior desregistrado');
-      }
-    } catch (e) {
-      console.log('Error limpiando SWs antiguos:', e);
-    }
-    // Register fresh service worker
+    // Register/update service worker (don't unregister — it kills push subscriptions)
     navigator.serviceWorker.register('/service-worker.js')
       .then((registration) => {
         console.log('SW registrado:', registration.scope);
+        // Check for updates
+        registration.update();
       })
       .catch((error) => {
         console.log('Error registrando SW:', error);

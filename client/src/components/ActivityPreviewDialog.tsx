@@ -49,10 +49,36 @@ function formatDuration(seconds: number): string {
 function formatDate(dateStr: string): string {
   try {
     if (!dateStr) return 'Sin fecha';
-    // Handle various formats: ISO string, Date.toString(), Polar format
+    
+    // Handle numeric timestamps stored as strings (e.g. "1770750442000.0")
+    if (/^\d+(\.\d+)?$/.test(dateStr.trim())) {
+      const ts = Number(dateStr);
+      const date = new Date(ts);
+      if (!isNaN(date.getTime()) && date.getFullYear() > 1970 && date.getFullYear() < 2100) {
+        return date.toLocaleDateString('es-ES', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      }
+      // Maybe seconds instead of ms
+      const dateSec = new Date(ts * 1000);
+      if (!isNaN(dateSec.getTime()) && dateSec.getFullYear() > 1970 && dateSec.getFullYear() < 2100) {
+        return dateSec.toLocaleDateString('es-ES', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      }
+    }
+    
+    // Handle ISO strings and other standard formats
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) {
-      // Try parsing as Polar format "2024-01-15T10:30:00.000"
       const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
       if (match) {
         return `${match[3]}/${match[2]}/${match[1]}`;
@@ -112,7 +138,7 @@ function MiniMap({ polyline, activityName }: { polyline: string; activityName: s
       touchZoom: false,
     });
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/positron/{z}/{x}/{y}{r}.png').addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png').addTo(map);
 
     const latlngs = coordinates.map(([lat, lng]) => L.latLng(lat, lng));
 
@@ -246,20 +272,26 @@ export function ActivityPreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={isProcessing ? undefined : onOpenChange}>
-      <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto p-4 sm:p-6 gap-3">
-        <DialogHeader className="space-y-1">
-          <DialogTitle className="flex items-center gap-2 text-lg">
-            <Download className="h-5 w-5 text-primary" />
-            Nueva Actividad
-          </DialogTitle>
-          <DialogDescription className="text-xs sm:text-sm">
-            {totalCount > 1
-              ? `Actividad ${currentIndex + 1} de ${totalCount}`
-              : 'Revisa los detalles antes de importar'}
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="w-[calc(100%-1rem)] max-w-sm mx-auto gap-0 overflow-hidden rounded-2xl border-0 shadow-2xl [&>button]:text-white [&>button]:hover:text-white/80 [&>button]:z-10" style={{ padding: '0', paddingTop: '0', paddingBottom: '0' }}>
+        {/* Green header with icon */}
+        <div className="relative bg-gradient-to-br from-emerald-500 via-green-500 to-teal-600 px-4 py-4 text-white">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_70%)]" />
+          <DialogHeader className="space-y-1 relative">
+            <DialogTitle className="flex items-center gap-2.5 text-lg font-bold text-white">
+              <div className="bg-white/20 backdrop-blur-sm rounded-lg p-1.5">
+                <Download className="h-5 w-5" />
+              </div>
+              Nueva Actividad
+            </DialogTitle>
+            <DialogDescription className="text-sm text-white/85">
+              {totalCount > 1
+                ? `Actividad ${currentIndex + 1} de ${totalCount} pendientes`
+                : 'Revisa los detalles antes de importar'}
+            </DialogDescription>
+          </DialogHeader>
+        </div>
 
-        <div className="space-y-3">
+        <div className="space-y-2 p-3" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}>
           {/* Activity name + type */}
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-sm sm:text-base truncate flex-1 mr-2">
@@ -283,7 +315,7 @@ export function ActivityPreviewDialog({
           )}
 
           {/* Info grid - 3 items in a row */}
-          <div className="grid grid-cols-3 gap-2 p-2.5 bg-muted/30 rounded-lg border border-border/50">
+          <div className="grid grid-cols-3 gap-2 p-2 bg-muted/30 rounded-lg border border-border/50">
             <div className="text-center">
               <Calendar className="h-4 w-4 mx-auto text-muted-foreground mb-0.5" />
               <p className="text-[10px] text-muted-foreground">Fecha</p>
@@ -302,7 +334,7 @@ export function ActivityPreviewDialog({
           </div>
 
           {/* Action buttons */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 pt-1">
             <Button
               onClick={onAccept}
               disabled={isProcessing || !activity.summaryPolyline}

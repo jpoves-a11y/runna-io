@@ -163,3 +163,106 @@ export async function notifyFriendRequestAccepted(
     console.error('Error sending friend accepted notification:', error);
   }
 }
+
+// Notify friends when a user uploads a new activity
+export async function notifyFriendNewActivity(
+  storage: WorkerStorage,
+  activityUserId: string,
+  distanceKm: number,
+  newAreaKm2: number,
+  env: any
+): Promise<void> {
+  try {
+    const user = await storage.getUser(activityUserId);
+    const userName = user?.name || user?.username || 'Un amigo';
+
+    const friendIds = await storage.getFriendIds(activityUserId);
+    if (friendIds.length === 0) return;
+
+    const distanceText = distanceKm.toFixed(1);
+    const areaText = newAreaKm2.toFixed(2);
+
+    const payload = {
+      title: `🏃 ${userName} ha salido a correr`,
+      body: `${distanceText} km recorridos — ${areaText} km² de área nueva`,
+      tag: `friend-activity-${activityUserId}`,
+      data: {
+        url: '/',
+        type: 'friend_activity',
+        userId: activityUserId,
+      },
+    };
+
+    // Send to all friends who have push enabled
+    for (const friendId of friendIds) {
+      try {
+        const subscriptions = await storage.getPushSubscriptionsByUserId(friendId);
+        if (subscriptions.length === 0) continue;
+
+        const pushSubs = subscriptions.map((sub) => ({
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.p256dh, auth: sub.auth },
+        }));
+
+        await sendPushToUser(
+          pushSubs,
+          payload,
+          env.VAPID_PUBLIC_KEY || '',
+          env.VAPID_PRIVATE_KEY || '',
+          env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+        );
+      } catch (friendErr) {
+        console.error(`Error sending activity notification to friend ${friendId}:`, friendErr);
+      }
+    }
+
+    console.log(`✅ Sent activity notification to ${friendIds.length} friends of ${activityUserId}`);
+  } catch (error) {
+    console.error('Error sending friend activity notification:', error);
+  }
+}
+
+// Notify a user when someone overtakes them in total area
+export async function notifyAreaOvertake(
+  storage: WorkerStorage,
+  overtakerUserId: string,
+  victimUserId: string,
+  overtakerAreaKm2: number,
+  env: any
+): Promise<void> {
+  try {
+    const subscriptions = await storage.getPushSubscriptionsByUserId(victimUserId);
+    if (subscriptions.length === 0) return;
+
+    const overtaker = await storage.getUser(overtakerUserId);
+    const overtakerName = overtaker?.name || overtaker?.username || 'Alguien';
+
+    const payload = {
+      title: '📊 ¡Te han superado en área!',
+      body: `${overtakerName} ahora tiene ${overtakerAreaKm2.toFixed(2)} km² y te ha adelantado`,
+      tag: `area-overtake-${overtakerUserId}`,
+      data: {
+        url: '/',
+        type: 'area_overtake',
+        userId: overtakerUserId,
+      },
+    };
+
+    const pushSubs = subscriptions.map((sub) => ({
+      endpoint: sub.endpoint,
+      keys: { p256dh: sub.p256dh, auth: sub.auth },
+    }));
+
+    await sendPushToUser(
+      pushSubs,
+      payload,
+      env.VAPID_PUBLIC_KEY || '',
+      env.VAPID_PRIVATE_KEY || '',
+      env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+    );
+
+    console.log(`✅ Sent area overtake notification to ${victimUserId}`);
+  } catch (error) {
+    console.error('Error sending area overtake notification:', error);
+  }
+}

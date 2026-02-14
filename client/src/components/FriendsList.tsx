@@ -25,7 +25,7 @@ interface FriendsListProps {
   onUserClick?: (userId: string) => void;
 }
 
-export function FriendsList({ friends, onAddFriend, onInviteFriend, onRemoveFriend }: FriendsListProps) {
+export function FriendsList({ friends, onAddFriend, onInviteFriend, onRemoveFriend, onUserClick }: FriendsListProps) {
   const [friendToRemove, setFriendToRemove] = useState<UserWithStats | null>(null);
 
   const getInitials = (name: string) => {

@@ -49,7 +49,8 @@ function StartActivityButton() {
     const checkVisibility = () => {
       const isMapPage = window.location.pathname === '/';
       const isTracking = window.location.search.includes('tracking=true');
-      setShowButton(isMapPage && !isTracking);
+      const isAnimating = window.location.search.includes('animateLatestActivity=true');
+      setShowButton(isMapPage && !isTracking && !isAnimating);
     };
     window.addEventListener('popstate', checkVisibility);
     checkVisibility();

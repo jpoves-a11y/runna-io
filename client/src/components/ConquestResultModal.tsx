@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Trophy, Heart, Zap } from 'lucide-react';
+import { Trophy, MapPin, TrendingUp, Swords } from 'lucide-react';
 
 interface VictimInfo {
   userId: string;
@@ -28,15 +28,18 @@ export function ConquestResultModal({
 }: ConquestResultModalProps) {
   const [displayNewArea, setDisplayNewArea] = useState(0);
   const [displayTotalArea, setDisplayTotalArea] = useState(previousAreaKm2);
-  const [showVictims, setShowVictims] = useState(false);
+  const [showContent, setShowContent] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setDisplayNewArea(0);
       setDisplayTotalArea(previousAreaKm2);
-      setShowVictims(false);
+      setShowContent(false);
       return;
     }
+
+    // Small delay for entrance
+    setTimeout(() => setShowContent(true), 100);
 
     // Animate new area counter
     const newAreaInterval = setInterval(() => {
@@ -48,7 +51,6 @@ export function ConquestResultModal({
         
         if (Math.abs(next - target) < 0.01) {
           clearInterval(newAreaInterval);
-          // After new area is done, animate total area
           setTimeout(() => {
             const totalInterval = setInterval(() => {
               setDisplayTotalArea((prev2) => {
@@ -56,19 +58,14 @@ export function ConquestResultModal({
                 const diff2 = target2 - prev2;
                 const step2 = Math.max(diff2 / 20, 0.01);
                 const next2 = Math.min(prev2 + step2, target2);
-                
                 if (Math.abs(next2 - target2) < 0.01) {
                   clearInterval(totalInterval);
-                  // Finally show victims
-                  setTimeout(() => setShowVictims(true), 300);
                 }
-                
                 return next2;
               });
             }, 50);
-          }, 300);
+          }, 200);
         }
-        
         return next;
       });
     }, 50);
@@ -76,104 +73,82 @@ export function ConquestResultModal({
     return () => clearInterval(newAreaInterval);
   }, [open, newAreaKm2, previousAreaKm2]);
 
-  const totalStolenArea = victims.reduce((sum, v) => sum + v.stolenArea, 0);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-full max-w-sm border-2 border-primary/50">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-center justify-center">
-            <Trophy className="h-6 w-6 text-yellow-500 animate-bounce" />
-            ¡Conquista Completada!
-            <Zap className="h-6 w-6 text-primary animate-pulse" />
-          </DialogTitle>
-          <DialogDescription>Tu actividad ha sido procesada y mapeada</DialogDescription>
-        </DialogHeader>
+      <DialogContent className="w-[calc(100%-1rem)] max-w-sm mx-auto gap-0 overflow-hidden rounded-2xl border-0 shadow-2xl p-0" style={{ padding: '0', paddingTop: '0', paddingBottom: '0' }}>
+        {/* Green gradient header */}
+        <div className="relative bg-gradient-to-br from-emerald-500 via-green-500 to-teal-600 px-5 pt-6 pb-8 text-white text-center">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_70%)]" />
+          <div className="relative">
+            <div className="inline-flex items-center justify-center bg-white/20 backdrop-blur-sm rounded-full p-3 mb-3">
+              <Trophy className="h-8 w-8 text-yellow-200" />
+            </div>
+            <h2 className="text-xl font-bold mb-1">¡Conquista Completada!</h2>
+            <p className="text-sm text-white/80">Tu actividad ha sido procesada</p>
+          </div>
+        </div>
 
-        <div className="space-y-6 py-4">
-          {/* New Area Gained */}
-          <div className="bg-gradient-to-br from-primary/10 to-primary/5 rounded-lg p-6 text-center border border-primary/20">
-            <p className="text-sm text-muted-foreground mb-2">Has conquistado</p>
-            <div className="text-5xl font-bold text-primary mb-2">
+        {/* New area card - overlapping header */}
+        <div className={`px-4 -mt-5 transition-all duration-500 ${showContent ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+          <div className="bg-background rounded-xl shadow-lg border border-border/50 p-5 text-center">
+            <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Has conquistado</p>
+            <div className="text-4xl font-black text-primary mb-0.5">
               {displayNewArea.toFixed(2)}
             </div>
-            <p className="text-sm font-semibold text-muted-foreground">km² nuevos</p>
+            <p className="text-sm font-medium text-muted-foreground">km² nuevos</p>
           </div>
+        </div>
 
-          {/* Total Area */}
-          <div className="flex items-center justify-between p-4 bg-muted/50 rounded-lg border border-border/50">
-            <div>
-              <p className="text-sm text-muted-foreground">Área total conquistada</p>
-              <p className="text-2xl font-bold">
-                {displayTotalArea.toFixed(2)}
-              </p>
-              <p className="text-xs text-muted-foreground">km²</p>
+        {/* Stats and action */}
+        <div className={`px-4 pt-3 pb-4 space-y-3 transition-all duration-500 delay-200 ${showContent ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`} style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}>
+          {/* Total area + change */}
+          <div className="flex items-center gap-3 p-3 bg-muted/40 rounded-xl">
+            <div className="bg-primary/10 rounded-lg p-2">
+              <MapPin className="h-5 w-5 text-primary" />
             </div>
-            <Heart className="h-8 w-8 text-red-500 opacity-50" />
+            <div className="flex-1">
+              <p className="text-xs text-muted-foreground">Área total conquistada</p>
+              <p className="text-xl font-bold">{displayTotalArea.toFixed(2)} km²</p>
+            </div>
+            {newAreaKm2 > 0 && (
+              <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 border-0">
+                <TrendingUp className="h-3 w-3 mr-1" />
+                +{newAreaKm2.toFixed(2)}
+              </Badge>
+            )}
           </div>
 
           {/* Stolen Territories */}
-          {victims.length > 0 && showVictims && (
-            <div className="space-y-3 pt-2 border-t border-border/50">
-              <div className="flex items-center justify-between">
-                <p className="font-semibold">Territorios robados</p>
-                <Badge variant="secondary" className="bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
-                  {totalStolenArea.toFixed(2)} km²
-                </Badge>
+          {victims.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-1">
+                <Swords className="h-4 w-4 text-red-500" />
+                <p className="text-sm font-semibold">Territorios robados</p>
               </div>
-
-              <div className="space-y-2 max-h-48 overflow-y-auto">
+              <div className="space-y-1.5 max-h-32 overflow-y-auto">
                 {victims.map((victim) => (
                   <div
                     key={victim.userId}
-                    className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border border-border/50 hover:bg-muted transition-colors"
+                    className="flex items-center gap-2.5 p-2.5 bg-muted/30 rounded-lg"
                   >
                     <div
-                      className="w-4 h-4 rounded-full flex-shrink-0"
+                      className="w-3 h-3 rounded-full flex-shrink-0"
                       style={{ backgroundColor: victim.userColor }}
                     />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{victim.userName}</p>
-                    </div>
-                    <Badge variant="outline" className="text-xs flex-shrink-0 bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800">
-                      {victim.stolenArea.toFixed(2)} km²
-                    </Badge>
+                    <span className="text-sm flex-1 truncate">{victim.userName}</span>
+                    <span className="text-xs font-semibold text-red-500">-{victim.stolenArea.toFixed(2)} km²</span>
                   </div>
                 ))}
               </div>
-
-              <p className="text-xs text-muted-foreground text-center pt-2">
-                {victims.length} {victims.length === 1 ? 'usuario perdió' : 'usuarios perdieron'} territorio
-              </p>
-            </div>
-          )}
-
-          {/* Loading state for victims */}
-          {!showVictims && victims.length > 0 && (
-            <div className="text-center py-2">
-              <div className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-                <div className="w-2 h-2 bg-primary rounded-full animate-bounce" />
-                Calculando territorios robados...
-              </div>
-            </div>
-          )}
-
-          {/* No victims */}
-          {victims.length === 0 && showVictims && (
-            <div className="text-center p-4 bg-muted/50 rounded-lg border border-border/50">
-              <p className="text-sm text-muted-foreground">
-                No robaste territorio a otros usuarios en esta actividad
-              </p>
             </div>
           )}
 
           {/* Action Button */}
           <Button
             onClick={() => onOpenChange(false)}
-            className="w-full bg-primary hover:bg-primary/90"
-            disabled={!showVictims && victims.length > 0}
+            className="w-full h-12 bg-primary hover:bg-primary/90 rounded-xl text-base font-semibold shadow-lg"
           >
-            {!showVictims && victims.length > 0 ? 'Calculando...' : 'Ver en el mapa'}
+            Ver en el mapa
           </Button>
         </div>
       </DialogContent>

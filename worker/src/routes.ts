@@ -776,6 +776,54 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
             }
 
+            // Send notifications to friends about new activity + check area overtakes
+            // (non-blocking — don't await, let it run in background)
+            c.executionCtx.waitUntil((async () => {
+              try {
+                const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
+                
+                // 1. Notify friends about new activity
+                const distanceKm = routeData.distance ? routeData.distance / 1000 : 0;
+                const newAreaKm2 = conquestResult.newAreaConquered / 1000000;
+                await notifyFriendNewActivity(
+                  storage,
+                  routeData.userId,
+                  distanceKm,
+                  newAreaKm2,
+                  c.env
+                );
+
+                // 2. Check if user overtook any friends in total area
+                const friendIds = await storage.getFriendIds(routeData.userId);
+                const userAreaKm2 = conquestResult.totalArea / 1000000;
+                
+                for (const friendId of friendIds) {
+                  try {
+                    const friend = await storage.getUser(friendId);
+                    if (friend && friend.totalArea !== null && friend.totalArea !== undefined) {
+                      const friendAreaKm2 = friend.totalArea / 1000000;
+                      // User now has more area than friend
+                      // Check if before this activity they had less (new area pushed them over)
+                      const previousAreaKm2 = (conquestResult.totalArea - conquestResult.newAreaConquered) / 1000000;
+                      if (previousAreaKm2 < friendAreaKm2 && userAreaKm2 >= friendAreaKm2) {
+                        await notifyAreaOvertake(
+                          storage,
+                          routeData.userId,
+                          friendId,
+                          userAreaKm2,
+                          c.env
+                        );
+                      }
+                    }
+                  } catch (friendErr) {
+                    console.error(`[NOTIFY] Error checking overtake for friend ${friendId}:`, friendErr);
+                  }
+                }
+              } catch (notifErr) {
+                console.error('[NOTIFY] Error sending activity/overtake notifications:', notifErr);
+              }
+            })());
+
             return c.json({ 
               route, 
               territory: conquestResult.territory,
@@ -1097,6 +1145,36 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Cancel (delete) a friend request sent by the user
+  app.delete('/api/friends/requests/:requestId', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const requestId = c.req.param('requestId');
+
+      const request = await storage.getFriendRequestById(requestId);
+      if (!request) {
+        return c.json({ error: "Request not found" }, 404);
+      }
+
+      // Only the sender can cancel their own request
+      // We don't check userId from body here since the request itself identifies the sender
+      // If you want additional auth, uncomment the lines below
+      // const body = await c.req.json();
+      // const { userId } = body;
+      // if (request.senderId !== userId) {
+      //   return c.json({ error: "Unauthorized" }, 403);
+      // }
+
+      // Delete the request
+      await storage.deleteFriendRequest(requestId);
+
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.get('/api/users/search', async (c) => {
     try {
       const db = getDb(c.env);
@@ -1130,25 +1208,60 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       // Total area (stored on users.totalArea)
       const totalArea = user.totalArea || 0;
 
-      // Activities: count saved routes
-      const routes = await storage.getRoutesByUserId(userId);
-      const activitiesCount = routes.length;
-
-      // Last activity: most recent route completion or strava activity
-      const stravaActs = await storage.getStravaActivitiesByUserId(userId);
-      const lastRouteDate = routes.length > 0 ? new Date(routes[0].completedAt) : null;
-      const lastStravaDate = stravaActs.length > 0 ? new Date(stravaActs[0].startDate) : null;
+      // Activities & last activity - wrapped in try/catch so user info still returns if routes fail
+      let activitiesCount = 0;
       let lastActivity: string | null = null;
-      if (lastRouteDate && lastStravaDate) {
-        lastActivity = (lastRouteDate > lastStravaDate ? lastRouteDate : lastStravaDate).toISOString();
-      } else if (lastRouteDate) {
-        lastActivity = lastRouteDate.toISOString();
-      } else if (lastStravaDate) {
-        lastActivity = lastStravaDate.toISOString();
+      try {
+        const routes = await storage.getRoutesByUserId(userId);
+        activitiesCount = routes.length;
+        const lastRouteDate = routes.length > 0 ? new Date(routes[0].completedAt) : null;
+
+        try {
+          const stravaActs = await storage.getStravaActivitiesByUserId(userId);
+          const lastStravaDate = stravaActs.length > 0 ? new Date(stravaActs[0].startDate) : null;
+          if (lastRouteDate && lastStravaDate) {
+            lastActivity = (lastRouteDate > lastStravaDate ? lastRouteDate : lastStravaDate).toISOString();
+          } else if (lastRouteDate) {
+            lastActivity = lastRouteDate.toISOString();
+          } else if (lastStravaDate) {
+            lastActivity = lastStravaDate.toISOString();
+          }
+        } catch (e) {
+          console.error('Error fetching strava activities for stats:', e);
+          if (lastRouteDate) lastActivity = lastRouteDate.toISOString();
+        }
+      } catch (e) {
+        console.error('Error fetching routes for user stats:', e);
       }
 
-      // Note: historical "stolen/robbed" area is not currently recorded in the DB.
-      // Return null for those fields so the client can display N/A.
+      // Conquest stats: total stolen by this user and total lost by this user (global)
+      let totalStolen = 0;
+      let totalLost = 0;
+      // Conquest stats between viewer and this user
+      let stolenFromViewer = 0;
+      let stolenByViewer = 0;
+      try {
+        const conquestStats = await storage.getUserConquestStats(userId);
+        totalStolen = conquestStats.totalStolen;
+        totalLost = conquestStats.totalLost;
+      } catch (e) {
+        console.error('Error fetching conquest stats:', e);
+      }
+
+      // If a viewerId is provided, compute stolen area between the two users
+      const viewerId = c.req.query('viewerId');
+      if (viewerId && viewerId !== userId) {
+        try {
+          const between = await storage.getConquestMetricsBetweenUsers(userId, viewerId);
+          // totalFromFirstToSecond = area userId stole from viewerId
+          // totalFromSecondToFirst = area viewerId stole from userId
+          stolenFromViewer = between.totalFromFirstToSecond; // this user stole from viewer
+          stolenByViewer = between.totalFromSecondToFirst; // viewer stole from this user
+        } catch (e) {
+          console.error('Error fetching conquest metrics between users:', e);
+        }
+      }
+
       const stats = {
         user: {
           id: user.id,
@@ -1160,8 +1273,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         totalArea, // in m²
         activitiesCount,
         lastActivity, // ISO string or null
-        areaStolen: null,
-        areaRobbed: null,
+        totalStolen, // total area this user has stolen globally (m²)
+        totalLost, // total area stolen from this user globally (m²)
+        stolenFromViewer, // area this user stole from the viewer (m²)
+        stolenByViewer, // area the viewer stole from this user (m²)
       };
 
       return c.json(stats);
@@ -1295,6 +1410,50 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       await storage.deletePushSubscriptionsByUserId(userId);
       return c.json({ success: true });
     } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Test push notification endpoint
+  app.post('/api/push/test', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { userId } = body;
+
+      if (!userId) return c.json({ error: 'userId required' }, 400);
+
+      const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
+      if (subscriptions.length === 0) {
+        return c.json({ error: 'No push subscriptions found for this user', subscriptionCount: 0 }, 404);
+      }
+
+      const { sendPushToUser } = await import('./pushHelper');
+
+      const pushSubs = subscriptions.map((sub) => ({
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.p256dh, auth: sub.auth },
+      }));
+
+      const payload = {
+        title: '🏃 Runna.io',
+        body: '¡Las notificaciones funcionan correctamente!',
+        tag: 'test-notification',
+        data: { url: '/', type: 'test' },
+      };
+
+      await sendPushToUser(
+        pushSubs,
+        payload,
+        c.env.VAPID_PUBLIC_KEY || '',
+        c.env.VAPID_PRIVATE_KEY || '',
+        c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+      );
+
+      return c.json({ success: true, subscriptionCount: subscriptions.length });
+    } catch (error: any) {
+      console.error('Error sending test push:', error);
       return c.json({ error: error.message }, 500);
     }
   });

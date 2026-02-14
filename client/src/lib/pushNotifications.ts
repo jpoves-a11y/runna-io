@@ -1,6 +1,7 @@
 // Push Notifications Helper
-// VAPID keys - these need to be generated with web-push library
-// Run: npx web-push generate-vapid-keys
+import { API_BASE } from './queryClient';
+
+// VAPID keys
 const VAPID_PUBLIC_KEY = 'BOGRkr2uEzhJfiGZ90GHqrfXfgJX1WjfSCB7pOxaDbA81aSkBNuRLnsjsq-9Jf7ryPq1TMvYDLisOurpJNptkHw';
 
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
@@ -74,7 +75,7 @@ async function sendSubscriptionToBackend(
 ): Promise<void> {
   const subscriptionJSON = subscription.toJSON();
   
-  const response = await fetch(`${import.meta.env.VITE_API_URL}/api/push/subscribe`, {
+  const response = await fetch(`${API_BASE}/api/push/subscribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -101,7 +102,7 @@ export async function unsubscribeFromPushNotifications(userId: string): Promise<
     await subscription.unsubscribe();
 
     // Remove from backend
-    await fetch(`${import.meta.env.VITE_API_URL}/api/push/unsubscribe`, {
+    await fetch(`${API_BASE}/api/push/unsubscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId }),

@@ -33,11 +33,22 @@ import { apiRequest, queryClient } from '@/lib/queryClient';
 function safeFormatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return 'Sin fecha';
   try {
+    // Handle numeric timestamps stored as strings (e.g. "1770750442000.0")
+    if (/^\d+(\.\d+)?$/.test(dateStr.trim())) {
+      const ts = Number(dateStr);
+      let date = new Date(ts);
+      if (!isNaN(date.getTime()) && date.getFullYear() > 1970 && date.getFullYear() < 2100) {
+        return date.toLocaleDateString('es-ES');
+      }
+      date = new Date(ts * 1000);
+      if (!isNaN(date.getTime()) && date.getFullYear() > 1970 && date.getFullYear() < 2100) {
+        return date.toLocaleDateString('es-ES');
+      }
+    }
     const date = new Date(dateStr);
     if (!isNaN(date.getTime())) {
       return date.toLocaleDateString('es-ES');
     }
-    // Fallback: extract date from YYYY-MM-DD pattern
     const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
     if (match) return `${match[3]}/${match[2]}/${match[1]}`;
     return dateStr;
@@ -531,7 +542,10 @@ export default function ProfilePage() {
       const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
       const processData = await processRes.json();
       
-      // Store conquest data for the map animation
+      // Get current activity data for the animation
+      const currentActivity = pendingActivities[currentPreviewIndex];
+      
+      // Store conquest data + polyline for the map animation
       if (processData.results && processData.results.length > 0) {
         const result = processData.results[0];
         sessionStorage.setItem('lastConquestResult', JSON.stringify({
@@ -540,6 +554,8 @@ export default function ProfilePage() {
           areaStolen: result.metrics?.areaStolen || 0,
           routeId: result.routeId,
           territoryArea: result.area || 0,
+          summaryPolyline: currentActivity?.summaryPolyline || null,
+          distance: currentActivity?.distance || 0,
         }));
       }
       
@@ -810,15 +826,28 @@ export default function ProfilePage() {
             </div>
 
             {user.rank && (
-              <Badge variant="secondary" className="gap-1">
-                <Trophy className="h-4 w-4" />
-                Puesto #{user.rank}
-              </Badge>
+              <button
+                type="button"
+                onClick={() => navigate('/rankings')}
+                className="focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-md"
+                aria-label="Ver rankings"
+              >
+                <Badge variant="secondary" className="gap-1 hover:bg-secondary/80 transition-colors">
+                  <Trophy className="h-4 w-4" />
+                  Puesto #{user.rank}
+                </Badge>
+              </button>
             )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">
-            <Card className="p-4 text-center">
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className="text-left focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-xl"
+              aria-label="Ir al mapa"
+            >
+              <Card className="p-4 text-center hover:bg-muted/30 transition-colors">
               <div className="flex items-center justify-center mb-2">
                 <MapPin className="h-6 w-6 text-primary" />
               </div>
@@ -829,9 +858,16 @@ export default function ProfilePage() {
                 })}
               </p>
               <p className="text-sm text-muted-foreground">km² conquistados</p>
-            </Card>
+              </Card>
+            </button>
 
-            <Card className="p-4 text-center">
+            <button
+              type="button"
+              onClick={() => navigate('/friends')}
+              className="text-left focus:outline-none focus:ring-2 focus:ring-primary/50 rounded-xl"
+              aria-label="Ir a amigos"
+            >
+              <Card className="p-4 text-center hover:bg-muted/30 transition-colors">
               <div className="flex items-center justify-center mb-2">
                 <Users className="h-6 w-6 text-primary" />
               </div>
@@ -839,7 +875,8 @@ export default function ProfilePage() {
                 {user.friendCount || 0}
               </p>
               <p className="text-sm text-muted-foreground">amigos</p>
-            </Card>
+              </Card>
+            </button>
           </div>
 
           {/* Conquest Stats */}

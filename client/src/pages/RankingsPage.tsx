@@ -110,6 +110,7 @@ export default function RankingsPage() {
 
       <UserInfoDialog
         userId={selectedUserId}
+        currentUserId={currentUser?.id}
         open={isDialogOpen}
         onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }}
       />
