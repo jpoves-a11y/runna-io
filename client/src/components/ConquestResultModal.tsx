@@ -35,6 +35,9 @@ export function ConquestResultModal({
   const [selectedVictim, setSelectedVictim] = useState<VictimInfo | null>(null);
   const [showTauntCamera, setShowTauntCamera] = useState(false);
 
+  // Filter out victims with no stolen area
+  const activeVictims = victims.filter(v => v.stolenArea > 0);
+
   useEffect(() => {
     if (!open) {
       setDisplayNewArea(0);
@@ -127,14 +130,14 @@ export function ConquestResultModal({
           </div>
 
           {/* Stolen Territories */}
-          {victims.length > 0 && (
+          {activeVictims.length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center gap-2 px-1">
                 <Swords className="h-4 w-4 text-red-500" />
                 <p className="text-sm font-semibold">Territorios robados</p>
               </div>
               <div className="space-y-1.5 max-h-32 overflow-y-auto">
-                {victims.map((victim) => (
+                {activeVictims.map((victim) => (
                   <div
                     key={victim.userId}
                     className="flex items-center gap-2.5 p-2.5 bg-muted/30 rounded-lg"

@@ -33,9 +33,19 @@ interface ActivityFeedProps {
 // Helper to safely parse dates that might be timestamps as strings
 function parseDate(value: string | number | Date): Date {
   if (value instanceof Date) return value;
-  // Handle timestamps stored as strings (e.g., "1769690860000.0")
-  const num = typeof value === 'string' ? parseFloat(value) : value;
-  return new Date(num);
+  if (typeof value === 'string') {
+    // Try as ISO/date string first
+    const d = new Date(value);
+    if (!isNaN(d.getTime()) && d.getFullYear() > 1970) return d;
+    // Fallback: try as numeric timestamp (ms, then seconds)
+    const num = parseFloat(value);
+    if (!isNaN(num)) {
+      const fromMs = new Date(num);
+      if (fromMs.getFullYear() > 1970 && fromMs.getFullYear() < 2100) return fromMs;
+      return new Date(num * 1000);
+    }
+  }
+  return new Date(value as number);
 }
 
 export function ActivityFeed({ routes }: ActivityFeedProps) {
