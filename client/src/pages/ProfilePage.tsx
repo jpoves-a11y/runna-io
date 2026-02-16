@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Watch, Camera, Plus, Trash2 } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2 } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -278,6 +278,21 @@ export default function ProfilePage() {
           title: 'Actividades procesadas',
           description: `Se procesaron ${data.processed} actividades de Strava`,
         });
+
+        const result = data.results?.[0];
+        if (result?.metrics) {
+          sessionStorage.setItem('lastConquestResult', JSON.stringify({
+            newAreaConquered: result.metrics?.newAreaConquered || 0,
+            totalArea: result.metrics?.totalArea || 0,
+            areaStolen: result.metrics?.areaStolen || 0,
+            routeId: result.routeId,
+            territoryArea: 0,
+            summaryPolyline: null,
+            distance: 0,
+            victims: result.metrics?.victims || [],
+          }));
+          navigate('/?showConquestResult=true');
+        }
       } else {
         toast({
           title: 'Sin actividades nuevas',
@@ -538,6 +553,9 @@ export default function ProfilePage() {
     if (!user?.id) return;
     
     setIsProcessingActivity(true);
+    setIsImportProcessed(false);
+    setImportTauntVictims([]);
+    setImportTauntArea(0);
     try {
       const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
       const processData = await processRes.json();
@@ -545,9 +563,13 @@ export default function ProfilePage() {
       // Get current activity data for the animation
       const currentActivity = pendingActivities[currentPreviewIndex];
       
+      let hasTauntVictims = false;
       // Store conquest data + polyline for the map animation
       if (processData.results && processData.results.length > 0) {
         const result = processData.results[0];
+        const victimsNotified = result.metrics?.victimsNotified || [];
+        const areaStolen = result.metrics?.areaStolen || 0;
+        hasTauntVictims = victimsNotified.length > 0 && areaStolen > 0;
         sessionStorage.setItem('lastConquestResult', JSON.stringify({
           newAreaConquered: result.metrics?.newAreaConquered || result.area || 0,
           totalArea: result.metrics?.totalArea || 0,
@@ -557,6 +579,12 @@ export default function ProfilePage() {
           summaryPolyline: currentActivity?.summaryPolyline || null,
           distance: currentActivity?.distance || 0,
         }));
+
+        if (hasTauntVictims) {
+          setImportTauntVictims(victimsNotified);
+          setImportTauntArea(areaStolen);
+          setIsImportProcessed(true);
+        }
       }
       
       // Invalidate queries so map has fresh data
@@ -568,16 +596,18 @@ export default function ProfilePage() {
         queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] }),
       ]);
       
-      setShowActivityPreview(false);
-      setPendingActivities([]);
-      setCurrentPreviewIndex(0);
-      
-      toast({
-        title: 'Actividad importada',
-        description: 'Redirigiendo al mapa...',
-      });
-      
-      navigate('/?animateLatestActivity=true');
+      if (hasTauntVictims) {
+        toast({
+          title: 'Actividad importada',
+          description: 'Puedes enviar una foto a tu rival o continuar al mapa.',
+        });
+      } else {
+        toast({
+          title: 'Actividad importada',
+          description: 'Redirigiendo al mapa...',
+        });
+        finalizeImportNavigation();
+      }
     } catch (error: any) {
       toast({
         title: 'Error al procesar',
@@ -590,6 +620,9 @@ export default function ProfilePage() {
   };
 
   const handleSkipActivity = () => {
+    setIsImportProcessed(false);
+    setImportTauntVictims([]);
+    setImportTauntArea(0);
     if (currentPreviewIndex < pendingActivities.length - 1) {
       setCurrentPreviewIndex(prev => prev + 1);
     } else {
@@ -615,14 +648,18 @@ export default function ProfilePage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
-      queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['/api/routes'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
       queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+      if (user?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/strava/activities/${user.id}`] });
+      }
       setIsPolarDeleteOpen(false);
       setPolarActivityToDelete(null);
       toast({
         title: 'Actividad eliminada',
-        description: 'Se ha recalculado tu territorio con las actividades restantes',
+        description: 'Se ha recalculado el territorio de todos los usuarios con las actividades restantes. Puedes reimportarla.',
       });
     },
     onError: (error: any) => {
@@ -1068,7 +1105,7 @@ export default function ProfilePage() {
 
           <Card className="p-4">
             <div className="flex items-center gap-2 mb-3">
-              <Watch className="h-5 w-5 text-[#D4213D]" />
+              <img src="/polar_icon.png" alt="Polar" className="h-5 w-5 rounded-full" />
               <h3 className="font-semibold">Integracion con Polar</h3>
             </div>
             
@@ -1081,7 +1118,7 @@ export default function ProfilePage() {
               <div className="space-y-4">
                 <div className="flex items-center gap-3">
                   <div className="h-12 w-12 rounded-full bg-[#D4213D] flex items-center justify-center">
-                    <Watch className="h-6 w-6 text-white" />
+                    <img src="/polar_icon.png" alt="Polar" className="h-6 w-6 rounded-full" />
                   </div>
                   <div className="flex-1">
                     <p className="font-medium">Polar Flow</p>
@@ -1136,7 +1173,7 @@ export default function ProfilePage() {
                   {connectPolarMutation.isPending ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
-                    <Watch className="h-4 w-4 mr-2" />
+                    <img src="/polar_icon.png" alt="Polar" className="h-4 w-4 mr-2 rounded-full" />
                   )}
                   Conectar con Polar
                 </Button>

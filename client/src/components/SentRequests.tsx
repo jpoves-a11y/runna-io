@@ -23,9 +23,10 @@ interface SentRequest {
 
 interface SentRequestsProps {
   userId: string;
+  onUserClick?: (userId: string) => void;
 }
 
-export default function SentRequests({ userId }: SentRequestsProps) {
+export default function SentRequests({ userId, onUserClick }: SentRequestsProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -80,7 +81,7 @@ export default function SentRequests({ userId }: SentRequestsProps) {
       </div>
       <div className="p-2 space-y-2 max-h-[300px] overflow-y-auto">
         {pendingRequests.map((request) => (
-          <Card key={request.id} className="p-3 bg-muted/50">
+          <Card key={request.id} className="p-3 bg-muted/50 cursor-pointer hover:bg-muted/70 transition-colors active:scale-[0.98]" onClick={() => request.recipient && onUserClick?.(request.recipient.id)}>
             <div className="flex items-center gap-3">
               {request.recipient?.avatar ? (
                 <img
@@ -105,7 +106,7 @@ export default function SentRequests({ userId }: SentRequestsProps) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => cancelMutation.mutate(request.id)}
+                  onClick={(e) => { e.stopPropagation(); cancelMutation.mutate(request.id); }}
                   disabled={cancelMutation.isPending}
                   className="h-8 w-8 p-0"
                 >

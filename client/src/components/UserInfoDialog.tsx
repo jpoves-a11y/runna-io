@@ -137,7 +137,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
       onOpenChange(v);
     }}>
       <DialogContent
-        className="w-[calc(100%-1.5rem)] max-w-sm gap-0 rounded-2xl border-0 shadow-2xl p-0 flex flex-col overflow-hidden top-[--dialog-top] translate-y-0"
+        className="w-[calc(100%-1.5rem)] max-w-sm gap-0 rounded-2xl border-0 shadow-2xl p-0 flex flex-col overflow-hidden top-[--dialog-top] translate-y-0 [&>button.absolute]:text-white [&>button.absolute]:hover:bg-white/15 [&>button.absolute]:hover:text-white"
         onInteractOutside={(e) => {
           if (showFullAvatar) e.preventDefault();
         }}
@@ -157,7 +157,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
               {selectedFriendId && (
                 <button
                   onClick={() => setSelectedFriendId(null)}
-                  className="flex-shrink-0 bg-white/20 hover:bg-white/30 transition-colors rounded-lg p-1.5"
+                  className="flex-shrink-0 hover:bg-white/15 transition-colors rounded-full p-1.5"
                   title="Volver"
                 >
                   <ChevronLeft className="h-5 w-5 text-white" />
@@ -193,7 +193,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
               <button
                 onClick={handleAddFriend}
                 disabled={addingFriend}
-                className="flex-shrink-0 bg-white/20 hover:bg-white/30 disabled:bg-white/10 disabled:cursor-not-allowed backdrop-blur-sm rounded-lg p-2 transition-colors"
+                className="flex-shrink-0 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed rounded-full p-2 transition-colors"
                 title="Añadir amigo"
               >
                 {addingFriend ? (

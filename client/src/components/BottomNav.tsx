@@ -12,6 +12,9 @@ const navItems = [
 export function BottomNav() {
   const [location] = useLocation();
 
+  // Hide nav during tracking
+  if (location.includes('tracking=true')) return null;
+
   const isPathActive = (path: string) => {
     if (path === '/') {
       return location === '/' || location.startsWith('/?');

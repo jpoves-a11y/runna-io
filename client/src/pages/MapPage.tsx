@@ -9,6 +9,7 @@ import { LoginDialog } from '@/components/LoginDialog';
 import { MapSkeleton } from '@/components/LoadingState';
 import { ActivityAnimationView } from '@/components/ActivityAnimationView';
 import { ConquestResultModal } from '@/components/ConquestResultModal';
+import { RouteCompletionDialog } from '@/components/RouteCompletionDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -31,6 +32,8 @@ export default function MapPage() {
   const { user: currentUser, isLoading: userLoading, login } = useSession();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [completionData, setCompletionData] = useState<any>(null);
+  const [showCompletionDialog, setShowCompletionDialog] = useState(false);
 
   useEffect(() => {
     const checkTracking = () => {
@@ -43,13 +46,26 @@ export default function MapPage() {
   useEffect(() => {
     const checkAnimation = () => {
       const animating = window.location.search.includes('animateLatestActivity=true');
+      const showResult = window.location.search.includes('showConquestResult=true');
       setIsAnimating(animating);
-      if (animating) {
+      if (animating || showResult) {
         // Read conquest data from sessionStorage (saved by ProfilePage)
         try {
           const stored = sessionStorage.getItem('lastConquestResult');
           if (stored) {
-            setConquestData(JSON.parse(stored));
+            const parsed = JSON.parse(stored);
+            setConquestData(parsed);
+            if (!animating) {
+              const newArea = (parsed?.newAreaConquered || 0) / 1000000;
+              const totalArea = (parsed?.totalArea || 0) / 1000000;
+              const previousArea = totalArea - newArea;
+              setConquestResult({
+                newArea,
+                previousArea: Math.max(0, previousArea),
+                victims: parsed?.victims || [],
+              });
+              setIsResultModalOpen(true);
+            }
             sessionStorage.removeItem('lastConquestResult');
           }
         } catch (e) {
@@ -100,39 +116,38 @@ export default function MapPage() {
       const response = await apiRequest('POST', '/api/routes', {
         userId: currentUser.id,
         name: `Ruta ${new Date().toLocaleDateString('es-ES')}`,
-        coordinates: routeData.coordinates,
+        coordinates: JSON.stringify(routeData.coordinates),
         distance: routeData.distance,
         duration: routeData.duration,
         startedAt: new Date(Date.now() - routeData.duration * 1000).toISOString(),
         completedAt: new Date().toISOString(),
       });
 
-      return response;
+      const data = await response.json();
+      return { ...data, inputDistance: routeData.distance, inputDuration: routeData.duration };
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/territories/friends', currentUser?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
       queryClient.invalidateQueries({ queryKey: ['/api/routes', currentUser?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
 
-      if (data.territory) {
-        toast({
-          title: '🎉 ¡Territorio conquistado!',
-          description: `Has conquistado ${(data.territory.area / 1000000).toLocaleString('es-ES', {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })} km² de territorio`,
-          duration: 5000,
-          className: 'animate-bounce-in',
-        });
-      } else {
-        toast({
-          title: '✅ Ruta guardada',
-          description: 'Tu ruta ha sido guardada exitosamente',
-        });
-      }
+      // Stop tracking mode
+      window.history.pushState({}, '', '/');
+      setIsTracking(false);
 
-      setLocation('/');
+      // Show completion dialog with route/territory/metrics data
+      setCompletionData({
+        routeName: data.route?.name || `Ruta ${new Date().toLocaleDateString('es-ES')}`,
+        distance: data.inputDistance || 0,
+        duration: data.inputDuration || 0,
+        summaryPolyline: data.summaryPolyline || null,
+        territory: data.territory || null,
+        metrics: data.metrics || null,
+        senderId: currentUser?.id,
+      });
+      setShowCompletionDialog(true);
     },
     onError: (error: Error) => {
       toast({
@@ -179,7 +194,7 @@ export default function MapPage() {
             setConquestResult({
               newArea,
               previousArea: Math.max(0, previousArea),
-              victims: []
+              victims: conquestData?.victims || []
             });
             setIsResultModalOpen(true);
           }}
@@ -232,6 +247,29 @@ export default function MapPage() {
         newAreaKm2={conquestResult?.newArea || 0}
         previousAreaKm2={conquestResult?.previousArea || 0}
         victims={conquestResult?.victims || []}
+        senderId={currentUser?.id}
+      />
+      <RouteCompletionDialog
+        open={showCompletionDialog}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowCompletionDialog(false);
+            setCompletionData(null);
+          }
+        }}
+        data={completionData}
+        onShowConquestResults={() => {
+          if (!completionData?.metrics) return;
+          const newArea = (completionData.metrics.newAreaConquered || 0) / 1000000;
+          const totalArea = (completionData.metrics.totalArea || 0) / 1000000;
+          const previousArea = totalArea - newArea;
+          setConquestResult({
+            newArea,
+            previousArea: Math.max(0, previousArea),
+            victims: completionData.metrics.victims || [],
+          });
+          setIsResultModalOpen(true);
+        }}
       />
     </div>
   );

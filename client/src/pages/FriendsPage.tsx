@@ -96,12 +96,12 @@ export default function FriendsPage() {
       <div className="flex flex-col h-full overflow-hidden">
         <div 
           className="flex-1 overflow-y-auto"
-          style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }}
         >
           {currentUser && (
             <div className="p-3 md:p-4 space-y-3 bg-muted/30">
               <PendingRequests userId={currentUser.id} />
-              <SentRequests userId={currentUser.id} />
+              <SentRequests userId={currentUser.id} onUserClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }} />
             </div>
           )}
           <FriendsList

@@ -14,6 +14,7 @@ import {
   conquestMetrics,
   emailNotifications,
   emailPreferences,
+  ephemeralPhotos,
   type User,
   type InsertUser,
   type Route,
@@ -42,6 +43,8 @@ import {
   type InsertEmailNotification,
   type EmailPreferences,
   type InsertEmailPreferences,
+  type EphemeralPhoto,
+  type InsertEphemeralPhoto,
   type UserWithStats,
   type TerritoryWithUser,
   type RouteWithTerritory,
@@ -141,6 +144,34 @@ export class WorkerStorage {
       .values(routeValues)
       .returning();
     return route;
+  }
+
+  // Get all routes from all users, sorted oldest first (for chronological reprocessing)
+  async getAllRoutesChronological(): Promise<Route[]> {
+    return await this.db
+      .select()
+      .from(routes)
+      .orderBy(routes.completedAt); // oldest first (ASC)
+  }
+
+  // Get routes for a single user, sorted oldest first (chronological order for territory rebuilding)
+  async getRoutesByUserIdChronological(userId: string): Promise<Route[]> {
+    return await this.db
+      .select()
+      .from(routes)
+      .where(eq(routes.userId, userId))
+      .orderBy(routes.completedAt); // oldest first (ASC)
+  }
+
+  // Get routes for a set of users, sorted oldest first
+  async getRoutesForUsersChronological(userIds: string[]): Promise<Route[]> {
+    if (userIds.length === 0) return [];
+    const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    return await this.db
+      .select()
+      .from(routes)
+      .where(sql`${routes.userId} IN (${sql.raw(placeholders)})`)
+      .orderBy(routes.completedAt);
   }
 
   async getRoutesByUserId(userId: string): Promise<RouteWithTerritory[]> {
@@ -281,6 +312,18 @@ export class WorkerStorage {
 
   async deleteTerritoryById(id: string): Promise<void> {
     await this.db.delete(territories).where(eq(territories.id, id));
+  }
+
+  async detachTerritoriesFromRoute(routeId: string): Promise<void> {
+    await this.db
+      .update(territories)
+      .set({ routeId: null })
+      .where(eq(territories.routeId, routeId));
+  }
+
+  async cleanStaleRouteIds(): Promise<void> {
+    // Set routeId to null for territories whose route no longer exists
+    await this.db.run(sql`UPDATE territories SET route_id = NULL WHERE route_id IS NOT NULL AND route_id NOT IN (SELECT id FROM routes)`);
   }
 
   async subtractFromTerritory(
@@ -474,9 +517,10 @@ export class WorkerStorage {
     }
 
     const friendIds = userFriendships.map((f) => f.friendId);
-    const allUsers = await this.getAllUsersWithStats();
     
-    return allUsers.filter((user) => friendIds.includes(user.id));
+    // Rank friends among the friend group (including the user) instead of globally
+    const friendsLeaderboard = await this.getLeaderboardFriends(userId);
+    return friendsLeaderboard.filter((user) => friendIds.includes(user.id));
   }
 
   async checkFriendship(userId: string, friendId: string): Promise<boolean> {
@@ -664,6 +708,10 @@ export class WorkerStorage {
       .orderBy(desc(stravaActivities.startDate));
   }
 
+  async deleteStravaActivityByRouteId(routeId: string): Promise<void> {
+    await this.db.delete(stravaActivities).where(eq(stravaActivities.routeId, routeId));
+  }
+
   // ==================== POLAR ====================
 
   async getPolarAccountByUserId(userId: string): Promise<PolarAccount | undefined> {
@@ -711,6 +759,10 @@ export class WorkerStorage {
       .where(eq(polarActivities.id, id))
       .returning();
     return activity;
+  }
+
+  async deletePolarActivityByRouteId(routeId: string): Promise<void> {
+    await this.db.delete(polarActivities).where(eq(polarActivities.routeId, routeId));
   }
 
   async getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]> {
@@ -792,8 +844,37 @@ export class WorkerStorage {
     await this.db.delete(conquestMetrics).where(eq(conquestMetrics.routeId, routeId));
   }
 
+  async deleteAllConquestMetrics(): Promise<void> {
+    await this.db.delete(conquestMetrics);
+  }
+
+  async deleteConquestMetricsByUserId(userId: string): Promise<void> {
+    await this.db.delete(conquestMetrics).where(
+      sql`${conquestMetrics.attackerId} = ${userId} OR ${conquestMetrics.defenderId} = ${userId}`
+    );
+  }
+
   async deleteRouteById(id: string): Promise<void> {
     await this.db.delete(routes).where(eq(routes.id, id));
+  }
+
+  async updateRouteName(id: string, name: string): Promise<void> {
+    await this.db.update(routes).set({ name }).where(eq(routes.id, id));
+  }
+
+  async getRouteById(id: string): Promise<Route | null> {
+    const result = await this.db.select().from(routes).where(eq(routes.id, id)).limit(1);
+    return result[0] || null;
+  }
+
+  async recalculateUserArea(userId: string): Promise<void> {
+    // Sum all territory areas for this user
+    const result = await this.db
+      .select({ total: sql<number>`COALESCE(SUM(${territories.area}), 0)` })
+      .from(territories)
+      .where(eq(territories.userId, userId));
+    const totalArea = result[0]?.total || 0;
+    await this.db.update(users).set({ totalArea }).where(eq(users.id, userId));
   }
 
   async findRouteByAttributes(userId: string, name: string, distance: number): Promise<Route | null> {
@@ -816,6 +897,45 @@ export class WorkerStorage {
 
   async deleteTerritoriesByUserId(userId: string): Promise<void> {
     await this.db.delete(territories).where(eq(territories.userId, userId));
+  }
+
+  async deleteTerritoriesByRouteId(routeId: string): Promise<void> {
+    await this.db.delete(territories).where(eq(territories.routeId, routeId));
+  }
+
+  async deleteAllPolarActivitiesByUserId(userId: string): Promise<void> {
+    await this.db.delete(polarActivities).where(eq(polarActivities.userId, userId));
+  }
+
+  async deleteAllRoutesByUserId(userId: string): Promise<void> {
+    await this.db.delete(routes).where(eq(routes.userId, userId));
+  }
+
+  async deleteAllStravaActivitiesByUserId(userId: string): Promise<void> {
+    await this.db.delete(stravaActivities).where(eq(stravaActivities.userId, userId));
+  }
+
+  async findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null> {
+    // Busca una ruta por userId, fecha de inicio y distancia aproximada (1% tolerancia)
+    // Compare by date prefix (YYYY-MM-DDTHH:MM) to avoid format mismatches (milliseconds, timezone)
+    const datePrefix = startDate.substring(0, 16); // "2026-01-15T10:30"
+    const userRoutes = await this.db
+      .select()
+      .from(routes)
+      .where(
+        and(
+          eq(routes.userId, userId),
+          sql`${routes.startedAt} LIKE ${datePrefix + '%'}`
+        )
+      );
+    for (const route of userRoutes) {
+      const distDiff = Math.abs(route.distance - distance);
+      const threshold = Math.max(distance * 0.01, 1);
+      if (distDiff <= threshold) {
+        return route;
+      }
+    }
+    return null;
   }
 
   async getPolarActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {
@@ -1154,5 +1274,87 @@ export class WorkerStorage {
       .returning();
     
     return updated;
+  }
+
+  // --- Ephemeral Photos ---
+
+  async ensureEphemeralPhotosTable(): Promise<void> {
+    try {
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS ephemeral_photos (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        photo_data TEXT NOT NULL,
+        message TEXT,
+        area_stolen REAL,
+        viewed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TEXT NOT NULL
+      )`);
+    } catch (_) {}
+  }
+
+  async createEphemeralPhoto(data: InsertEphemeralPhoto): Promise<EphemeralPhoto> {
+    await this.ensureEphemeralPhotosTable();
+    const [photo] = await this.db
+      .insert(ephemeralPhotos)
+      .values(data)
+      .returning();
+    return photo;
+  }
+
+  async getPendingPhotosForUser(userId: string): Promise<Array<EphemeralPhoto & { senderName: string; senderUsername: string; senderAvatar: string | null }>> {
+    await this.ensureEphemeralPhotosTable();
+    const results = await this.db
+      .select({
+        id: ephemeralPhotos.id,
+        senderId: ephemeralPhotos.senderId,
+        recipientId: ephemeralPhotos.recipientId,
+        photoData: ephemeralPhotos.photoData,
+        message: ephemeralPhotos.message,
+        areaStolen: ephemeralPhotos.areaStolen,
+        viewed: ephemeralPhotos.viewed,
+        createdAt: ephemeralPhotos.createdAt,
+        expiresAt: ephemeralPhotos.expiresAt,
+        senderName: users.name,
+        senderUsername: users.username,
+        senderAvatar: users.avatar,
+      })
+      .from(ephemeralPhotos)
+      .innerJoin(users, eq(ephemeralPhotos.senderId, users.id))
+      .where(
+        and(
+          eq(ephemeralPhotos.recipientId, userId),
+          eq(ephemeralPhotos.viewed, false)
+        )
+      );
+    return results as any;
+  }
+
+  async viewAndDeleteEphemeralPhoto(photoId: string, userId: string): Promise<EphemeralPhoto | null> {
+    await this.ensureEphemeralPhotosTable();
+    const [photo] = await this.db
+      .select()
+      .from(ephemeralPhotos)
+      .where(
+        and(
+          eq(ephemeralPhotos.id, photoId),
+          eq(ephemeralPhotos.recipientId, userId)
+        )
+      );
+    if (!photo) return null;
+    
+    // Delete immediately after retrieval
+    await this.db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.id, photoId));
+    return photo;
+  }
+
+  async cleanupExpiredPhotos(): Promise<number> {
+    await this.ensureEphemeralPhotosTable();
+    const now = new Date().toISOString();
+    const result = await this.db
+      .delete(ephemeralPhotos)
+      .where(sql`${ephemeralPhotos.expiresAt} < ${now}`);
+    return result.rowsAffected || 0;
   }
 }

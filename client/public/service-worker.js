@@ -61,14 +61,19 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   const urlToOpen = event.notification.data?.url || '/';
+  const isTracking = event.notification.data?.type === 'tracking';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true })
       .then((clientList) => {
-        // Check if there's already a window open
+        // For tracking notifications, try to focus existing window
         for (const client of clientList) {
           if (client.url.includes(self.registration.scope) && 'focus' in client) {
-            return client.focus().then(() => client.navigate(urlToOpen));
+            return client.focus().then(() => {
+              // For tracking, stay on the current tracking view
+              if (!isTracking) client.navigate(urlToOpen);
+              return client;
+            });
           }
         }
         // Open new window

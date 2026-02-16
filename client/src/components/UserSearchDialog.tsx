@@ -119,6 +119,13 @@ export function UserSearchDialog({ open, onOpenChange, currentUserId }: UserSear
               onKeyPress={handleKeyPress}
               data-testid="input-search-friend"
               className="flex-1"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              data-form-type="other"
+              data-lpignore="true"
+              name="friend-search-input"
             />
             <Button
               onClick={handleSearch}

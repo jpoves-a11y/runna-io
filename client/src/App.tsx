@@ -6,7 +6,15 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { BottomNav } from "@/components/BottomNav";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { EphemeralPhotoViewer } from "@/components/EphemeralPhotoViewer";
+import { useSession } from "@/hooks/use-session";
 import { Play } from "lucide-react";
+
+function EphemeralPhotoWrapper() {
+  const { user } = useSession();
+  if (!user) return null;
+  return <EphemeralPhotoViewer userId={user.id} />;
+}
 
 // Log app initialization
 console.log('App.tsx loading...');
@@ -201,11 +209,11 @@ function App() {
               onTouchEnd={handleTouchEnd}
             >
               {isRefreshing && (
-                <div className="absolute inset-x-0 top-0 flex items-center justify-center z-50 h-12 bg-white/80">
-                  <svg className="animate-spin h-6 w-6 text-gray-700" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a12 12 0 100 24v-4l-3 3 3 3v-4a8 8 0 01-8-8z" />
-                  </svg>
+                <div
+                  className="absolute inset-x-0 top-0 flex items-center justify-center z-50 bg-background/80 backdrop-blur-sm"
+                  style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)', paddingBottom: '0.5rem' }}
+                >
+                  <div className="h-8 w-8 rounded-full border-[3px] border-muted-foreground/20 border-t-primary animate-spin" />
                 </div>
               )}
               <Router />
@@ -213,6 +221,7 @@ function App() {
             <BottomNav />
           </div>
           <StartActivityButton />
+          <EphemeralPhotoWrapper />
           <Toaster />
         </TooltipProvider>
       </QueryClientProvider>

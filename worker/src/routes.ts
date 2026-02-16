@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createDb } from './db';
 import { WorkerStorage } from './storage';
-import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute } from '../../shared/schema';
+import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
 import { EmailService } from './email';
 import type { Env } from './index';
@@ -83,6 +83,13 @@ function geometriesOverlapByPercentage(
   }
 }
 
+interface ConquestVictimInfo {
+  userId: string;
+  userName: string;
+  userColor: string;
+  stolenArea: number;
+}
+
 async function processTerritoryConquest(
   storage: WorkerStorage,
   userId: string,
@@ -97,6 +104,7 @@ async function processTerritoryConquest(
   newAreaConquered: number;
   areaStolen: number;
   victimsNotified: string[];
+  victims: ConquestVictimInfo[];
   ranTogetherWith: string[]; // Users who ran together (no territory stolen)
 }> {
   const allTerritories = await storage.getAllTerritories();
@@ -111,6 +119,10 @@ async function processTerritoryConquest(
   let totalStolenArea = 0;
   const victimsNotified: string[] = [];
   const ranTogetherWith: string[] = []; // Track users who ran together
+
+  const victimMap = new Map<string, ConquestVictimInfo>();
+  const defenderCache = new Map<string, any>();
+  const attacker = await storage.getUser(userId);
 
   // Step 1: Handle enemy territory conquest
   console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
@@ -182,10 +194,27 @@ async function processTerritoryConquest(
           console.error('[TERRITORY] Failed to record conquest metric:', metricErr);
         }
 
+        let defender = defenderCache.get(enemyTerritory.userId);
+        if (!defender) {
+          defender = await storage.getUser(enemyTerritory.userId);
+          defenderCache.set(enemyTerritory.userId, defender);
+        }
+
+        if (!victimMap.has(enemyTerritory.userId)) {
+          victimMap.set(enemyTerritory.userId, {
+            userId: enemyTerritory.userId,
+            userName: defender?.name || defender?.username || 'Usuario',
+            userColor: defender?.color || '#9ca3af',
+            stolenArea: 0,
+          });
+        }
+        const currentVictim = victimMap.get(enemyTerritory.userId);
+        if (currentVictim) {
+          currentVictim.stolenArea += result.stolenArea;
+        }
+
         // Send email notification
         try {
-          const attacker = await storage.getUser(userId);
-          const defender = await storage.getUser(enemyTerritory.userId);
           const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
           const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
           const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
@@ -213,7 +242,7 @@ async function processTerritoryConquest(
           console.error('[TERRITORY] Failed to send conquest email:', emailErr);
         }
 
-        // Send notification
+        // Send notification with stolen area
         if (env && !victimsNotified.includes(enemyTerritory.userId)) {
           try {
             const { notifyTerritoryLoss } = await import('./notifications');
@@ -221,7 +250,8 @@ async function processTerritoryConquest(
               storage,
               enemyTerritory.userId,
               userId,
-              env
+              env,
+              result.stolenArea
             );
             victimsNotified.push(enemyTerritory.userId);
           } catch (notifErr) {
@@ -274,8 +304,250 @@ async function processTerritoryConquest(
     newAreaConquered: result.newArea,
     areaStolen: totalStolenArea,
     victimsNotified,
+    victims: Array.from(victimMap.values()).sort((a, b) => b.stolenArea - a.stolenArea),
     ranTogetherWith,
   };
+}
+
+// Rebuild territories for a user from all their remaining routes
+// Used after route deletion to recalculate territory accurately
+async function reprocessUserTerritories(
+  storage: WorkerStorage,
+  userId: string
+): Promise<void> {
+  // Delete all existing territories for this user
+  await storage.deleteTerritoriesByUserId(userId);
+
+  // Get all of the user's routes, ordered chronologically (oldest first)
+  const userRoutes = await storage.getRoutesByUserIdChronological(userId);
+
+  let currentGeometry: any = null;
+
+  for (const route of userRoutes) {
+    try {
+      const coords: [number, number][] = Array.isArray(route.coordinates)
+        ? route.coordinates
+        : typeof route.coordinates === 'string'
+          ? JSON.parse(route.coordinates)
+          : [];
+
+      if (coords.length < 3) continue;
+
+      const simplifiedCoords = simplifyCoordinates(coords, 150);
+      const lineString = turf.lineString(
+        simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
+      );
+      const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+      if (!buffered) continue;
+
+      if (currentGeometry) {
+        // Merge with existing territory
+        try {
+          const toFeature = (geom: any) => geom.type === 'MultiPolygon'
+            ? turf.multiPolygon(geom.coordinates)
+            : turf.polygon(geom.coordinates);
+          const currentFeature = toFeature(currentGeometry);
+          const newFeature = toFeature(buffered.geometry);
+          const union = turf.union(
+            turf.featureCollection([currentFeature, newFeature])
+          );
+          if (union) {
+            currentGeometry = union.geometry;
+          }
+        } catch (err) {
+          console.error('[REPROCESS] Error merging geometry:', err);
+        }
+      } else {
+        currentGeometry = buffered.geometry;
+      }
+    } catch (err) {
+      console.error(`[REPROCESS] Error processing route ${route.id}:`, err);
+    }
+  }
+
+  if (currentGeometry) {
+    const totalArea = turf.area(currentGeometry);
+    await storage.updateTerritoryGeometry(userId, null, currentGeometry, totalArea);
+    await storage.updateUserTotalArea(userId, totalArea);
+  } else {
+    await storage.updateUserTotalArea(userId, 0);
+  }
+}
+
+// Reprocess ALL users' territories in strict chronological order so that
+// older routes "own" the territory first and newer overlapping routes steal
+// from them.  This is the only way to get correct steal attribution after
+// a route is deleted and then reimported.
+// Reprocess territories chronologically for a user and their friends only.
+// Since territory stealing only happens between friends, a delete/reimport
+// only needs to recalculate the territory of the affected friend group.
+async function reprocessFriendGroupTerritoriesChronologically(
+  storage: WorkerStorage,
+  triggerUserId: string,
+): Promise<void> {
+  console.log(`[FRIEND REPROCESS] Starting for user ${triggerUserId} + friends...`);
+
+  // 1. Determine the friend group (user + their friends)
+  const friendIds = await storage.getFriendIds(triggerUserId);
+  const groupUserIds = [triggerUserId, ...friendIds];
+  console.log(`[FRIEND REPROCESS] Friend group: ${groupUserIds.length} users`);
+
+  // 2. Wipe territories and conquest metrics for this group only
+  for (const uid of groupUserIds) {
+    await storage.deleteTerritoriesByUserId(uid);
+    await storage.updateUserTotalArea(uid, 0);
+  }
+
+  // Delete conquest metrics where attacker OR defender is in the group
+  for (const uid of groupUserIds) {
+    await storage.deleteConquestMetricsByUserId(uid);
+  }
+
+  // 3. Get routes from group users only, oldest first
+  const allRoutes = await storage.getRoutesForUsersChronological(groupUserIds);
+  console.log(`[FRIEND REPROCESS] ${allRoutes.length} routes to process`);
+
+  // Per-user accumulated geometry
+  const userGeometries = new Map<string, any>();
+
+  // Build a friendship lookup: for each user, which other group members are friends
+  const friendshipMap = new Map<string, Set<string>>();
+  for (const uid of groupUserIds) {
+    const uFriends = await storage.getFriendIds(uid);
+    friendshipMap.set(uid, new Set(uFriends));
+  }
+
+  for (const route of allRoutes) {
+    try {
+      const coords: [number, number][] = Array.isArray(route.coordinates)
+        ? route.coordinates
+        : typeof route.coordinates === 'string'
+          ? JSON.parse(route.coordinates)
+          : [];
+
+      if (coords.length < 3) continue;
+
+      const simplifiedCoords = simplifyCoordinates(coords, 150);
+      const lineString = turf.lineString(
+        simplifiedCoords.map((c: [number, number]) => [c[1], c[0]])
+      );
+      const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+      if (!buffered) continue;
+
+      const routeGeometry = buffered.geometry;
+      const routeOwnerFriends = friendshipMap.get(route.userId) || new Set();
+
+      // --- Steal from FRIENDS only whose territory overlaps this route ---
+      for (const [otherUserId, otherGeometry] of userGeometries) {
+        if (otherUserId === route.userId) continue;
+        // Only steal between friends
+        if (!routeOwnerFriends.has(otherUserId)) continue;
+
+        try {
+          const toFeature = (geom: any) => geom.type === 'MultiPolygon'
+            ? turf.multiPolygon(geom.coordinates)
+            : turf.polygon(geom.coordinates);
+
+          const otherFeature = toFeature(otherGeometry);
+          const routeFeature = toFeature(routeGeometry);
+
+          const intersection = turf.intersect(turf.featureCollection([otherFeature, routeFeature]));
+          if (intersection) {
+            const stolenArea = turf.area(intersection);
+            if (stolenArea > 0) {
+              const remaining = turf.difference(turf.featureCollection([otherFeature, routeFeature]));
+              if (remaining) {
+                userGeometries.set(otherUserId, remaining.geometry);
+              } else {
+                userGeometries.delete(otherUserId);
+              }
+
+              try {
+                await storage.recordConquestMetric(
+                  route.userId,
+                  otherUserId,
+                  stolenArea,
+                  route.id
+                );
+              } catch (_e) { /* best-effort */ }
+            }
+          }
+        } catch (_e) {
+          // geometry operation failed, skip
+        }
+      }
+
+      // --- Merge route into its owner's accumulated geometry ---
+      const existing = userGeometries.get(route.userId);
+      if (existing) {
+        try {
+          const toFeature = (geom: any) => geom.type === 'MultiPolygon'
+            ? turf.multiPolygon(geom.coordinates)
+            : turf.polygon(geom.coordinates);
+          const existingFeature = toFeature(existing);
+          const newFeature = toFeature(routeGeometry);
+          const union = turf.union(turf.featureCollection([existingFeature, newFeature]));
+          if (union) {
+            userGeometries.set(route.userId, union.geometry);
+          }
+        } catch (_e) {
+          // If merge fails, keep existing
+        }
+      } else {
+        userGeometries.set(route.userId, routeGeometry);
+      }
+    } catch (err) {
+      console.error(`[FRIEND REPROCESS] Error on route ${route.id}:`, err);
+    }
+  }
+
+  // 4. Persist final geometries
+  for (const [uid, geometry] of userGeometries) {
+    const totalArea = turf.area(geometry);
+    await storage.updateTerritoryGeometry(uid, null, geometry, totalArea);
+    await storage.updateUserTotalArea(uid, totalArea);
+  }
+
+  // Users in the group with no routes left
+  for (const uid of groupUserIds) {
+    if (!userGeometries.has(uid)) {
+      await storage.updateUserTotalArea(uid, 0);
+    }
+  }
+
+  console.log('[FRIEND REPROCESS] Chronological reprocessing complete');
+}
+
+// Check if a newly inserted route is chronologically older than existing routes
+// from the user's FRIENDS.  If so, the territory ownership order is wrong and we
+// need a friend-group chronological rebuild.
+async function hasNewerOverlappingRoutes(
+  storage: WorkerStorage,
+  newRoute: { id: string; userId: string; completedAt: string | Date }
+): Promise<boolean> {
+  try {
+    const newCompletedAt = typeof newRoute.completedAt === 'string'
+      ? newRoute.completedAt
+      : (newRoute.completedAt as Date).toISOString();
+
+    // Only check friends' routes (only friends can steal territory)
+    const friendIds = await storage.getFriendIds(newRoute.userId);
+    if (friendIds.length === 0) return false;
+
+    const friendRoutes = await storage.getRoutesForUsersChronological(friendIds);
+    for (const route of friendRoutes) {
+      const routeCompletedAt = typeof route.completedAt === 'string'
+        ? route.completedAt
+        : String(route.completedAt);
+      if (routeCompletedAt > newCompletedAt) {
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.error('[hasNewerOverlappingRoutes] Error:', err);
+    return false;
+  }
 }
 
 function coerceDate(value: string | number | Date): Date | null {
@@ -402,9 +674,17 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       if (!user) {
         return c.json({ error: "User not found" }, 404);
       }
-      const allUsers = await storage.getAllUsersWithStats();
-      const userWithStats = allUsers.find(u => u.id === userId);
-      const { password: _, ...userWithoutPassword } = userWithStats || user;
+      // Use friends leaderboard so rank is among friends, not global
+      const friendsLeaderboard = await storage.getLeaderboardFriends(userId);
+      const userWithStats = friendsLeaderboard.find(u => u.id === userId);
+      if (!userWithStats) {
+        // Fallback to global stats if somehow not in friends list
+        const allUsers = await storage.getAllUsersWithStats();
+        const globalUser = allUsers.find(u => u.id === userId);
+        const { password: _, ...userWithoutPassword } = globalUser || user;
+        return c.json(userWithoutPassword);
+      }
+      const { password: _, ...userWithoutPassword } = userWithStats;
       return c.json(userWithoutPassword);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -750,9 +1030,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       
       const route = await storage.createRoute(routeData);
 
-      if (routeData.coordinates.length >= 3) {
+      // Parse coordinates from JSON string
+      const coords: [number, number][] = typeof routeData.coordinates === 'string'
+        ? JSON.parse(routeData.coordinates)
+        : routeData.coordinates;
+
+      if (coords.length >= 3) {
         try {
-          const coords = routeData.coordinates as [number, number][];
           const simplifiedCoords = simplifyCoordinates(coords, 150);
           const lineString = turf.lineString(
             simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
@@ -824,28 +1108,209 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               }
             })());
 
+            // Encode polyline from coords for the response
+            const summaryPolyline = encodePolyline(coords);
+
             return c.json({ 
               route, 
               territory: conquestResult.territory,
+              summaryPolyline,
               metrics: {
                 totalArea: conquestResult.totalArea,
                 newAreaConquered: conquestResult.newAreaConquered,
                 areaStolen: conquestResult.areaStolen,
                 ranTogetherWith: conquestResult.ranTogetherWith,
+                victimsNotified: conquestResult.victimsNotified,
+                victims: conquestResult.victims,
               }
             });
           } else {
-            return c.json({ route });
+            // Encode polyline even without territory
+            const summaryPolyline = encodePolyline(coords);
+            return c.json({ route, summaryPolyline });
           }
         } catch (error) {
           console.error('Error calculating territory:', error);
-          return c.json({ route });
+          const summaryPolyline = encodePolyline(coords);
+          return c.json({ route, summaryPolyline });
         }
       } else {
         return c.json({ route });
       }
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
+    }
+  });
+
+  // Rename a route
+  app.patch('/api/routes/:routeId/name', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const routeId = c.req.param('routeId');
+      const { userId, name } = await c.req.json();
+      if (!userId || !name || !name.trim()) {
+        return c.json({ error: 'userId and name are required' }, 400);
+      }
+      const route = await storage.getRouteById(routeId);
+      if (!route) {
+        return c.json({ error: 'Route not found' }, 404);
+      }
+      if (route.userId !== userId) {
+        return c.json({ error: 'Unauthorized' }, 403);
+      }
+      await storage.updateRouteName(routeId, name.trim());
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Delete a route and its associated territory/metrics
+  app.delete('/api/routes/:routeId', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const routeId = c.req.param('routeId');
+      const body = await c.req.json();
+      const userId = body.userId;
+
+      if (!userId) {
+        return c.json({ error: 'userId is required' }, 400);
+      }
+
+      // Verify the route belongs to this user
+      const route = await storage.getRouteById(routeId);
+      if (!route) {
+        return c.json({ error: 'Route not found' }, 404);
+      }
+      if (route.userId !== userId) {
+        return c.json({ error: 'Unauthorized' }, 403);
+      }
+
+      // Detach territories from this route (set routeId to null) so cascade doesn't delete them
+      await storage.detachTerritoriesFromRoute(routeId);
+
+      // Delete conquest metrics for this route
+      await storage.deleteConquestMetricsByRouteId(routeId);
+
+      // Remove any linked Polar/Strava activity records so they can be reimported
+      await storage.deletePolarActivityByRouteId(routeId);
+      await storage.deleteStravaActivityByRouteId(routeId);
+
+      // Delete the route itself (no cascade on territories now)
+      await storage.deleteRouteById(routeId);
+
+      // Reprocess this user's friend group territories chronologically
+      // so that removing this route recalculates correct ownership order
+      await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Reprocess all territories for all users (admin endpoint to fix data)
+  app.post('/api/admin/reprocess-territories', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      // Fix the FK constraint in the actual database
+      // Clean stale route_ids from territories
+      try {
+        await storage.cleanStaleRouteIds();
+      } catch (e) {
+        console.error('[REPROCESS] Could not clean stale route_ids:', e);
+      }
+
+      // Reprocess each user's friend group chronologically
+      const allUsers = await storage.getAllUsersWithStats();
+      const processedGroups = new Set<string>();
+      for (const user of allUsers) {
+        if (processedGroups.has(user.id)) continue;
+        const friendIds = await storage.getFriendIds(user.id);
+        // Mark this group as processed
+        processedGroups.add(user.id);
+        for (const fid of friendIds) processedGroups.add(fid);
+        await reprocessFriendGroupTerritoriesChronologically(storage, user.id);
+      }
+
+      // Gather results summary
+      const results: { userId: string; name: string; totalArea: number; routeCount: number }[] = [];
+      for (const user of allUsers) {
+        const updatedUser = await storage.getUser(user.id);
+        const userRoutes = await storage.getRoutesByUserIdChronological(user.id);
+        results.push({
+          userId: user.id,
+          name: user.name,
+          totalArea: updatedUser?.totalArea || 0,
+          routeCount: userRoutes.length,
+        });
+      }
+
+      return c.json({ success: true, results });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Admin: Full cleanup of a user's data (routes, territories, activities) so they can reimport fresh
+  app.post('/api/admin/cleanup-user/:username', async (c) => {
+    try {
+      const username = c.req.param('username');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const user = await storage.getUserByUsername(username);
+      if (!user) {
+        return c.json({ error: `User '${username}' not found` }, 404);
+      }
+
+      const userId = user.id;
+      console.log(`[ADMIN CLEANUP] Starting full cleanup for user: ${username} (${userId})`);
+
+      // 1. Delete all conquest metrics involving this user
+      await storage.deleteConquestMetricsByUserId(userId);
+      console.log(`[ADMIN CLEANUP] Deleted conquest metrics`);
+
+      // 2. Delete all territories for this user
+      await storage.deleteTerritoriesByUserId(userId);
+      console.log(`[ADMIN CLEANUP] Deleted territories`);
+
+      // 3. Delete all routes for this user
+      await storage.deleteAllRoutesByUserId(userId);
+      console.log(`[ADMIN CLEANUP] Deleted routes`);
+
+      // 4. Delete all polar activity records (so they can be reimported)
+      await storage.deleteAllPolarActivitiesByUserId(userId);
+      console.log(`[ADMIN CLEANUP] Deleted polar activities`);
+
+      // 5. Delete all strava activity records (so they can be reimported)
+      await storage.deleteAllStravaActivitiesByUserId(userId);
+      console.log(`[ADMIN CLEANUP] Deleted strava activities`);
+
+      // 6. Reset user stats
+      await storage.updateUser(userId, { totalArea: 0, totalDistance: 0 });
+      console.log(`[ADMIN CLEANUP] Reset user stats`);
+
+      // 7. Reprocess friend group territories (friends keep their territories, just recalculated without this user's old data)
+      try {
+        await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+        console.log(`[ADMIN CLEANUP] Reprocessed friend group territories`);
+      } catch (e) {
+        console.error('[ADMIN CLEANUP] Error reprocessing friend group:', e);
+      }
+
+      return c.json({
+        success: true,
+        message: `User '${username}' data cleaned. Polar/Strava activities removed. User can now sync to reimport.`,
+        userId,
+      });
+    } catch (error: any) {
+      console.error('[ADMIN CLEANUP] Error:', error);
+      return c.json({ error: error.message }, 500);
     }
   });
 
@@ -1779,18 +2244,29 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
           if (coordinates.length >= 3) {
+            const startedAtStr = startDate.toISOString();
+            const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
             const route = await storage.createRoute({
               userId: activity.userId,
               name: activity.name,
               coordinates,
               distance: activity.distance,
               duration: activity.duration,
-              startedAt: startDate,
-              completedAt: new Date(startDate.getTime() + activity.duration * 1000),
+              startedAt: startedAtStr,
+              completedAt: completedAtStr,
             });
 
-            const startedAtStr = startDate.toISOString();
-            const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+            // Check if this activity is older than existing routes from other users
+            let needsChronologicalReprocess = false;
+            try {
+              needsChronologicalReprocess = await hasNewerOverlappingRoutes(storage, route);
+            } catch (e) {
+              console.warn(`[STRAVA PROCESS] hasNewerOverlappingRoutes check failed:`, e);
+            }
+
+            if (needsChronologicalReprocess) {
+              console.log(`[STRAVA PROCESS] Activity ${activity.id} is older than some existing routes — needs chronological reprocess (use admin endpoint)`);
+            }
 
             const simplifiedCoords = simplifyCoordinates(coordinates, 150);
             const lineString = turf.lineString(
@@ -1829,7 +2305,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   totalArea: conquestResult.totalArea,
                   newAreaConquered: conquestResult.newAreaConquered,
                   areaStolen: conquestResult.areaStolen,
-                  ranTogetherWith: conquestResult.ranTogetherWith,
+                ranTogetherWith: conquestResult.ranTogetherWith,
+                victimsNotified: conquestResult.victimsNotified,
                 }
               });
             }
@@ -2558,92 +3035,62 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       let routeId = activity.routeId;
       if (!routeId) {
         console.log(`[DELETE] routeId is null for activity ${activityId}, searching by attributes...`);
-        const matchedRoute = await storage.findRouteByAttributes(userId, activity.name, activity.distance);
+        // Buscar por nombre y distancia (por si no ha sido renombrada)
+        let matchedRoute = await storage.findRouteByAttributes(userId, activity.name, activity.distance);
+        // Si no se encuentra, buscar por fecha y distancia (por si ha sido renombrada)
+        if (!matchedRoute && activity.startDate) {
+          matchedRoute = await storage.findRouteByDateAndDistance(userId, activity.startDate, activity.distance);
+        }
         if (matchedRoute) {
           routeId = matchedRoute.id;
-          console.log(`[DELETE] Found matching route by attributes: ${routeId}`);
+          console.log(`[DELETE] Found matching route by attributes or date: ${routeId}`);
         } else {
           console.log(`[DELETE] No matching route found for activity ${activityId}`);
         }
       }
 
-      // If we have a route, delete it FIRST (before deleting polar_activity)
+      // If we have a route, perform consistent cleanup similar to the /api/routes/:routeId handler
       if (routeId) {
         try {
+          // Detach territories from the route so they are not orphan-deleted
+          await storage.detachTerritoriesFromRoute(routeId);
+
+          // Remove conquest metrics associated with the route
           await storage.deleteConquestMetricsByRouteId(routeId);
+
+          // Remove any linked Polar/Strava activity records so they can be reimported
+          await storage.deletePolarActivityByRouteId(routeId);
+          await storage.deleteStravaActivityByRouteId(routeId);
+
+          // Finally delete the route itself
+          await storage.deleteRouteById(routeId);
+          console.log(`[DELETE] Route ${routeId} and associated records cleaned up`);
         } catch (e) {
-          console.error('Error deleting conquest metrics:', e);
+          console.error('Error cleaning up route-related data:', e);
         }
-        await storage.deleteRouteById(routeId);
-        console.log(`[DELETE] Route ${routeId} deleted`);
+
+        // The polar activity row(s) linked to the route were removed by deletePolarActivityByRouteId.
+        // No need to call deletePolarActivityById(activityId) in this branch.
+      } else {
+        // No route associated: just delete the polar activity record
+        await storage.deletePolarActivityById(activityId);
+        console.log(`[DELETE] Polar activity ${activityId} deleted (no route attached)`);
       }
 
-      // Delete the polar activity record AFTER route is deleted
-      await storage.deletePolarActivityById(activityId);
-      console.log(`[DELETE] Polar activity ${activityId} deleted`);
-
-      // Recalculate territory from remaining routes
-      const remainingRoutes = await storage.getRoutesByUserId(userId);
-      let mergedGeometry: any = null;
-
-      for (const route of remainingRoutes) {
+      // Rebuild friend group territories chronologically so ownership order is correct
+      try {
+        await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+      } catch (e) {
+        console.error('Error reprocessing territories after delete:', e);
+        // Fallback: at least rebuild this user's territories
         try {
-          const rawCoordinates = typeof route.coordinates === 'string'
-            ? JSON.parse(route.coordinates)
-            : route.coordinates;
-          if (!Array.isArray(rawCoordinates) || rawCoordinates.length < 3) continue;
-
-          // Ensure coordinates are numbers (SQLite may store as strings)
-          const coordinates: Array<[number, number]> = rawCoordinates.map((coord: any) => [
-            parseFloat(coord[0]),
-            parseFloat(coord[1]),
-          ]).filter((coord: [number, number]) => !isNaN(coord[0]) && !isNaN(coord[1]));
-
-          if (coordinates.length < 3) continue;
-
-          const simplifiedCoords = simplifyCoordinates(coordinates, 150);
-          if (simplifiedCoords.length < 2) continue;
-
-          const lineString = turf.lineString(
-            simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
-          );
-          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-          if (!buffered) continue;
-
-          if (!mergedGeometry) {
-            mergedGeometry = buffered.geometry;
-            continue;
-          }
-
-          // Handle both Polygon and MultiPolygon for union
-          const existingFeature = mergedGeometry.type === 'MultiPolygon'
-            ? turf.multiPolygon(mergedGeometry.coordinates)
-            : turf.polygon(mergedGeometry.coordinates);
-          const newFeature = buffered.geometry.type === 'MultiPolygon'
-            ? turf.multiPolygon(buffered.geometry.coordinates)
-            : turf.polygon(buffered.geometry.coordinates);
-
-          const union = turf.union(turf.featureCollection([existingFeature, newFeature]));
-          if (union) {
-            mergedGeometry = union.geometry;
-          }
-        } catch (routeError) {
-          console.error(`Error processing route ${route.id} during recalculation, skipping:`, routeError);
-          continue;
+          await reprocessUserTerritories(storage, userId);
+        } catch (e2) {
+          console.error('Fallback reprocess also failed:', e2);
         }
       }
 
-      if (!mergedGeometry) {
-        await storage.deleteTerritoriesByUserId(userId);
-        await storage.updateUserTotalArea(userId, 0);
-        return c.json({ success: true, totalArea: 0 });
-      }
-
-      const totalArea = turf.area(mergedGeometry);
-      await storage.updateTerritoryGeometry(userId, null, mergedGeometry, totalArea);
-      await storage.updateUserTotalArea(userId, totalArea);
-
-      return c.json({ success: true, totalArea });
+      return c.json({ success: true });
     } catch (error: any) {
       console.error('Error deleting Polar activity:', error);
       return c.json({ error: error.message }, 500);
@@ -2730,22 +3177,46 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           }
 
           console.log(`[PROCESS] Creating route for activity ${activity.id}`);
-          const route = await storage.createRoute({
-            userId: activity.userId,
-            name: activity.name,
-            coordinates,
-            distance: activity.distance,
-            duration: activity.duration,
-            startedAt: startDate,
-            completedAt: new Date(startDate.getTime() + activity.duration * 1000),
-          });
-          console.log(`[PROCESS] Route created: ${route.id}`);
+          const startedAtStr = startDate.toISOString();
+          const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+
+          // Check if the activity already has a route (from a previous partial processing)
+          let route: Route | null = null;
+          if (activity.routeId) {
+            route = await storage.getRouteById(activity.routeId);
+            if (route) {
+              console.log(`[PROCESS] Reusing existing route ${route.id} for activity ${activity.id}`);
+            }
+          }
+          if (!route) {
+            route = await storage.createRoute({
+              userId: activity.userId,
+              name: activity.name,
+              coordinates,
+              distance: activity.distance,
+              duration: activity.duration,
+              startedAt: startedAtStr,
+              completedAt: completedAtStr,
+            });
+            console.log(`[PROCESS] Route created: ${route.id}`);
+          }
 
           // Save routeId immediately so it's linked even if territory processing fails
           await storage.updatePolarActivity(activity.id, { routeId: route.id });
 
-          const startedAtStr = startDate.toISOString();
-          const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+          // Check if this activity is older than existing routes from other users.
+          // If so, a full chronological reprocess is needed (handled separately via admin endpoint
+          // to avoid hitting Worker CPU limits during inline processing).
+          let needsChronologicalReprocess = false;
+          try {
+            needsChronologicalReprocess = await hasNewerOverlappingRoutes(storage, route);
+          } catch (e) {
+            console.warn(`[PROCESS] hasNewerOverlappingRoutes check failed, proceeding with normal processing:`, e);
+          }
+
+          if (needsChronologicalReprocess) {
+            console.log(`[PROCESS] Activity ${activity.id} is older than some existing routes — needs chronological reprocess (use admin endpoint)`);
+          }
 
           console.log(`[PROCESS] Calculating territory buffer (${coordinates.length} coords)...`);
           // Simplify coordinates to avoid Worker CPU limits
@@ -2783,11 +3254,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               routeId: route.id,
               territoryId: conquestResult.territory.id,
               area: conquestResult.territory.area,
+              needsChronologicalReprocess,
               metrics: {
                 totalArea: conquestResult.totalArea,
                 newAreaConquered: conquestResult.newAreaConquered,
                 areaStolen: conquestResult.areaStolen,
                 ranTogetherWith: conquestResult.ranTogetherWith,
+                victimsNotified: conquestResult.victimsNotified,
+                victims: conquestResult.victims,
               }
             });
           }
@@ -2956,6 +3430,126 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     return c.json({ error: error.message, stack: error.stack }, 500);
   }
 });
+
+  // ==========================================
+  // EPHEMERAL PHOTOS (one-time taunt photos)
+  // ==========================================
+
+  // Send a taunt photo to a victim
+  app.post('/api/ephemeral-photos', async (c) => {
+    try {
+      const { senderId, recipientId, photoData, message, areaStolen } = await c.req.json();
+
+      if (!senderId || !recipientId || !photoData) {
+        return c.json({ error: 'senderId, recipientId, and photoData are required' }, 400);
+      }
+
+      // Validate photo size (max ~500KB base64)
+      if (photoData.length > 700000) {
+        return c.json({ error: 'Photo too large. Max 500KB.' }, 400);
+      }
+
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h
+
+      const photo = await storage.createEphemeralPhoto({
+        senderId,
+        recipientId,
+        photoData,
+        message: message || null,
+        areaStolen: areaStolen || null,
+        expiresAt,
+      });
+
+      // Send push notification to the recipient
+      try {
+        const sender = await storage.getUser(senderId);
+        if (sender) {
+          const subs = await storage.getPushSubscriptionsByUserId(recipientId);
+          if (subs.length > 0) {
+            const { sendPushToUser } = await import('./pushHelper');
+            const pushSubs = subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }));
+            const areaKm2 = areaStolen ? (areaStolen / 1000000).toFixed(2) : null;
+            const bodyText = areaKm2 
+              ? `${sender.name} te ha robado ${areaKm2} km² y te ha enviado una foto` 
+              : `${sender.name} te ha enviado una foto de conquista`;
+            await sendPushToUser(
+              pushSubs,
+              {
+                title: '📸 ¡Foto de conquista!',
+                body: bodyText,
+                tag: 'ephemeral-photo',
+                data: { url: '/', type: 'ephemeral-photo', photoId: photo.id },
+              },
+              c.env.VAPID_PUBLIC_KEY || '',
+              c.env.VAPID_PRIVATE_KEY || '',
+              c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+            );
+          }
+        }
+      } catch (_) {}
+
+      return c.json({ success: true, photoId: photo.id });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get pending photos for a user
+  app.get('/api/ephemeral-photos/pending/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      // Cleanup expired photos first
+      await storage.cleanupExpiredPhotos();
+
+      const photos = await storage.getPendingPhotosForUser(userId);
+
+      // Return without photoData to save bandwidth on listing
+      const listing = photos.map(p => ({
+        id: p.id,
+        senderId: p.senderId,
+        senderName: p.senderName,
+        senderUsername: p.senderUsername,
+        senderAvatar: p.senderAvatar,
+        message: p.message,
+        areaStolen: p.areaStolen,
+        createdAt: p.createdAt,
+      }));
+
+      return c.json(listing);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // View a photo (returns data and deletes it)
+  app.get('/api/ephemeral-photos/:photoId/view', async (c) => {
+    try {
+      const photoId = c.req.param('photoId');
+      const userId = c.req.query('userId');
+
+      if (!userId) {
+        return c.json({ error: 'userId query param required' }, 400);
+      }
+
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const photo = await storage.viewAndDeleteEphemeralPhoto(photoId, userId);
+
+      if (!photo) {
+        return c.json({ error: 'Photo not found or already viewed' }, 404);
+      }
+
+      return c.json(photo);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
 }
 
 // Helper to parse GPX to coordinates

@@ -1,9 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar, MapPin, TrendingUp, Flame, Users, Timer, Route } from 'lucide-react';
+import { Calendar, MapPin, TrendingUp, Flame, Users, Timer, Route, Trash2, Pencil, Check, X } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { useMutation } from '@tanstack/react-query';
+import { apiRequest, queryClient } from '@/lib/queryClient';
+import { useToast } from '@/hooks/use-toast';
+import { useSession } from '@/hooks/use-session';
 import type { RouteWithTerritory } from '@shared/schema';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -24,6 +40,50 @@ function parseDate(value: string | number | Date): Date {
 
 export function ActivityFeed({ routes }: ActivityFeedProps) {
   const [selectedRoute, setSelectedRoute] = useState<RouteWithTerritory | null>(null);
+  const [routeToDelete, setRouteToDelete] = useState<RouteWithTerritory | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renamingValue, setRenamingValue] = useState('');
+  const { toast } = useToast();
+  const { user: currentUser } = useSession();
+
+  const renameRouteMutation = useMutation({
+    mutationFn: async ({ routeId, name }: { routeId: string; name: string }) => {
+      if (!currentUser) throw new Error('No user');
+      return await apiRequest('PATCH', `/api/routes/${routeId}/name`, { userId: currentUser.id, name });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/routes'] });
+      setIsRenaming(false);
+      toast({ title: '✅ Nombre actualizado' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const deleteRouteMutation = useMutation({
+    mutationFn: async (routeId: string) => {
+      if (!currentUser) throw new Error('No user');
+      return await apiRequest('DELETE', `/api/routes/${routeId}`, { userId: currentUser.id });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/routes'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
+      // Also invalidate Polar/Strava activity lists so they reflect the deleted link
+      if (currentUser?.id) {
+        queryClient.invalidateQueries({ queryKey: [`/api/polar/activities/${currentUser.id}`] });
+        queryClient.invalidateQueries({ queryKey: [`/api/strava/activities/${currentUser.id}`] });
+      }
+      setRouteToDelete(null);
+      setSelectedRoute(null);
+      toast({ title: '✅ Actividad eliminada', description: 'La actividad y su territorio han sido eliminados. Puedes reimportarla desde Polar/Strava.' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Error', description: error.message || 'No se pudo eliminar', variant: 'destructive' });
+    },
+  });
 
   const formatDistance = (meters: number) => {
     if (meters < 1000) return `${meters.toFixed(0)} m`;
@@ -178,7 +238,7 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
         </div>
       </ScrollArea>
 
-      <Dialog open={!!selectedRoute} onOpenChange={(open) => !open && setSelectedRoute(null)}>
+      <Dialog open={!!selectedRoute} onOpenChange={(open) => { if (!open) { setSelectedRoute(null); setIsRenaming(false); } }}>
         <DialogContent className="w-[calc(100%-1rem)] max-w-sm mx-auto gap-0 overflow-hidden rounded-2xl border-0 shadow-2xl [&>button]:text-white [&>button]:hover:text-white/80 [&>button]:z-10" style={{ padding: '0', paddingTop: '0', paddingBottom: '0' }}>
           <div className="relative bg-gradient-to-br from-emerald-500 via-green-500 to-teal-600 px-4 py-4 text-white">
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_70%)]" />
@@ -189,8 +249,57 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
                 </div>
                 Detalle de actividad
               </DialogTitle>
-              <DialogDescription className="text-sm text-white/85">
-                {selectedRoute?.name || 'Ruta'}
+              <DialogDescription asChild>
+                <div className="text-sm text-white/85">
+                  {isRenaming ? (
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <Input
+                        value={renamingValue}
+                        onChange={(e) => setRenamingValue(e.target.value)}
+                        className="h-7 text-sm bg-white/20 border-white/30 text-white placeholder:text-white/50 focus-visible:ring-white/40"
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && renamingValue.trim() && selectedRoute) {
+                            renameRouteMutation.mutate({ routeId: selectedRoute.id, name: renamingValue.trim() });
+                          }
+                          if (e.key === 'Escape') setIsRenaming(false);
+                        }}
+                      />
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-white hover:bg-white/20 shrink-0"
+                        onClick={() => {
+                          if (renamingValue.trim() && selectedRoute) {
+                            renameRouteMutation.mutate({ routeId: selectedRoute.id, name: renamingValue.trim() });
+                          }
+                        }}
+                        disabled={renameRouteMutation.isPending}
+                      >
+                        <Check className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 text-white hover:bg-white/20 shrink-0"
+                        onClick={() => setIsRenaming(false)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <span
+                      className="inline-flex items-center gap-1.5 cursor-pointer hover:text-white transition-colors"
+                      onClick={() => {
+                        setRenamingValue(selectedRoute?.name || '');
+                        setIsRenaming(true);
+                      }}
+                    >
+                      {selectedRoute?.name || 'Ruta'}
+                      <Pencil className="h-3 w-3 opacity-60" />
+                    </span>
+                  )}
+                </div>
               </DialogDescription>
             </DialogHeader>
           </div>
@@ -223,9 +332,39 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
                 </Badge>
               </div>
             )}
+
+            <Button
+              variant="destructive"
+              size="sm"
+              className="w-full mt-1"
+              onClick={() => setRouteToDelete(selectedRoute)}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Eliminar actividad
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!routeToDelete} onOpenChange={() => setRouteToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar actividad?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se eliminará la actividad "{routeToDelete?.name}" y el territorio conquistado asociado. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => routeToDelete && deleteRouteMutation.mutate(routeToDelete.id)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteRouteMutation.isPending ? 'Eliminando...' : 'Eliminar'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

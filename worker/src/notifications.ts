@@ -5,7 +5,8 @@ export async function notifyTerritoryLoss(
   storage: WorkerStorage,
   victimUserId: string,
   conquerorUserId: string,
-  env: any
+  env: any,
+  stolenAreaM2?: number
 ): Promise<void> {
   try {
     // Get subscriptions for the victim
@@ -19,13 +20,18 @@ export async function notifyTerritoryLoss(
     const conqueror = await storage.getUser(conquerorUserId);
     const conquerorName = conqueror?.name || conqueror?.username || 'Alguien';
 
+    // Include km² in notification body
+    const areaText = stolenAreaM2 
+      ? ` ${(stolenAreaM2 / 1000000).toFixed(2)} km² de` 
+      : ' parte de';
+
     // Prepare notification payload
     const payload = {
-      title: '🚨 ¡Te han conquistado territorio!',
-      body: `${conquerorName} acaba de conquistar parte de tu territorio`,
+      title: '🚨 ¡Te han robado territorio!',
+      body: `${conquerorName} te ha robado${areaText} tu territorio`,
       tag: 'territory-loss',
       data: {
-        url: '/mapa',
+        url: '/',
         type: 'territory_loss',
         conquerorId: conquerorUserId,
       },

@@ -30,6 +30,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const intervalRef = useRef<number | null>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
 
+
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
@@ -73,6 +74,45 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     };
   }, []);
 
+  // --- Tracking notification helpers ---
+  const showTrackingNotification = async () => {
+    try {
+      if (!('Notification' in window)) return;
+      if (Notification.permission !== 'granted') {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') return;
+      }
+      const reg = await navigator.serviceWorker?.ready;
+      if (!reg) return;
+
+      await reg.showNotification('🏃 Grabando ruta', {
+        body: 'Runna.io está registrando tu actividad',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: 'runna-tracking',
+        silent: true,
+        requireInteraction: true,
+        data: { url: '/?tracking=true', type: 'tracking' },
+      });
+    } catch (e) {
+      console.error('Tracking notification error:', e);
+    }
+  };
+
+  const closeTrackingNotification = async () => {
+    try {
+      const reg = await navigator.serviceWorker?.ready;
+      if (!reg) return;
+      const notifs = await reg.getNotifications({ tag: 'runna-tracking' });
+      notifs.forEach((n: Notification) => n.close());
+    } catch (_) {}
+  };
+
+  // Cleanup notification on unmount
+  useEffect(() => {
+    return () => { closeTrackingNotification(); };
+  }, []);
+
   const calculateDistance = (coords: Array<[number, number]>): number => {
     if (coords.length < 2) return 0;
     
@@ -98,6 +138,9 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const handleStart = () => {
     setIsTracking(true);
     setIsPaused(false);
+
+    // Show tracking notification once
+    showTrackingNotification();
 
     intervalRef.current = window.setInterval(() => {
       setDuration((d) => d + 1);
@@ -156,6 +199,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const handleStop = () => {
     if (watchIdRef.current) clearWatch(watchIdRef.current);
     if (intervalRef.current) window.clearInterval(intervalRef.current);
+    closeTrackingNotification();
     
     onComplete({
       coordinates,
@@ -188,8 +232,9 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
         
         {/* Close button */}
         <button
-          className="absolute top-3 left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
-          onClick={onCancel}
+          className="absolute left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
+          style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}
+          onClick={() => { closeTrackingNotification(); onCancel(); }}
           data-testid="button-cancel"
         >
           <X className="h-5 w-5" />
@@ -197,7 +242,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
 
         {/* Recording indicator */}
         {isTracking && !isPaused && (
-          <div className="absolute top-3 right-3 z-[1000]">
+          <div className="absolute right-3 z-[1000]" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}>
             <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500 text-white rounded-full shadow-lg">
               <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
               <span className="text-xs font-semibold">REC</span>
@@ -217,7 +262,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
       </div>
 
       {/* Bottom Panel - Stats and Controls */}
-      <div className="bg-card border-t border-border p-4 space-y-4 safe-area-bottom">
+      <div className="bg-card border-t border-border p-4 space-y-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
         {/* Stats Row */}
         <div className="grid grid-cols-3 gap-3">
           <div className="text-center">

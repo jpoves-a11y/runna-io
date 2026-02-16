@@ -33,7 +33,7 @@ export const routes = sqliteTable("routes", {
 export const territories = sqliteTable("territories", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  routeId: text("route_id").references(() => routes.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
   geometry: text("geometry").notNull(), // JSON string of GeoJSON polygon
   area: real("area").notNull(), // square meters
   conqueredAt: text("conquered_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -138,6 +138,19 @@ export const stravaActivities = sqliteTable("strava_activities", {
   processed: integer("processed").notNull().default(0),
   processedAt: text("processed_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+// Ephemeral photos (one-time viewable taunt photos)
+export const ephemeralPhotos = sqliteTable("ephemeral_photos", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  senderId: text("sender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  recipientId: text("recipient_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  photoData: text("photo_data").notNull(), // base64 compressed JPEG
+  message: text("message"), // optional short message
+  areaStolen: real("area_stolen"), // context: how much was stolen
+  viewed: integer("viewed", { mode: 'boolean' }).notNull().default(false),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(), // auto-delete after 24h
 });
 
 // Email notifications tables
@@ -333,6 +346,12 @@ export const insertConquestMetricSchema = createInsertSchema(conquestMetrics).om
   createdAt: true,
 });
 
+export const insertEphemeralPhotoSchema = createInsertSchema(ephemeralPhotos).omit({
+  id: true,
+  createdAt: true,
+  viewed: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -369,6 +388,9 @@ export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema
 
 export type ConquestMetric = typeof conquestMetrics.$inferSelect;
 export type InsertConquestMetric = z.infer<typeof insertConquestMetricSchema>;
+
+export type EphemeralPhoto = typeof ephemeralPhotos.$inferSelect;
+export type InsertEphemeralPhoto = z.infer<typeof insertEphemeralPhotoSchema>;
 
 export type EmailNotification = typeof emailNotifications.$inferSelect;
 export const insertEmailNotificationSchema = createInsertSchema(emailNotifications);

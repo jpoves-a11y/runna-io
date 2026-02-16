@@ -41,7 +41,7 @@ import {
   type InsertEmailPreferences,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, desc, sql } from "drizzle-orm";
+import { eq, desc, sql, and } from "drizzle-orm";
 
 export interface IStorage {
   // Users
@@ -84,12 +84,20 @@ export interface IStorage {
 
   // Routes cleanup
   deleteRouteById(routeId: string): Promise<void>;
+  getRouteById(routeId: string): Promise<Route | null>;
+  findRouteByAttributes(userId: string, name: string, distance: number): Promise<Route | null>;
+  findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null>;
 
   // Territories cleanup
   deleteTerritoriesByUserId(userId: string): Promise<void>;
+  detachTerritoriesFromRoute(routeId: string): Promise<void>;
 
   // Conquest metrics cleanup
   deleteConquestMetricsByRouteId(routeId: string): Promise<void>;
+
+  // Polar/Strava activity cleanup by route
+  deletePolarActivityByRouteId(routeId: string): Promise<void>;
+  deleteStravaActivityByRouteId(routeId: string): Promise<void>;
 
   // Strava
   getStravaAccountByUserId(userId: string): Promise<StravaAccount | undefined>;
@@ -523,6 +531,62 @@ export class DatabaseStorage implements IStorage {
 
   async deleteConquestMetricsByRouteId(routeId: string): Promise<void> {
     await db.delete(conquestMetrics).where(eq(conquestMetrics.routeId, routeId));
+  }
+
+  async getRouteById(routeId: string): Promise<Route | null> {
+    const [route] = await db.select().from(routes).where(eq(routes.id, routeId)).limit(1);
+    return route || null;
+  }
+
+  async findRouteByAttributes(userId: string, name: string, distance: number): Promise<Route | null> {
+    const userRoutes = await db
+      .select()
+      .from(routes)
+      .where(and(eq(routes.userId, userId), eq(routes.name, name)));
+    for (const route of userRoutes) {
+      const distDiff = Math.abs(route.distance - distance);
+      const threshold = Math.max(distance * 0.01, 1);
+      if (distDiff <= threshold) {
+        return route;
+      }
+    }
+    return null;
+  }
+
+  async findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null> {
+    const datePrefix = startDate.substring(0, 16);
+    const userRoutes = await db
+      .select()
+      .from(routes)
+      .where(
+        and(
+          eq(routes.userId, userId),
+          sql`${routes.startedAt} LIKE ${datePrefix + '%'}`
+        )
+      );
+    for (const route of userRoutes) {
+      const distDiff = Math.abs(route.distance - distance);
+      const threshold = Math.max(distance * 0.01, 1);
+      if (distDiff <= threshold) {
+        return route;
+      }
+    }
+    return null;
+  }
+
+  async detachTerritoriesFromRoute(routeId: string): Promise<void> {
+    await db
+      .update(territories)
+      .set({ routeId: null })
+      .where(eq(territories.routeId, routeId));
+  }
+
+  async deletePolarActivityByRouteId(routeId: string): Promise<void> {
+    await db.delete(polarActivities).where(eq(polarActivities.routeId, routeId));
+  }
+
+  async deleteStravaActivityByRouteId(routeId: string): Promise<void> {
+    await db.delete(stravaActivities).where(eq(stravaActivities.routeId, routeId));
   }
 
   // Strava

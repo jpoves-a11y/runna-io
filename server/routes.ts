@@ -758,14 +758,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           if (coordinates.length >= 3) {
             // Create route
+            const startedAtStr = typeof activity.startDate === 'string' ? activity.startDate : new Date(activity.startDate).toISOString();
+            const startDateMs = new Date(startedAtStr).getTime();
+            const completedAtStr = new Date(startDateMs + activity.duration * 1000).toISOString();
             const route = await storage.createRoute({
               userId: activity.userId,
               name: activity.name,
               coordinates,
               distance: activity.distance,
               duration: activity.duration,
-              startedAt: activity.startDate,
-              completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+              startedAt: startedAtStr,
+              completedAt: completedAtStr,
             });
 
             // Calculate territory (same logic as POST /api/routes)
@@ -1332,15 +1335,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ error: 'No autorizado' });
       }
 
-      const routeId = activity.routeId;
-
-      await storage.deletePolarActivityById(activityId);
-
-      if (routeId) {
-        await storage.deleteConquestMetricsByRouteId(routeId);
-        await storage.deleteRouteById(routeId);
+      // Find the route to delete - use routeId if available, otherwise match by attributes
+      let routeId = activity.routeId;
+      if (!routeId) {
+        console.log(`[DELETE] routeId is null for activity ${activityId}, searching by attributes...`);
+        let matchedRoute = await storage.findRouteByAttributes(userId, activity.name, activity.distance);
+        if (!matchedRoute && activity.startDate) {
+          matchedRoute = await storage.findRouteByDateAndDistance(userId, activity.startDate, activity.distance);
+        }
+        if (matchedRoute) {
+          routeId = matchedRoute.id;
+          console.log(`[DELETE] Found matching route by attributes or date: ${routeId}`);
+        } else {
+          console.log(`[DELETE] No matching route found for activity ${activityId}`);
+        }
       }
 
+      // If we have a route, perform consistent cleanup
+      if (routeId) {
+        try {
+          // Detach territories from the route so they are not orphan-deleted
+          await storage.detachTerritoriesFromRoute(routeId);
+
+          // Remove conquest metrics associated with the route
+          await storage.deleteConquestMetricsByRouteId(routeId);
+
+          // Remove any linked Polar/Strava activity records so they can be reimported
+          await storage.deletePolarActivityByRouteId(routeId);
+          await storage.deleteStravaActivityByRouteId(routeId);
+
+          // Finally delete the route itself
+          await storage.deleteRouteById(routeId);
+          console.log(`[DELETE] Route ${routeId} and associated records cleaned up`);
+        } catch (e) {
+          console.error('Error cleaning up route-related data:', e);
+        }
+      } else {
+        // No route associated: just delete the polar activity record
+        await storage.deletePolarActivityById(activityId);
+        console.log(`[DELETE] Polar activity ${activityId} deleted (no route attached)`);
+      }
+
+      // Rebuild territories for the user from remaining routes
       const remainingRoutes = await storage.getRoutesByUserId(userId);
       let mergedGeometry: any = null;
 
@@ -1438,14 +1474,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           if (coordinates.length >= 3) {
             // Create route
+            const startedAtStr = typeof activity.startDate === 'string' ? activity.startDate : new Date(activity.startDate).toISOString();
+            const startDateMs = new Date(startedAtStr).getTime();
+            const completedAtStr = new Date(startDateMs + activity.duration * 1000).toISOString();
             const route = await storage.createRoute({
               userId: activity.userId,
               name: activity.name,
               coordinates,
               distance: activity.distance,
               duration: activity.duration,
-              startedAt: activity.startDate,
-              completedAt: new Date(activity.startDate.getTime() + activity.duration * 1000),
+              startedAt: startedAtStr,
+              completedAt: completedAtStr,
             });
 
             // Calculate territory (same logic as POST /api/routes)

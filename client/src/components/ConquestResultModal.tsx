@@ -3,6 +3,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Trophy, MapPin, TrendingUp, Swords } from 'lucide-react';
+import { TauntCameraDialog } from '@/components/TauntCameraDialog';
 
 interface VictimInfo {
   userId: string;
@@ -17,6 +18,7 @@ interface ConquestResultModalProps {
   newAreaKm2: number;
   previousAreaKm2: number;
   victims: VictimInfo[];
+  senderId?: string;
 }
 
 export function ConquestResultModal({
@@ -25,16 +27,21 @@ export function ConquestResultModal({
   newAreaKm2,
   previousAreaKm2,
   victims,
+  senderId,
 }: ConquestResultModalProps) {
   const [displayNewArea, setDisplayNewArea] = useState(0);
   const [displayTotalArea, setDisplayTotalArea] = useState(previousAreaKm2);
   const [showContent, setShowContent] = useState(false);
+  const [selectedVictim, setSelectedVictim] = useState<VictimInfo | null>(null);
+  const [showTauntCamera, setShowTauntCamera] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setDisplayNewArea(0);
       setDisplayTotalArea(previousAreaKm2);
       setShowContent(false);
+      setSelectedVictim(null);
+      setShowTauntCamera(false);
       return;
     }
 
@@ -74,6 +81,7 @@ export function ConquestResultModal({
   }, [open, newAreaKm2, previousAreaKm2]);
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[calc(100%-1rem)] max-w-sm mx-auto gap-0 overflow-hidden rounded-2xl border-0 shadow-2xl p-0" style={{ padding: '0', paddingTop: '0', paddingBottom: '0' }}>
         {/* Green gradient header */}
@@ -136,7 +144,22 @@ export function ConquestResultModal({
                       style={{ backgroundColor: victim.userColor }}
                     />
                     <span className="text-sm flex-1 truncate">{victim.userName}</span>
-                    <span className="text-xs font-semibold text-red-500">-{victim.stolenArea.toFixed(2)} km²</span>
+                    <span className="text-xs font-semibold text-red-500">
+                      -{(victim.stolenArea / 1000000).toFixed(2)} km²
+                    </span>
+                    {senderId && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="ml-1 h-7 px-2 text-xs border-red-200 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+                        onClick={() => {
+                          setSelectedVictim(victim);
+                          setShowTauntCamera(true);
+                        }}
+                      >
+                        Enviar foto
+                      </Button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -153,5 +176,16 @@ export function ConquestResultModal({
         </div>
       </DialogContent>
     </Dialog>
+
+    {selectedVictim && senderId && (
+      <TauntCameraDialog
+        open={showTauntCamera}
+        onOpenChange={setShowTauntCamera}
+        senderId={senderId}
+        victims={[selectedVictim.userId]}
+        areaStolen={selectedVictim.stolenArea}
+      />
+    )}
+    </>
   );
 }
