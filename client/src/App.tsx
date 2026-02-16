@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { BottomNav } from "@/components/BottomNav";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { EphemeralPhotoViewer } from "@/components/EphemeralPhotoViewer";
+import { OnboardingTutorial, shouldShowOnboarding } from "@/components/OnboardingTutorial";
 import { useSession } from "@/hooks/use-session";
 import { Play } from "lucide-react";
 
@@ -101,6 +102,14 @@ function App() {
   const isPulling = useRef(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const { user: appUser } = useSession();
+
+  useEffect(() => {
+    if (appUser && shouldShowOnboarding()) {
+      setShowOnboarding(true);
+    }
+  }, [appUser]);
 
   // Match the order used in BottomNav
   const tabs = ['/', '/rankings', '/activity', '/friends', '/profile'];
@@ -222,6 +231,12 @@ function App() {
           </div>
           <StartActivityButton />
           <EphemeralPhotoWrapper />
+          {showOnboarding && (
+            <OnboardingTutorial
+              userId={appUser?.id}
+              onComplete={() => setShowOnboarding(false)}
+            />
+          )}
           <Toaster />
         </TooltipProvider>
       </QueryClientProvider>
