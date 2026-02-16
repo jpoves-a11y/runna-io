@@ -553,10 +553,16 @@ export default function ProfilePage() {
 
   // Navigate to map after import is done
   const finalizeImportNavigation = () => {
+    const currentActivity = pendingActivities[currentPreviewIndex];
     setShowActivityPreview(false);
     setPendingActivities([]);
     setCurrentPreviewIndex(0);
-    navigate('/');
+    // Use animation if polyline available, otherwise show conquest result directly
+    if (currentActivity?.summaryPolyline) {
+      navigate('/?animateLatestActivity=true');
+    } else {
+      navigate('/?showConquestResult=true');
+    }
   };
 
   // Step 2: Process a single activity and navigate to map with animation
@@ -589,6 +595,7 @@ export default function ProfilePage() {
           territoryArea: result.area || 0,
           summaryPolyline: currentActivity?.summaryPolyline || null,
           distance: currentActivity?.distance || 0,
+          victims: result.metrics?.victims || [],
         }));
 
         if (hasTauntVictims) {
