@@ -345,9 +345,11 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
 
           {/* Bottom: TINY buttons, cramped, hard to tap accidentally */}
           <div className="fixed bottom-0 left-0 right-0 z-[1000] flex items-center justify-end gap-1 p-1" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.25rem)' }}>
-            {/* Pause/Resume: 10px square, no label */}
+            {/* Pause/Resume: requires 2 taps when pausing */}
             <button
-              className="w-9 h-9 rounded-md bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition-colors"
+              className={`w-9 h-9 rounded-md flex items-center justify-center transition-all ${
+                !isPaused && pauseTaps > 0 ? 'bg-orange-700 ring-1 ring-orange-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
+              }`}
               onClick={!isPaused ? handlePauseTap : () => { setPauseTaps(0); handleResume(); }}
               title={!isPaused ? `Pausar (${pauseTaps}/2)` : 'Reanudar'}
               data-testid="button-pause"
@@ -356,7 +358,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
               {!isPaused ? <Pause className="w-4 h-4 text-white" /> : <Play className="w-4 h-4 text-white" fill="white" />}
             </button>
 
-            {/* Stop: requires 2 taps, 10px square, red when confirmed */}
+            {/* Stop: requires 2 taps, red when confirmed */}
             <button
               className={`w-9 h-9 rounded-md flex items-center justify-center font-black transition-all ${
                 confirmStop ? 'bg-red-700 ring-1 ring-red-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
@@ -371,10 +373,15 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
             </button>
           </div>
 
-          {/* Confirmation hint: appears when stop is tapped once */}
+          {/* Confirmation hints */}
+          {pauseTaps > 0 && !isPaused && (
+            <div className="fixed bottom-14 right-12 z-[999] px-2 py-1 bg-orange-600 text-white text-[10px] font-bold rounded animate-pulse">
+              ¡PAUSAR!
+            </div>
+          )}
           {confirmStop && (
             <div className="fixed bottom-14 right-2 z-[999] px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded animate-pulse">
-              ¡CONFIRMA!
+              ¡DETENER!
             </div>
           )}
         </>
