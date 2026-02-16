@@ -94,14 +94,7 @@ function StartActivityButton() {
   );
 }
 
-function App() {
-  const [location, setLocation] = useLocation();
-  const touchStartX = useRef(0);
-  const touchStartY = useRef(0);
-  const isSwiping = useRef(false);
-  const isPulling = useRef(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const mainRef = useRef<HTMLElement | null>(null);
+function OnboardingWrapper() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const { user: appUser } = useSession();
 
@@ -110,6 +103,24 @@ function App() {
       setShowOnboarding(true);
     }
   }, [appUser]);
+
+  if (!showOnboarding) return null;
+  return (
+    <OnboardingTutorial
+      userId={appUser?.id}
+      onComplete={() => setShowOnboarding(false)}
+    />
+  );
+}
+
+function App() {
+  const [location, setLocation] = useLocation();
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
+  const isSwiping = useRef(false);
+  const isPulling = useRef(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const mainRef = useRef<HTMLElement | null>(null);
 
   // Match the order used in BottomNav
   const tabs = ['/', '/rankings', '/activity', '/friends', '/profile'];
@@ -231,12 +242,7 @@ function App() {
           </div>
           <StartActivityButton />
           <EphemeralPhotoWrapper />
-          {showOnboarding && (
-            <OnboardingTutorial
-              userId={appUser?.id}
-              onComplete={() => setShowOnboarding(false)}
-            />
-          )}
+          <OnboardingWrapper />
           <Toaster />
         </TooltipProvider>
       </QueryClientProvider>
