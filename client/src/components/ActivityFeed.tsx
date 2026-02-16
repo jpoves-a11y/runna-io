@@ -359,7 +359,7 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!routeToDelete} onOpenChange={() => setRouteToDelete(null)}>
+      <AlertDialog open={!!routeToDelete} onOpenChange={(open) => { if (!open && !deleteRouteMutation.isPending) setRouteToDelete(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>¿Eliminar actividad?</AlertDialogTitle>
@@ -367,15 +367,22 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
               Se eliminará la actividad "{routeToDelete?.name}" y el territorio conquistado asociado. Esta acción no se puede deshacer.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => routeToDelete && deleteRouteMutation.mutate(routeToDelete.id)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleteRouteMutation.isPending ? 'Eliminando...' : 'Eliminar'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
+          {deleteRouteMutation.isPending ? (
+            <div className="flex flex-col items-center gap-3 py-4">
+              <div className="w-8 h-8 border-2 border-destructive border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-muted-foreground">Eliminando actividad y territorio...</p>
+            </div>
+          ) : (
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => routeToDelete && deleteRouteMutation.mutate(routeToDelete.id)}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Eliminar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          )}
         </AlertDialogContent>
       </AlertDialog>
     </div>

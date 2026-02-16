@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Play, Pause, Square, MapPin, Zap, Activity, X, Smartphone } from 'lucide-react';
+import { Play, Pause, Square, MapPin, Zap, Activity, X, Smartphone, Loader2, ShieldAlert } from 'lucide-react';
 import { watchPosition, clearWatch, getCurrentPosition, type Coordinates } from '@/lib/geolocation';
 import { acquireWakeLock, releaseWakeLock, setupVisibilityReacquire } from '@/lib/wakeLock';
 import L from 'leaflet';
@@ -40,6 +40,8 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const [distance, setDistance] = useState(0);
   const [isGettingLocation, setIsGettingLocation] = useState(true);
   const [screenLockActive, setScreenLockActive] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
 
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -224,6 +226,9 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   };
 
   const handleStop = () => {
+    if (!confirmStop) { setConfirmStop(true); return; }
+    if (isSaving) return;
+    setIsSaving(true);
     if (watchIdRef.current) clearWatch(watchIdRef.current);
     if (displayTimerRef.current) window.clearInterval(displayTimerRef.current);
     releaseWakeLock(); closeTrackingNotification(); clearTrackingState();
@@ -247,26 +252,48 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
 
   return (
     <div className="absolute inset-0 flex flex-col bg-background">
+      {/* Saving overlay */}
+      {isSaving && (
+        <div className="absolute inset-0 z-[2000] flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-card shadow-2xl border border-border">
+            <Loader2 className="h-10 w-10 text-primary animate-spin" />
+            <p className="text-lg font-semibold">Guardando ruta...</p>
+            <p className="text-sm text-muted-foreground text-center">Procesando territorio y conquista</p>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 relative">
         <div ref={mapContainer} className="absolute inset-0" data-testid="tracker-map" />
-        <button className="absolute left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
-          style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }} onClick={handleCancelTracking} data-testid="button-cancel">
-          <X className="h-5 w-5" />
-        </button>
-        {isTracking && !isPaused && (
-          <div className="absolute right-3 z-[1000]" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500 text-white rounded-full shadow-lg">
-              <div className="w-2 h-2 bg-white rounded-full animate-pulse" /><span className="text-xs font-semibold">REC</span>
-            </div>
-          </div>
+
+        {/* Cancel button — only visible before tracking starts */}
+        {!isTracking && (
+          <button className="absolute left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
+            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }} onClick={handleCancelTracking} data-testid="button-cancel">
+            <X className="h-5 w-5" />
+          </button>
         )}
+
+        {/* Top bar during tracking: REC + screen status + warning */}
         {isTracking && (
-          <div className="absolute left-1/2 -translate-x-1/2 z-[1000]" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}>
-            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full shadow-lg text-xs font-medium ${screenLockActive ? 'bg-green-500/90 text-white' : 'bg-yellow-500/90 text-black'}`}>
-              <Smartphone className="w-3 h-3" />{screenLockActive ? 'Pantalla activa' : 'No bloquees'}
+          <div className="absolute left-0 right-0 z-[1000] flex flex-col items-center gap-1" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)' }}>
+            <div className="flex items-center gap-2">
+              {!isPaused && (
+                <div className="flex items-center gap-1.5 px-3 py-1 bg-red-500 text-white rounded-full shadow-lg">
+                  <div className="w-2 h-2 bg-white rounded-full animate-pulse" /><span className="text-[11px] font-semibold">REC</span>
+                </div>
+              )}
+              <div className={`flex items-center gap-1 px-2.5 py-1 rounded-full shadow-lg text-[11px] font-medium ${screenLockActive ? 'bg-green-500/90 text-white' : 'bg-yellow-500/90 text-black'}`}>
+                <Smartphone className="w-3 h-3" />{screenLockActive ? 'Pantalla activa' : 'No bloquees'}
+              </div>
+            </div>
+            <div className="flex items-center gap-1 px-3 py-1 bg-card/90 backdrop-blur-sm rounded-full shadow text-[10px] text-muted-foreground">
+              <ShieldAlert className="w-3 h-3" />No cierres la app ni bloquees el móvil
             </div>
           </div>
         )}
+
+        {/* Loading indicator */}
         {isGettingLocation && (
           <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm z-[999]">
             <div className="flex flex-col items-center gap-2">
@@ -276,40 +303,56 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
           </div>
         )}
       </div>
-      <div className="bg-card border-t border-border p-4 space-y-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
-        <div className="grid grid-cols-3 gap-3">
+
+      {/* Bottom Panel */}
+      <div className="bg-card border-t border-border p-3 space-y-3" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' }}>
+        {/* Stats Row */}
+        <div className="grid grid-cols-3 gap-2">
           <div className="text-center">
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><Activity className="h-3 w-3" />Tiempo</p>
-            <p className="text-xl font-bold tabular-nums" data-testid="text-duration">{formatTime(displayDuration)}</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1"><Activity className="h-3 w-3" />Tiempo</p>
+            <p className="text-lg font-bold tabular-nums" data-testid="text-duration">{formatTime(displayDuration)}</p>
           </div>
           <div className="text-center border-x border-border">
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><MapPin className="h-3 w-3" />Distancia</p>
-            <p className="text-xl font-bold tabular-nums" data-testid="text-distance">{formatDist(distance)}</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1"><MapPin className="h-3 w-3" />Distancia</p>
+            <p className="text-lg font-bold tabular-nums" data-testid="text-distance">{formatDist(distance)}</p>
           </div>
           <div className="text-center">
-            <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><Zap className="h-3 w-3" />Ritmo</p>
-            <p className="text-xl font-bold tabular-nums" data-testid="text-pace">{pace > 0 ? `${pace.toFixed(1)}'` : "0.0'"}</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1"><Zap className="h-3 w-3" />Ritmo</p>
+            <p className="text-lg font-bold tabular-nums" data-testid="text-pace">{pace > 0 ? `${pace.toFixed(1)}'` : "0.0'"}</p>
           </div>
         </div>
+
+        {/* Controls */}
         {!isTracking ? (
           <Button size="lg" className="w-full h-14 text-base font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform" onClick={handleStart} disabled={isGettingLocation} data-testid="button-start-tracking">
             <Play className="h-6 w-6 mr-2" fill="currentColor" />Iniciar Ruta
           </Button>
         ) : (
-          <div className="flex gap-3">
+          <div className="flex items-center justify-center gap-6">
             {!isPaused ? (
-              <Button size="lg" variant="secondary" className="flex-1 h-14 font-semibold active:scale-[0.98] transition-transform" onClick={handlePause} data-testid="button-pause">
-                <Pause className="h-5 w-5 mr-2" />Pausar
-              </Button>
+              <button className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center shadow-md active:scale-95 transition-transform" onClick={handlePause} data-testid="button-pause">
+                <Pause className="h-6 w-6" />
+              </button>
             ) : (
-              <Button size="lg" className="flex-1 h-14 font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform" onClick={handleResume} data-testid="button-resume">
-                <Play className="h-5 w-5 mr-2" fill="currentColor" />Reanudar
-              </Button>
+              <button className="w-14 h-14 rounded-full gradient-primary flex items-center justify-center shadow-md active:scale-95 transition-transform" onClick={() => { setConfirmStop(false); handleResume(); }} data-testid="button-resume">
+                <Play className="h-6 w-6 text-white" fill="currentColor" />
+              </button>
             )}
-            <Button size="lg" variant="destructive" className="flex-1 h-14 font-semibold active:scale-[0.98] transition-transform" onClick={handleStop} data-testid="button-stop">
-              <Square className="h-5 w-5 mr-2" fill="currentColor" />Finalizar
-            </Button>
+            {/* Stop: first tap shows confirm text, second tap stops */}
+            <button
+              className={`w-14 h-14 rounded-full flex items-center justify-center shadow-md active:scale-95 transition-all ${
+                confirmStop ? 'bg-red-600 ring-2 ring-red-400 ring-offset-2 ring-offset-background' : 'bg-destructive'
+              }`}
+              onClick={handleStop}
+              disabled={isSaving}
+              data-testid="button-stop"
+            >
+              <Square className="h-5 w-5 text-white" fill="currentColor" />
+            </button>
           </div>
+        )}
+        {isTracking && confirmStop && (
+          <p className="text-center text-xs text-red-400 font-medium animate-pulse">Pulsa de nuevo ■ para finalizar</p>
         )}
       </div>
     </div>
