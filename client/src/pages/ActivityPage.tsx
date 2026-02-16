@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ActivityFeed } from '@/components/ActivityFeed';
+import { SocialFeed } from '@/components/SocialFeed';
 import { LoadingState } from '@/components/LoadingState';
 import { LoginDialog } from '@/components/LoginDialog';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,7 @@ import type { RouteWithTerritory } from '@shared/schema';
 export default function ActivityPage() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState<'my' | 'feed'>('feed');
   const scrollRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef<number>(0);
   const pullToRefreshThreshold = 80;
@@ -49,7 +51,11 @@ export default function ActivityPage() {
     
     setIsRefreshing(true);
     try {
-      await queryClient.invalidateQueries({ queryKey: ['/api/routes', currentUser.id] });
+      if (activeTab === 'my') {
+        await queryClient.invalidateQueries({ queryKey: ['/api/routes', currentUser.id] });
+      } else {
+        await queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+      }
       await new Promise(resolve => setTimeout(resolve, 500));
     } finally {
       setIsRefreshing(false);
@@ -87,10 +93,6 @@ export default function ActivityPage() {
     touchStartY.current = 0;
   };
 
-  if (isLoading) {
-    return <LoadingState message="Cargando actividades..." />;
-  }
-
   return (
     <div 
       ref={scrollRef}
@@ -108,7 +110,48 @@ export default function ActivityPage() {
           </div>
         </div>
       )}
-      <ActivityFeed routes={routes} />
+
+      {/* Subtabs */}
+      <div
+        className="flex border-b border-border/50 sticky top-0 bg-background z-10"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      >
+        <button
+          className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+            activeTab === 'feed'
+              ? 'text-primary border-b-2 border-primary'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+          onClick={() => setActiveTab('feed')}
+        >
+          Feed
+        </button>
+        <button
+          className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+            activeTab === 'my'
+              ? 'text-primary border-b-2 border-primary'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+          onClick={() => setActiveTab('my')}
+        >
+          Mis Actividades
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="px-0">
+        {activeTab === 'feed' ? (
+          <div className="p-3">
+            <SocialFeed />
+          </div>
+        ) : (
+          isLoading ? (
+            <LoadingState message="Cargando actividades..." />
+          ) : (
+            <ActivityFeed routes={routes} />
+          )
+        )}
+      </div>
     </div>
   );
 }

@@ -84,6 +84,7 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
       queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
       queryClient.invalidateQueries({ queryKey: ['/api/user', currentUser?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
       if (currentUser?.id) {
         queryClient.invalidateQueries({ queryKey: [`/api/polar/activities/${currentUser.id}`] });
         queryClient.invalidateQueries({ queryKey: [`/api/strava/activities/${currentUser.id}`] });
@@ -142,7 +143,6 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
       {/* Header */}
       <div 
         className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-orange-500/5 animate-slide-down"
-        style={{ paddingTop: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
       >
         <div className="flex items-center gap-3">
           <div className="relative p-2 rounded-xl bg-primary/10">

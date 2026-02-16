@@ -9,7 +9,7 @@ import { LoginDialog } from '@/components/LoginDialog';
 import { MapSkeleton } from '@/components/LoadingState';
 import { ActivityAnimationView } from '@/components/ActivityAnimationView';
 import { ConquestResultModal } from '@/components/ConquestResultModal';
-import { RouteCompletionDialog } from '@/components/RouteCompletionDialog';
+
 import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -32,8 +32,7 @@ export default function MapPage() {
   const { user: currentUser, isLoading: userLoading, login } = useSession();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [completionData, setCompletionData] = useState<any>(null);
-  const [showCompletionDialog, setShowCompletionDialog] = useState(false);
+
 
   useEffect(() => {
     const checkTracking = () => {
@@ -134,20 +133,35 @@ export default function MapPage() {
       queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
 
       // Stop tracking mode
-      window.history.pushState({}, '', '/');
       setIsTracking(false);
 
-      // Show completion dialog with route/territory/metrics data
-      setCompletionData({
+      // Store conquest data in sessionStorage and trigger animation (same as Polar flow)
+      const conquestPayload = {
+        newAreaConquered: data.metrics?.newAreaConquered || 0,
+        totalArea: data.metrics?.totalArea || 0,
+        areaStolen: data.metrics?.areaStolen || 0,
+        routeId: data.route?.id,
         routeName: data.route?.name || `Ruta ${new Date().toLocaleDateString('es-ES')}`,
-        distance: data.inputDistance || 0,
-        duration: data.inputDuration || 0,
+        territoryArea: data.territory?.area || 0,
         summaryPolyline: data.summaryPolyline || null,
-        territory: data.territory || null,
-        metrics: data.metrics || null,
-        senderId: currentUser?.id,
-      });
-      setShowCompletionDialog(true);
+        distance: data.inputDistance || 0,
+        victims: data.metrics?.victims || [],
+      };
+      sessionStorage.setItem('lastConquestResult', JSON.stringify(conquestPayload));
+
+      if (conquestPayload.summaryPolyline) {
+        window.history.replaceState({}, '', '/?animateLatestActivity=true');
+        setConquestData(conquestPayload);
+        setIsAnimating(true);
+      } else {
+        // No polyline — skip animation, go directly to conquest result modal
+        const newArea = conquestPayload.newAreaConquered / 1000000;
+        const totalArea = conquestPayload.totalArea / 1000000;
+        setConquestData(conquestPayload);
+        setConquestResult({ newArea, previousArea: Math.max(0, totalArea - newArea), victims: conquestPayload.victims });
+        window.history.replaceState({}, '', '/?showConquestResult=true');
+        setIsResultModalOpen(true);
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -196,6 +210,9 @@ export default function MapPage() {
               previousArea: Math.max(0, previousArea),
               victims: conquestData?.victims || []
             });
+            // Stop animation view so the normal map renders with ConquestResultModal
+            window.history.replaceState({}, '', '/');
+            setIsAnimating(false);
             setIsResultModalOpen(true);
           }}
           animationDuration={7000}
@@ -248,29 +265,10 @@ export default function MapPage() {
         previousAreaKm2={conquestResult?.previousArea || 0}
         victims={conquestResult?.victims || []}
         senderId={currentUser?.id}
+        routeId={conquestData?.routeId}
+        routeName={conquestData?.routeName}
       />
-      <RouteCompletionDialog
-        open={showCompletionDialog}
-        onOpenChange={(open) => {
-          if (!open) {
-            setShowCompletionDialog(false);
-            setCompletionData(null);
-          }
-        }}
-        data={completionData}
-        onShowConquestResults={() => {
-          if (!completionData?.metrics) return;
-          const newArea = (completionData.metrics.newAreaConquered || 0) / 1000000;
-          const totalArea = (completionData.metrics.totalArea || 0) / 1000000;
-          const previousArea = totalArea - newArea;
-          setConquestResult({
-            newArea,
-            previousArea: Math.max(0, previousArea),
-            victims: completionData.metrics.victims || [],
-          });
-          setIsResultModalOpen(true);
-        }}
-      />
+
     </div>
   );
 }

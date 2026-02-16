@@ -4,7 +4,7 @@ import {
   DialogContent,
 } from '@/components/ui/dialog';
 import { Swords, X } from 'lucide-react';
-import { apiRequest } from '@/lib/queryClient';
+import { apiRequest, API_BASE } from '@/lib/queryClient';
 
 interface PendingPhoto {
   id: string;
@@ -54,7 +54,7 @@ export function EphemeralPhotoViewer({ userId }: EphemeralPhotoViewerProps) {
 
     const check = async () => {
       try {
-        const res = await fetch(`/api/ephemeral-photos/pending/${userId}`);
+        const res = await fetch(`${API_BASE}/api/ephemeral-photos/pending/${userId}`);
         if (res.ok) {
           const photos: PendingPhoto[] = await res.json();
           if (photos.length > 0) {

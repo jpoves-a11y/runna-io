@@ -176,6 +176,32 @@ export const emailPreferences = sqliteTable("email_preferences", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Social Feed Tables
+export const feedEvents = sqliteTable("feed_events", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  eventType: text("event_type").notNull(), // 'activity' | 'territory_stolen' | 'personal_record' | 'ran_together'
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  victimId: text("victim_id").references(() => users.id, { onDelete: 'set null' }),
+  areaStolen: real("area_stolen"), // m² stolen from victim
+  distance: real("distance"), // meters
+  duration: integer("duration"), // seconds
+  newArea: real("new_area"), // m² of new territory
+  ranTogetherWith: text("ran_together_with"), // JSON array of { id, name }
+  recordType: text("record_type"), // 'longest_run' | 'fastest_pace' | 'biggest_conquest'
+  recordValue: real("record_value"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const feedComments = sqliteTable("feed_comments", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  feedEventId: text("feed_event_id").notNull().references(() => feedEvents.id, { onDelete: 'cascade' }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  parentId: text("parent_id"), // NULL for top-level, comment id for replies (1 level)
+  content: text("content").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   routes: many(routes),
@@ -186,6 +212,8 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   polarActivities: many(polarActivities),
   stravaAccount: one(stravaAccounts),
   stravaActivities: many(stravaActivities),
+  feedEvents: many(feedEvents),
+  feedComments: many(feedComments),
 }));
 
 export const polarAccountsRelations = relations(polarAccounts, ({ one }) => ({
@@ -284,6 +312,33 @@ export const stravaActivitiesRelations = relations(stravaActivities, ({ one }) =
   }),
 }));
 
+export const feedEventsRelations = relations(feedEvents, ({ one, many }) => ({
+  user: one(users, {
+    fields: [feedEvents.userId],
+    references: [users.id],
+  }),
+  route: one(routes, {
+    fields: [feedEvents.routeId],
+    references: [routes.id],
+  }),
+  victim: one(users, {
+    fields: [feedEvents.victimId],
+    references: [users.id],
+  }),
+  comments: many(feedComments),
+}));
+
+export const feedCommentsRelations = relations(feedComments, ({ one }) => ({
+  feedEvent: one(feedEvents, {
+    fields: [feedComments.feedEventId],
+    references: [feedEvents.id],
+  }),
+  user: one(users, {
+    fields: [feedComments.userId],
+    references: [users.id],
+  }),
+}));
+
 // Insert Schemas
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
@@ -341,6 +396,16 @@ export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions
   createdAt: true,
 });
 
+export const insertFeedEventSchema = createInsertSchema(feedEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertFeedCommentSchema = createInsertSchema(feedComments).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertConquestMetricSchema = createInsertSchema(conquestMetrics).omit({
   id: true,
   createdAt: true,
@@ -392,6 +457,12 @@ export type InsertConquestMetric = z.infer<typeof insertConquestMetricSchema>;
 export type EphemeralPhoto = typeof ephemeralPhotos.$inferSelect;
 export type InsertEphemeralPhoto = z.infer<typeof insertEphemeralPhotoSchema>;
 
+export type FeedEvent = typeof feedEvents.$inferSelect;
+export type InsertFeedEvent = z.infer<typeof insertFeedEventSchema>;
+
+export type FeedComment = typeof feedComments.$inferSelect;
+export type InsertFeedComment = z.infer<typeof insertFeedCommentSchema>;
+
 export type EmailNotification = typeof emailNotifications.$inferSelect;
 export const insertEmailNotificationSchema = createInsertSchema(emailNotifications);
 export type InsertEmailNotification = z.infer<typeof insertEmailNotificationSchema>;
@@ -413,4 +484,17 @@ export type TerritoryWithUser = Territory & {
 export type RouteWithTerritory = Route & {
   territory?: Territory;
   ranTogetherWithUsers?: Array<{ id: string; name: string }>;
+};
+
+export type FeedEventWithDetails = FeedEvent & {
+  user: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'>;
+  victim?: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> | null;
+  routeName?: string | null;
+  activityDate?: string | null;
+  commentCount: number;
+};
+
+export type FeedCommentWithUser = FeedComment & {
+  user: Pick<User, 'id' | 'username' | 'name' | 'avatar'>;
+  replies?: FeedCommentWithUser[];
 };

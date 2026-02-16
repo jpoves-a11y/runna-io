@@ -1,9 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Trophy, MapPin, TrendingUp, Swords } from 'lucide-react';
+import { Trophy, MapPin, TrendingUp, Swords, Pencil, Check, X } from 'lucide-react';
 import { TauntCameraDialog } from '@/components/TauntCameraDialog';
+import { useMutation } from '@tanstack/react-query';
+import { apiRequest, queryClient } from '@/lib/queryClient';
+import { useSession } from '@/hooks/use-session';
+import { useToast } from '@/hooks/use-toast';
 
 interface VictimInfo {
   userId: string;
@@ -19,6 +24,8 @@ interface ConquestResultModalProps {
   previousAreaKm2: number;
   victims: VictimInfo[];
   senderId?: string;
+  routeId?: string;
+  routeName?: string;
 }
 
 export function ConquestResultModal({
@@ -28,12 +35,45 @@ export function ConquestResultModal({
   previousAreaKm2,
   victims,
   senderId,
+  routeId,
+  routeName,
 }: ConquestResultModalProps) {
   const [displayNewArea, setDisplayNewArea] = useState(0);
   const [displayTotalArea, setDisplayTotalArea] = useState(previousAreaKm2);
   const [showContent, setShowContent] = useState(false);
   const [selectedVictim, setSelectedVictim] = useState<VictimInfo | null>(null);
   const [showTauntCamera, setShowTauntCamera] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(routeName || '');
+  const [currentRouteName, setCurrentRouteName] = useState(routeName || '');
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const { user: currentUser } = useSession();
+  const { toast } = useToast();
+
+  // Sync routeName prop
+  useEffect(() => {
+    if (routeName) {
+      setRenameValue(routeName);
+      setCurrentRouteName(routeName);
+    }
+  }, [routeName]);
+
+  const renameMutation = useMutation({
+    mutationFn: async (name: string) => {
+      if (!routeId || !currentUser) throw new Error('No route');
+      return await apiRequest('PATCH', `/api/routes/${routeId}/name`, { userId: currentUser.id, name });
+    },
+    onSuccess: () => {
+      setCurrentRouteName(renameValue.trim());
+      setIsRenaming(false);
+      queryClient.invalidateQueries({ queryKey: ['/api/routes'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+      toast({ title: '✅ Nombre actualizado' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Error', description: err.message, variant: 'destructive' });
+    },
+  });
 
   // Filter out victims with no stolen area
   const activeVictims = victims.filter(v => v.stolenArea > 0);
@@ -95,7 +135,37 @@ export function ConquestResultModal({
               <Trophy className="h-8 w-8 text-yellow-200" />
             </div>
             <h2 className="text-xl font-bold mb-1">¡Conquista Completada!</h2>
-            <p className="text-sm text-white/80">Tu actividad ha sido procesada</p>
+            {routeId && currentRouteName ? (
+              <div className="flex items-center justify-center gap-1.5">
+                {isRenaming ? (
+                  <div className="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1">
+                    <Input
+                      ref={renameInputRef}
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && renameValue.trim()) renameMutation.mutate(renameValue.trim());
+                        if (e.key === 'Escape') { setIsRenaming(false); setRenameValue(currentRouteName); }
+                      }}
+                      className="h-6 text-xs bg-transparent border-0 text-white placeholder:text-white/50 p-0 focus-visible:ring-0"
+                      autoFocus
+                    />
+                    <button onClick={() => { if (renameValue.trim()) renameMutation.mutate(renameValue.trim()); }} className="text-white/80 hover:text-white"><Check className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { setIsRenaming(false); setRenameValue(currentRouteName); }} className="text-white/80 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setIsRenaming(true); setTimeout(() => renameInputRef.current?.focus(), 50); }}
+                    className="flex items-center gap-1 text-sm text-white/80 hover:text-white transition-colors"
+                  >
+                    <span className="truncate max-w-[200px]">{currentRouteName}</span>
+                    <Pencil className="w-3 h-3 flex-shrink-0" />
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-white/80">Tu actividad ha sido procesada</p>
+            )}
           </div>
         </div>
 

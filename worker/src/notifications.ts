@@ -86,7 +86,7 @@ export async function notifyFriendRequest(
       body: `${senderName} quiere conectar contigo en Runna`,
       tag: 'friend-request',
       data: {
-        url: '/amigos',
+        url: '/friends',
         type: 'friend_request',
         senderId: senderUserId,
       },
@@ -140,7 +140,7 @@ export async function notifyFriendRequestAccepted(
       body: `${accepterName} aceptó tu solicitud de amistad`,
       tag: 'friend-accepted',
       data: {
-        url: '/amigos',
+        url: '/friends',
         type: 'friend_accepted',
         friendId: accepterUserId,
       },

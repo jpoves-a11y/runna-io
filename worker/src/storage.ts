@@ -15,6 +15,8 @@ import {
   emailNotifications,
   emailPreferences,
   ephemeralPhotos,
+  feedEvents,
+  feedComments,
   type User,
   type InsertUser,
   type Route,
@@ -48,6 +50,12 @@ import {
   type UserWithStats,
   type TerritoryWithUser,
   type RouteWithTerritory,
+  type FeedEvent,
+  type InsertFeedEvent,
+  type FeedComment,
+  type InsertFeedComment,
+  type FeedEventWithDetails,
+  type FeedCommentWithUser,
 } from '../../shared/schema';
 import { eq, desc, sql, and, inArray } from 'drizzle-orm';
 import { type Database } from './db';
@@ -1011,6 +1019,138 @@ export class WorkerStorage {
     await this.db.delete(stravaActivities).where(eq(stravaActivities.userId, userId));
   }
 
+  // Reset all Polar activities for all users (force reimport)
+  async resetAllPolarActivitiesForReprocessing(): Promise<number> {
+    const result = await this.db
+      .update(polarActivities)
+      .set({
+        processed: false,
+        processedAt: null,
+        routeId: null,
+        territoryId: null,
+      })
+      .returning();
+    return result.length;
+  }
+
+  // Get all distinct user IDs that have Polar activities
+  async getUsersWithPolarActivities(): Promise<string[]> {
+    const results = await this.db
+      .selectDistinct({ userId: polarActivities.userId })
+      .from(polarActivities);
+    return results.map(r => r.userId);
+  }
+
+  // Get all Polar activities (for admin purposes)
+  async getAllPolarActivities(): Promise<PolarActivity[]> {
+    return await this.db
+      .select()
+      .from(polarActivities)
+      .orderBy(desc(polarActivities.startDate));
+  }
+
+  // Get count of routes by userId
+  async getRouteCountByUserId(userId: string): Promise<number> {
+    const [result] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(routes)
+      .where(eq(routes.userId, userId));
+    return Number(result?.count || 0);
+  }
+
+  // Get count of territories by userId
+  async getTerritoryCountByUserId(userId: string): Promise<number> {
+    const [result] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(territories)
+      .where(eq(territories.userId, userId));
+    return Number(result?.count || 0);
+  }
+
+  // Find duplicate routes: same user, same startedAt (prefix match), same distance (~2% tolerance)
+  async findDuplicateRoutes(userId: string): Promise<{ keepId: string; deleteIds: string[] }[]> {
+    const userRoutes = await this.db
+      .select()
+      .from(routes)
+      .where(eq(routes.userId, userId))
+      .orderBy(routes.startedAt);
+
+    const groups = new Map<string, typeof userRoutes>();
+    for (const route of userRoutes) {
+      // Group by date prefix (YYYY-MM-DDTHH:MM)
+      const dateKey = (route.startedAt || '').substring(0, 16);
+      if (!groups.has(dateKey)) groups.set(dateKey, []);
+      groups.get(dateKey)!.push(route);
+    }
+
+    const duplicates: { keepId: string; deleteIds: string[] }[] = [];
+    for (const [, group] of groups) {
+      if (group.length <= 1) continue;
+      // Within same date prefix, group by approximate distance
+      const distGroups: typeof userRoutes[] = [];
+      for (const route of group) {
+        let found = false;
+        for (const dg of distGroups) {
+          const ref = dg[0];
+          const distDiff = Math.abs(route.distance - ref.distance);
+          const threshold = Math.max(ref.distance * 0.02, 10);
+          if (distDiff <= threshold) {
+            dg.push(route);
+            found = true;
+            break;
+          }
+        }
+        if (!found) distGroups.push([route]);
+      }
+      for (const dg of distGroups) {
+        if (dg.length <= 1) continue;
+        // Keep the one that has a polar activity linked, otherwise keep the oldest
+        const withPolar = dg.filter(r => {
+          // We'll determine this outside, for now keep first
+          return false;
+        });
+        const keepId = dg[0].id; // oldest (sorted by startedAt)
+        const deleteIds = dg.slice(1).map(r => r.id);
+        duplicates.push({ keepId, deleteIds });
+      }
+    }
+    return duplicates;
+  }
+
+  // Delete a specific route by ID (no cascade - handled manually)
+  async deleteRouteByIdDirect(routeId: string): Promise<void> {
+    await this.db.delete(routes).where(eq(routes.id, routeId));
+  }
+
+  // Get routes that have no linked polar activity (orphaned from reimport)
+  async getOrphanedRoutes(userId: string): Promise<Route[]> {
+    // Get all routes for user
+    const userRoutes = await this.db
+      .select()
+      .from(routes)
+      .where(eq(routes.userId, userId));
+    
+    // Get all polar activities with routeId for this user
+    const polarActs = await this.db
+      .select({ routeId: polarActivities.routeId })
+      .from(polarActivities)
+      .where(and(eq(polarActivities.userId, userId), sql`${polarActivities.routeId} IS NOT NULL`));
+    
+    // Get all strava activities with routeId for this user
+    const stravaActs = await this.db
+      .select({ routeId: stravaActivities.routeId })
+      .from(stravaActivities)
+      .where(and(eq(stravaActivities.userId, userId), sql`${stravaActivities.routeId} IS NOT NULL`));
+    
+    const linkedRouteIds = new Set([
+      ...polarActs.map(a => a.routeId).filter(Boolean),
+      ...stravaActs.map(a => a.routeId).filter(Boolean),
+    ]);
+    
+    // Routes not linked to any activity are orphans
+    return userRoutes.filter(r => !linkedRouteIds.has(r.id));
+  }
+
   async findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null> {
     // Busca una ruta por userId, fecha de inicio y distancia aproximada (1% tolerancia)
     // Compare by date prefix (YYYY-MM-DDTHH:MM) to avoid format mismatches (milliseconds, timezone)
@@ -1471,5 +1611,211 @@ export class WorkerStorage {
       .delete(ephemeralPhotos)
       .where(sql`${ephemeralPhotos.expiresAt} < ${now}`);
     return result.rowsAffected || 0;
+  }
+
+  // --- Social Feed ---
+
+  async ensureFeedTables(): Promise<void> {
+    try {
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_events (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        route_id TEXT REFERENCES routes(id) ON DELETE SET NULL,
+        victim_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+        area_stolen REAL,
+        distance REAL,
+        duration INTEGER,
+        new_area REAL,
+        ran_together_with TEXT,
+        record_type TEXT,
+        record_value REAL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_comments (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        feed_event_id TEXT NOT NULL REFERENCES feed_events(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        parent_id TEXT,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+    } catch (_) {}
+  }
+
+  async createFeedEvent(data: InsertFeedEvent): Promise<FeedEvent> {
+    await this.ensureFeedTables();
+    const [event] = await this.db
+      .insert(feedEvents)
+      .values(data)
+      .returning();
+    return event;
+  }
+
+  async deleteFeedEventsByRouteId(routeId: string): Promise<void> {
+    await this.ensureFeedTables();
+    // Delete comments first, then events (raw SQL to avoid ON DELETE SET NULL race)
+    await this.db.run(sql`DELETE FROM feed_comments WHERE feed_event_id IN (SELECT id FROM feed_events WHERE route_id = ${routeId})`);
+    await this.db.run(sql`DELETE FROM feed_events WHERE route_id = ${routeId}`);
+  }
+
+  async getFeedForUser(userId: string, limit: number = 30, offset: number = 0): Promise<FeedEventWithDetails[]> {
+    await this.ensureFeedTables();
+    // Get user's friend IDs
+    const friendIds = await this.getFriendIds(userId);
+    // Feed includes own events + friends' events
+    const allUserIds = [userId, ...friendIds];
+
+    if (allUserIds.length === 0) return [];
+
+    // Get feed events with user data
+    const events = await this.db
+      .select()
+      .from(feedEvents)
+      .where(inArray(feedEvents.userId, allUserIds))
+      .orderBy(desc(feedEvents.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    if (events.length === 0) return [];
+
+    // Enrich with user data, victim data, and comment counts
+    const result: FeedEventWithDetails[] = [];
+    const userCache = new Map<string, any>();
+
+    const getOrFetchUser = async (uid: string) => {
+      if (userCache.has(uid)) return userCache.get(uid);
+      const u = await this.getUser(uid);
+      if (u) userCache.set(uid, u);
+      return u;
+    };
+
+    for (const event of events) {
+      const eventUser = await getOrFetchUser(event.userId);
+      if (!eventUser) continue;
+
+      let victim = null;
+      if (event.victimId) {
+        const v = await getOrFetchUser(event.victimId);
+        if (v) {
+          victim = { id: v.id, username: v.username, name: v.name, color: v.color, avatar: v.avatar };
+        }
+      }
+
+      // Get route name and activity date if routeId exists
+      let routeName: string | null = null;
+      let activityDate: string | null = null;
+      if (event.routeId) {
+        const route = await this.getRouteById(event.routeId);
+        if (route) {
+          routeName = route.name;
+          activityDate = route.startedAt;
+        }
+      }
+
+      // Get comment count
+      const countResult = await this.db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(feedComments)
+        .where(eq(feedComments.feedEventId, event.id));
+      const commentCount = countResult[0]?.count || 0;
+
+      result.push({
+        ...event,
+        user: { id: eventUser.id, username: eventUser.username, name: eventUser.name, color: eventUser.color, avatar: eventUser.avatar },
+        victim,
+        routeName,
+        activityDate,
+        commentCount,
+      });
+    }
+
+    return result;
+  }
+
+  async getFeedEventComments(eventId: string): Promise<FeedCommentWithUser[]> {
+    await this.ensureFeedTables();
+
+    const rawComments = await this.db
+      .select({
+        id: feedComments.id,
+        feedEventId: feedComments.feedEventId,
+        userId: feedComments.userId,
+        parentId: feedComments.parentId,
+        content: feedComments.content,
+        createdAt: feedComments.createdAt,
+        userName: users.name,
+        userUsername: users.username,
+        userAvatar: users.avatar,
+      })
+      .from(feedComments)
+      .innerJoin(users, eq(feedComments.userId, users.id))
+      .where(eq(feedComments.feedEventId, eventId))
+      .orderBy(feedComments.createdAt);
+
+    if (rawComments.length === 0) return [];
+
+    const allComments: FeedCommentWithUser[] = rawComments.map((row) => ({
+      id: row.id,
+      feedEventId: row.feedEventId,
+      userId: row.userId,
+      parentId: row.parentId,
+      content: row.content,
+      createdAt: row.createdAt,
+      user: {
+        id: row.userId,
+        username: row.userUsername,
+        name: row.userName,
+        avatar: row.userAvatar,
+      },
+      replies: [],
+    }));
+
+    // Group into top-level + replies
+    const topLevel = allComments.filter(c => !c.parentId);
+    const replies = allComments.filter(c => c.parentId);
+    for (const reply of replies) {
+      const parent = topLevel.find(c => c.id === reply.parentId);
+      if (parent) {
+        parent.replies = parent.replies || [];
+        parent.replies.push(reply);
+      }
+    }
+    return topLevel;
+  }
+
+  async addFeedComment(data: InsertFeedComment): Promise<FeedComment> {
+    await this.ensureFeedTables();
+    const [comment] = await this.db
+      .insert(feedComments)
+      .values(data)
+      .returning();
+    return comment;
+  }
+
+  async deleteFeedComment(commentId: string, userId: string): Promise<boolean> {
+    await this.ensureFeedTables();
+    const result = await this.db
+      .delete(feedComments)
+      .where(and(eq(feedComments.id, commentId), eq(feedComments.userId, userId)));
+    return (result.rowsAffected || 0) > 0;
+  }
+
+  async getFeedEvent(eventId: string): Promise<FeedEvent | undefined> {
+    await this.ensureFeedTables();
+    const [event] = await this.db
+      .select()
+      .from(feedEvents)
+      .where(eq(feedEvents.id, eventId));
+    return event || undefined;
+  }
+
+  async getFeedCommentById(commentId: string): Promise<FeedComment | undefined> {
+    await this.ensureFeedTables();
+    const [comment] = await this.db
+      .select()
+      .from(feedComments)
+      .where(eq(feedComments.id, commentId));
+    return comment || undefined;
   }
 }

@@ -80,6 +80,60 @@ function geometriesOverlapByPercentage(
   }
 }
 
+// Helper: generate feed events after a conquest
+async function generateFeedEvents(
+  storage: WorkerStorage,
+  userId: string,
+  routeId: string,
+  distance: number,
+  duration: number,
+  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[] }
+): Promise<void> {
+  try {
+    // 1. Activity event (always)
+    await storage.createFeedEvent({
+      userId,
+      eventType: 'activity',
+      routeId,
+      distance,
+      duration,
+      newArea: conquestResult.newAreaConquered,
+    });
+
+    // 2. Territory stolen events (one per victim)
+    if (conquestResult.victims && conquestResult.victims.length > 0) {
+      for (const victim of conquestResult.victims) {
+        await storage.createFeedEvent({
+          userId,
+          eventType: 'territory_stolen',
+          routeId,
+          victimId: victim.userId,
+          areaStolen: victim.stolenArea,
+        });
+      }
+    }
+
+    // 3. Ran together event
+    if (conquestResult.ranTogetherWith.length > 0) {
+      const ranNames = await Promise.all(
+        conquestResult.ranTogetherWith.map(async (uid: string) => {
+          const u = await storage.getUser(uid);
+          return { id: uid, name: u?.name || uid };
+        })
+      );
+      await storage.createFeedEvent({
+        userId,
+        eventType: 'ran_together',
+        routeId,
+        distance,
+        ranTogetherWith: JSON.stringify(ranNames),
+      });
+    }
+  } catch (e) {
+    console.error('[FEED] Error creating feed events:', e);
+  }
+}
+
 interface ConquestVictimInfo {
   userId: string;
   userName: string;
@@ -1118,6 +1172,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
             }
 
+            // Generate feed events
+            await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, conquestResult);
+
             // Send notifications to friends about new activity + check area overtakes
             // (non-blocking — don't await, let it run in background)
             c.executionCtx.waitUntil((async () => {
@@ -1243,6 +1300,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       // Detach territories from this route (set routeId to null) so cascade doesn't delete them
       await storage.detachTerritoriesFromRoute(routeId);
+
+      // Delete feed events for this route
+      await storage.deleteFeedEventsByRouteId(routeId);
 
       // Delete conquest metrics for this route
       await storage.deleteConquestMetricsByRouteId(routeId);
@@ -1382,6 +1442,320 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Admin: Force reimport of all Polar activities from database
+  // Phase 1: ?phase=diagnose → shows current state (no changes)
+  // Phase 2: ?phase=cleanup → removes duplicate routes, orphaned data
+  // Phase 3: ?phase=process → processes 1 unprocessed activity (call repeatedly)
+  // Phase 4: ?phase=reprocess → full chronological territory reprocess for all friend groups
+  app.post('/api/admin/reimport-polar-activities', async (c) => {
+    const phase = c.req.query('phase') || 'process';
+    const db = getDb(c.env);
+    const storage = new WorkerStorage(db);
+
+    // ===== PHASE 1: DIAGNOSE =====
+    if (phase === 'diagnose') {
+      try {
+        const userIds = await storage.getUsersWithPolarActivities();
+        const diagnostics: any[] = [];
+
+        for (const userId of userIds) {
+          const user = await storage.getUser(userId);
+          const allActivities = await storage.getPolarActivitiesByUserId(userId);
+          const unprocessed = allActivities.filter(a => !a.processed);
+          const withRoute = allActivities.filter(a => a.routeId);
+          const withoutRoute = allActivities.filter(a => !a.routeId);
+          const routeCount = await storage.getRouteCountByUserId(userId);
+          const territoryCount = await storage.getTerritoryCountByUserId(userId);
+
+          diagnostics.push({
+            userId,
+            userName: user?.name || userId,
+            polarActivities: {
+              total: allActivities.length, 
+              processed: allActivities.length - unprocessed.length,
+              unprocessed: unprocessed.length,
+              withRoute: withRoute.length,
+              withoutRoute: withoutRoute.length,
+            },
+            routes: routeCount,
+            territories: territoryCount,
+          });
+        }
+
+        return c.json({ phase: 'diagnose', diagnostics });
+      } catch (error: any) {
+        return c.json({ error: error.message }, 500);
+      }
+    }
+
+    // ===== PHASE 2: CLEANUP =====
+    // Removes: duplicate routes (same user+date+distance), orphaned territories,
+    // and resets polar activities that point to non-existent routes
+    if (phase === 'cleanup') {
+      try {
+        const userIds = await storage.getUsersWithPolarActivities();
+        const cleanupResults: any[] = [];
+
+        for (const userId of userIds) {
+          const user = await storage.getUser(userId);
+          let deletedRoutes = 0;
+          let resetActivities = 0;
+
+          // 1. Find and remove orphaned routes (routes not linked to any polar/strava activity)
+          const orphanedRoutes = await storage.getOrphanedRoutes(userId);
+          for (const route of orphanedRoutes) {
+            // Clean up territories linked to this route
+            await storage.detachTerritoriesFromRoute(route.id);
+            await storage.deleteConquestMetricsByRouteId(route.id);
+            await storage.deleteRouteByIdDirect(route.id);
+            deletedRoutes++;
+          }
+
+          // 2. Reset polar activities whose routeId points to a route that was deleted
+          const allActivities = await storage.getPolarActivitiesByUserId(userId);
+          for (const activity of allActivities) {
+            if (activity.routeId) {
+              const route = await storage.getRouteById(activity.routeId);
+              if (!route) {
+                // Route was deleted but activity still points to it
+                await storage.updatePolarActivity(activity.id, {
+                  routeId: null,
+                  territoryId: null,
+                  processed: false,
+                  processedAt: null,
+                });
+                resetActivities++;
+              }
+            }
+          }
+
+          cleanupResults.push({
+            userId,
+            userName: user?.name || userId,
+            orphanedRoutesDeleted: deletedRoutes,
+            activitiesReset: resetActivities,
+          });
+        }
+
+        return c.json({ phase: 'cleanup', results: cleanupResults });
+      } catch (error: any) {
+        return c.json({ error: error.message }, 500);
+      }
+    }
+
+    // ===== PHASE 3: PROCESS (one activity at a time - LIGHTWEIGHT) =====
+    // Only creates the route and links it to the polar activity. 
+    // Territory processing is deferred to phase=reprocess for correct chronological order.
+    if (phase === 'process') {
+      try {
+        const userIds = await storage.getUsersWithPolarActivities();
+
+        // Find first user with unprocessed activities
+        for (const userId of userIds) {
+          const unprocessed = await storage.getUnprocessedPolarActivities(userId);
+          if (unprocessed.length === 0) continue;
+
+          const user = await storage.getUser(userId);
+          const activity = unprocessed[0];
+
+          console.log(`[REIMPORT] Processing activity ${activity.id} for user ${user?.name || userId}: "${activity.name}"`);
+
+          if (!activity.summaryPolyline) {
+            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            return c.json({
+              phase: 'process', action: 'skipped_no_gps',
+              activity: { id: activity.id, name: activity.name },
+              user: user?.name || userId, remaining: unprocessed.length - 1,
+            });
+          }
+
+          const startDate = coerceDate(activity.startDate);
+          if (!startDate) {
+            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            return c.json({
+              phase: 'process', action: 'skipped_bad_date',
+              activity: { id: activity.id, name: activity.name },
+              user: user?.name || userId, remaining: unprocessed.length - 1,
+            });
+          }
+
+          const decoded = decodePolyline(activity.summaryPolyline);
+          const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+
+          if (coordinates.length < 3) {
+            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            return c.json({
+              phase: 'process', action: 'skipped_few_coords',
+              activity: { id: activity.id, name: activity.name },
+              user: user?.name || userId, remaining: unprocessed.length - 1,
+            });
+          }
+
+          const startedAtStr = startDate.toISOString();
+          const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+
+          // DEDUPLICATE: Check if a route already exists for this user at this time/distance
+          let route = await storage.findRouteByDateAndDistance(userId, startedAtStr, activity.distance);
+          let routeAction = 'reused_existing';
+
+          if (!route) {
+            route = await storage.createRoute({
+              userId: activity.userId,
+              name: activity.name,
+              coordinates,
+              distance: activity.distance,
+              duration: activity.duration,
+              startedAt: startedAtStr,
+              completedAt: completedAtStr,
+            });
+            routeAction = 'created_new';
+          }
+
+          // Link activity to route and mark as processed
+          await storage.updatePolarActivity(activity.id, {
+            routeId: route.id,
+            processed: true,
+            processedAt: new Date(),
+          });
+
+          return c.json({
+            phase: 'process', action: 'processed', routeAction,
+            activity: { id: activity.id, name: activity.name, distance: Math.round(activity.distance) },
+            user: user?.name || userId,
+            remaining: unprocessed.length - 1,
+            note: 'Ruta creada. Territorios se calculan con phase=reprocess al final.',
+          });
+        }
+
+        // All users done
+        return c.json({
+          phase: 'process', action: 'all_done',
+          message: 'Todas las actividades procesadas. Ahora ejecuta phase=reprocess para calcular territorios.',
+        });
+
+      } catch (error: any) {
+        console.error('[REIMPORT] Error:', error);
+        return c.json({ error: error.message }, 500);
+      }
+    }
+
+    // ===== PHASE 4: REPROCESS TERRITORIES =====
+    // Process ONE friend group per invocation (call repeatedly until done).
+    // Uses chronological reprocess with steal logic + ran-together detection.
+    if (phase === 'reprocess') {
+      try {
+        const allUsers = await storage.getAllUsersWithStats();
+        
+        // Find which friend groups have routes but no territories yet
+        // (or need recalculation)
+        const processedGroupKey = new Set<string>();
+        
+        for (const user of allUsers) {
+          // Create a deterministic group key (sorted user IDs)
+          const friendIds = await storage.getFriendIds(user.id);
+          const groupIds = [user.id, ...friendIds].sort();
+          const groupKey = groupIds.join(',');
+          
+          if (processedGroupKey.has(groupKey)) continue;
+          processedGroupKey.add(groupKey);
+          
+          // Check if this group needs reprocessing:
+          // Any user in the group has routes but no territory, or totalArea = 0 with routes
+          let needsReprocess = false;
+          for (const uid of groupIds) {
+            const routeCount = await storage.getRouteCountByUserId(uid);
+            const territoryCount = await storage.getTerritoryCountByUserId(uid);
+            if (routeCount > 0 && territoryCount === 0) {
+              needsReprocess = true;
+              break;
+            }
+          }
+          
+          if (!needsReprocess) continue;
+          
+          // Process this friend group
+          console.log(`[REPROCESS] Processing friend group: ${groupIds.length} users, trigger: ${user.name}`);
+          await reprocessFriendGroupTerritoriesChronologically(storage, user.id);
+          
+          // Return result for this group only
+          const groupResults: any[] = [];
+          for (const uid of groupIds) {
+            const u = await storage.getUser(uid);
+            groupResults.push({
+              userId: uid,
+              name: u?.name || uid,
+              totalArea: u?.totalArea || 0,
+            });
+          }
+          
+          return c.json({ 
+            phase: 'reprocess', 
+            action: 'processed_group',
+            group: groupResults,
+            message: 'Un grupo de amigos procesado. Ejecuta de nuevo si hay más.',
+          });
+        }
+        
+        // All groups done
+        const results: any[] = [];
+        for (const user of allUsers) {
+          results.push({
+            userId: user.id,
+            name: user.name,
+            totalArea: user.totalArea || 0,
+          });
+        }
+        
+        return c.json({ phase: 'reprocess', action: 'all_done', results });
+      } catch (error: any) {
+        return c.json({ error: error.message }, 500);
+      }
+    }
+
+    // ===== PHASE: RESET =====
+    // Resets all polar activities to unprocessed state (USE WITH CAUTION)
+    if (phase === 'reset') {
+      try {
+        const userIds = await storage.getUsersWithPolarActivities();
+        const resetResults: any[] = [];
+
+        for (const userId of userIds) {
+          const user = await storage.getUser(userId);
+          const activities = await storage.getPolarActivitiesByUserId(userId);
+          
+          let resetCount = 0;
+          for (const activity of activities) {
+            await storage.updatePolarActivity(activity.id, {
+              processed: false,
+              processedAt: null,
+              routeId: null,
+              territoryId: null,
+            });
+            resetCount++;
+          }
+
+          // Delete all routes for this user (they'll be recreated from polar activities)
+          await storage.deleteTerritoriesByUserId(userId);
+          await storage.deleteAllRoutesByUserId(userId);
+          await storage.deleteConquestMetricsByUserId(userId);
+          await storage.updateUser(userId, { totalArea: 0 });
+
+          resetResults.push({
+            userId,
+            userName: user?.name || userId,
+            activitiesReset: resetCount,
+          });
+        }
+
+        return c.json({ phase: 'reset', results: resetResults });
+      } catch (error: any) {
+        return c.json({ error: error.message }, 500);
+      }
+    }
+
+    return c.json({ error: `Fase desconocida: ${phase}. Usa: diagnose, cleanup, process, reprocess, reset` }, 400);
+  });
+
   app.get('/api/routes/:userId', async (c) => {
     try {
       const db = getDb(c.env);
@@ -1389,6 +1763,176 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const userId = c.req.param('userId');
       const routes = await storage.getRoutesByUserId(userId);
       return c.json(routes);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // --- Social Feed Endpoints ---
+
+  // Get feed for a user (own + friends' events)
+  app.get('/api/feed/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const limit = parseInt(c.req.query('limit') || '30');
+      const offset = parseInt(c.req.query('offset') || '0');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const events = await storage.getFeedForUser(userId, limit, offset);
+      return c.json(events);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get comments for a feed event
+  app.get('/api/feed/events/:eventId/comments', async (c) => {
+    try {
+      const eventId = c.req.param('eventId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comments = await storage.getFeedEventComments(eventId);
+      return c.json(comments);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Add a comment to a feed event
+  app.post('/api/feed/events/:eventId/comments', async (c) => {
+    try {
+      const eventId = c.req.param('eventId');
+      const { userId, content, parentId } = await c.req.json();
+
+      if (!userId || !content || !content.trim()) {
+        return c.json({ error: 'userId and content are required' }, 400);
+      }
+      if (content.length > 500) {
+        return c.json({ error: 'Comment too long (max 500 chars)' }, 400);
+      }
+
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const comment = await storage.addFeedComment({
+        feedEventId: eventId,
+        userId,
+        content: content.trim(),
+        parentId: parentId || null,
+      });
+
+      // Send push notifications (non-blocking)
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const { sendPushToUser } = await import('./pushHelper');
+          const commenter = await storage.getUser(userId);
+          const commenterName = commenter?.name || 'Alguien';
+          const notifiedUserIds = new Set<string>([userId]); // track who we already notified
+
+          // Notify event owner
+          const event = await storage.getFeedEvent(eventId);
+          if (event && event.userId !== userId) {
+            notifiedUserIds.add(event.userId);
+            const subs = await storage.getPushSubscriptionsByUserId(event.userId);
+            if (subs.length > 0) {
+              await sendPushToUser(
+                subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
+                {
+                  title: `💬 ${commenterName} comentó tu actividad`,
+                  body: content.trim().substring(0, 100),
+                  tag: 'feed-comment',
+                  data: { url: '/activity', type: 'feed_comment' },
+                },
+                c.env.VAPID_PUBLIC_KEY || '',
+                c.env.VAPID_PRIVATE_KEY || '',
+                c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+              );
+            }
+          }
+
+          // Notify parent comment author for replies
+          if (parentId) {
+            const parentComment = await storage.getFeedCommentById(parentId);
+            if (parentComment && !notifiedUserIds.has(parentComment.userId)) {
+              notifiedUserIds.add(parentComment.userId);
+              const subs = await storage.getPushSubscriptionsByUserId(parentComment.userId);
+              if (subs.length > 0) {
+                await sendPushToUser(
+                  subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
+                  {
+                    title: `💬 ${commenterName} respondió tu comentario`,
+                    body: content.trim().substring(0, 100),
+                    tag: 'feed-reply',
+                    data: { url: '/activity', type: 'feed_reply' },
+                  },
+                  c.env.VAPID_PUBLIC_KEY || '',
+                  c.env.VAPID_PRIVATE_KEY || '',
+                  c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                );
+              }
+            }
+          }
+
+          // Notify @mentioned users
+          const mentionRegex = /@([\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/g;
+          const mentions = [...content.matchAll(mentionRegex)].map((m: RegExpMatchArray) => m[1]);
+          if (mentions.length > 0) {
+            const friendIds = await storage.getFriendIds(userId);
+            for (const friendId of friendIds) {
+              const friend = await storage.getUser(friendId);
+              if (!friend || notifiedUserIds.has(friend.id)) continue;
+              const friendNameLower = friend.name?.toLowerCase() || '';
+              const friendUsernameLower = friend.username?.toLowerCase() || '';
+              const isMentioned = mentions.some((m: string) => {
+                const ml = m.toLowerCase();
+                return ml === friendNameLower || ml === friendUsernameLower;
+              });
+              if (isMentioned) {
+                notifiedUserIds.add(friend.id);
+                const subs = await storage.getPushSubscriptionsByUserId(friend.id);
+                if (subs.length > 0) {
+                  await sendPushToUser(
+                    subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
+                    {
+                      title: `📣 ${commenterName} te mencionó en un comentario`,
+                      body: content.trim().substring(0, 100),
+                      tag: 'feed-mention',
+                      data: { url: '/activity', type: 'feed_mention' },
+                    },
+                    c.env.VAPID_PUBLIC_KEY || '',
+                    c.env.VAPID_PRIVATE_KEY || '',
+                    c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                  );
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[FEED] Error sending comment notification:', e);
+        }
+      })());
+
+      return c.json(comment);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Delete a comment (only own comments)
+  app.delete('/api/feed/comments/:commentId', async (c) => {
+    try {
+      const commentId = c.req.param('commentId');
+      const { userId } = await c.req.json();
+      if (!userId) {
+        return c.json({ error: 'userId is required' }, 400);
+      }
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const deleted = await storage.deleteFeedComment(commentId, userId);
+      if (!deleted) {
+        return c.json({ error: 'Comment not found or not yours' }, 404);
+      }
+      return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -2370,6 +2914,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
               }
 
+              // Generate feed events
+              await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
+
               await storage.updateStravaActivity(activity.id, {
                 processed: true,
                 processedAt: new Date(),
@@ -3277,6 +3824,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               console.log(`[PROCESS] Reusing existing route ${route.id} for activity ${activity.id}`);
             }
           }
+          // ANTI-DUPLICATE: Check if a route with same date+distance already exists
+          if (!route) {
+            route = await storage.findRouteByDateAndDistance(userId, startedAtStr, activity.distance);
+            if (route) {
+              console.log(`[PROCESS] Found existing route by date+distance: ${route.id} - reusing to avoid duplicate`);
+            }
+          }
           if (!route) {
             route = await storage.createRoute({
               userId: activity.userId,
@@ -3337,6 +3891,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             }
 
             console.log(`[PROCESS] Territory updated: ${conquestResult.territory.id}, area: ${conquestResult.territory.area}`);
+
+            // Generate feed events
+            await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
 
             results.push({
               activityId: activity.id,

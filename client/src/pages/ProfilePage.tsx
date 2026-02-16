@@ -24,6 +24,7 @@ import { NotificationToggle } from '@/components/NotificationToggle';
 import { AvatarDialog } from '@/components/AvatarDialog';
 import { ConquestStats } from '@/components/ConquestStats';
 import { ActivityPreviewDialog } from '@/components/ActivityPreviewDialog';
+import { TauntCameraDialog } from '@/components/TauntCameraDialog';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
@@ -180,6 +181,7 @@ export default function ProfilePage() {
   const [isImportProcessed, setIsImportProcessed] = useState(false);
   const [importTauntVictims, setImportTauntVictims] = useState<string[]>([]);
   const [importTauntArea, setImportTauntArea] = useState(0);
+  const [showImportTaunt, setShowImportTaunt] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef<number>(0);
@@ -289,6 +291,7 @@ export default function ProfilePage() {
             totalArea: result.metrics?.totalArea || 0,
             areaStolen: result.metrics?.areaStolen || 0,
             routeId: result.routeId,
+            routeName: 'Actividad Strava',
             territoryArea: 0,
             summaryPolyline: null,
             distance: 0,
@@ -592,6 +595,7 @@ export default function ProfilePage() {
           totalArea: result.metrics?.totalArea || 0,
           areaStolen: result.metrics?.areaStolen || 0,
           routeId: result.routeId,
+          routeName: currentActivity?.name || 'Actividad',
           territoryArea: result.area || 0,
           summaryPolyline: currentActivity?.summaryPolyline || null,
           distance: currentActivity?.distance || 0,
@@ -615,9 +619,12 @@ export default function ProfilePage() {
       ]);
       
       if (hasTauntVictims) {
+        // Close the preview dialog and open taunt camera
+        setShowActivityPreview(false);
+        setShowImportTaunt(true);
         toast({
           title: 'Actividad importada',
-          description: 'Puedes enviar una foto a tu rival o continuar al mapa.',
+          description: '¡Has robado territorio! Envía una foto a tu rival.',
         });
       } else {
         toast({
@@ -1427,6 +1434,24 @@ export default function ProfilePage() {
         onSkip={handleSkipActivity}
         isProcessing={isProcessingActivity}
       />
+
+      {user?.id && importTauntVictims.length > 0 && (
+        <TauntCameraDialog
+          open={showImportTaunt}
+          onOpenChange={(open) => {
+            if (!open) {
+              setShowImportTaunt(false);
+              setImportTauntVictims([]);
+              setImportTauntArea(0);
+              setIsImportProcessed(false);
+              finalizeImportNavigation();
+            }
+          }}
+          senderId={user.id}
+          victims={importTauntVictims}
+          areaStolen={importTauntArea}
+        />
+      )}
     </div>
   );
 }
