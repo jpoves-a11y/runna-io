@@ -177,6 +177,9 @@ export default function ProfilePage() {
   const [pendingActivities, setPendingActivities] = useState<PolarActivity[]>([]);
   const [currentPreviewIndex, setCurrentPreviewIndex] = useState(0);
   const [isProcessingActivity, setIsProcessingActivity] = useState(false);
+  const [isImportProcessed, setIsImportProcessed] = useState(false);
+  const [importTauntVictims, setImportTauntVictims] = useState<string[]>([]);
+  const [importTauntArea, setImportTauntArea] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const touchStartY = useRef<number>(0);
@@ -547,6 +550,14 @@ export default function ProfilePage() {
       });
     },
   });
+
+  // Navigate to map after import is done
+  const finalizeImportNavigation = () => {
+    setShowActivityPreview(false);
+    setPendingActivities([]);
+    setCurrentPreviewIndex(0);
+    navigate('/');
+  };
 
   // Step 2: Process a single activity and navigate to map with animation
   const handleAcceptActivity = async () => {
