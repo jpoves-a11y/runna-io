@@ -42,6 +42,8 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const [screenLockActive, setScreenLockActive] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [pauseTaps, setPauseTaps] = useState(0);
+  const pauseTapsTimeoutRef = useRef<number | null>(null);
 
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -210,16 +212,24 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     saveTrackingState({ coordinates: [], startTime: now, pausedDuration: 0, lastPauseTime: null, isPaused: false });
   };
 
-  const handlePause = () => {
-    setIsPaused(true); lastPauseTimeRef.current = Date.now(); updateDisplayDuration();
-    if (displayTimerRef.current) { window.clearInterval(displayTimerRef.current); displayTimerRef.current = null; }
-    if (watchIdRef.current) { clearWatch(watchIdRef.current); watchIdRef.current = null; }
-    saveTrackingState({ coordinates: coordsRef.current, startTime: startTimeRef.current, pausedDuration: pausedDurationRef.current, lastPauseTime: lastPauseTimeRef.current, isPaused: true });
+  const handlePauseTap = () => {
+    if (pauseTapsTimeoutRef.current) window.clearTimeout(pauseTapsTimeoutRef.current);
+    const newCount = pauseTaps + 1;
+    setPauseTaps(newCount);
+    if (newCount >= 2) {
+      setIsPaused(true); lastPauseTimeRef.current = Date.now(); updateDisplayDuration();
+      if (displayTimerRef.current) { window.clearInterval(displayTimerRef.current); displayTimerRef.current = null; }
+      if (watchIdRef.current) { clearWatch(watchIdRef.current); watchIdRef.current = null; }
+      saveTrackingState({ coordinates: coordsRef.current, startTime: startTimeRef.current, pausedDuration: pausedDurationRef.current, lastPauseTime: lastPauseTimeRef.current, isPaused: true });
+      setPauseTaps(0);
+    } else {
+      pauseTapsTimeoutRef.current = window.setTimeout(() => setPauseTaps(0), 800);
+    }
   };
 
   const handleResume = async () => {
     if (lastPauseTimeRef.current) pausedDurationRef.current += Date.now() - lastPauseTimeRef.current;
-    lastPauseTimeRef.current = null; setIsPaused(false);
+    lastPauseTimeRef.current = null; setIsPaused(false); setPauseTaps(0);
     const ok = await acquireWakeLock(); setScreenLockActive(ok);
     startDisplayTimer(); startGpsWatch();
     saveTrackingState({ coordinates: coordsRef.current, startTime: startTimeRef.current, pausedDuration: pausedDurationRef.current, lastPauseTime: null, isPaused: false });
@@ -251,110 +261,124 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const pace = displayDuration > 0 && distance > 0 ? (displayDuration / 60) / (distance / 1000) : 0;
 
   return (
-    <div className="absolute inset-0 flex flex-col bg-background">
-      {/* Saving overlay */}
+    <div className="absolute inset-0 flex flex-col bg-black">
+      {/* SAVING OVERLAY */}
       {isSaving && (
-        <div className="absolute inset-0 z-[2000] flex items-center justify-center bg-background/80 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-card shadow-2xl border border-border">
+        <div className="absolute inset-0 z-[2000] flex items-center justify-center bg-black/90">
+          <div className="flex flex-col items-center gap-4 p-8 rounded-2xl bg-slate-900 shadow-2xl border border-slate-700">
             <Loader2 className="h-10 w-10 text-primary animate-spin" />
-            <p className="text-lg font-semibold">Guardando ruta...</p>
-            <p className="text-sm text-muted-foreground text-center">Procesando territorio y conquista</p>
+            <p className="text-lg font-semibold text-white">Guardando ruta...</p>
+            <p className="text-sm text-slate-400 text-center">Procesando territorio y conquista</p>
           </div>
         </div>
       )}
 
-      <div className="flex-1 relative">
-        <div ref={mapContainer} className="absolute inset-0" data-testid="tracker-map" />
-
-        {/* Cancel button — only visible before tracking starts */}
-        {!isTracking && (
-          <button className="absolute left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
-            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }} onClick={handleCancelTracking} data-testid="button-cancel">
-            <X className="h-5 w-5" />
-          </button>
-        )}
-
-        {/* Top bar during tracking: REC + screen status + warning */}
-        {isTracking && (
-          <div className="absolute left-0 right-0 z-[1000] flex flex-col items-center gap-1" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)' }}>
-            <div className="flex items-center gap-2">
-              {!isPaused && (
-                <div className="flex items-center gap-1.5 px-3 py-1 bg-red-500 text-white rounded-full shadow-lg">
-                  <div className="w-2 h-2 bg-white rounded-full animate-pulse" /><span className="text-[11px] font-semibold">REC</span>
+      {/* PRE-TRACKING MODE: Show map + normal UI */}
+      {!isTracking ? (
+        <>
+          <div className="flex-1 relative">
+            <div ref={mapContainer} className="absolute inset-0" data-testid="tracker-map" />
+            <button className="absolute left-3 z-[1000] w-10 h-10 flex items-center justify-center bg-card/95 backdrop-blur-md rounded-full shadow-lg border border-border"
+              style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }} onClick={handleCancelTracking} data-testid="button-cancel">
+              <X className="h-5 w-5" />
+            </button>
+            {isGettingLocation && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm z-[999]">
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  <span className="text-sm text-muted-foreground">Obteniendo ubicación...</span>
                 </div>
-              )}
-              <div className={`flex items-center gap-1 px-2.5 py-1 rounded-full shadow-lg text-[11px] font-medium ${screenLockActive ? 'bg-green-500/90 text-white' : 'bg-yellow-500/90 text-black'}`}>
-                <Smartphone className="w-3 h-3" />{screenLockActive ? 'Pantalla activa' : 'No bloquees'}
+              </div>
+            )}
+          </div>
+          <div className="bg-card border-t border-border p-4 space-y-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-center">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><Activity className="h-3 w-3" />Tiempo</p>
+                <p className="text-xl font-bold tabular-nums" data-testid="text-duration">{formatTime(displayDuration)}</p>
+              </div>
+              <div className="text-center border-x border-border">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><MapPin className="h-3 w-3" />Distancia</p>
+                <p className="text-xl font-bold tabular-nums" data-testid="text-distance">{formatDist(distance)}</p>
+              </div>
+              <div className="text-center">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><Zap className="h-3 w-3" />Ritmo</p>
+                <p className="text-xl font-bold tabular-nums" data-testid="text-pace">{pace > 0 ? `${pace.toFixed(1)}'` : "0.0'"}</p>
               </div>
             </div>
-            <div className="flex items-center gap-1 px-3 py-1 bg-card/90 backdrop-blur-sm rounded-full shadow text-[10px] text-muted-foreground">
-              <ShieldAlert className="w-3 h-3" />No cierres la app ni bloquees el móvil
+            <Button size="lg" className="w-full h-14 text-base font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform" onClick={handleStart} disabled={isGettingLocation} data-testid="button-start-tracking">
+              <Play className="h-6 w-6 mr-2" fill="currentColor" />Iniciar Ruta
+            </Button>
+          </div>
+        </>
+      ) : (
+        /* TRACKING MODE: Black screen, huge stats, tiny controls */
+        <>
+          {/* Black background (no map = low battery) */}
+          <div className="flex-1 flex flex-col items-center justify-center relative bg-black">
+            {/* Top status bar: minimal, hard to tap */}
+            <div className="absolute left-0 right-0 z-[1000] flex items-center justify-between px-2" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.25rem)' }}>
+              <div className="flex items-center gap-1">
+                {!isPaused && (
+                  <div className="flex items-center gap-0.5 px-2 py-0.5 bg-red-600 text-white rounded-full text-[10px] font-bold">
+                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />REC
+                  </div>
+                )}
+              </div>
+              <div className={`flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${screenLockActive ? 'bg-green-600 text-white' : 'bg-yellow-600 text-white'}`}>
+                <Smartphone className="w-2.5 h-2.5" />{screenLockActive ? 'OK' : '⚠'}
+              </div>
+            </div>
+
+            {/* HUGE stats: time + distance */}
+            <div className="flex flex-col items-center justify-center gap-6">
+              {/* Time: biggest */}
+              <div className="text-center">
+                <p className="text-7xl font-black tabular-nums text-white" data-testid="text-duration">{formatTime(displayDuration)}</p>
+              </div>
+              {/* Distance: almost as big */}
+              <div className="text-center">
+                <p className="text-5xl font-bold tabular-nums text-slate-300" data-testid="text-distance">{formatDist(distance)}</p>
+              </div>
             </div>
           </div>
-        )}
 
-        {/* Loading indicator */}
-        {isGettingLocation && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm z-[999]">
-            <div className="flex flex-col items-center gap-2">
-              <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-muted-foreground">Obteniendo ubicación...</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Bottom Panel */}
-      <div className="bg-card border-t border-border p-3 space-y-3" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' }}>
-        {/* Stats Row */}
-        <div className="grid grid-cols-3 gap-2">
-          <div className="text-center">
-            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1"><Activity className="h-3 w-3" />Tiempo</p>
-            <p className="text-lg font-bold tabular-nums" data-testid="text-duration">{formatTime(displayDuration)}</p>
-          </div>
-          <div className="text-center border-x border-border">
-            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1"><MapPin className="h-3 w-3" />Distancia</p>
-            <p className="text-lg font-bold tabular-nums" data-testid="text-distance">{formatDist(distance)}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1"><Zap className="h-3 w-3" />Ritmo</p>
-            <p className="text-lg font-bold tabular-nums" data-testid="text-pace">{pace > 0 ? `${pace.toFixed(1)}'` : "0.0'"}</p>
-          </div>
-        </div>
-
-        {/* Controls */}
-        {!isTracking ? (
-          <Button size="lg" className="w-full h-14 text-base font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform" onClick={handleStart} disabled={isGettingLocation} data-testid="button-start-tracking">
-            <Play className="h-6 w-6 mr-2" fill="currentColor" />Iniciar Ruta
-          </Button>
-        ) : (
-          <div className="flex items-center justify-center gap-6">
-            {!isPaused ? (
-              <button className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center shadow-md active:scale-95 transition-transform" onClick={handlePause} data-testid="button-pause">
-                <Pause className="h-6 w-6" />
-              </button>
-            ) : (
-              <button className="w-14 h-14 rounded-full gradient-primary flex items-center justify-center shadow-md active:scale-95 transition-transform" onClick={() => { setConfirmStop(false); handleResume(); }} data-testid="button-resume">
-                <Play className="h-6 w-6 text-white" fill="currentColor" />
-              </button>
-            )}
-            {/* Stop: first tap shows confirm text, second tap stops */}
+          {/* Bottom: TINY buttons, cramped, hard to tap accidentally */}
+          <div className="fixed bottom-0 left-0 right-0 z-[1000] flex items-center justify-end gap-1 p-1" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.25rem)' }}>
+            {/* Pause/Resume: 10px square, no label */}
             <button
-              className={`w-14 h-14 rounded-full flex items-center justify-center shadow-md active:scale-95 transition-all ${
-                confirmStop ? 'bg-red-600 ring-2 ring-red-400 ring-offset-2 ring-offset-background' : 'bg-destructive'
+              className="w-9 h-9 rounded-md bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition-colors"
+              onClick={!isPaused ? handlePauseTap : () => { setPauseTaps(0); handleResume(); }}
+              title={!isPaused ? `Pausar (${pauseTaps}/2)` : 'Reanudar'}
+              data-testid="button-pause"
+              style={{ opacity: 0.8 }}
+            >
+              {!isPaused ? <Pause className="w-4 h-4 text-white" /> : <Play className="w-4 h-4 text-white" fill="white" />}
+            </button>
+
+            {/* Stop: requires 2 taps, 10px square, red when confirmed */}
+            <button
+              className={`w-9 h-9 rounded-md flex items-center justify-center font-black transition-all ${
+                confirmStop ? 'bg-red-700 ring-1 ring-red-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
               }`}
               onClick={handleStop}
               disabled={isSaving}
+              title={confirmStop ? '¡PULSA DE NUEVO!' : `Finalizar (${confirmStop ? '¡CONFIRMA!' : 'pulsa'}) (${Math.max(0, confirmStop ? 1 : 0)}x)`}
               data-testid="button-stop"
+              style={{ opacity: 0.8 }}
             >
-              <Square className="h-5 w-5 text-white" fill="currentColor" />
+              <Square className="w-4 h-4 text-white" fill="white" />
             </button>
           </div>
-        )}
-        {isTracking && confirmStop && (
-          <p className="text-center text-xs text-red-400 font-medium animate-pulse">Pulsa de nuevo ■ para finalizar</p>
-        )}
-      </div>
+
+          {/* Confirmation hint: appears when stop is tapped once */}
+          {confirmStop && (
+            <div className="fixed bottom-14 right-2 z-[999] px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded animate-pulse">
+              ¡CONFIRMA!
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
