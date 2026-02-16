@@ -104,11 +104,13 @@ async function processTerritoryConquest(
   victims: ConquestVictimInfo[];
   ranTogetherWith: string[]; // Users who ran together (no territory stolen)
 }> {
-  const allTerritories = await storage.getAllTerritories();
-  const userTerritories = allTerritories.filter(t => t.userId === userId);
-  
-  // Get friend IDs to determine who can be conquered
+  // Get friend IDs FIRST so we can scope the territory query
   const friendIds = await storage.getFriendIds(userId);
+  
+  // Only load territories for this user + friends (not ALL users)
+  const relevantUserIds = [userId, ...friendIds];
+  const allTerritories = await storage.getTerritoriesForUsers(relevantUserIds);
+  const userTerritories = allTerritories.filter(t => t.userId === userId);
   const enemyTerritories = allTerritories.filter(t => 
     t.userId !== userId && friendIds.includes(t.userId)
   );
@@ -119,7 +121,6 @@ async function processTerritoryConquest(
 
   const victimMap = new Map<string, ConquestVictimInfo>();
   const defenderCache = new Map<string, any>();
-  const attacker = await storage.getUser(userId);
 
   // Batch-load route times for all enemy territories (single DB call instead of N)
   const enemyRouteIds = enemyTerritories
@@ -132,6 +133,18 @@ async function processTerritoryConquest(
   // Step 1: Handle enemy territory conquest
   console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
   
+  // Collect deferred notifications/emails to send after the main loop
+  const deferredNotifications: Array<{
+    victimId: string;
+    attackerName: string;
+    attackerUsername: string;
+    victimEmail: string;
+    stolenArea: number;
+  }> = [];
+
+  // Track which victims need area recalculation
+  const victimsToUpdate = new Set<string>();
+
   for (const enemyTerritory of enemyTerritories) {
     try {
       // Check if activities were done together (time + area overlap)
@@ -169,13 +182,15 @@ async function processTerritoryConquest(
         }
       }
       
-      const result = await storage.subtractFromTerritory(
-        enemyTerritory.id,
+      // Use subtractFromTerritoryDirect with pre-loaded territory (avoids redundant DB read)
+      const result = await storage.subtractFromTerritoryDirect(
+        enemyTerritory as any,
         bufferedGeometry
       );
 
       if (result.stolenArea > 0) {
         totalStolenArea += result.stolenArea;
+        victimsToUpdate.add(enemyTerritory.userId);
         
         console.log(
           `[TERRITORY] Stole ${(result.stolenArea/1000000).toFixed(4)} km² from user ${enemyTerritory.userId}`
@@ -212,67 +227,29 @@ async function processTerritoryConquest(
           currentVictim.stolenArea += result.stolenArea;
         }
 
-        // Send email notification
-        try {
-          const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-          const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
-          const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
-          const emailService = new EmailService(apiKey!, fromEmail, provider as any);
-          
-          if (attacker && defender && defender.email) {
-            await emailService.sendTerritoryConqueredEmail(
-              defender.email,
-              attacker.name,
-              attacker.username,
-              result.stolenArea
-            );
-            
-            await emailService.recordNotification(
-              storage,
-              enemyTerritory.userId,
-              'territory_conquered',
-              userId,
-              `¡${attacker.name} te conquistó ${(result.stolenArea/1000000).toFixed(2)} km²!`,
-              `${attacker.name} (@${attacker.username}) ha conquistado ${(result.stolenArea/1000000).toFixed(2)} km² de tu territorio.`,
-              result.stolenArea
-            );
-          }
-        } catch (emailErr) {
-          console.error('[TERRITORY] Failed to send conquest email:', emailErr);
+        // Defer email/notification instead of sending inline
+        if (defender?.email) {
+          deferredNotifications.push({
+            victimId: enemyTerritory.userId,
+            attackerName: '', // filled after attacker lookup
+            attackerUsername: '',
+            victimEmail: defender.email,
+            stolenArea: result.stolenArea,
+          });
         }
-
-        // Send notification with stolen area
-        if (env && !victimsNotified.includes(enemyTerritory.userId)) {
-          try {
-            const { notifyTerritoryLoss } = await import('./notifications');
-            await notifyTerritoryLoss(
-              storage,
-              enemyTerritory.userId,
-              userId,
-              env,
-              result.stolenArea
-            );
-            victimsNotified.push(enemyTerritory.userId);
-          } catch (notifErr) {
-            console.error('[TERRITORY] Failed to send notification:', notifErr);
-          }
-        }
-
-        // Update victim's total area
-        const victimTerritories = await storage.getTerritoriesByUserId(
-          enemyTerritory.userId
-        );
-        const victimTotalArea = victimTerritories.reduce(
-          (sum, t) => sum + t.area,
-          0
-        );
-        await storage.updateUserTotalArea(
-          enemyTerritory.userId,
-          victimTotalArea
-        );
       }
     } catch (err) {
       console.error('[TERRITORY] Error processing enemy territory:', err);
+    }
+  }
+
+  // Update victims' total areas (single DB call per victim, no geometry transfer)
+  for (const victimId of victimsToUpdate) {
+    try {
+      const victimTotalArea = await storage.getUserTotalAreaFromTerritories(victimId);
+      await storage.updateUserTotalArea(victimId, victimTotalArea);
+    } catch (err) {
+      console.error('[TERRITORY] Error updating victim area:', err);
     }
   }
 
@@ -288,6 +265,57 @@ async function processTerritoryConquest(
 
   // Step 3: Update user's total area
   await storage.updateUserTotalArea(userId, result.totalArea);
+
+  // Step 4: Send deferred emails/notifications (non-critical, best-effort)
+  if (deferredNotifications.length > 0 && env) {
+    const attacker = await storage.getUser(userId);
+    if (attacker) {
+      // Import notifications module ONCE
+      let notifyFn: any = null;
+      try {
+        const mod = await import('./notifications');
+        notifyFn = mod.notifyTerritoryLoss;
+      } catch (_e) { /* notifications not available */ }
+
+      for (const notif of deferredNotifications) {
+        try {
+          const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+          const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
+          const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
+          const emailService = new EmailService(apiKey!, fromEmail, provider as any);
+          
+          await emailService.sendTerritoryConqueredEmail(
+            notif.victimEmail,
+            attacker.name,
+            attacker.username,
+            notif.stolenArea
+          );
+          
+          await emailService.recordNotification(
+            storage,
+            notif.victimId,
+            'territory_conquered',
+            userId,
+            `¡${attacker.name} te conquistó ${(notif.stolenArea/1000000).toFixed(2)} km²!`,
+            `${attacker.name} (@${attacker.username}) ha conquistado ${(notif.stolenArea/1000000).toFixed(2)} km² de tu territorio.`,
+            notif.stolenArea
+          );
+        } catch (emailErr) {
+          console.error('[TERRITORY] Failed to send conquest email:', emailErr);
+        }
+
+        // Push notification
+        if (notifyFn && !victimsNotified.includes(notif.victimId)) {
+          try {
+            await notifyFn(storage, notif.victimId, userId, env, notif.stolenArea);
+            victimsNotified.push(notif.victimId);
+          } catch (notifErr) {
+            console.error('[TERRITORY] Failed to send notification:', notifErr);
+          }
+        }
+      }
+    }
+  }
 
   console.log(`[TERRITORY] Conquest complete:
     - Total area: ${(result.totalArea/1000000).toFixed(4)} km²
@@ -391,16 +419,10 @@ async function reprocessFriendGroupTerritoriesChronologically(
   const groupUserIds = [triggerUserId, ...friendIds];
   console.log(`[FRIEND REPROCESS] Friend group: ${groupUserIds.length} users`);
 
-  // 2. Wipe territories and conquest metrics for this group only
-  for (const uid of groupUserIds) {
-    await storage.deleteTerritoriesByUserId(uid);
-    await storage.updateUserTotalArea(uid, 0);
-  }
-
-  // Delete conquest metrics where attacker OR defender is in the group
-  for (const uid of groupUserIds) {
-    await storage.deleteConquestMetricsByUserId(uid);
-  }
+  // 2. Wipe territories and conquest metrics for this group (batch operations)
+  await storage.deleteTerritoriesForUsers(groupUserIds);
+  await storage.resetTotalAreaForUsers(groupUserIds);
+  await storage.deleteConquestMetricsForUsers(groupUserIds);
 
   // 3. Get routes from group users only, oldest first
   const allRoutes = await storage.getRoutesForUsersChronological(groupUserIds);
@@ -409,37 +431,8 @@ async function reprocessFriendGroupTerritoriesChronologically(
   // Per-user accumulated geometry
   const userGeometries = new Map<string, any>();
 
-  // Build a friendship lookup: for each user, which other group members are friends
-  // Use the trigger user's friends as base (already fetched) to avoid extra DB calls
-  const friendshipMap = new Map<string, Set<string>>();
-  friendshipMap.set(triggerUserId, new Set(friendIds));
-  // For other users, their friendship with trigger user is symmetric
-  for (const fid of friendIds) {
-    const fSet = new Set<string>();
-    fSet.add(triggerUserId);
-    // Check mutual friendships within the group
-    for (const otherId of friendIds) {
-      if (otherId !== fid) {
-        // Both are friends of triggerUserId, but may not be friends with each other
-        // We need to check - but batch it
-        fSet.add(otherId); // We'll verify below only if needed
-      }
-    }
-    friendshipMap.set(fid, fSet);
-  }
-  // If group > 2, verify cross-friendships (only needed for groups of 3+)
-  if (friendIds.length > 1) {
-    for (const fid of friendIds) {
-      const actualFriends = await storage.getFriendIds(fid);
-      const actualSet = new Set(actualFriends);
-      // Keep only actual friends that are in the group
-      const filtered = new Set<string>();
-      for (const uid of groupUserIds) {
-        if (uid !== fid && actualSet.has(uid)) filtered.add(uid);
-      }
-      friendshipMap.set(fid, filtered);
-    }
-  }
+  // Build a friendship lookup for the whole group (single DB call)
+  const friendshipMap = await storage.getFriendshipMap(groupUserIds);
 
   // Pre-build routes-by-user index for fast ran-together lookups
   const routesByUser = new Map<string, typeof allRoutes>();
@@ -3154,9 +3147,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         console.log(`[DELETE] Polar activity ${activityId} deleted (no route attached)`);
       }
 
-      // Rebuild friend group territories chronologically so ownership order is correct
+      // Rebuild territories after delete.
+      // Only do the expensive friend-group chronological reprocess if the user
+      // has conquest interactions. Otherwise just rebuild the user's own territories.
       try {
-        await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+        const hasInteractions = await storage.hasConquestInteractions(userId);
+        if (hasInteractions) {
+          console.log('[DELETE] User has conquest interactions, doing friend-group reprocess');
+          await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+        } else {
+          console.log('[DELETE] No conquest interactions, doing user-only reprocess');
+          await reprocessUserTerritories(storage, userId);
+        }
       } catch (e) {
         console.error('Error reprocessing territories after delete:', e);
         // Fallback: at least rebuild this user's territories

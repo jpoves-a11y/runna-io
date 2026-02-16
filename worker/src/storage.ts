@@ -324,6 +324,51 @@ export class WorkerStorage {
       .orderBy(desc(territories.conqueredAt));
   }
 
+  // Get total area for a user directly from DB (no geometry transfer)
+  async getUserTotalAreaFromTerritories(userId: string): Promise<number> {
+    const result = await this.db
+      .select({ total: sql<number>`COALESCE(SUM(${territories.area}), 0)` })
+      .from(territories)
+      .where(eq(territories.userId, userId));
+    return result[0]?.total || 0;
+  }
+
+  // Get territories only for specific users (much faster than getAllTerritories)
+  async getTerritoriesForUsers(userIds: string[]): Promise<TerritoryWithUser[]> {
+    if (userIds.length === 0) return [];
+    const results = await this.db
+      .select({
+        id: territories.id,
+        userId: territories.userId,
+        routeId: territories.routeId,
+        geometry: territories.geometry,
+        area: territories.area,
+        conqueredAt: territories.conqueredAt,
+        userName: users.name,
+        userUsername: users.username,
+        userColor: users.color,
+      })
+      .from(territories)
+      .leftJoin(users, eq(territories.userId, users.id))
+      .where(inArray(territories.userId, userIds))
+      .orderBy(desc(territories.conqueredAt));
+
+    return results.map((t) => ({
+      id: t.id,
+      userId: t.userId,
+      routeId: t.routeId,
+      geometry: t.geometry,
+      area: t.area,
+      conqueredAt: t.conqueredAt,
+      user: {
+        id: t.userId,
+        username: t.userUsername || '',
+        name: t.userName || '',
+        color: t.userColor || '#000000',
+      },
+    }));
+  }
+
   async deleteTerritoryById(id: string): Promise<void> {
     await this.db.delete(territories).where(eq(territories.id, id));
   }
@@ -353,6 +398,14 @@ export class WorkerStorage {
       throw new Error('Territory not found');
     }
 
+    return this.subtractFromTerritoryDirect(territory, subtractionGeometry);
+  }
+
+  // Like subtractFromTerritory but accepts a pre-loaded territory (avoids redundant DB read)
+  async subtractFromTerritoryDirect(
+    territory: Territory,
+    subtractionGeometry: any
+  ): Promise<{ updatedTerritory: Territory | null; stolenArea: number }> {
     // Parse geometry from JSON string (SQLite stores as text)
     const parsedGeometry = typeof territory.geometry === 'string' 
       ? JSON.parse(territory.geometry) 
@@ -381,7 +434,7 @@ export class WorkerStorage {
     
     if (!difference) {
       // Entire territory was conquered, delete it
-      await this.db.delete(territories).where(eq(territories.id, territoryId));
+      await this.db.delete(territories).where(eq(territories.id, territory.id));
       return { updatedTerritory: null, stolenArea };
     }
     
@@ -393,7 +446,7 @@ export class WorkerStorage {
         geometry: JSON.stringify(difference.geometry),
         area: newArea,
       })
-      .where(eq(territories.id, territoryId))
+      .where(eq(territories.id, territory.id))
       .returning();
     
     return { updatedTerritory, stolenArea };
@@ -868,6 +921,15 @@ export class WorkerStorage {
     );
   }
 
+  // Check if a user has any conquest interactions (as attacker or defender)
+  async hasConquestInteractions(userId: string): Promise<boolean> {
+    const result = await this.db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(conquestMetrics)
+      .where(sql`${conquestMetrics.attackerId} = ${userId} OR ${conquestMetrics.defenderId} = ${userId}`);
+    return (result[0]?.count || 0) > 0;
+  }
+
   async deleteRouteById(id: string): Promise<void> {
     await this.db.delete(routes).where(eq(routes.id, id));
   }
@@ -911,6 +973,26 @@ export class WorkerStorage {
 
   async deleteTerritoriesByUserId(userId: string): Promise<void> {
     await this.db.delete(territories).where(eq(territories.userId, userId));
+  }
+
+  // Batch delete territories for multiple users (single query)
+  async deleteTerritoriesForUsers(userIds: string[]): Promise<void> {
+    if (userIds.length === 0) return;
+    await this.db.delete(territories).where(inArray(territories.userId, userIds));
+  }
+
+  // Batch reset total area for multiple users (single query)
+  async resetTotalAreaForUsers(userIds: string[]): Promise<void> {
+    if (userIds.length === 0) return;
+    await this.db.update(users).set({ totalArea: 0 }).where(inArray(users.id, userIds));
+  }
+
+  // Batch delete conquest metrics for multiple users (single query)
+  async deleteConquestMetricsForUsers(userIds: string[]): Promise<void> {
+    if (userIds.length === 0) return;
+    await this.db.delete(conquestMetrics).where(
+      sql`${conquestMetrics.attackerId} IN (${sql.join(userIds.map(id => sql`${id}`), sql`, `)}) OR ${conquestMetrics.defenderId} IN (${sql.join(userIds.map(id => sql`${id}`), sql`, `)})`
+    );
   }
 
   async deleteTerritoriesByRouteId(routeId: string): Promise<void> {
@@ -1124,6 +1206,25 @@ export class WorkerStorage {
       .where(eq(friendships.userId, userId));
     
     return userFriendships.map(f => f.friendId);
+  }
+
+  // Get all friendship pairs for a set of users (single query)
+  async getFriendshipMap(userIds: string[]): Promise<Map<string, Set<string>>> {
+    if (userIds.length === 0) return new Map();
+    const result = await this.db
+      .select({ userId: friendships.userId, friendId: friendships.friendId })
+      .from(friendships)
+      .where(inArray(friendships.userId, userIds));
+    
+    const map = new Map<string, Set<string>>();
+    for (const uid of userIds) {
+      map.set(uid, new Set());
+    }
+    for (const row of result) {
+      const set = map.get(row.userId);
+      if (set) set.add(row.friendId);
+    }
+    return map;
   }
 
   async recordConquestMetric(
