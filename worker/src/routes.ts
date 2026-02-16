@@ -26,25 +26,22 @@ async function verifyPassword(password: string, hash: string): Promise<boolean> 
 }
 
 // Helper function to process territory conquest for a new route
-// Helper function to check if two time ranges overlap (activities happened together)
+// Helper function to check if two activities started at roughly the same time
+// Only checks START dates (not end dates) with a 15-minute tolerance
 function activitiesOverlapInTime(
   activity1Start: Date | string,
   activity1End: Date | string,
   activity2Start: Date | string,
   activity2End: Date | string,
-  toleranceMs: number = 30 * 60 * 1000 // 30 minutes tolerance
+  toleranceMs: number = 15 * 60 * 1000 // 15 minutes tolerance
 ): boolean {
   const a1Start = new Date(activity1Start).getTime();
-  const a1End = new Date(activity1End).getTime();
   const a2Start = new Date(activity2Start).getTime();
-  const a2End = new Date(activity2End).getTime();
   
-  // Check if activities are within tolerance window of each other
-  // Either started within 30 min of each other, or ended within 30 min of each other
+  // Check if activities started within 15 min of each other (start dates only)
   const startDiff = Math.abs(a1Start - a2Start);
-  const endDiff = Math.abs(a1End - a2End);
   
-  return startDiff <= toleranceMs || endDiff <= toleranceMs;
+  return startDiff <= toleranceMs;
 }
 
 // Helper function to check if two geometries overlap by at least a percentage
@@ -156,7 +153,7 @@ async function processTerritoryConquest(
               );
               
               if (areaOverlap) {
-                console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together! (time: within 30min, area: 90%+ overlap)`);
+                console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together! (start times within 15min AND area 90%+ overlap)`);
                 if (!ranTogetherWith.includes(enemyTerritory.userId)) {
                   ranTogetherWith.push(enemyTerritory.userId);
                 }
@@ -453,6 +450,39 @@ async function reprocessFriendGroupTerritoriesChronologically(
 
           const intersection = turf.intersect(turf.featureCollection([otherFeature, routeFeature]));
           if (intersection) {
+            // --- Ran-together exception: BOTH conditions must be met ---
+            // 1. Start times within 15 minutes
+            // 2. Area overlap >= 90%
+            // If both conditions are met, they "ran together" → no stealing
+            if (route.startedAt && route.completedAt) {
+              // Find the enemy route that generated this territory
+              // We check this route's time against all routes from otherUserId
+              const otherRoutes = allRoutes.filter(r => r.userId === otherUserId);
+              let ranTogether = false;
+              for (const otherRoute of otherRoutes) {
+                if (!otherRoute.startedAt || !otherRoute.completedAt) continue;
+                const timeOverlap = activitiesOverlapInTime(
+                  route.startedAt,
+                  route.completedAt,
+                  otherRoute.startedAt,
+                  otherRoute.completedAt
+                );
+                if (timeOverlap) {
+                  const areaOverlap = geometriesOverlapByPercentage(
+                    routeGeometry,
+                    otherGeometry,
+                    0.90
+                  );
+                  if (areaOverlap) {
+                    console.log(`[FRIEND REPROCESS] Ran together: route ${route.id} (${route.userId}) and user ${otherUserId} - start times within 15min AND 90%+ area overlap, skipping steal`);
+                    ranTogether = true;
+                    break;
+                  }
+                }
+              }
+              if (ranTogether) continue;
+            }
+
             const stolenArea = turf.area(intersection);
             if (stolenArea > 0) {
               const remaining = turf.difference(turf.featureCollection([otherFeature, routeFeature]));
@@ -1576,6 +1606,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         }
       } catch (emailErr) {
         console.error('[EMAIL] Failed to send friend accepted email:', emailErr);
+      }
+
+      // Reprocess territories for the new friend group
+      // When two users become friends, their overlapping territories need 
+      // to be recalculated chronologically (newer steals from older)
+      try {
+        console.log(`[FRIEND ACCEPT] Reprocessing territories for new friends: ${request.senderId} <-> ${userId}`);
+        await reprocessFriendGroupTerritoriesChronologically(storage, request.senderId);
+        console.log(`[FRIEND ACCEPT] Territory reprocessing complete`);
+      } catch (reprocessErr) {
+        console.error('[FRIEND ACCEPT] Failed to reprocess territories:', reprocessErr);
+        // Don't fail the friendship creation if territory reprocessing fails
       }
 
       return c.json({ success: true });
