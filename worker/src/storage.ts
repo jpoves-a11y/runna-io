@@ -49,7 +49,7 @@ import {
   type TerritoryWithUser,
   type RouteWithTerritory,
 } from '../../shared/schema';
-import { eq, desc, sql, and } from 'drizzle-orm';
+import { eq, desc, sql, and, inArray } from 'drizzle-orm';
 import { type Database } from './db';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
@@ -252,6 +252,20 @@ export class WorkerStorage {
       ...route,
       coordinates: parsedCoordinates,
     };
+  }
+
+  // Batch-load routes by IDs (only startedAt/completedAt needed for ran-together check)
+  async getRouteTimesById(ids: string[]): Promise<Map<string, { startedAt: string | null; completedAt: string | null }>> {
+    const result = new Map<string, { startedAt: string | null; completedAt: string | null }>();
+    if (ids.length === 0) return result;
+    const rows = await this.db
+      .select({ id: routes.id, startedAt: routes.startedAt, completedAt: routes.completedAt })
+      .from(routes)
+      .where(inArray(routes.id, ids));
+    for (const row of rows) {
+      result.set(row.id, { startedAt: row.startedAt, completedAt: row.completedAt });
+    }
+    return result;
   }
 
   async updateRouteRanTogether(routeId: string, ranTogetherWith: string[]): Promise<void> {
