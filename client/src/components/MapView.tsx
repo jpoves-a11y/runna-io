@@ -117,7 +117,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
 
     // Add route polylines with reduced opacity (user's territories)
     routes.forEach((route) => {
-      if (!mapRef.current || !route.territory || !route.territory.user || !route.coordinates) return;
+      if (!mapRef.current || !route.coordinates) return;
+
+      // Use territory user color if available, otherwise default primary color
+      const routeColor = route.territory?.user?.color || '#D4213D';
 
       // Convert coordinates from [lat, lng] to [lat, lng] for Leaflet
       const routeCoordinates = (route.coordinates as any).map((coord: any) => {
@@ -130,7 +133,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       if (routeCoordinates.length < 2) return;
 
       const polyline = L.polyline(routeCoordinates, {
-        color: route.territory.user.color,
+        color: routeColor,
         weight: 2,
         opacity: 0.4,
         smoothFactor: 1.0,

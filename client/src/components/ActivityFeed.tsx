@@ -74,14 +74,16 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
   const deleteRouteMutation = useMutation({
     mutationFn: async (routeId: string) => {
       if (!currentUser) throw new Error('No user');
-      return await apiRequest('DELETE', `/api/routes/${routeId}`, { userId: currentUser.id });
+      const response = await apiRequest('DELETE', `/api/routes/${currentUser.id}/${routeId}`);
+      return await response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/routes'] });
       queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/territories/friends', currentUser?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/user', currentUser?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
-      // Also invalidate Polar/Strava activity lists so they reflect the deleted link
       if (currentUser?.id) {
         queryClient.invalidateQueries({ queryKey: [`/api/polar/activities/${currentUser.id}`] });
         queryClient.invalidateQueries({ queryKey: [`/api/strava/activities/${currentUser.id}`] });
@@ -91,6 +93,7 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
       toast({ title: '✅ Actividad eliminada', description: 'La actividad y su territorio han sido eliminados. Puedes reimportarla desde Polar/Strava.' });
     },
     onError: (error: Error) => {
+      setRouteToDelete(null);
       toast({ title: 'Error', description: error.message || 'No se pudo eliminar', variant: 'destructive' });
     },
   });

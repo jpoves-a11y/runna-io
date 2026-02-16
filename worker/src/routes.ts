@@ -1225,17 +1225,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Delete a route and its associated territory/metrics
-  app.delete('/api/routes/:routeId', async (c) => {
+  app.delete('/api/routes/:userId/:routeId', async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const routeId = c.req.param('routeId');
-      const body = await c.req.json();
-      const userId = body.userId;
-
-      if (!userId) {
-        return c.json({ error: 'userId is required' }, 400);
-      }
+      const userId = c.req.param('userId');
 
       // Verify the route belongs to this user
       const route = await storage.getRouteById(routeId);
@@ -1259,9 +1254,24 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);
 
-      // Reprocess this user's friend group territories chronologically
-      // so that removing this route recalculates correct ownership order
-      await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+      // Rebuild territories after delete — smart reprocess like Polar delete
+      try {
+        const hasInteractions = await storage.hasConquestInteractions(userId);
+        if (hasInteractions) {
+          console.log('[DELETE ROUTE] User has conquest interactions, doing friend-group reprocess');
+          await reprocessFriendGroupTerritoriesChronologically(storage, userId);
+        } else {
+          console.log('[DELETE ROUTE] No conquest interactions, doing user-only reprocess');
+          await reprocessUserTerritories(storage, userId);
+        }
+      } catch (e) {
+        console.error('[DELETE ROUTE] Error reprocessing territories:', e);
+        try {
+          await reprocessUserTerritories(storage, userId);
+        } catch (e2) {
+          console.error('[DELETE ROUTE] Fallback reprocess also failed:', e2);
+        }
+      }
 
       return c.json({ success: true });
     } catch (error: any) {
