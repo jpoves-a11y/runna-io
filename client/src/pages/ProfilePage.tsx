@@ -15,12 +15,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2 } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
 import { LoginDialog } from '@/components/LoginDialog';
 import { NotificationToggle } from '@/components/NotificationToggle';
+import { useTheme } from '@/hooks/use-theme';
 import { AvatarDialog } from '@/components/AvatarDialog';
 import { ConquestStats } from '@/components/ConquestStats';
 import { ActivityPreviewDialog } from '@/components/ActivityPreviewDialog';
@@ -161,6 +162,35 @@ interface PolarActivity {
   summaryPolyline: string | null;
   processed: boolean;
   processedAt: string | null;
+}
+
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+
+  const options: Array<{ value: 'light' | 'dark' | 'system'; label: string; icon: React.ReactNode }> = [
+    { value: 'light', label: 'Claro', icon: <Sun className="h-4 w-4" /> },
+    { value: 'dark', label: 'Oscuro', icon: <Moon className="h-4 w-4" /> },
+    { value: 'system', label: 'Sistema', icon: <Monitor className="h-4 w-4" /> },
+  ];
+
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => setTheme(opt.value)}
+          className={`flex flex-col items-center gap-1.5 rounded-xl p-3 text-xs font-medium transition-all border ${
+            theme === opt.value
+              ? 'bg-primary/10 border-primary text-primary'
+              : 'bg-muted/50 border-transparent text-muted-foreground hover:bg-muted'
+          }`}
+        >
+          {opt.icon}
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export default function ProfilePage() {
@@ -973,6 +1003,16 @@ export default function ProfilePage() {
               Recibe alertas cuando te conquistan territorio
             </p>
             <NotificationToggle />
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold">Apariencia</h3>
+            </div>
+            <p className="text-sm text-muted-foreground mb-4">
+              Elige el tema de la aplicación
+            </p>
+            <ThemeToggle />
           </Card>
 
           <Card className="p-4">

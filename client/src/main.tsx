@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import "./hooks/use-theme"; // Apply saved theme immediately (before render)
 import App from "./App";
 import "./index.css";
 

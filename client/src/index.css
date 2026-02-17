@@ -542,6 +542,7 @@
   border-radius: 12px !important;
   padding: 0 !important;
   overflow: hidden;
+  background: hsl(var(--card)) !important;
 }
 
 .leaflet-popup-content {
@@ -550,7 +551,7 @@
 }
 
 .leaflet-popup-tip {
-  background: white !important;
+  background: hsl(var(--card)) !important;
 }
 
 /* PWA Standalone: reducir altura de la barra de navegación inferior */

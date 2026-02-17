@@ -26,10 +26,10 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
+        <div style={{ padding: '20px', fontFamily: 'sans-serif', backgroundColor: 'var(--background, #f5f5f5)', color: 'var(--foreground, #111)', minHeight: '100vh' }}>
           <h1>Error en la aplicación</h1>
           <p>Lo sentimos, algo salió mal.</p>
-          <details style={{ whiteSpace: 'pre-wrap', marginTop: '20px' }}>
+          <details style={{ whiteSpace: 'pre-wrap', marginTop: '20px', color: 'var(--muted-foreground, #666)' }}>
             {this.state.error?.toString()}
           </details>
           <button

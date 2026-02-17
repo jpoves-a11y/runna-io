@@ -445,8 +445,7 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
                   <div key={comment.id} className="space-y-1.5">
                     {/* Top-level comment */}
                     <div className="flex items-start gap-2 bg-background/50 rounded-lg p-2">
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0"
-                        style={{ backgroundColor: '#666' }}>
+                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0 bg-muted-foreground">
                         {comment.user.name.charAt(0).toUpperCase()}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -475,8 +474,7 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
                       <div className="ml-6 space-y-1.5">
                         {comment.replies.map((reply) => (
                           <div key={reply.id} className="flex items-start gap-2 bg-background/30 rounded-lg p-2">
-                            <div className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0"
-                              style={{ backgroundColor: '#555' }}>
+                            <div className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0 bg-muted-foreground/80">
                               {reply.user.name.charAt(0).toUpperCase()}
                             </div>
                             <div className="flex-1 min-w-0">

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { ZoomIn, ZoomOut, Layers, Navigation } from 'lucide-react';
 import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 import { DEFAULT_CENTER, getCurrentPosition } from '@/lib/geolocation';
+import { useTheme } from '@/hooks/use-theme';
 
 interface MapViewProps {
   territories: TerritoryWithUser[];
@@ -19,7 +20,8 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const [isLocating, setIsLocating] = useState(false);
-  const [mapStyle, setMapStyle] = useState<'light' | 'dark'>('light');
+  const { resolvedTheme } = useTheme();
+  const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -32,14 +34,19 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       attributionControl: false,
     });
 
-    // Use Cartodb Positron for clean, minimalist look
-    const lightTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    // Use tile layer matching current theme
+    const initialStyle = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+    const tileUrl = initialStyle === 'dark'
+      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+      : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+    const initialTiles = L.tileLayer(tileUrl, {
       maxZoom: 19,
     });
 
-    lightTiles.addTo(map);
-    tileLayerRef.current = lightTiles;
+    initialTiles.addTo(map);
+    tileLayerRef.current = initialTiles;
     mapRef.current = map;
+    setMapStyle(initialStyle);
 
     // Ensure the map renders correctly after layout/gesture changes
     const invalidate = () => {
@@ -72,6 +79,22 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       mapRef.current = null;
     };
   }, []);
+
+  // Sync map tiles when app theme changes
+  useEffect(() => {
+    if (!mapRef.current || !tileLayerRef.current) return;
+    const desired = resolvedTheme === 'dark' ? 'dark' : 'light';
+    if (desired === mapStyle) return;
+
+    mapRef.current.removeLayer(tileLayerRef.current);
+    const url = desired === 'dark'
+      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+      : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+    const newTiles = L.tileLayer(url, { maxZoom: 19 });
+    newTiles.addTo(mapRef.current);
+    tileLayerRef.current = newTiles;
+    setMapStyle(desired);
+  }, [resolvedTheme]);
 
   const toggleMapStyle = () => {
     if (!mapRef.current || !tileLayerRef.current) return;
@@ -183,6 +206,14 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         className: 'territory-polygon',
       });
 
+      // Determine popup colors based on current theme
+      const isDark = document.documentElement.classList.contains('dark');
+      const popupBg = isDark ? '#1e1e1e' : 'white';
+      const popupText = isDark ? '#e5e5e5' : '#1a1a1a';
+      const popupMuted = isDark ? '#999' : '#666';
+      const popupCardBg = isDark ? '#2a2a2a' : 'white';
+      const popupShadow = isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)';
+
       // Beautiful popup styling
       polygon.bindPopup(`
         <div class="territory-popup" style="min-width: 240px; font-family: system-ui, -apple-system, sans-serif;">
@@ -191,7 +222,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
             border-left: 4px solid ${territory.user.color};
             padding: 16px;
             border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 12px ${popupShadow};
           ">
             <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
               <div style="
@@ -210,10 +241,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
                 ${territory.user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
               </div>
               <div style="flex: 1;">
-                <div style="font-weight: 600; font-size: 16px; color: #1a1a1a; margin-bottom: 2px; cursor: pointer; hover: text-decoration: underline;" class="territory-user-name" data-user-id="${territory.user.id}">
+                <div style="font-weight: 600; font-size: 16px; color: ${popupText}; margin-bottom: 2px; cursor: pointer;" class="territory-user-name" data-user-id="${territory.user.id}">
                   ${territory.user.name}
                 </div>
-                <div style="font-size: 13px; color: #666; display: flex; align-items: center; gap: 4px;">
+                <div style="font-size: 13px; color: ${popupMuted}; display: flex; align-items: center; gap: 4px;">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
                     <circle cx="12" cy="10" r="3"></circle>
@@ -223,7 +254,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
               </div>
             </div>
             <div style="
-              background: white;
+              background: ${popupCardBg};
               padding: 12px;
               border-radius: 8px;
               display: flex;
@@ -232,12 +263,12 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
               box-shadow: 0 1px 3px rgba(0,0,0,0.05);
               margin-bottom: 12px;
             ">
-              <span style="color: #666; font-size: 14px; font-weight: 500;">Área total</span>
+              <span style="color: ${popupMuted}; font-size: 14px; font-weight: 500;">Área total</span>
               <div style="display: flex; align-items: baseline; gap: 4px;">
                 <span style="font-size: 20px; font-weight: 700; color: ${territory.user.color};">
                   ${(territory.area / 1000000).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
-                <span style="font-size: 14px; font-weight: 600; color: #666;">km²</span>
+                <span style="font-size: 14px; font-weight: 600; color: ${popupMuted};">km²</span>
               </div>
             </div>
             <button class="view-profile-btn" data-user-id="${territory.user.id}" style="

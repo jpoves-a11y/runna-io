@@ -31,7 +31,12 @@
   </head>
   <body>
     <div id="root">
-      <div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5;">
+      <div style="display: flex; align-items: center; justify-content: center; height: 100vh; font-family: system-ui, -apple-system, sans-serif; background: var(--loading-bg, #f5f5f5); color: var(--loading-fg, #111);">
+        <style>
+          @media (prefers-color-scheme: dark) {
+            :root { --loading-bg: #121212; --loading-fg: #fafafa; }
+          }
+        </style>
         <div style="text-align: center;">
           <h1>Cargando Runna.io...</h1>
           <p id="status">Inicializando aplicación...</p>
