@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2, Sun, Moon, Monitor } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2, Sun, Moon, Monitor, FileText, UserX } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -197,6 +197,7 @@ export default function ProfilePage() {
   const [, navigate] = useLocation();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
+  const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isStravaDisconnectOpen, setIsStravaDisconnectOpen] = useState(false);
   const [isPolarDisconnectOpen, setIsPolarDisconnectOpen] = useState(false);
@@ -791,6 +792,29 @@ export default function ProfilePage() {
     setIsLoginOpen(true);
   };
 
+  const deleteAccountMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest('DELETE', `/api/users/${user!.id}`);
+    },
+    onSuccess: () => {
+      logout();
+      queryClient.clear();
+      toast({
+        title: 'Cuenta eliminada',
+        description: 'Tu cuenta y todos tus datos han sido eliminados permanentemente',
+      });
+      setIsDeleteAccountOpen(false);
+      setIsLoginOpen(true);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'No se pudo eliminar la cuenta',
+        variant: 'destructive',
+      });
+    },
+  });
+
   if (isLoading) {
     return <LoadingState message="Cargando perfil..." />;
   }
@@ -1339,6 +1363,24 @@ export default function ProfilePage() {
               <LogOut className="h-5 w-5 mr-2" />
               Cerrar sesion
             </Button>
+
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => navigate('/terms')}
+            >
+              <FileText className="h-5 w-5 mr-2" />
+              Términos y Condiciones
+            </Button>
+
+            <Button
+              variant="outline"
+              className="w-full justify-start text-destructive/70 hover:text-destructive hover:border-destructive/50"
+              onClick={() => setIsDeleteAccountOpen(true)}
+            >
+              <UserX className="h-5 w-5 mr-2" />
+              Eliminar cuenta
+            </Button>
           </div>
         </div>
       </div>
@@ -1373,6 +1415,39 @@ export default function ProfilePage() {
               className="bg-destructive hover:bg-destructive/90"
             >
               Cerrar sesion
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={isDeleteAccountOpen} onOpenChange={setIsDeleteAccountOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+              <UserX className="h-5 w-5" />
+              Eliminar cuenta permanentemente
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">Esta acción es <strong className="text-destructive">irreversible</strong>. Se eliminarán permanentemente:</span>
+              <span className="block pl-4">• Tu perfil y datos personales</span>
+              <span className="block pl-4">• Todas tus rutas y actividades</span>
+              <span className="block pl-4">• Tus territorios conquistados</span>
+              <span className="block pl-4">• Conexiones con Strava/Polar</span>
+              <span className="block pl-4">• Amistades y solicitudes</span>
+              <span className="block mt-2 font-medium">¿Estás seguro de que deseas continuar?</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => deleteAccountMutation.mutate()}
+              className="bg-destructive hover:bg-destructive/90"
+              disabled={deleteAccountMutation.isPending}
+            >
+              {deleteAccountMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Eliminar mi cuenta
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

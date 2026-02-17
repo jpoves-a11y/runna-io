@@ -5,6 +5,8 @@ import {
   territories,
   friendships,
   friendInvites,
+  friendRequests,
+  pushSubscriptions,
   polarAccounts,
   polarActivities,
   stravaAccounts,
@@ -12,6 +14,9 @@ import {
   conquestMetrics,
   emailNotifications,
   emailPreferences,
+  feedEvents,
+  feedComments,
+  ephemeralPhotos,
   type User,
   type InsertUser,
   type Route,
@@ -49,6 +54,7 @@ export interface IStorage {
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(userId: string, data: Partial<Pick<User, 'name' | 'color' | 'avatar'>>): Promise<User>;
+  deleteUser(userId: string): Promise<void>;
   getAllUsersWithStats(): Promise<UserWithStats[]>;
   updateUserTotalArea(userId: string, area: number): Promise<void>;
 
@@ -135,6 +141,30 @@ export class DatabaseStorage implements IStorage {
       .values(insertUser)
       .returning();
     return user;
+  }
+
+  async deleteUser(userId: string): Promise<void> {
+    // Explicitly delete from all child tables for safety (Turso/SQLite cascade support)
+    await db.delete(feedComments).where(eq(feedComments.userId, userId));
+    await db.delete(feedEvents).where(eq(feedEvents.userId, userId));
+    await db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.senderId, userId));
+    await db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
+    await db.delete(emailPreferences).where(eq(emailPreferences.userId, userId));
+    await db.delete(emailNotifications).where(eq(emailNotifications.userId, userId));
+    await db.delete(conquestMetrics).where(eq(conquestMetrics.attackerId, userId));
+    await db.delete(conquestMetrics).where(eq(conquestMetrics.defenderId, userId));
+    await db.delete(polarActivities).where(eq(polarActivities.userId, userId));
+    await db.delete(polarAccounts).where(eq(polarAccounts.userId, userId));
+    await db.delete(stravaActivities).where(eq(stravaActivities.userId, userId));
+    await db.delete(stravaAccounts).where(eq(stravaAccounts.userId, userId));
+    await db.delete(friendRequests).where(eq(friendRequests.senderId, userId));
+    await db.delete(friendRequests).where(eq(friendRequests.recipientId, userId));
+    await db.delete(friendInvites).where(eq(friendInvites.userId, userId));
+    await db.delete(friendships).where(eq(friendships.userId, userId));
+    await db.delete(friendships).where(eq(friendships.friendId, userId));
+    await db.delete(territories).where(eq(territories.userId, userId));
+    await db.delete(routes).where(eq(routes.userId, userId));
+    await db.delete(users).where(eq(users.id, userId));
   }
 
   async getAllUsersWithStats(): Promise<UserWithStats[]> {

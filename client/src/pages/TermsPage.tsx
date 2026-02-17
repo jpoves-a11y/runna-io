@@ -30,7 +30,7 @@ export default function TermsPage() {
           <h1 className="text-3xl font-bold mb-2">🏃 Runna.io</h1>
           <h2 className="text-2xl font-semibold text-foreground mb-4">Términos y Condiciones</h2>
           <div className="text-muted-foreground text-sm space-y-1">
-            <p><strong>Última actualización:</strong> 4 de febrero de 2026</p>
+            <p><strong>Última actualización:</strong> 17 de febrero de 2026</p>
             <p><strong>Responsable:</strong> Javier Poves Ruiz</p>
             <p><strong>Contacto:</strong> runna.io.service@gmail.com</p>
           </div>
@@ -211,8 +211,9 @@ export default function TermsPage() {
           
           <h3 className="font-medium mt-4 mb-2">Por el usuario</h3>
           <ul className="list-disc list-inside space-y-1 text-muted-foreground mb-4">
-            <li>Puedes eliminar tu cuenta en cualquier momento</li>
+            <li>Puedes eliminar tu cuenta en cualquier momento desde la sección de <strong>Perfil</strong> de la aplicación</li>
             <li>La eliminación es inmediata e irreversible</li>
+            <li>Se borrarán todos tus datos personales, rutas, territorios, actividades y conexiones con servicios externos (Strava, Polar)</li>
             <li>Tus territorios se liberan para que otros puedan conquistarlos</li>
           </ul>
 

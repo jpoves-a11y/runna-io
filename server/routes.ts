@@ -226,6 +226,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Delete user account and all associated data
+  app.delete("/api/users/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const user = await storage.getUser(id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      await storage.deleteUser(id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get leaderboard
   app.get("/api/leaderboard", async (req, res) => {
     try {
