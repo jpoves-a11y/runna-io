@@ -43,12 +43,16 @@ const DialogContent = React.forwardRef<
       )}
       style={{ 
         maxHeight: 'calc(100vh - 2rem)',
+        paddingTop: 'max(1.5rem, env(safe-area-inset-top, 0px))',
         WebkitOverflowScrolling: 'touch'
       }}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-3 top-3 z-50 flex items-center justify-center rounded-full h-8 w-8 text-foreground/70 transition-all hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 active:scale-95 focus:outline-none disabled:pointer-events-none">
+      <DialogPrimitive.Close 
+        className="absolute right-3 z-50 flex items-center justify-center rounded-full h-8 w-8 text-foreground/70 transition-all hover:text-foreground hover:bg-black/5 dark:hover:bg-white/10 active:scale-95 focus:outline-none disabled:pointer-events-none"
+        style={{ top: 'max(0.75rem, env(safe-area-inset-top, 0px))' }}
+      >
         <X className="h-4 w-4" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
