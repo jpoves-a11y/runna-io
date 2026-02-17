@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useInfiniteQuery } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { useSession } from '@/hooks/use-session';
@@ -8,10 +8,74 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import UserInfoDialog from '@/components/UserInfoDialog';
 import {
   MapPin, Users, Swords, Trophy, MessageCircle, Send, ChevronDown, ChevronUp, Trash2, Reply, Loader2
 } from 'lucide-react';
 import type { FeedEventWithDetails, FeedCommentWithUser } from '@shared/schema';
+
+// Merged event: activity event + any territory_stolen events from the same route
+interface MergedFeedEvent extends FeedEventWithDetails {
+  victims?: Array<{ id: string; name: string; color: string; avatar?: string | null; areaStolen: number }>;
+}
+
+/** Group activity + territory_stolen events by routeId+userId into single merged events */
+function mergeEvents(events: FeedEventWithDetails[]): MergedFeedEvent[] {
+  const result: MergedFeedEvent[] = [];
+  // Map routeId+userId -> index in result where the activity event is
+  const activityIndex = new Map<string, number>();
+  // Track territory_stolen events that got merged (to skip them)
+  const merged = new Set<string>();
+
+  // First pass: identify activity events and collect territory_stolen events
+  for (const event of events) {
+    if (event.eventType === 'activity' && event.routeId) {
+      const key = `${event.routeId}:${event.userId}`;
+      const idx = result.length;
+      activityIndex.set(key, idx);
+      result.push({ ...event, victims: [] });
+    }
+  }
+
+  // Second pass: merge territory_stolen into their activity event
+  for (const event of events) {
+    if (event.eventType === 'territory_stolen' && event.routeId) {
+      const key = `${event.routeId}:${event.userId}`;
+      const idx = activityIndex.get(key);
+      if (idx !== undefined && result[idx]) {
+        const victim = event.victim;
+        if (victim) {
+          result[idx].victims!.push({
+            id: victim.id,
+            name: victim.name,
+            color: victim.color,
+            avatar: victim.avatar,
+            areaStolen: event.areaStolen || 0,
+          });
+        }
+        // Also add the comment count from territory_stolen to the activity
+        result[idx].commentCount += event.commentCount;
+        merged.add(event.id);
+      }
+    }
+  }
+
+  // Third pass: add non-merged events (territory_stolen without matching activity, ran_together, personal_record, etc.)
+  for (const event of events) {
+    if (event.eventType === 'activity') continue; // already added
+    if (merged.has(event.id)) continue; // was merged into activity
+    result.push({ ...event });
+  }
+
+  // Sort by createdAt descending (since we broke order during grouping)
+  result.sort((a, b) => {
+    const da = new Date(a.createdAt).getTime();
+    const db = new Date(b.createdAt).getTime();
+    return db - da;
+  });
+
+  return result;
+}
 
 function formatDistance(meters: number): string {
   if (meters >= 1000) return `${(meters / 1000).toFixed(2)} km`;
@@ -73,7 +137,7 @@ function UserAvatar({ user, size = 'sm' }: { user: { name: string; color: string
   );
 }
 
-function EventCard({ event, currentUserId }: { event: FeedEventWithDetails; currentUserId: string }) {
+function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEvent; currentUserId: string; onUserClick: (userId: string) => void }) {
   const [showComments, setShowComments] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [replyTo, setReplyTo] = useState<{ id: string; name: string } | null>(null);
@@ -169,28 +233,63 @@ function EventCard({ event, currentUserId }: { event: FeedEventWithDetails; curr
   };
 
   const renderMentionedText = (text: string) => {
-    return text.split(/(@[\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/).map((part, i) =>
-      part.startsWith('@') ? <span key={i} className="text-blue-400 font-semibold">{part}</span> : part
-    );
+    return text.split(/(@[\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/).map((part, i) => {
+      if (part.startsWith('@')) {
+        const mentionName = part.slice(1).toLowerCase();
+        const matchedFriend = friends?.find(f =>
+          f.name.toLowerCase() === mentionName || f.username.toLowerCase() === mentionName
+        );
+        return (
+          <span
+            key={i}
+            className="text-blue-400 font-semibold cursor-pointer hover:underline"
+            onClick={() => matchedFriend && onUserClick(matchedFriend.id)}
+          >
+            {part}
+          </span>
+        );
+      }
+      return part;
+    });
   };
 
   const renderEventContent = () => {
     const isOwn = event.userId === currentUserId;
     const userName = isOwn ? 'Tú' : event.user.name;
+    const victims = (event as MergedFeedEvent).victims || [];
 
     switch (event.eventType) {
       case 'activity':
         return (
           <div className="flex items-start gap-3">
-            <UserAvatar user={event.user} size="md" />
+            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
+              <UserAvatar user={event.user} size="md" />
+            </button>
             <div className="flex-1 min-w-0">
               <p className="text-sm">
-                <span className="font-semibold" style={{ color: event.user.color }}>{userName}</span>
+                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
                 {' '}corrió{event.activityDate ? ` ${preciseTimeAgo(event.activityDate)}` : ''}
                 {event.routeName ? (
                   <> y completó <span className="font-medium">"{event.routeName}"</span></>
                 ) : (
                   ' y completó una actividad'
+                )}
+                {victims.length > 0 && (
+                  <>
+                    {' '}y robó territorio a{' '}
+                    {victims.map((v, i) => (
+                      <span key={v.id}>
+                        {i > 0 && (i === victims.length - 1 ? ' y ' : ', ')}
+                        <span
+                          className="font-semibold cursor-pointer hover:underline"
+                          style={{ color: v.color }}
+                          onClick={() => onUserClick(v.id)}
+                        >
+                          {v.id === currentUserId ? 'ti' : v.name}
+                        </span>
+                      </span>
+                    ))}
+                  </>
                 )}
               </p>
               <div className="flex flex-wrap gap-2 mt-1.5">
@@ -209,6 +308,12 @@ function EventCard({ event, currentUserId }: { event: FeedEventWithDetails; curr
                     +{formatArea(event.newArea)}
                   </Badge>
                 )}
+                {victims.map((v) => (
+                  <Badge key={v.id} variant="destructive" className="text-xs">
+                    <Swords className="w-3 h-3 mr-1" />
+                    {formatArea(v.areaStolen)} de {v.id === currentUserId ? 'ti' : v.name}
+                  </Badge>
+                ))}
               </div>
             </div>
           </div>
@@ -217,12 +322,18 @@ function EventCard({ event, currentUserId }: { event: FeedEventWithDetails; curr
       case 'territory_stolen':
         return (
           <div className="flex items-start gap-3">
-            <UserAvatar user={event.user} size="md" />
+            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
+              <UserAvatar user={event.user} size="md" />
+            </button>
             <div className="flex-1 min-w-0">
               <p className="text-sm">
-                <span className="font-semibold" style={{ color: event.user.color }}>{userName}</span>
+                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
                 {' '}ha robado territorio a{' '}
-                <span className="font-semibold" style={{ color: event.victim?.color }}>
+                <span
+                  className="font-semibold cursor-pointer hover:underline"
+                  style={{ color: event.victim?.color }}
+                  onClick={() => event.victim && onUserClick(event.victim.id)}
+                >
                   {event.victim?.id === currentUserId ? 'ti' : event.victim?.name || 'alguien'}
                 </span>
                 {event.routeName && (
@@ -246,15 +357,22 @@ function EventCard({ event, currentUserId }: { event: FeedEventWithDetails; curr
         } catch { /* ignore */ }
         return (
           <div className="flex items-start gap-3">
-            <UserAvatar user={event.user} size="md" />
+            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
+              <UserAvatar user={event.user} size="md" />
+            </button>
             <div className="flex-1 min-w-0">
               <p className="text-sm">
-                <span className="font-semibold" style={{ color: event.user.color }}>{userName}</span>
+                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
                 {' '}ha corrido junto a{' '}
                 {ranWith.map((u, i) => (
                   <span key={u.id}>
                     {i > 0 && (i === ranWith.length - 1 ? ' y ' : ', ')}
-                    <span className="font-semibold">{u.id === currentUserId ? 'ti' : u.name}</span>
+                    <span
+                      className="font-semibold cursor-pointer hover:underline"
+                      onClick={() => onUserClick(u.id)}
+                    >
+                      {u.id === currentUserId ? 'ti' : u.name}
+                    </span>
                   </span>
                 ))}
               </p>
@@ -271,10 +389,12 @@ function EventCard({ event, currentUserId }: { event: FeedEventWithDetails; curr
       case 'personal_record':
         return (
           <div className="flex items-start gap-3">
-            <UserAvatar user={event.user} size="md" />
+            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
+              <UserAvatar user={event.user} size="md" />
+            </button>
             <div className="flex-1 min-w-0">
               <p className="text-sm">
-                <span className="font-semibold" style={{ color: event.user.color }}>{userName}</span>
+                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
                 {' '}ha batido un récord personal
               </p>
               <Badge className="text-xs mt-1.5 bg-yellow-500/20 text-yellow-400">
@@ -457,7 +577,14 @@ export function SocialFeed() {
   const { user: currentUser } = useSession();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState(0);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
   const LIMIT = 30;
+
+  const handleUserClick = (userId: string) => {
+    setSelectedUserId(userId);
+    setIsDialogOpen(true);
+  };
 
   const { data: events, isLoading, isError, refetch } = useQuery<FeedEventWithDetails[]>({
     queryKey: ['/api/feed', currentUser?.id, page],
@@ -468,6 +595,11 @@ export function SocialFeed() {
     },
     enabled: !!currentUser,
   });
+
+  const mergedEvents = useMemo(() => {
+    if (!events) return [];
+    return mergeEvents(events);
+  }, [events]);
 
   if (!currentUser) return null;
 
@@ -502,8 +634,8 @@ export function SocialFeed() {
 
   return (
     <div ref={scrollRef} className="space-y-3 pb-4">
-      {events.map((event) => (
-        <EventCard key={event.id} event={event} currentUserId={currentUser.id} />
+      {mergedEvents.map((event) => (
+        <EventCard key={event.id} event={event} currentUserId={currentUser.id} onUserClick={handleUserClick} />
       ))}
 
       {events.length >= LIMIT && (
@@ -513,6 +645,13 @@ export function SocialFeed() {
           </Button>
         </div>
       )}
+
+      <UserInfoDialog
+        userId={selectedUserId}
+        currentUserId={currentUser?.id}
+        open={isDialogOpen}
+        onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }}
+      />
     </div>
   );
 }
