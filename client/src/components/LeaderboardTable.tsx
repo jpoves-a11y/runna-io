@@ -91,7 +91,7 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                   {/* Rank */}
                   <div className="w-10 sm:w-14 flex items-center justify-center flex-shrink-0 relative">
                     {getRankIcon(rank) || (
-                      <span className="text-xl sm:text-2xl font-bold text-muted-foreground">
+                      <span className={`text-xl sm:text-2xl font-bold ${isTopThree ? 'text-white/80' : 'text-muted-foreground'}`}>
                         {rank}
                       </span>
                     )}
@@ -124,7 +124,7 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                   {/* User Info */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1 sm:gap-2">
-                      <p className={`font-semibold truncate text-sm sm:text-base ${isTopThree ? 'sm:text-lg' : ''}`} data-testid={`text-name-${user.id}`}>
+                      <p className={`font-semibold truncate text-sm sm:text-base ${isTopThree ? 'sm:text-lg text-white' : ''}`} data-testid={`text-name-${user.id}`}>
                         {user.name}
                       </p>
                       {isCurrentUser && (
@@ -133,20 +133,20 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                         </Badge>
                       )}
                     </div>
-                    <p className="text-xs sm:text-sm text-muted-foreground truncate">
+                    <p className={`text-xs sm:text-sm truncate ${isTopThree ? 'text-white/70' : 'text-muted-foreground'}`}>
                       @{user.username}
                     </p>
                   </div>
 
                   {/* Area */}
                   <div className="text-right flex-shrink-0">
-                    <p className={`font-bold text-sm sm:text-lg ${isTopThree ? 'sm:text-2xl' : ''} ${rank === 1 ? 'text-white' : ''}`} data-testid={`text-area-${user.id}`}>
+                    <p className={`font-bold text-sm sm:text-lg ${isTopThree ? 'sm:text-2xl text-white' : ''}`} data-testid={`text-area-${user.id}`}>
                       {(user.totalArea / 1000000).toLocaleString('es-ES', {
                         minimumFractionDigits: 1,
                         maximumFractionDigits: 1,
                       })}
                     </p>
-                    <p className={`text-xs ${rank === 1 ? 'text-white/80' : 'text-muted-foreground'}`}>km²</p>
+                    <p className={`text-xs ${isTopThree ? 'text-white/70' : 'text-muted-foreground'}`}>km²</p>
                   </div>
                 </div>
               </Card>
