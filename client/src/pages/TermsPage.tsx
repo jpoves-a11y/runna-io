@@ -19,13 +19,14 @@ export default function TermsPage() {
       {/* Botón X para cerrar */}
       <button
         onClick={handleClose}
-        className="fixed top-4 right-4 z-50 p-2 rounded-full bg-background/80 backdrop-blur-sm border shadow-lg hover:bg-muted transition-colors"
+        className="fixed right-4 z-50 p-2 rounded-full bg-background/80 backdrop-blur-sm border shadow-lg hover:bg-muted transition-colors"
+        style={{ top: 'max(1rem, env(safe-area-inset-top, 1rem))' }}
         aria-label="Cerrar"
       >
         <X className="h-6 w-6" />
       </button>
 
-      <div className="container max-w-4xl mx-auto px-4 py-8">
+      <div className="container max-w-4xl mx-auto px-4 py-8" style={{ paddingTop: 'max(2rem, calc(env(safe-area-inset-top, 0px) + 1rem))' }}>
         <header className="text-center mb-12 pb-6 border-b-2 border-primary">
           <h1 className="text-3xl font-bold mb-2">🏃 Runna.io</h1>
           <h2 className="text-2xl font-semibold text-foreground mb-4">Términos y Condiciones</h2>
