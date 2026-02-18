@@ -8,7 +8,7 @@ export const USER_COLORS = [
   '#A65628', // Marrón
   '#F781BF', // Rosa
   '#999999', // Gris
-  '#66C2A5', // Menta
+  '#A0E550', // Verde Pistacho Chillón
   '#FC8D62', // Coral
   '#8DA0CB', // Lavanda
   '#E78AC3', // Rosa magenta
@@ -24,7 +24,7 @@ export const USER_COLOR_NAMES: Record<string, string> = {
   '#A65628': 'Marrón',
   '#F781BF': 'Rosa',
   '#999999': 'Gris',
-  '#66C2A5': 'Menta',
+  '#A0E550': 'Verde Pistacho',
   '#FC8D62': 'Coral',
   '#8DA0CB': 'Lavanda',
   '#E78AC3': 'Rosa magenta',
