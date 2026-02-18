@@ -51,12 +51,13 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     const initialTiles = L.tileLayer(tileUrl, {
       maxZoom: 19,
       minZoom: 3,
-      keepBuffer: 8, // Keep 8 tile rows/cols outside viewport (prevents reloading)
-      updateWhenIdle: false, // Update immediately for smooth experience
+      keepBuffer: 10, // Increased to 10 for even more buffering
+      updateWhenIdle: true, // Update when idle for smoother panning
       updateWhenZooming: false, // Don't update while zooming
-      updateInterval: 150, // Throttle tile updates to 150ms
+      updateInterval: 100, // Reduced to 100ms for faster updates
       crossOrigin: true, // Enable CORS for better caching
       subdomains: ['a', 'b', 'c', 'd'], // Use all CDN subdomains for parallel loading
+      className: 'map-tiles', // For better debugging
     });
 
     initialTiles.addTo(map);
@@ -109,12 +110,13 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     const newTiles = L.tileLayer(url, {
       maxZoom: 19,
       minZoom: 3,
-      keepBuffer: 8,
-      updateWhenIdle: false,
+      keepBuffer: 10,
+      updateWhenIdle: true,
       updateWhenZooming: false,
-      updateInterval: 150,
+      updateInterval: 100,
       crossOrigin: true,
       subdomains: ['a', 'b', 'c', 'd'],
+      className: 'map-tiles',
     });
     newTiles.addTo(mapRef.current);
     tileLayerRef.current = newTiles;
@@ -134,22 +136,24 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       ? L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
           maxZoom: 19,
           minZoom: 3,
-          keepBuffer: 8,
-          updateWhenIdle: false,
+          keepBuffer: 10,
+          updateWhenIdle: true,
           updateWhenZooming: false,
-          updateInterval: 150,
+          updateInterval: 100,
           crossOrigin: true,
           subdomains: ['a', 'b', 'c', 'd'],
+          className: 'map-tiles',
         })
       : L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
           maxZoom: 19,
           minZoom: 3,
-          keepBuffer: 8,
-          updateWhenIdle: false,
+          keepBuffer: 10,
+          updateWhenIdle: true,
           updateWhenZooming: false,
-          updateInterval: 150,
+          updateInterval: 100,
           crossOrigin: true,
           subdomains: ['a', 'b', 'c', 'd'],
+          className: 'map-tiles',
         });
 
     newTiles.addTo(mapRef.current);
@@ -160,26 +164,23 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   useEffect(() => {
     if (!mapRef.current) return;
 
-    // Small delay to ensure DOM is properly updated
-    const timer = setTimeout(() => {
+    // Use requestAnimationFrame for smoother updates
+    requestAnimationFrame(() => {
       if (mapRef.current && mapContainer.current) {
         mapRef.current.invalidateSize();
       }
-    }, 0);
-
-    // Clear existing territory layers
-    mapRef.current.eachLayer((layer) => {
-      if (layer instanceof L.Polygon) {
-        mapRef.current?.removeLayer(layer);
-      }
     });
 
-    // Clear existing polyline layers
+    // Clear existing territory and route layers efficiently
+    const layersToRemove: L.Layer[] = [];
     mapRef.current.eachLayer((layer) => {
-      if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
-        mapRef.current?.removeLayer(layer);
+      if (layer instanceof L.Polygon || (layer instanceof L.Polyline && !(layer instanceof L.Polygon))) {
+        layersToRemove.push(layer);
       }
     });
+    
+    // Batch remove for better performance
+    layersToRemove.forEach(layer => mapRef.current?.removeLayer(layer));
 
     // Add route polylines with reduced opacity (user's territories)
     routes.forEach((route) => {
@@ -373,7 +374,6 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     }
 
     return () => {
-      clearTimeout(timer);
       if (popupContainer) {
         popupContainer.removeEventListener('click', handlePopupButtonClick);
       }

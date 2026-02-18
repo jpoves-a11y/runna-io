@@ -3,7 +3,7 @@ import type L from 'leaflet';
 
 /**
  * Hook to prefetch adjacent map tiles for smoother panning
- * Preloads tiles around the current viewport
+ * Preloads tiles around the current viewport - NOW DURING MOVEMENT
  */
 export function useMapTilePrefetch(
   mapRef: React.RefObject<L.Map | null>,
@@ -14,12 +14,15 @@ export function useMapTilePrefetch(
 
     const map = mapRef.current;
     let prefetchTimeout: NodeJS.Timeout;
+    let isMoving = false;
 
-    const prefetchAdjacentTiles = () => {
+    const prefetchAdjacentTiles = (immediate: boolean = false) => {
       // Clear any pending prefetch
       clearTimeout(prefetchTimeout);
 
-      // Wait for map to settle before prefetching (avoid prefetching during pan/zoom)
+      // Prefetch immediately during movement or with small delay after
+      const delay = immediate ? 50 : 200; // 50ms during movement, 200ms after stopping
+      
       prefetchTimeout = setTimeout(() => {
         const bounds = map.getBounds();
         const zoom = map.getZoom();
@@ -75,20 +78,45 @@ export function useMapTilePrefetch(
             }
           }
         });
-      }, 500); // Wait 500ms after map movement stops
+      }, delay);
     };
 
-    // Listen to map events
-    map.on('moveend', prefetchAdjacentTiles);
-    map.on('zoomend', prefetchAdjacentTiles);
+    // Track when movement starts/ends
+    const handleMoveStart = () => {
+      isMoving = true;
+    };
+
+    const handleMoveEnd = () => {
+      isMoving = false;
+      prefetchAdjacentTiles(false); // Slower prefetch after stopping
+    };
+
+    // Prefetch during movement for instant loading
+    const handleMove = () => {
+      if (isMoving) {
+        prefetchAdjacentTiles(true); // Fast prefetch during movement
+      }
+    };
+
+    // Listen to map events - prefetch during AND after movement
+    map.on('movestart', handleMoveStart);
+    map.on('zoomstart', handleMoveStart);
+    map.on('move', handleMove);
+    map.on('zoom', handleMove);
+    map.on('moveend', handleMoveEnd);
+    map.on('zoomend', handleMoveEnd);
 
     // Initial prefetch
-    prefetchAdjacentTiles();
+    prefetchAdjacentTiles(false);
 
     return () => {
       clearTimeout(prefetchTimeout);
-      map.off('moveend', prefetchAdjacentTiles);
-      map.off('zoomend', prefetchAdjacentTiles);
+      map.off('movestart', handleMoveStart);
+      map.off('zoomstart', handleMoveStart);
+      map.off('move', handleMove);
+      map.off('zoom', handleMove);
+      map.off('moveend', handleMoveEnd);
+      map.off('zoomend', handleMoveEnd);
     };
   }, [mapRef, enabled]);
 }
