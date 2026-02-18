@@ -450,8 +450,9 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     };
   }, [territories, visibleUserIds]);
 
-  // === TERRITORY NAME LABELS ===
-  // Show user names at territory centroids, responsive to zoom level
+  // === TERRITORY NAME LABELS (DYNAMIC, VIEWPORT-BASED) ===
+  // Show one @username per user INSIDE their territory, repositioned on pan/zoom
+  // so the label always sits in the visible portion of the territory.
   useEffect(() => {
     if (!mapRef.current || !labelGroupRef.current) return;
 
@@ -459,85 +460,103 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     const labelGroup = labelGroupRef.current;
     const existingLabels = labelLayersRef.current;
 
-    // Filter territories by visible users
-    const visibleTerritories = visibleUserIds
-      ? territories.filter(t => t.user && visibleUserIds.has(t.user.id))
-      : territories;
+    // Stable references for the closure
+    const getTerritoryPolygons = () => territoryLayersRef.current;
 
-    // Group territories by user to show one label per user (at their largest territory)
-    const userTerritories = new Map<string, TerritoryWithUser>();
-    visibleTerritories.forEach(t => {
-      if (!t.user) return;
-      const existing = userTerritories.get(t.user.id);
-      if (!existing || t.area > existing.area) {
-        userTerritories.set(t.user.id, t);
-      }
-    });
+    const updateLabels = () => {
+      const viewBounds = map.getBounds();
+      const zoom = map.getZoom();
 
-    const currentUserIds = new Set(userTerritories.keys());
-
-    // Remove labels for users no longer visible
-    for (const [userId, marker] of existingLabels) {
-      if (!currentUserIds.has(userId)) {
-        labelGroup.removeLayer(marker);
-        existingLabels.delete(userId);
-      }
-    }
-
-    // Create/update labels
-    for (const [userId, territory] of userTerritories) {
-      // Remove existing to recreate (centroid may have changed)
-      if (existingLabels.has(userId)) {
-        labelGroup.removeLayer(existingLabels.get(userId)!);
-        existingLabels.delete(userId);
+      // Hide at very low zoom
+      if (zoom < 11) {
+        for (const [uid, m] of existingLabels) {
+          labelGroup.removeLayer(m);
+        }
+        existingLabels.clear();
+        return;
       }
 
-      const centroid = getGeometryCentroid(territory.geometry);
-      if (!centroid) continue;
+      // Filter by visible users
+      const filteredTerritories = visibleUserIds
+        ? territories.filter(t => t.user && visibleUserIds.has(t.user.id))
+        : territories;
 
-      const handle = territory.user.username || territory.user.name.split(' ')[0];
+      // For each user, find the best position: center of the intersection
+      // between the territory polygon bounds and the current viewport.
+      const polyLayers = getTerritoryPolygons();
+      const userBestPos = new Map<string, { lat: number; lng: number; area: number; territory: TerritoryWithUser }>();
 
-      const marker = L.marker(centroid, {
-        interactive: false,
-        keyboard: false,
-        icon: L.divIcon({
-          className: 'territory-label',
-          html: `<span class="territory-label-text" data-color="${territory.user.color}">@${handle}</span>`,
-          iconSize: [0, 0],
-          iconAnchor: [0, 0],
-        }),
+      filteredTerritories.forEach(t => {
+        if (!t.user) return;
+
+        const polygon = polyLayers.get(t.id);
+        if (!polygon) return;
+
+        const polyBounds = polygon.getBounds();
+        if (!viewBounds.intersects(polyBounds)) return; // off-screen
+
+        // Compute intersection rectangle of territory bounds ∩ viewport
+        const s = Math.max(viewBounds.getSouth(), polyBounds.getSouth());
+        const n = Math.min(viewBounds.getNorth(), polyBounds.getNorth());
+        const w = Math.max(viewBounds.getWest(), polyBounds.getWest());
+        const e = Math.min(viewBounds.getEast(), polyBounds.getEast());
+
+        if (n <= s || e <= w) return; // no real overlap
+
+        const visibleArea = (n - s) * (e - w);
+        const lat = (s + n) / 2;
+        const lng = (w + e) / 2;
+
+        const existing = userBestPos.get(t.user.id);
+        if (!existing || visibleArea > existing.area) {
+          userBestPos.set(t.user.id, { lat, lng, area: visibleArea, territory: t });
+        }
       });
 
-      labelGroup.addLayer(marker);
-      existingLabels.set(userId, marker);
-    }
+      // Remove labels for users no longer in viewport
+      for (const [uid, m] of existingLabels) {
+        if (!userBestPos.has(uid)) {
+          labelGroup.removeLayer(m);
+          existingLabels.delete(uid);
+        }
+      }
 
-    // Zoom-responsive label sizing
-    const updateLabelSizes = () => {
-      const zoom = map.getZoom();
-      const labels = document.querySelectorAll('.territory-label-text') as NodeListOf<HTMLSpanElement>;
-      
-      if (zoom < 11) {
-        // Hide labels at low zoom
-        labels.forEach(l => l.style.opacity = '0');
-      } else {
-        // Scale from 9px at zoom 11 to 18px at zoom 18
-        const fontSize = Math.min(18, Math.max(9, 9 + (zoom - 11) * 1.3));
-        // Opacity from 0.25 at zoom 11 to 0.55 at zoom 18 — subtle, semi-transparent
-        const opacity = Math.min(0.55, Math.max(0.25, (zoom - 11) * 0.043 + 0.25));
-        labels.forEach(l => {
-          l.style.fontSize = `${fontSize}px`;
-          l.style.opacity = `${opacity}`;
-          l.style.color = l.dataset.color || '';
+      // Font / opacity based on zoom
+      const fontSize = Math.min(18, Math.max(9, 9 + (zoom - 11) * 1.3));
+      const opacity = Math.min(0.55, Math.max(0.25, (zoom - 11) * 0.043 + 0.25));
+
+      // Place / reposition labels
+      for (const [uid, pos] of userBestPos) {
+        const handle = pos.territory.user.username || pos.territory.user.name.split(' ')[0];
+
+        // Remove old marker so we can reposition
+        if (existingLabels.has(uid)) {
+          labelGroup.removeLayer(existingLabels.get(uid)!);
+        }
+
+        const marker = L.marker([pos.lat, pos.lng], {
+          interactive: false,
+          keyboard: false,
+          icon: L.divIcon({
+            className: 'territory-label',
+            html: `<span class="territory-label-text" style="color:${pos.territory.user.color};font-size:${fontSize}px;opacity:${opacity};">@${handle}</span>`,
+            iconSize: [0, 0],
+            iconAnchor: [0, 0],
+          }),
         });
+
+        labelGroup.addLayer(marker);
+        existingLabels.set(uid, marker);
       }
     };
 
-    updateLabelSizes();
-    map.on('zoomend', updateLabelSizes);
+    updateLabels();
+    map.on('moveend', updateLabels);
+    map.on('zoomend', updateLabels);
 
     return () => {
-      map.off('zoomend', updateLabelSizes);
+      map.off('moveend', updateLabels);
+      map.off('zoomend', updateLabels);
     };
   }, [territories, visibleUserIds]);
 
