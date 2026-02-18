@@ -495,14 +495,14 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       const centroid = getGeometryCentroid(territory.geometry);
       if (!centroid) continue;
 
-      const firstName = territory.user.name.split(' ')[0];
+      const handle = territory.user.username || territory.user.name.split(' ')[0];
 
       const marker = L.marker(centroid, {
         interactive: false,
         keyboard: false,
         icon: L.divIcon({
           className: 'territory-label',
-          html: `<span class="territory-label-text" style="color: ${territory.user.color};">${firstName}</span>`,
+          html: `<span class="territory-label-text" data-color="${territory.user.color}">@${handle}</span>`,
           iconSize: [0, 0],
           iconAnchor: [0, 0],
         }),
@@ -517,16 +517,18 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       const zoom = map.getZoom();
       const labels = document.querySelectorAll('.territory-label-text') as NodeListOf<HTMLSpanElement>;
       
-      if (zoom < 10) {
-        // Hide labels at very low zoom
+      if (zoom < 11) {
+        // Hide labels at low zoom
         labels.forEach(l => l.style.opacity = '0');
       } else {
-        // Scale from 8px at zoom 10 to 16px at zoom 18
-        const fontSize = Math.min(16, Math.max(8, 8 + (zoom - 10) * 1));
-        const opacity = Math.min(0.85, Math.max(0.3, (zoom - 10) * 0.11 + 0.3));
+        // Scale from 9px at zoom 11 to 18px at zoom 18
+        const fontSize = Math.min(18, Math.max(9, 9 + (zoom - 11) * 1.3));
+        // Opacity from 0.25 at zoom 11 to 0.55 at zoom 18 — subtle, semi-transparent
+        const opacity = Math.min(0.55, Math.max(0.25, (zoom - 11) * 0.043 + 0.25));
         labels.forEach(l => {
           l.style.fontSize = `${fontSize}px`;
           l.style.opacity = `${opacity}`;
+          l.style.color = l.dataset.color || '';
         });
       }
     };
@@ -690,21 +692,17 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         }
         
         .territory-label-text {
-          font-weight: 600;
+          font-weight: 700;
           font-size: 11px;
           white-space: nowrap;
           pointer-events: none;
           user-select: none;
-          text-shadow:
-            -1px -1px 2px rgba(0,0,0,0.6),
-             1px -1px 2px rgba(0,0,0,0.6),
-            -1px  1px 2px rgba(0,0,0,0.6),
-             1px  1px 2px rgba(0,0,0,0.6),
-             0    0   6px rgba(0,0,0,0.4);
-          letter-spacing: 0.02em;
+          letter-spacing: 0.04em;
           transition: font-size 0.2s ease, opacity 0.2s ease;
           transform: translate(-50%, -50%);
           display: inline-block;
+          opacity: 0.35;
+          text-transform: lowercase;
         }
       `}</style>
     </div>
