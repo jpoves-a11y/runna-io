@@ -47,23 +47,58 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Map tiles - CacheFirst (tiles don't change, serve from cache for speed)
+  // Map tiles - Aggressive CacheFirst with long expiration (tiles rarely change)
   if (url.hostname.includes('cartocdn.com') || url.hostname.includes('openstreetmap.org') || url.pathname.match(/\/(tiles|maps)\//)) {
     event.respondWith(
       caches.open(TILE_CACHE).then((cache) => {
         return cache.match(request).then((cached) => {
+          // Always return cached tile immediately if available
           if (cached) {
+            // Optional: Check age and refresh in background if older than 30 days
+            const cacheDate = cached.headers.get('sw-cache-date');
+            if (cacheDate) {
+              const age = Date.now() - parseInt(cacheDate, 10);
+              // Refresh in background if older than 30 days
+              if (age > 30 * 24 * 60 * 60 * 1000) {
+                fetch(request).then((response) => {
+                  if (response.ok) {
+                    const headers = new Headers(response.headers);
+                    headers.set('sw-cache-date', Date.now().toString());
+                    response.clone().blob().then((blob) => {
+                      cache.put(request, new Response(blob, {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: headers,
+                      }));
+                    });
+                  }
+                }).catch(() => {});
+              }
+            }
             return cached;
           }
+          
+          // No cache hit - fetch from network
           return fetch(request).then((response) => {
-            // Only cache successful responses
             if (response.ok) {
-              cache.put(request, response.clone());
+              const headers = new Headers(response.headers);
+              headers.set('sw-cache-date', Date.now().toString());
+              
+              response.clone().blob().then((blob) => {
+                cache.put(request, new Response(blob, {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: headers,
+                }));
+              });
             }
             return response;
           }).catch(() => {
-            // Return a placeholder for failed tile loads
-            return new Response('', { status: 404 });
+            // Return transparent tile for failed loads (prevents gaps in map)
+            return new Response(
+              new Blob([new Uint8Array([137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,1,0,0,0,1,0,8,6,0,0,0,92,114,168,102,0,0,0,1,115,82,71,66,0,174,206,28,233,0,0,0,4,103,65,77,65,0,0,177,143,11,252,97,5,0,0,0,9,112,72,89,115,0,0,14,195,0,0,14,195,1,199,111,168,100,0,0,0,11,73,68,65,84,120,94,99,96,0,0,0,2,0,1,226,33,188,51,0,0,0,0,73,69,78,68,174,66,96,130])], { type: 'image/png' }),
+              { status: 200, statusText: 'OK', headers: { 'Content-Type': 'image/png' } }
+            );
           });
         });
       })

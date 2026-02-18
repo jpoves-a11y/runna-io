@@ -6,6 +6,7 @@ import { ZoomIn, ZoomOut, Layers, Navigation } from 'lucide-react';
 import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 import { DEFAULT_CENTER, getCurrentPosition } from '@/lib/geolocation';
 import { useTheme } from '@/hooks/use-theme';
+import { useMapTilePrefetch } from '@/hooks/use-map-tile-prefetch';
 
 interface MapViewProps {
   territories: TerritoryWithUser[];
@@ -24,24 +25,38 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
 
+  // Prefetch adjacent tiles for smoother panning
+  useMapTilePrefetch(mapRef, true);
+
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
-    // Initialize map with more zoom
+    // Initialize map with optimized settings for smooth panning
     const map = L.map(mapContainer.current, {
       center: [center.lat, center.lng],
       zoom: 14,
       zoomControl: false,
       attributionControl: false,
+      preferCanvas: true, // Better performance for many markers/polygons
+      zoomAnimation: true,
+      fadeAnimation: true,
+      markerZoomAnimation: true,
     });
 
-    // Use tile layer matching current theme
+    // Use tile layer matching current theme with aggressive caching
     const initialStyle = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
     const tileUrl = initialStyle === 'dark'
       ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
       : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
     const initialTiles = L.tileLayer(tileUrl, {
       maxZoom: 19,
+      minZoom: 3,
+      keepBuffer: 8, // Keep 8 tile rows/cols outside viewport (prevents reloading)
+      updateWhenIdle: false, // Update immediately for smooth experience
+      updateWhenZooming: false, // Don't update while zooming
+      updateInterval: 150, // Throttle tile updates to 150ms
+      crossOrigin: true, // Enable CORS for better caching
+      subdomains: ['a', 'b', 'c', 'd'], // Use all CDN subdomains for parallel loading
     });
 
     initialTiles.addTo(map);
@@ -91,7 +106,16 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     const url = desired === 'dark'
       ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
       : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-    const newTiles = L.tileLayer(url, { maxZoom: 19 });
+    const newTiles = L.tileLayer(url, {
+      maxZoom: 19,
+      minZoom: 3,
+      keepBuffer: 8,
+      updateWhenIdle: false,
+      updateWhenZooming: false,
+      updateInterval: 150,
+      crossOrigin: true,
+      subdomains: ['a', 'b', 'c', 'd'],
+    });
     newTiles.addTo(mapRef.current);
     tileLayerRef.current = newTiles;
     setMapStyle(desired);
@@ -105,10 +129,28 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     // Remove current tile layer
     mapRef.current.removeLayer(tileLayerRef.current);
 
-    // Add new tile layer
+    // Add new tile layer with same optimization settings
     const newTiles = newStyle === 'light'
-      ? L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 })
-      : L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19 });
+      ? L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+          maxZoom: 19,
+          minZoom: 3,
+          keepBuffer: 8,
+          updateWhenIdle: false,
+          updateWhenZooming: false,
+          updateInterval: 150,
+          crossOrigin: true,
+          subdomains: ['a', 'b', 'c', 'd'],
+        })
+      : L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          maxZoom: 19,
+          minZoom: 3,
+          keepBuffer: 8,
+          updateWhenIdle: false,
+          updateWhenZooming: false,
+          updateInterval: 150,
+          crossOrigin: true,
+          subdomains: ['a', 'b', 'c', 'd'],
+        });
 
     newTiles.addTo(mapRef.current);
     tileLayerRef.current = newTiles;
