@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Button } from '@/components/ui/button';
@@ -17,10 +17,36 @@ interface MapViewProps {
   isLoadingTerritories?: boolean;
 }
 
+// Shared tile layer options - extracted to avoid re-creation
+const TILE_OPTIONS: L.TileLayerOptions = {
+  maxZoom: 19,
+  minZoom: 3,
+  keepBuffer: 12, // Large buffer = more pre-loaded tiles around viewport
+  updateWhenIdle: false, // Load tiles DURING panning, not after
+  updateWhenZooming: true, // Load tiles during zoom animation
+  updateInterval: 50, // Very fast tile update rate (50ms)
+  crossOrigin: true,
+  subdomains: ['a', 'b', 'c', 'd'], // 4 CDN subdomains for max parallelism
+  className: 'map-tiles',
+};
+
+const TILE_URLS = {
+  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+};
+
 export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  // Persistent layer groups for efficient add/remove without full redraw
+  const territoryGroupRef = useRef<L.LayerGroup | null>(null);
+  const routeGroupRef = useRef<L.LayerGroup | null>(null);
+  // Track which layers correspond to which data IDs for diffing
+  const territoryLayersRef = useRef<Map<number, L.Polygon>>(new Map());
+  const routeLayersRef = useRef<Map<number, L.Polyline>>(new Map());
+  // Canvas renderer for better polygon/polyline performance
+  const canvasRendererRef = useRef<L.Canvas | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
@@ -31,37 +57,38 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
+    // Create a shared canvas renderer for all vector layers - much faster than SVG
+    const canvasRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+    canvasRendererRef.current = canvasRenderer;
+
     // Initialize map with optimized settings for smooth panning
     const map = L.map(mapContainer.current, {
       center: [center.lat, center.lng],
       zoom: 14,
       zoomControl: false,
       attributionControl: false,
-      preferCanvas: true, // Better performance for many markers/polygons
+      preferCanvas: true, // Global canvas preference
+      renderer: canvasRenderer, // Shared canvas renderer
       zoomAnimation: true,
       fadeAnimation: true,
       markerZoomAnimation: true,
+      zoomSnap: 0.5, // Smoother zoom steps
+      wheelDebounceTime: 40, // Responsive scroll zoom
     });
 
     // Use tile layer matching current theme with aggressive caching
     const initialStyle = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-    const tileUrl = initialStyle === 'dark'
-      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-      : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-    const initialTiles = L.tileLayer(tileUrl, {
-      maxZoom: 19,
-      minZoom: 3,
-      keepBuffer: 10, // Increased to 10 for even more buffering
-      updateWhenIdle: true, // Update when idle for smoother panning
-      updateWhenZooming: false, // Don't update while zooming
-      updateInterval: 100, // Reduced to 100ms for faster updates
-      crossOrigin: true, // Enable CORS for better caching
-      subdomains: ['a', 'b', 'c', 'd'], // Use all CDN subdomains for parallel loading
-      className: 'map-tiles', // For better debugging
-    });
+    const initialTiles = L.tileLayer(TILE_URLS[initialStyle], TILE_OPTIONS);
 
     initialTiles.addTo(map);
     tileLayerRef.current = initialTiles;
+
+    // Create persistent layer groups for territories and routes
+    const territoryGroup = L.layerGroup().addTo(map);
+    const routeGroup = L.layerGroup().addTo(map);
+    territoryGroupRef.current = territoryGroup;
+    routeGroupRef.current = routeGroup;
+
     mapRef.current = map;
     setMapStyle(initialStyle);
 
@@ -94,6 +121,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       window.removeEventListener('orientationchange', handleResize);
       map.remove();
       mapRef.current = null;
+      territoryGroupRef.current = null;
+      routeGroupRef.current = null;
+      territoryLayersRef.current.clear();
+      routeLayersRef.current.clear();
     };
   }, []);
 
@@ -104,20 +135,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     if (desired === mapStyle) return;
 
     mapRef.current.removeLayer(tileLayerRef.current);
-    const url = desired === 'dark'
-      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-      : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-    const newTiles = L.tileLayer(url, {
-      maxZoom: 19,
-      minZoom: 3,
-      keepBuffer: 10,
-      updateWhenIdle: true,
-      updateWhenZooming: false,
-      updateInterval: 100,
-      crossOrigin: true,
-      subdomains: ['a', 'b', 'c', 'd'],
-      className: 'map-tiles',
-    });
+    const newTiles = L.tileLayer(TILE_URLS[desired], TILE_OPTIONS);
     newTiles.addTo(mapRef.current);
     tileLayerRef.current = newTiles;
     setMapStyle(desired);
@@ -131,65 +149,42 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     // Remove current tile layer
     mapRef.current.removeLayer(tileLayerRef.current);
 
-    // Add new tile layer with same optimization settings
-    const newTiles = newStyle === 'light'
-      ? L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 19,
-          minZoom: 3,
-          keepBuffer: 10,
-          updateWhenIdle: true,
-          updateWhenZooming: false,
-          updateInterval: 100,
-          crossOrigin: true,
-          subdomains: ['a', 'b', 'c', 'd'],
-          className: 'map-tiles',
-        })
-      : L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 19,
-          minZoom: 3,
-          keepBuffer: 10,
-          updateWhenIdle: true,
-          updateWhenZooming: false,
-          updateInterval: 100,
-          crossOrigin: true,
-          subdomains: ['a', 'b', 'c', 'd'],
-          className: 'map-tiles',
-        });
+    // Add new tile layer with shared optimization settings
+    const newTiles = L.tileLayer(TILE_URLS[newStyle], TILE_OPTIONS);
 
     newTiles.addTo(mapRef.current);
     tileLayerRef.current = newTiles;
     setMapStyle(newStyle);
   };
 
+  // Stable callback to avoid re-renders
+  const onTerritoryClickRef = useRef(onTerritoryClick);
+  onTerritoryClickRef.current = onTerritoryClick;
+
+  // === ROUTE LAYER DIFFING ===
+  // Only add/remove changed routes instead of clearing everything
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || !routeGroupRef.current) return;
 
-    // Use requestAnimationFrame for smoother updates
-    requestAnimationFrame(() => {
-      if (mapRef.current && mapContainer.current) {
-        mapRef.current.invalidateSize();
+    const routeGroup = routeGroupRef.current;
+    const existingLayers = routeLayersRef.current;
+    const newRouteIds = new Set(routes.map(r => r.id));
+    const existingIds = new Set(existingLayers.keys());
+
+    // Remove routes that no longer exist
+    for (const [id, layer] of existingLayers) {
+      if (!newRouteIds.has(id)) {
+        routeGroup.removeLayer(layer);
+        existingLayers.delete(id);
       }
-    });
+    }
 
-    // Clear existing territory and route layers efficiently
-    const layersToRemove: L.Layer[] = [];
-    mapRef.current.eachLayer((layer) => {
-      if (layer instanceof L.Polygon || (layer instanceof L.Polyline && !(layer instanceof L.Polygon))) {
-        layersToRemove.push(layer);
-      }
-    });
-    
-    // Batch remove for better performance
-    layersToRemove.forEach(layer => mapRef.current?.removeLayer(layer));
-
-    // Add route polylines with reduced opacity (user's territories)
+    // Add new routes that don't exist yet
     routes.forEach((route) => {
-      if (!mapRef.current || !route.coordinates) return;
+      if (!route.coordinates || existingIds.has(route.id)) return;
 
-      // Use territory user color if available, otherwise default primary color
       const routeColor = route.territory?.user?.color || '#D4213D';
 
-      // Convert coordinates from [lat, lng] to [lat, lng] for Leaflet
       const routeCoordinates = (route.coordinates as any).map((coord: any) => {
         if (Array.isArray(coord)) {
           return [coord[0], coord[1]] as [number, number];
@@ -203,16 +198,36 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         color: routeColor,
         weight: 2,
         opacity: 0.4,
-        smoothFactor: 1.0,
-        className: 'route-polyline',
+        smoothFactor: 1.5, // Simplify polyline for better performance
+        renderer: canvasRendererRef.current || undefined,
       });
 
-      polyline.addTo(mapRef.current);
+      routeGroup.addLayer(polyline);
+      existingLayers.set(route.id, polyline);
     });
+  }, [routes]);
 
-    // Add territory polygons with improved styling
+  // === TERRITORY LAYER DIFFING ===
+  // Only add/remove changed territories instead of clearing everything
+  useEffect(() => {
+    if (!mapRef.current || !territoryGroupRef.current) return;
+
+    const territoryGroup = territoryGroupRef.current;
+    const existingLayers = territoryLayersRef.current;
+    const newTerritoryIds = new Set(territories.map(t => t.id));
+    const existingIds = new Set(existingLayers.keys());
+
+    // Remove territories that no longer exist
+    for (const [id, layer] of existingLayers) {
+      if (!newTerritoryIds.has(id)) {
+        territoryGroup.removeLayer(layer);
+        existingLayers.delete(id);
+      }
+    }
+
+    // Add new territories that don't exist yet
     territories.forEach((territory) => {
-      if (!mapRef.current || !territory.user) return;
+      if (!territory.user || existingIds.has(territory.id)) return;
 
       // Parse geometry from JSON string if needed (SQLite stores as text)
       const parsedGeometry = typeof territory.geometry === 'string' 
@@ -247,7 +262,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         opacity: 0.9,
         lineCap: 'round',
         lineJoin: 'round',
-        className: 'territory-polygon',
+        renderer: canvasRendererRef.current || undefined, // Canvas renderer for better perf
       });
 
       // Determine popup colors based on current theme
@@ -352,7 +367,8 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         });
       });
 
-      polygon.addTo(mapRef.current);
+      territoryGroup.addLayer(polygon);
+      existingLayers.set(territory.id, polygon);
     });
 
     // Add event listener for popup buttons
@@ -360,8 +376,8 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       const target = e.target as HTMLElement;
       if (target.classList.contains('view-profile-btn') || target.classList.contains('territory-user-name')) {
         const userId = target.getAttribute('data-user-id');
-        if (userId && onTerritoryClick) {
-          onTerritoryClick(userId);
+        if (userId && onTerritoryClickRef.current) {
+          onTerritoryClickRef.current(userId);
           mapRef.current?.closePopup();
         }
       }
@@ -378,7 +394,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         popupContainer.removeEventListener('click', handlePopupButtonClick);
       }
     };
-  }, [territories, routes, onTerritoryClick]);
+  }, [territories]);
 
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();
@@ -477,8 +493,25 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
           border-radius: 0;
         }
         
-        .territory-polygon {
-          transition: all 0.2s ease;
+        /* Match map background to tile theme - eliminates white zones */
+        .leaflet-container {
+          background: ${mapStyle === 'dark' ? '#000000' : '#e8e8e6'} !important;
+        }
+        
+        /* Smooth tile appearance */
+        .leaflet-tile {
+          will-change: transform;
+        }
+        
+        /* Ensure tiles load without delay */
+        .leaflet-tile-container {
+          will-change: transform;
+          backface-visibility: hidden;
+        }
+        
+        /* Make tile loading invisible - tiles appear from matching background */
+        .leaflet-tile-loaded {
+          opacity: 1 !important;
         }
         
         .leaflet-popup-content-wrapper {
