@@ -122,7 +122,7 @@ function OnboardingWrapper() {
   );
 }
 
-function App() {
+function AppContent() {
   const [location, setLocation] = useLocation();
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
@@ -131,7 +131,7 @@ function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
 
-  // Strategic prefetching to reduce perceived loading times
+  // Strategic prefetching to reduce perceived loading times (must be inside QueryClientProvider)
   usePrefetch();
 
   // Match the order used in BottomNav
@@ -228,34 +228,40 @@ function App() {
   };
 
   return (
+    <div className="fixed inset-0 flex flex-col bg-background">
+      <main
+        ref={(el) => (mainRef.current = el)}
+        className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
+        style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        {isRefreshing && (
+          <div
+            className="absolute inset-x-0 top-0 flex items-center justify-center z-50 bg-background/80 backdrop-blur-sm"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)', paddingBottom: '0.5rem' }}
+          >
+            <div className="h-8 w-8 rounded-full border-[3px] border-muted-foreground/20 border-t-primary animate-spin" />
+          </div>
+        )}
+        <Router />
+      </main>
+      <BottomNav />
+      <StartActivityButton />
+      <EphemeralPhotoWrapper />
+      <OnboardingWrapper />
+      <Toaster />
+    </div>
+  );
+}
+
+function App() {
+  return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
-          <div className="fixed inset-0 flex flex-col bg-background">
-            <main
-              ref={(el) => (mainRef.current = el)}
-              className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-              style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
-              onTouchStart={handleTouchStart}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-            >
-              {isRefreshing && (
-                <div
-                  className="absolute inset-x-0 top-0 flex items-center justify-center z-50 bg-background/80 backdrop-blur-sm"
-                  style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)', paddingBottom: '0.5rem' }}
-                >
-                  <div className="h-8 w-8 rounded-full border-[3px] border-muted-foreground/20 border-t-primary animate-spin" />
-                </div>
-              )}
-              <Router />
-            </main>
-            <BottomNav />
-          </div>
-          <StartActivityButton />
-          <EphemeralPhotoWrapper />
-          <OnboardingWrapper />
-          <Toaster />
+          <AppContent />
         </TooltipProvider>
       </QueryClientProvider>
     </ErrorBoundary>
