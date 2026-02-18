@@ -346,6 +346,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "Cannot add yourself as friend" });
       }
 
+      // Check same color
+      const user = await storage.getUser(userId);
+      const friend = await storage.getUser(friendId);
+      if (user && friend && user.color.toLowerCase() === friend.color.toLowerCase()) {
+        return res.status(409).json({ error: "SAME_COLOR", message: "No puedes añadir a un amigo con el mismo color de territorio. Cambia tu color primero." });
+      }
+
       await storage.createBidirectionalFriendship(userId, friendId);
       res.json({ success: true });
     } catch (error: any) {
@@ -460,6 +467,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (invite.userId === userId) {
         return res.status(400).json({ error: "Cannot accept your own invite" });
+      }
+
+      // Check same color
+      const inviter = await storage.getUser(invite.userId);
+      const accepter = await storage.getUser(userId);
+      if (inviter && accepter && inviter.color.toLowerCase() === accepter.color.toLowerCase()) {
+        return res.status(409).json({ error: "SAME_COLOR", message: "No puedes aceptar la invitación porque tenéis el mismo color de territorio. Cambia tu color primero." });
       }
 
       await storage.createBidirectionalFriendship(invite.userId, userId);

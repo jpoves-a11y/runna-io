@@ -45,6 +45,13 @@ export function UserSearchDialog({ open, onOpenChange, currentUserId }: UserSear
         userId: currentUserId,
         friendId,
       });
+      if (!response.ok) {
+        const err = await response.json();
+        if (err.error === 'SAME_COLOR') {
+          throw new Error('No puedes añadir a un amigo con el mismo color de territorio. Cambia tu color en Perfil > Tu color de territorio.');
+        }
+        throw new Error(err.error || err.message || 'Error al enviar solicitud');
+      }
       return await response.json();
     },
     onSuccess: (data, friendId) => {

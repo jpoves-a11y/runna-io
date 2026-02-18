@@ -9,10 +9,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
-import { Activity, Calendar, ChevronRight, ChevronLeft, MapPin, Swords, Shield, Users, UserPlus, Loader2, X } from 'lucide-react';
+import { Activity, Calendar, ChevronRight, ChevronLeft, MapPin, Swords, Shield, Users, UserPlus, Loader2, X, Palette, AlertTriangle } from 'lucide-react';
 import { apiRequest } from '@/lib/queryClient';
 import UserActivitiesDialog from './UserActivitiesDialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { USER_COLOR_NAMES } from '@/lib/colors';
+import { useToast } from '@/hooks/use-toast';
 
 interface Props {
   userId?: string | null;
@@ -26,8 +28,10 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
   const [addingFriend, setAddingFriend] = useState(false);
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null);
   const [showFullAvatar, setShowFullAvatar] = useState(false);
+  const [sameColorError, setSameColorError] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   // Determine which user to display (either the original or the selected friend)
   const displayUserId = selectedFriendId || userId;
@@ -64,6 +68,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
     if (!currentUserId || !displayUserId) return;
     
     setAddingFriend(true);
+    setSameColorError(false);
     try {
       const res = await apiRequest('POST', '/api/friends', {
         userId: currentUserId,
@@ -71,13 +76,30 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
       });
       if (!res.ok) {
         const err = await res.json();
+        if (err.error === 'SAME_COLOR') {
+          setSameColorError(true);
+          toast({
+            title: '⚠️ Mismo color de territorio',
+            description: 'Cambia tu color en Perfil > Tu color de territorio antes de añadir a este amigo.',
+            variant: 'destructive',
+          });
+          return;
+        }
         throw new Error(err.error || 'Failed to send friend request');
       }
-      alert('Solicitud de amistad enviada');
+      toast({
+        title: '✅ Solicitud enviada',
+        description: 'Solicitud de amistad enviada correctamente',
+        className: 'animate-bounce-in',
+      });
       // Invalidate friends list cache to refresh
       queryClient.invalidateQueries({ queryKey: ['user-friends', displayUserId] });
     } catch (error: any) {
-      alert(error.message || 'Error sending friend request');
+      toast({
+        title: 'Error',
+        description: error.message || 'Error sending friend request',
+        variant: 'destructive',
+      });
       console.error('Error adding friend:', error);
     } finally {
       setAddingFriend(false);
@@ -208,6 +230,37 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
 
         <div className="flex-1 min-h-0 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
           <div className="space-y-3 p-4" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}>
+
+          {/* User color badge */}
+          {stats.user?.color && (
+            <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-muted/30 p-3">
+              <div
+                className="w-8 h-8 rounded-lg shadow-sm ring-1 ring-black/10 flex-shrink-0"
+                style={{ backgroundColor: stats.user.color }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <Palette className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">Color de territorio</span>
+                </div>
+                <span className="text-sm font-semibold">{USER_COLOR_NAMES[stats.user.color.toUpperCase()] || USER_COLOR_NAMES[stats.user.color] || 'Personalizado'}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Same color warning */}
+          {sameColorError && (
+            <div className="flex items-start gap-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 p-3 animate-in slide-in-from-top-2 duration-200">
+              <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Mismo color de territorio</p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                  Tú y este usuario tenéis el mismo color. Cambia tu color en <strong>Perfil &gt; Tu color de territorio</strong> para poder añadirle como amigo.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-xl border border-border/60 bg-muted/30 p-3">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">

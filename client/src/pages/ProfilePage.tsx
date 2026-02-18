@@ -25,10 +25,12 @@ import { useTheme } from '@/hooks/use-theme';
 import { AvatarDialog } from '@/components/AvatarDialog';
 import { ConquestStats } from '@/components/ConquestStats';
 import { ActivityPreviewDialog } from '@/components/ActivityPreviewDialog';
+import { ColorPickerDialog } from '@/components/ColorPickerDialog';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
+import { USER_COLOR_NAMES } from '@/lib/colors';
 
 // Parse date string safely (handles ISO, Polar format, and legacy format)
 function safeFormatDate(dateStr: string | null | undefined): string {
@@ -204,6 +206,7 @@ export default function ProfilePage() {
   const [polarActivityToDelete, setPolarActivityToDelete] = useState<PolarActivity | null>(null);
   const [deletingPolarActivityId, setDeletingPolarActivityId] = useState<string | null>(null);
   const [isAvatarDialogOpen, setIsAvatarDialogOpen] = useState(false);
+  const [isColorPickerOpen, setIsColorPickerOpen] = useState(false);
   const [showActivityPreview, setShowActivityPreview] = useState(false);
   const [pendingActivities, setPendingActivities] = useState<PolarActivity[]>([]);
   const [currentPreviewIndex, setCurrentPreviewIndex] = useState(0);
@@ -974,22 +977,28 @@ export default function ProfilePage() {
           {/* Conquest Stats */}
           <ConquestStats userId={user.id} />
 
-          <Card className="p-4">
+          <Card className="p-4 cursor-pointer hover:bg-muted/30 transition-all active:scale-[0.99]" onClick={() => setIsColorPickerOpen(true)}>
             <div className="flex items-center gap-2 mb-3">
               <Palette className="h-5 w-5 text-primary" />
               <h3 className="font-semibold">Tu color de territorio</h3>
             </div>
             <div className="flex items-center gap-4">
-              <div
-                className="w-14 h-14 rounded-xl shadow-md flex-shrink-0"
-                style={{ backgroundColor: user.color }}
-              />
+              <div className="relative group">
+                <div
+                  className="w-14 h-14 rounded-xl shadow-md flex-shrink-0 ring-2 ring-offset-2 ring-primary/30 group-hover:ring-primary/60 transition-all duration-300 group-hover:scale-105"
+                  style={{ backgroundColor: user.color }}
+                />
+                <div
+                  className="absolute inset-0 rounded-xl blur-lg opacity-0 group-hover:opacity-30 transition-opacity duration-300"
+                  style={{ backgroundColor: user.color }}
+                />
+              </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-lg" data-testid="text-color-name">
-                  {getColorName(user.color)}
+                  {USER_COLOR_NAMES[user.color.toUpperCase()] || USER_COLOR_NAMES[user.color] || getColorName(user.color)}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Este color identifica tus territorios en el mapa
+                  Toca para cambiar tu color
                 </p>
               </div>
             </div>
@@ -1373,6 +1382,13 @@ export default function ProfilePage() {
         currentAvatar={user.avatar}
         userName={user.name}
         userColor={user.color}
+        userId={user.id}
+      />
+
+      <ColorPickerDialog
+        open={isColorPickerOpen}
+        onOpenChange={setIsColorPickerOpen}
+        currentColor={user.color}
         userId={user.id}
       />
 

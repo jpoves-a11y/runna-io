@@ -10,12 +10,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { useToast } from '@/hooks/use-toast';
-import { Save, User, Palette, Camera, Upload, RefreshCw } from 'lucide-react';
+import { Save, User, Palette, Camera, Upload, RefreshCw, Check, Lock } from 'lucide-react';
 import type { UserWithStats } from '@shared/schema';
-import { USER_COLORS } from '@/lib/colors';
+import { USER_COLORS, USER_COLOR_NAMES } from '@/lib/colors';
 
 interface SettingsDialogProps {
   open: boolean;
@@ -30,6 +30,21 @@ export function SettingsDialog({ open, onOpenChange, user }: SettingsDialogProps
   const [previewUrl, setPreviewUrl] = useState(user.avatar || '');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  // Fetch friends to get their colors
+  const { data: friends = [] } = useQuery<any[]>({
+    queryKey: ['/api/friends', user.id],
+    queryFn: async () => {
+      const res = await apiRequest('GET', `/api/friends/${user.id}`);
+      if (!res.ok) return [];
+      return await res.json();
+    },
+    enabled: !!user.id && open,
+  });
+
+  const friendColors = new Set(
+    (friends as any[]).map((f: any) => f.color?.toUpperCase()).filter(Boolean)
+  );
 
   const updateUserMutation = useMutation({
     mutationFn: async (data: { name: string; color: string; avatar: string }) => {
@@ -233,26 +248,46 @@ export function SettingsDialog({ open, onOpenChange, user }: SettingsDialogProps
               <Palette className="h-4 w-4" />
               Color de territorio
             </Label>
-            <div className="grid grid-cols-5 gap-3">
-              {USER_COLORS.map((color) => (
-                <button
-                  key={color}
-                  onClick={() => setSelectedColor(color)}
-                  className={`w-full aspect-square rounded-lg transition-all duration-300 hover:scale-110 active:scale-95 ${
-                    selectedColor === color
-                      ? 'ring-4 ring-primary ring-offset-2 scale-110'
-                      : 'hover:ring-2 hover:ring-offset-2 hover:ring-primary/50'
-                  }`}
-                  style={{ backgroundColor: color }}
-                  data-testid={`color-${color}`}
-                >
-                  {selectedColor === color && (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <div className="w-3 h-3 bg-white rounded-full animate-scale-in" />
-                    </div>
-                  )}
-                </button>
-              ))}
+            <div className="grid grid-cols-4 gap-3">
+              {USER_COLORS.map((color) => {
+                const isTaken = friendColors.has(color.toUpperCase());
+                const isSelected = selectedColor.toUpperCase() === color.toUpperCase();
+
+                return (
+                  <button
+                    key={color}
+                    onClick={() => !isTaken && setSelectedColor(color)}
+                    disabled={isTaken}
+                    className={`relative w-full aspect-square rounded-xl transition-all duration-300 ${
+                      isTaken
+                        ? 'opacity-30 cursor-not-allowed grayscale'
+                        : isSelected
+                          ? 'ring-[3px] ring-primary ring-offset-2 scale-110 shadow-lg'
+                          : 'hover:scale-105 hover:ring-2 hover:ring-offset-1 hover:ring-primary/40 active:scale-95'
+                    }`}
+                    style={{ backgroundColor: color }}
+                    title={isTaken ? 'Usado por un amigo' : (USER_COLOR_NAMES[color] || color)}
+                    data-testid={`color-${color}`}
+                  >
+                    {isSelected && !isTaken && (
+                      <div className="w-full h-full flex items-center justify-center animate-in zoom-in-50 duration-200">
+                        <Check className="h-5 w-5 text-white drop-shadow-md" />
+                      </div>
+                    )}
+                    {isTaken && (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <Lock className="h-4 w-4 text-white/80 drop-shadow-md" />
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1">
+                <Lock className="h-3 w-3" />
+                <span>Usado por amigo</span>
+              </div>
             </div>
           </div>
 
