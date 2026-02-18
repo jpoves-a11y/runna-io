@@ -15,6 +15,39 @@ interface MapViewProps {
   onLocationFound?: (coords: { lat: number; lng: number }) => void;
   onTerritoryClick?: (userId: string) => void;
   isLoadingTerritories?: boolean;
+  visibleUserIds?: Set<string> | null; // null = show all
+}
+
+// Compute the centroid of a GeoJSON geometry (Polygon or MultiPolygon)
+function getGeometryCentroid(geometry: any): [number, number] | null {
+  try {
+    const parsed = typeof geometry === 'string' ? JSON.parse(geometry) : geometry;
+    if (!parsed?.coordinates) return null;
+
+    let sumLat = 0, sumLng = 0, count = 0;
+
+    const addRing = (ring: number[][]) => {
+      // Skip the closing coordinate (same as first)
+      for (let i = 0; i < ring.length - 1; i++) {
+        sumLng += ring[i][0];
+        sumLat += ring[i][1];
+        count++;
+      }
+    };
+
+    if (parsed.type === 'MultiPolygon') {
+      for (const polygon of parsed.coordinates) {
+        addRing(polygon[0]); // outer ring only
+      }
+    } else {
+      addRing(parsed.coordinates[0]); // outer ring only
+    }
+
+    if (count === 0) return null;
+    return [sumLat / count, sumLng / count];
+  } catch {
+    return null;
+  }
 }
 
 // Shared tile layer options - extracted to avoid re-creation
@@ -35,16 +68,18 @@ const TILE_URLS = {
   light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
 };
 
-export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false }: MapViewProps) {
+export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false, visibleUserIds = null }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   // Persistent layer groups for efficient add/remove without full redraw
   const territoryGroupRef = useRef<L.LayerGroup | null>(null);
   const routeGroupRef = useRef<L.LayerGroup | null>(null);
+  const labelGroupRef = useRef<L.LayerGroup | null>(null);
   // Track which layers correspond to which data IDs for diffing
   const territoryLayersRef = useRef<Map<number, L.Polygon>>(new Map());
   const routeLayersRef = useRef<Map<number, L.Polyline>>(new Map());
+  const labelLayersRef = useRef<Map<string, L.Marker>>(new Map());
   // Canvas renderer for better polygon/polyline performance
   const canvasRendererRef = useRef<L.Canvas | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -86,8 +121,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     // Create persistent layer groups for territories and routes
     const territoryGroup = L.layerGroup().addTo(map);
     const routeGroup = L.layerGroup().addTo(map);
+    const labelGroup = L.layerGroup().addTo(map);
     territoryGroupRef.current = territoryGroup;
     routeGroupRef.current = routeGroup;
+    labelGroupRef.current = labelGroup;
 
     mapRef.current = map;
     setMapStyle(initialStyle);
@@ -123,8 +160,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       mapRef.current = null;
       territoryGroupRef.current = null;
       routeGroupRef.current = null;
+      labelGroupRef.current = null;
       territoryLayersRef.current.clear();
       routeLayersRef.current.clear();
+      labelLayersRef.current.clear();
     };
   }, []);
 
@@ -168,7 +207,16 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
 
     const routeGroup = routeGroupRef.current;
     const existingLayers = routeLayersRef.current;
-    const newRouteIds = new Set(routes.map(r => r.id));
+
+    // Filter routes by visible users
+    const visibleRoutes = visibleUserIds
+      ? routes.filter(r => {
+          const routeUserId = (r as any).userId || r.territory?.user?.id;
+          return routeUserId && visibleUserIds.has(routeUserId);
+        })
+      : routes;
+
+    const newRouteIds = new Set(visibleRoutes.map(r => r.id));
     const existingIds = new Set(existingLayers.keys());
 
     // Remove routes that no longer exist
@@ -180,7 +228,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     }
 
     // Add new routes that don't exist yet
-    routes.forEach((route) => {
+    visibleRoutes.forEach((route) => {
       if (!route.coordinates || existingIds.has(route.id)) return;
 
       const routeColor = route.territory?.user?.color || '#D4213D';
@@ -205,7 +253,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       routeGroup.addLayer(polyline);
       existingLayers.set(route.id, polyline);
     });
-  }, [routes]);
+  }, [routes, visibleUserIds]);
 
   // === TERRITORY LAYER DIFFING ===
   // Only add/remove changed territories instead of clearing everything
@@ -214,10 +262,16 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
 
     const territoryGroup = territoryGroupRef.current;
     const existingLayers = territoryLayersRef.current;
-    const newTerritoryIds = new Set(territories.map(t => t.id));
+
+    // Filter territories by visible users
+    const visibleTerritories = visibleUserIds
+      ? territories.filter(t => t.user && visibleUserIds.has(t.user.id))
+      : territories;
+
+    const newTerritoryIds = new Set(visibleTerritories.map(t => t.id));
     const existingIds = new Set(existingLayers.keys());
 
-    // Remove territories that no longer exist
+    // Remove territories that no longer exist or are now hidden
     for (const [id, layer] of existingLayers) {
       if (!newTerritoryIds.has(id)) {
         territoryGroup.removeLayer(layer);
@@ -226,7 +280,7 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     }
 
     // Add new territories that don't exist yet
-    territories.forEach((territory) => {
+    visibleTerritories.forEach((territory) => {
       if (!territory.user || existingIds.has(territory.id)) return;
 
       // Parse geometry from JSON string if needed (SQLite stores as text)
@@ -394,7 +448,96 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         popupContainer.removeEventListener('click', handlePopupButtonClick);
       }
     };
-  }, [territories]);
+  }, [territories, visibleUserIds]);
+
+  // === TERRITORY NAME LABELS ===
+  // Show user names at territory centroids, responsive to zoom level
+  useEffect(() => {
+    if (!mapRef.current || !labelGroupRef.current) return;
+
+    const map = mapRef.current;
+    const labelGroup = labelGroupRef.current;
+    const existingLabels = labelLayersRef.current;
+
+    // Filter territories by visible users
+    const visibleTerritories = visibleUserIds
+      ? territories.filter(t => t.user && visibleUserIds.has(t.user.id))
+      : territories;
+
+    // Group territories by user to show one label per user (at their largest territory)
+    const userTerritories = new Map<string, TerritoryWithUser>();
+    visibleTerritories.forEach(t => {
+      if (!t.user) return;
+      const existing = userTerritories.get(t.user.id);
+      if (!existing || t.area > existing.area) {
+        userTerritories.set(t.user.id, t);
+      }
+    });
+
+    const currentUserIds = new Set(userTerritories.keys());
+
+    // Remove labels for users no longer visible
+    for (const [userId, marker] of existingLabels) {
+      if (!currentUserIds.has(userId)) {
+        labelGroup.removeLayer(marker);
+        existingLabels.delete(userId);
+      }
+    }
+
+    // Create/update labels
+    for (const [userId, territory] of userTerritories) {
+      // Remove existing to recreate (centroid may have changed)
+      if (existingLabels.has(userId)) {
+        labelGroup.removeLayer(existingLabels.get(userId)!);
+        existingLabels.delete(userId);
+      }
+
+      const centroid = getGeometryCentroid(territory.geometry);
+      if (!centroid) continue;
+
+      const firstName = territory.user.name.split(' ')[0];
+
+      const marker = L.marker(centroid, {
+        interactive: false,
+        keyboard: false,
+        icon: L.divIcon({
+          className: 'territory-label',
+          html: `<span class="territory-label-text" style="color: ${territory.user.color};">${firstName}</span>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+        }),
+      });
+
+      labelGroup.addLayer(marker);
+      existingLabels.set(userId, marker);
+    }
+
+    // Zoom-responsive label sizing
+    const updateLabelSizes = () => {
+      const zoom = map.getZoom();
+      const labels = document.querySelectorAll('.territory-label-text') as NodeListOf<HTMLSpanElement>;
+      
+      if (zoom < 10) {
+        // Hide labels at very low zoom
+        labels.forEach(l => l.style.opacity = '0');
+      } else {
+        // Scale from 8px at zoom 10 to 16px at zoom 18
+        const fontSize = Math.min(16, Math.max(8, 8 + (zoom - 10) * 1));
+        const opacity = Math.min(0.85, Math.max(0.3, (zoom - 10) * 0.11 + 0.3));
+        labels.forEach(l => {
+          l.style.fontSize = `${fontSize}px`;
+          l.style.opacity = `${opacity}`;
+        });
+      }
+    };
+
+    updateLabelSizes();
+    map.on('zoomend', updateLabelSizes);
+
+    return () => {
+      map.off('zoomend', updateLabelSizes);
+    };
+  }, [territories, visibleUserIds]);
 
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();
@@ -537,6 +680,31 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         
         .animate-ping {
           animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+        
+        /* Territory name labels */
+        .territory-label {
+          background: none !important;
+          border: none !important;
+          box-shadow: none !important;
+        }
+        
+        .territory-label-text {
+          font-weight: 600;
+          font-size: 11px;
+          white-space: nowrap;
+          pointer-events: none;
+          user-select: none;
+          text-shadow:
+            -1px -1px 2px rgba(0,0,0,0.6),
+             1px -1px 2px rgba(0,0,0,0.6),
+            -1px  1px 2px rgba(0,0,0,0.6),
+             1px  1px 2px rgba(0,0,0,0.6),
+             0    0   6px rgba(0,0,0,0.4);
+          letter-spacing: 0.02em;
+          transition: font-size 0.2s ease, opacity 0.2s ease;
+          transform: translate(-50%, -50%);
+          display: inline-block;
         }
       `}</style>
     </div>

@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
 import { MapView } from '@/components/MapView';
 import UserInfoDialog from '@/components/UserInfoDialog';
 import { StatsOverlay } from '@/components/StatsOverlay';
+import { FriendFilterBar } from '@/components/FriendFilterBar';
 import { RouteTracker } from '@/components/RouteTracker';
 import { LoginDialog } from '@/components/LoginDialog';
 import { MapSkeleton } from '@/components/LoadingState';
@@ -14,7 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
-import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
+import type { TerritoryWithUser, RouteWithTerritory, UserWithStats } from '@shared/schema';
 
 export default function MapPage() {
   const [, setLocation] = useLocation();
@@ -102,6 +103,45 @@ export default function MapPage() {
     queryKey: ['/api/routes', currentUser?.id],
     enabled: !!currentUser?.id,
   });
+
+  // Fetch friends list for the filter bar
+  const { data: friends = [] } = useQuery<UserWithStats[]>({
+    queryKey: ['/api/friends', currentUser?.id],
+    enabled: !!currentUser?.id,
+  });
+
+  // Friend filter state - null means all visible (initialized once friends load)
+  const [visibleUserIds, setVisibleUserIds] = useState<Set<string> | null>(null);
+
+  // Initialize visible users when friends or currentUser load
+  useEffect(() => {
+    if (currentUser && friends.length > 0 && !visibleUserIds) {
+      const allIds = new Set([currentUser.id, ...friends.map(f => f.id)]);
+      setVisibleUserIds(allIds);
+    }
+  }, [currentUser, friends]);
+
+  const handleToggleUser = useCallback((userId: string) => {
+    setVisibleUserIds(prev => {
+      if (!prev) return prev;
+      const next = new Set(prev);
+      if (next.has(userId)) {
+        next.delete(userId);
+      } else {
+        next.add(userId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleShowAll = useCallback(() => {
+    if (!currentUser) return;
+    setVisibleUserIds(new Set([currentUser.id, ...friends.map(f => f.id)]));
+  }, [currentUser, friends]);
+
+  const handleHideAll = useCallback(() => {
+    setVisibleUserIds(new Set());
+  }, []);
 
   const createRouteMutation = useMutation({
     mutationFn: async (routeData: {
@@ -243,12 +283,24 @@ export default function MapPage() {
         center={userLocation || DEFAULT_CENTER}
         onTerritoryClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
         isLoadingTerritories={territoriesLoading}
+        visibleUserIds={visibleUserIds}
       />
       
       {currentUser && (
         <div className="animate-slide-down">
           <StatsOverlay user={currentUser} />
         </div>
+      )}
+
+      {currentUser && friends.length > 0 && visibleUserIds && (
+        <FriendFilterBar
+          currentUser={currentUser}
+          friends={friends}
+          visibleUserIds={visibleUserIds}
+          onToggleUser={handleToggleUser}
+          onShowAll={handleShowAll}
+          onHideAll={handleHideAll}
+        />
       )}
       <UserInfoDialog userId={selectedUserId} currentUserId={currentUser?.id} open={isDialogOpen} onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }} />
       <ConquestResultModal
