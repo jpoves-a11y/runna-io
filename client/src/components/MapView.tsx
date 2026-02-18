@@ -18,38 +18,6 @@ interface MapViewProps {
   visibleUserIds?: Set<string> | null; // null = show all
 }
 
-// Compute the centroid of a GeoJSON geometry (Polygon or MultiPolygon)
-function getGeometryCentroid(geometry: any): [number, number] | null {
-  try {
-    const parsed = typeof geometry === 'string' ? JSON.parse(geometry) : geometry;
-    if (!parsed?.coordinates) return null;
-
-    let sumLat = 0, sumLng = 0, count = 0;
-
-    const addRing = (ring: number[][]) => {
-      // Skip the closing coordinate (same as first)
-      for (let i = 0; i < ring.length - 1; i++) {
-        sumLng += ring[i][0];
-        sumLat += ring[i][1];
-        count++;
-      }
-    };
-
-    if (parsed.type === 'MultiPolygon') {
-      for (const polygon of parsed.coordinates) {
-        addRing(polygon[0]); // outer ring only
-      }
-    } else {
-      addRing(parsed.coordinates[0]); // outer ring only
-    }
-
-    if (count === 0) return null;
-    return [sumLat / count, sumLng / count];
-  } catch {
-    return null;
-  }
-}
-
 // Shared tile layer options - extracted to avoid re-creation
 const TILE_OPTIONS: L.TileLayerOptions = {
   maxZoom: 19,
@@ -75,11 +43,9 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   // Persistent layer groups for efficient add/remove without full redraw
   const territoryGroupRef = useRef<L.LayerGroup | null>(null);
   const routeGroupRef = useRef<L.LayerGroup | null>(null);
-  const labelGroupRef = useRef<L.LayerGroup | null>(null);
   // Track which layers correspond to which data IDs for diffing
   const territoryLayersRef = useRef<Map<number, L.Polygon>>(new Map());
   const routeLayersRef = useRef<Map<number, L.Polyline>>(new Map());
-  const labelLayersRef = useRef<Map<string, L.Marker>>(new Map());
   // Canvas renderer for better polygon/polyline performance
   const canvasRendererRef = useRef<L.Canvas | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -121,10 +87,8 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     // Create persistent layer groups for territories and routes
     const territoryGroup = L.layerGroup().addTo(map);
     const routeGroup = L.layerGroup().addTo(map);
-    const labelGroup = L.layerGroup().addTo(map);
     territoryGroupRef.current = territoryGroup;
     routeGroupRef.current = routeGroup;
-    labelGroupRef.current = labelGroup;
 
     mapRef.current = map;
     setMapStyle(initialStyle);
@@ -160,10 +124,8 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       mapRef.current = null;
       territoryGroupRef.current = null;
       routeGroupRef.current = null;
-      labelGroupRef.current = null;
       territoryLayersRef.current.clear();
       routeLayersRef.current.clear();
-      labelLayersRef.current.clear();
     };
   }, []);
 
@@ -450,116 +412,6 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     };
   }, [territories, visibleUserIds]);
 
-  // === TERRITORY NAME LABELS (DYNAMIC, VIEWPORT-BASED) ===
-  // Show one @username per user INSIDE their territory, repositioned on pan/zoom
-  // so the label always sits in the visible portion of the territory.
-  useEffect(() => {
-    if (!mapRef.current || !labelGroupRef.current) return;
-
-    const map = mapRef.current;
-    const labelGroup = labelGroupRef.current;
-    const existingLabels = labelLayersRef.current;
-
-    // Stable references for the closure
-    const getTerritoryPolygons = () => territoryLayersRef.current;
-
-    const updateLabels = () => {
-      const viewBounds = map.getBounds();
-      const zoom = map.getZoom();
-
-      // Hide at very low zoom
-      if (zoom < 11) {
-        for (const [uid, m] of existingLabels) {
-          labelGroup.removeLayer(m);
-        }
-        existingLabels.clear();
-        return;
-      }
-
-      // Filter by visible users
-      const filteredTerritories = visibleUserIds
-        ? territories.filter(t => t.user && visibleUserIds.has(t.user.id))
-        : territories;
-
-      // For each user, find the best position: center of the intersection
-      // between the territory polygon bounds and the current viewport.
-      const polyLayers = getTerritoryPolygons();
-      const userBestPos = new Map<string, { lat: number; lng: number; area: number; territory: TerritoryWithUser }>();
-
-      filteredTerritories.forEach(t => {
-        if (!t.user) return;
-
-        const polygon = polyLayers.get(t.id);
-        if (!polygon) return;
-
-        const polyBounds = polygon.getBounds();
-        if (!viewBounds.intersects(polyBounds)) return; // off-screen
-
-        // Compute intersection rectangle of territory bounds ∩ viewport
-        const s = Math.max(viewBounds.getSouth(), polyBounds.getSouth());
-        const n = Math.min(viewBounds.getNorth(), polyBounds.getNorth());
-        const w = Math.max(viewBounds.getWest(), polyBounds.getWest());
-        const e = Math.min(viewBounds.getEast(), polyBounds.getEast());
-
-        if (n <= s || e <= w) return; // no real overlap
-
-        const visibleArea = (n - s) * (e - w);
-        const lat = (s + n) / 2;
-        const lng = (w + e) / 2;
-
-        const existing = userBestPos.get(t.user.id);
-        if (!existing || visibleArea > existing.area) {
-          userBestPos.set(t.user.id, { lat, lng, area: visibleArea, territory: t });
-        }
-      });
-
-      // Remove labels for users no longer in viewport
-      for (const [uid, m] of existingLabels) {
-        if (!userBestPos.has(uid)) {
-          labelGroup.removeLayer(m);
-          existingLabels.delete(uid);
-        }
-      }
-
-      // Font / opacity based on zoom
-      const fontSize = Math.min(18, Math.max(9, 9 + (zoom - 11) * 1.3));
-      const opacity = Math.min(0.55, Math.max(0.25, (zoom - 11) * 0.043 + 0.25));
-
-      // Place / reposition labels
-      for (const [uid, pos] of userBestPos) {
-        const handle = pos.territory.user.username || pos.territory.user.name.split(' ')[0];
-
-        // Remove old marker so we can reposition
-        if (existingLabels.has(uid)) {
-          labelGroup.removeLayer(existingLabels.get(uid)!);
-        }
-
-        const marker = L.marker([pos.lat, pos.lng], {
-          interactive: false,
-          keyboard: false,
-          icon: L.divIcon({
-            className: 'territory-label',
-            html: `<span class="territory-label-text" style="color:${pos.territory.user.color};font-size:${fontSize}px;opacity:${opacity};">@${handle}</span>`,
-            iconSize: [0, 0],
-            iconAnchor: [0, 0],
-          }),
-        });
-
-        labelGroup.addLayer(marker);
-        existingLabels.set(uid, marker);
-      }
-    };
-
-    updateLabels();
-    map.on('moveend', updateLabels);
-    map.on('zoomend', updateLabels);
-
-    return () => {
-      map.off('moveend', updateLabels);
-      map.off('zoomend', updateLabels);
-    };
-  }, [territories, visibleUserIds]);
-
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();
   };
@@ -701,27 +553,6 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         
         .animate-ping {
           animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
-        }
-        
-        /* Territory name labels */
-        .territory-label {
-          background: none !important;
-          border: none !important;
-          box-shadow: none !important;
-        }
-        
-        .territory-label-text {
-          font-weight: 700;
-          font-size: 11px;
-          white-space: nowrap;
-          pointer-events: none;
-          user-select: none;
-          letter-spacing: 0.04em;
-          transition: font-size 0.2s ease, opacity 0.2s ease;
-          transform: translate(-50%, -50%);
-          display: inline-block;
-          opacity: 0.35;
-          text-transform: lowercase;
         }
       `}</style>
     </div>
