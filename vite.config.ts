@@ -36,6 +36,19 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vendor chunks - heavy dependencies
+          'vendor-map': ['leaflet'],
+          'vendor-geo': ['@turf/area', '@turf/bbox', '@turf/boolean-point-in-polygon', '@turf/buffer', '@turf/center', '@turf/distance', '@turf/helpers', '@turf/intersect', '@turf/union'],
+          'vendor-ui': ['@radix-ui/react-avatar', '@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-select', '@radix-ui/react-switch', '@radix-ui/react-tabs', '@radix-ui/react-toast', '@radix-ui/react-tooltip'],
+          'vendor-query': ['@tanstack/react-query'],
+          'vendor-react': ['react', 'react-dom', 'wouter'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 600,
   },
   server: {
     fs: {

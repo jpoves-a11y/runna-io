@@ -17,6 +17,7 @@ interface TauntCameraDialogProps {
   senderId: string;
   victims: string[]; // array of victim user IDs
   areaStolen: number; // m²
+  onPhotoSent?: () => void;
 }
 
 async function compressImage(file: Blob): Promise<string> {
@@ -44,7 +45,7 @@ async function compressImage(file: Blob): Promise<string> {
   });
 }
 
-export function TauntCameraDialog({ open, onOpenChange, senderId, victims, areaStolen }: TauntCameraDialogProps) {
+export function TauntCameraDialog({ open, onOpenChange, senderId, victims, areaStolen, onPhotoSent }: TauntCameraDialogProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
@@ -88,6 +89,10 @@ export function TauntCameraDialog({ open, onOpenChange, senderId, victims, areaS
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
+    // Clear video srcObject to fully release camera on iOS
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
     setCameraReady(false);
   }, []);
 
@@ -108,17 +113,28 @@ export function TauntCameraDialog({ open, onOpenChange, senderId, victims, areaS
 
   const takePhoto = () => {
     if (!videoRef.current) return;
+    const video = videoRef.current;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+
+    // Crop to visible square (center crop to match the UI preview)
+    const size = Math.min(vw, vh);
+    const sx = (vw - size) / 2;
+    const sy = (vh - size) / 2;
+
     const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
+    canvas.width = size;
+    canvas.height = size;
     const ctx = canvas.getContext('2d')!;
 
     // Mirror if front camera
     if (facingMode === 'user') {
-      ctx.translate(canvas.width, 0);
+      ctx.translate(size, 0);
       ctx.scale(-1, 1);
+      ctx.drawImage(video, sx, sy, size, size, 0, 0, size, size);
+    } else {
+      ctx.drawImage(video, sx, sy, size, size, 0, 0, size, size);
     }
-    ctx.drawImage(videoRef.current, 0, 0);
 
     canvas.toBlob(async (blob) => {
       if (!blob) return;
@@ -158,6 +174,7 @@ export function TauntCameraDialog({ open, onOpenChange, senderId, victims, areaS
         title: '📸 ¡Foto enviada!',
         description: `Foto de conquista enviada a ${victims.length} rival${victims.length > 1 ? 'es' : ''}`,
       });
+      onPhotoSent?.();
       onOpenChange(false);
     } catch (err) {
       toast({
@@ -202,7 +219,7 @@ export function TauntCameraDialog({ open, onOpenChange, senderId, victims, areaS
                 playsInline
                 muted
                 className="w-full h-[350px] object-cover"
-                style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+                style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none', objectFit: 'cover' }}
               />
 
               {cameraError && (

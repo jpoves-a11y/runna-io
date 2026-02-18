@@ -1,4 +1,9 @@
-import * as turf from '@turf/turf';
+import { area } from '@turf/area';
+import { difference } from '@turf/difference';
+import { featureCollection } from '@turf/helpers';
+import { intersect } from '@turf/intersect';
+import { polygon } from '@turf/helpers';
+import { union } from '@turf/union';
 import {
   users,
   routes,
@@ -314,12 +319,12 @@ export class DatabaseStorage implements IStorage {
       throw new Error('Territory not found');
     }
 
-    const originalPoly = turf.polygon(territory.geometry.coordinates);
-    const subtractionPoly = turf.polygon(subtractionGeometry.coordinates);
+    const originalPoly = polygon(territory.geometry.coordinates);
+    const subtractionPoly = polygon(subtractionGeometry.coordinates);
     
     // Calculate the intersection (what's being stolen)
-    const intersection = turf.intersect(
-      turf.featureCollection([originalPoly, subtractionPoly])
+    const intersection = intersect(
+      featureCollection([originalPoly, subtractionPoly])
     );
     
     if (!intersection) {
@@ -327,25 +332,25 @@ export class DatabaseStorage implements IStorage {
       return { updatedTerritory: territory, stolenArea: 0 };
     }
     
-    const stolenArea = turf.area(intersection);
+    const stolenArea = area(intersection);
     
     // Calculate the difference (what remains)
-    const difference = turf.difference(
-      turf.featureCollection([originalPoly, subtractionPoly])
+    const diff = difference(
+      featureCollection([originalPoly, subtractionPoly])
     );
     
-    if (!difference) {
+    if (!diff) {
       // Entire territory was conquered, delete it
       await db.delete(territories).where(eq(territories.id, territoryId));
       return { updatedTerritory: null, stolenArea };
     }
     
     // Update the territory with the remaining geometry
-    const newArea = turf.area(difference);
+    const newArea = area(diff);
     const [updatedTerritory] = await db
       .update(territories)
       .set({
-        geometry: difference.geometry,
+        geometry: diff.geometry,
         area: newArea,
       })
       .where(eq(territories.id, territoryId))
@@ -365,20 +370,20 @@ export class DatabaseStorage implements IStorage {
     newArea: number;
     existingArea: number;
   }> {
-    const newPoly = turf.polygon(newGeometry.coordinates);
-    let newArea = turf.area(newGeometry);
+    const newPoly = polygon(newGeometry.coordinates);
+    let newArea = area(newGeometry);
     let existingAreaInBuffer = 0;
 
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
       try {
-        const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-        const overlap = turf.intersect(
-          turf.featureCollection([newPoly, userPoly])
+        const userPoly = polygon(userTerritory.geometry.coordinates);
+        const overlap = intersect(
+          featureCollection([newPoly, userPoly])
         );
         
         if (overlap) {
-          existingAreaInBuffer += turf.area(overlap);
+          existingAreaInBuffer += area(overlap);
         }
       } catch (err) {
         console.error('[TERRITORY] Error calculating overlap with existing territory:', err);
@@ -392,15 +397,15 @@ export class DatabaseStorage implements IStorage {
     let finalGeometry = newGeometry;
     for (const userTerritory of userTerritories) {
       try {
-        const userPoly = turf.polygon(userTerritory.geometry.coordinates);
-        const union = turf.union(
-          turf.featureCollection([
-            turf.polygon(finalGeometry.coordinates),
+        const userPoly = polygon(userTerritory.geometry.coordinates);
+        const unionResult = union(
+          featureCollection([
+            polygon(finalGeometry.coordinates),
             userPoly
           ])
         );
-        if (union) {
-          finalGeometry = union.geometry;
+        if (unionResult) {
+          finalGeometry = unionResult.geometry;
         }
       } catch (err) {
         console.error('[TERRITORY] Error merging territories:', err);
@@ -419,13 +424,13 @@ export class DatabaseStorage implements IStorage {
         userId,
         routeId,
         geometry: finalGeometry,
-        area: turf.area(finalGeometry),
+        area: area(finalGeometry),
       })
       .returning();
 
     return {
       territory,
-      totalArea: turf.area(finalGeometry),
+      totalArea: area(finalGeometry),
       newArea: actualNewArea,
       existingArea: existingAreaInBuffer,
     };

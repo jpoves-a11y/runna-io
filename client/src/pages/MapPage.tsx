@@ -27,7 +27,6 @@ export default function MapPage() {
   const [isResultModalOpen, setIsResultModalOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const { toast } = useToast();
   const { user: currentUser, isLoading: userLoading, login } = useSession();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
@@ -78,17 +77,17 @@ export default function MapPage() {
     return () => window.removeEventListener('popstate', checkAnimation);
   }, []);
 
+  // Get user location in parallel, don't block rendering
   useEffect(() => {
-    getCurrentPosition()
-      .then((coords) => {
-        setUserLocation(coords);
-      })
-      .catch((error) => {
-        console.log('Could not get user location, using default:', error);
-        setUserLocation(DEFAULT_CENTER);
-      })
-      .finally(() => {
-        setIsLoadingLocation(false);
+    // Use Promise.allSettled to not fail if geolocation is denied
+    Promise.allSettled([getCurrentPosition()])
+      .then((results) => {
+        if (results[0].status === 'fulfilled') {
+          setUserLocation(results[0].value);
+        } else {
+          console.log('Could not get user location, using default');
+          setUserLocation(DEFAULT_CENTER);
+        }
       });
   }, []);
 
@@ -230,7 +229,9 @@ export default function MapPage() {
     );
   }
 
-  if (territoriesLoading || userLoading || isLoadingLocation) {
+  // Show map immediately with loading states for data
+  // Only show skeleton if user session is still loading
+  if (userLoading) {
     return <MapSkeleton />;
   }
 
@@ -241,6 +242,7 @@ export default function MapPage() {
         routes={userRoutes}
         center={userLocation || DEFAULT_CENTER}
         onTerritoryClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
+        isLoadingTerritories={territoriesLoading}
       />
       
       {currentUser && (

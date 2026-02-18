@@ -13,9 +13,10 @@ interface MapViewProps {
   center?: { lat: number; lng: number };
   onLocationFound?: (coords: { lat: number; lng: number }) => void;
   onTerritoryClick?: (userId: string) => void;
+  isLoadingTerritories?: boolean;
 }
 
-export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick }: MapViewProps) {
+export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -379,6 +380,14 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
   return (
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full map-container" data-testid="map-container" />
+      
+      {/* Loading indicator for territories */}
+      {isLoadingTerritories && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 px-3 py-2 rounded-full bg-card/95 backdrop-blur-md border border-border shadow-md">
+          <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/20 border-t-primary animate-spin" />
+          <span className="text-xs font-medium text-muted-foreground">Cargando territorios...</span>
+        </div>
+      )}
       
       {/* Map Controls - positioned above the bottom nav */}
       <div className="absolute right-3 bottom-4 flex flex-col gap-2 z-[1000]">

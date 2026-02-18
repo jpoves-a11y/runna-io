@@ -3,7 +3,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Trophy, MapPin, TrendingUp, Swords, Pencil, Check, X } from 'lucide-react';
+import { Trophy, MapPin, TrendingUp, Swords, Pencil, Check, X, CheckCircle2 } from 'lucide-react';
 import { TauntCameraDialog } from '@/components/TauntCameraDialog';
 import { useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
@@ -43,6 +43,7 @@ export function ConquestResultModal({
   const [showContent, setShowContent] = useState(false);
   const [selectedVictim, setSelectedVictim] = useState<VictimInfo | null>(null);
   const [showTauntCamera, setShowTauntCamera] = useState(false);
+  const [sentVictims, setSentVictims] = useState<Set<string>>(new Set());
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(routeName || '');
   const [currentRouteName, setCurrentRouteName] = useState(routeName || '');
@@ -85,6 +86,7 @@ export function ConquestResultModal({
       setShowContent(false);
       setSelectedVictim(null);
       setShowTauntCamera(false);
+      setSentVictims(new Set());
       return;
     }
 
@@ -221,17 +223,24 @@ export function ConquestResultModal({
                       -{(victim.stolenArea / 1000000).toFixed(2)} km²
                     </span>
                     {senderId && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="ml-1 h-7 px-2 text-xs border-red-200 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
-                        onClick={() => {
-                          setSelectedVictim(victim);
-                          setShowTauntCamera(true);
-                        }}
-                      >
-                        Enviar foto
-                      </Button>
+                      sentVictims.has(victim.userId) ? (
+                        <span className="ml-1 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Enviada
+                        </span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="ml-1 h-7 px-2 text-xs border-red-200 text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30"
+                          onClick={() => {
+                            setSelectedVictim(victim);
+                            setShowTauntCamera(true);
+                          }}
+                        >
+                          Enviar foto
+                        </Button>
+                      )
                     )}
                   </div>
                 ))}
@@ -253,10 +262,22 @@ export function ConquestResultModal({
     {selectedVictim && senderId && (
       <TauntCameraDialog
         open={showTauntCamera}
-        onOpenChange={setShowTauntCamera}
+        onOpenChange={(isOpen) => {
+          setShowTauntCamera(isOpen);
+          // Mark victim as sent when dialog closes (photo was sent or dismissed)
+          if (!isOpen && selectedVictim) {
+            // Only mark if photo was actually sent — check via the dialog's internal state
+            // We mark on close since TauntCameraDialog handles the send internally
+          }
+        }}
         senderId={senderId}
         victims={[selectedVictim.userId]}
         areaStolen={selectedVictim.stolenArea}
+        onPhotoSent={() => {
+          if (selectedVictim) {
+            setSentVictims(prev => new Set(prev).add(selectedVictim.userId));
+          }
+        }}
       />
     )}
     </>

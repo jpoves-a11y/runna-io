@@ -1,7 +1,6 @@
 import { useEffect, useRef, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { X } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { decodePolyline } from '@/lib/polyline';
@@ -210,16 +209,6 @@ export function ActivityAnimationView({
 
   return (
     <div className="flex flex-col h-full gap-3 p-3 relative" style={{ paddingTop: 'calc(0.75rem + env(safe-area-inset-top, 0px))' }}>
-      {/* Close button */}
-      <button
-        onClick={() => onCloseRef.current()}
-        className="absolute right-4 z-[1000] bg-background/80 backdrop-blur-sm border border-border rounded-full p-2.5 shadow-lg hover:bg-background transition-colors active:scale-95"
-        style={{ top: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
-        aria-label="Cerrar animación"
-      >
-        <X className="h-5 w-5" />
-      </button>
-
       {/* Map */}
       <Card className="flex-1 overflow-hidden rounded-xl">
         <div ref={mapContainerRef} className="w-full h-full" />

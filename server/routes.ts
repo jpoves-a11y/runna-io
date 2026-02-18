@@ -2,7 +2,10 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema } from "@shared/schema";
-import * as turf from "@turf/turf";
+import { area } from '@turf/area';
+import { buffer } from '@turf/buffer';
+import { featureCollection, lineString, polygon } from '@turf/helpers';
+import { union } from '@turf/union';
 import { seedDatabase } from "./seed";
 import bcrypt from "bcryptjs";
 
@@ -265,12 +268,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (routeData.coordinates.length >= 3) {
         try {
           // Create a buffer around the route to represent conquered territory
-          const lineString = turf.lineString(
+          const lineStr = lineString(
             routeData.coordinates.map((coord: any) => [coord[1], coord[0]]) // [lng, lat] for GeoJSON
           );
           
           // Buffer of 50 meters around the route
-          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+          const buffered = buffer(lineStr, 0.05, { units: 'kilometers' });
           
           if (buffered) {
             const conquestResult = await processTerritoryConquest(
@@ -1399,10 +1402,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const coordinates = parseRouteCoordinates(route.coordinates);
         if (coordinates.length < 3) continue;
 
-        const lineString = turf.lineString(
+        const lineStr = lineString(
           coordinates.map((coord) => [coord[1], coord[0]])
         );
-        const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+        const buffered = buffer(lineStr, 0.05, { units: 'kilometers' });
 
         if (!buffered) continue;
 
@@ -1411,15 +1414,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           continue;
         }
 
-        const union = turf.union(
-          turf.featureCollection([
-            turf.polygon(mergedGeometry.coordinates),
-            turf.polygon(buffered.geometry.coordinates),
+        const unionResult = union(
+          featureCollection([
+            polygon(mergedGeometry.coordinates),
+            polygon(buffered.geometry.coordinates),
           ])
         );
 
-        if (union) {
-          mergedGeometry = union.geometry;
+        if (unionResult) {
+          mergedGeometry = unionResult.geometry;
         }
       }
 
@@ -1429,7 +1432,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json({ success: true, totalArea: 0 });
       }
 
-      const totalArea = turf.area(mergedGeometry);
+      const totalArea = area(mergedGeometry);
       await storage.updateTerritoryGeometry(userId, null, mergedGeometry, totalArea);
       await storage.updateUserTotalArea(userId, totalArea);
 
@@ -1503,10 +1506,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             // Calculate territory (same logic as POST /api/routes)
-            const lineString = turf.lineString(
+            const lineStr = lineString(
               coordinates.map(coord => [coord[1], coord[0]]) // [lng, lat] for GeoJSON
             );
-            const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+            const buffered = buffer(lineStr, 0.05, { units: 'kilometers' });
 
             if (buffered) {
               console.log(`[PROCESS] Processing territory conquest...`);

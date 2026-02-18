@@ -1668,7 +1668,7 @@ export class WorkerStorage {
 
     if (allUserIds.length === 0) return [];
 
-    // Get feed events with user data
+    // Get feed events
     const events = await this.db
       .select()
       .from(feedEvents)
@@ -1679,46 +1679,65 @@ export class WorkerStorage {
 
     if (events.length === 0) return [];
 
-    // Enrich with user data, victim data, and comment counts
-    const result: FeedEventWithDetails[] = [];
-    const userCache = new Map<string, any>();
-
-    const getOrFetchUser = async (uid: string) => {
-      if (userCache.has(uid)) return userCache.get(uid);
-      const u = await this.getUser(uid);
-      if (u) userCache.set(uid, u);
-      return u;
-    };
+    // Batch: collect all unique user IDs, route IDs, and event IDs
+    const userIdsNeeded = new Set<string>();
+    const routeIdsNeeded = new Set<string>();
+    const eventIds: string[] = [];
 
     for (const event of events) {
-      const eventUser = await getOrFetchUser(event.userId);
+      userIdsNeeded.add(event.userId);
+      if (event.victimId) userIdsNeeded.add(event.victimId);
+      if (event.routeId) routeIdsNeeded.add(event.routeId);
+      eventIds.push(event.id);
+    }
+
+    // Batch fetch all users in one query
+    const usersList = userIdsNeeded.size > 0
+      ? await this.db.select().from(users).where(inArray(users.id, [...userIdsNeeded]))
+      : [];
+    const userMap = new Map(usersList.map(u => [u.id, u]));
+
+    // Batch fetch all routes in one query
+    const routesList = routeIdsNeeded.size > 0
+      ? await this.db.select().from(routes).where(inArray(routes.id, [...routeIdsNeeded]))
+      : [];
+    const routeMap = new Map(routesList.map(r => [r.id, r]));
+
+    // Batch fetch all comment counts in one query
+    const commentCounts = eventIds.length > 0
+      ? await this.db
+          .select({ feedEventId: feedComments.feedEventId, count: sql<number>`COUNT(*)` })
+          .from(feedComments)
+          .where(inArray(feedComments.feedEventId, eventIds))
+          .groupBy(feedComments.feedEventId)
+      : [];
+    const commentCountMap = new Map(commentCounts.map(c => [c.feedEventId, c.count]));
+
+    // Build result from cached data (no more individual queries)
+    const result: FeedEventWithDetails[] = [];
+    for (const event of events) {
+      const eventUser = userMap.get(event.userId);
       if (!eventUser) continue;
 
       let victim = null;
       if (event.victimId) {
-        const v = await getOrFetchUser(event.victimId);
+        const v = userMap.get(event.victimId);
         if (v) {
           victim = { id: v.id, username: v.username, name: v.name, color: v.color, avatar: v.avatar };
         }
       }
 
-      // Get route name and activity date if routeId exists
       let routeName: string | null = null;
       let activityDate: string | null = null;
       if (event.routeId) {
-        const route = await this.getRouteById(event.routeId);
+        const route = routeMap.get(event.routeId);
         if (route) {
           routeName = route.name;
           activityDate = route.startedAt;
         }
       }
 
-      // Get comment count
-      const countResult = await this.db
-        .select({ count: sql<number>`COUNT(*)` })
-        .from(feedComments)
-        .where(eq(feedComments.feedEventId, event.id));
-      const commentCount = countResult[0]?.count || 0;
+      const commentCount = commentCountMap.get(event.id) || 0;
 
       result.push({
         ...event,

@@ -61,8 +61,10 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
       if (!currentUser) throw new Error('No user');
       return await apiRequest('PATCH', `/api/routes/${routeId}/name`, { userId: currentUser.id, name });
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['/api/routes'] });
+      // Update selectedRoute in place so the dialog shows the new name immediately
+      setSelectedRoute(prev => prev ? { ...prev, name: variables.name } : null);
       setIsRenaming(false);
       toast({ title: '✅ Nombre actualizado' });
     },

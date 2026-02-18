@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -9,7 +9,9 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { EphemeralPhotoViewer } from "@/components/EphemeralPhotoViewer";
 import { OnboardingTutorial, shouldShowOnboarding } from "@/components/OnboardingTutorial";
 import { useSession } from "@/hooks/use-session";
+import { usePrefetch } from "@/hooks/use-prefetch";
 import { Play } from "lucide-react";
+import { MapSkeleton, LoadingState } from "@/components/LoadingState";
 
 function EphemeralPhotoWrapper() {
   const { user } = useSession();
@@ -20,30 +22,37 @@ function EphemeralPhotoWrapper() {
 // Log app initialization
 console.log('App.tsx loading...');
 console.log('API_BASE:', import.meta.env.VITE_API_BASE_URL || (import.meta.env.PROD ? 'https://runna-io-api.runna-io-api.workers.dev' : ''));
-import MapPage from "@/pages/MapPage";
-import RankingsPage from "@/pages/RankingsPage";
-import ActivityPage from "@/pages/ActivityPage";
-import ProfilePage from "@/pages/ProfilePage";
-import FriendsPage from "@/pages/FriendsPage";
-import AcceptFriendInvitePage from "@/pages/AcceptFriendInvitePage";
-import PrivacyPage from "@/pages/PrivacyPage";
-import TermsPage from "@/pages/TermsPage";
-import NotFound from "@/pages/not-found";
+
+// Lazy load pages for code splitting - reduces initial bundle size
+const MapPage = lazy(() => import("@/pages/MapPage"));
+const RankingsPage = lazy(() => import("@/pages/RankingsPage"));
+const ActivityPage = lazy(() => import("@/pages/ActivityPage"));
+const ProfilePage = lazy(() => import("@/pages/ProfilePage"));
+const FriendsPage = lazy(() => import("@/pages/FriendsPage"));
+const AcceptFriendInvitePage = lazy(() => import("@/pages/AcceptFriendInvitePage"));
+const PrivacyPage = lazy(() => import("@/pages/PrivacyPage"));
+const TermsPage = lazy(() => import("@/pages/TermsPage"));
+const NotFound = lazy(() => import("@/pages/not-found"));
 
 function Router() {
+  const [location] = useLocation();
+  const isMapPage = location === '/' || location.startsWith('/?');
+  
   return (
     <div className="w-full h-full">
-      <Switch>
-        <Route path="/" component={MapPage} />
-        <Route path="/rankings" component={RankingsPage} />
-        <Route path="/activity" component={ActivityPage} />
-        <Route path="/profile" component={ProfilePage} />
-        <Route path="/friends" component={FriendsPage} />
-        <Route path="/friends/accept/:token" component={AcceptFriendInvitePage} />
-        <Route path="/privacy" component={PrivacyPage} />
-        <Route path="/terms" component={TermsPage} />
-        <Route component={NotFound} />
-      </Switch>
+      <Suspense fallback={isMapPage ? <MapSkeleton /> : <LoadingState />}>
+        <Switch>
+          <Route path="/" component={MapPage} />
+          <Route path="/rankings" component={RankingsPage} />
+          <Route path="/activity" component={ActivityPage} />
+          <Route path="/profile" component={ProfilePage} />
+          <Route path="/friends" component={FriendsPage} />
+          <Route path="/friends/accept/:token" component={AcceptFriendInvitePage} />
+          <Route path="/privacy" component={PrivacyPage} />
+          <Route path="/terms" component={TermsPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
     </div>
   );
 }
@@ -121,6 +130,9 @@ function App() {
   const isPulling = useRef(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
+
+  // Strategic prefetching to reduce perceived loading times
+  usePrefetch();
 
   // Match the order used in BottomNav
   const tabs = ['/', '/rankings', '/activity', '/friends', '/profile'];
