@@ -27,16 +27,25 @@ export default function AcceptFriendInvitePage() {
         }
         throw new Error(err.error || err.message || 'Error al aceptar invitación');
       }
-      return res;
+      return await res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       setStatus('success');
       queryClient.invalidateQueries({ queryKey: ['/api/friends', currentUser?.id] });
-      toast({
-        title: '🎉 ¡Amigo agregado!',
-        description: 'Ahora puedes competir juntos',
-        className: 'animate-bounce-in',
-      });
+      queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
+      if (data.colorChanged) {
+        toast({
+          title: '🎉 ¡Amigo agregado!',
+          description: 'Se cambió tu color de territorio automáticamente para evitar conflictos.',
+          className: 'animate-bounce-in',
+        });
+      } else {
+        toast({
+          title: '🎉 ¡Amigo agregado!',
+          description: 'Ahora puedes competir juntos',
+          className: 'animate-bounce-in',
+        });
+      }
       setTimeout(() => {
         setLocation('/friends');
       }, 2000);

@@ -17,6 +17,7 @@ import {
   ephemeralPhotos,
   feedEvents,
   feedComments,
+  feedReactions,
   inactivityReminders,
   territoryLossNotifications,
   type User,
@@ -58,6 +59,8 @@ import {
   type InsertFeedEvent,
   type FeedComment,
   type InsertFeedComment,
+  type FeedReaction,
+  type InsertFeedReaction,
   type FeedEventWithDetails,
   type FeedCommentWithUser,
 } from '../../shared/schema';
@@ -199,6 +202,24 @@ export class WorkerStorage {
       .from(routes)
       .where(eq(routes.userId, userId))
       .orderBy(routes.completedAt); // oldest first (ASC)
+  }
+
+  async getRoutesByUserIdChronologicalPaginated(userId: string, limit: number, offset: number): Promise<Route[]> {
+    return await this.db
+      .select()
+      .from(routes)
+      .where(eq(routes.userId, userId))
+      .orderBy(routes.completedAt)
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getRouteCountByUserId(userId: string): Promise<number> {
+    const result = await this.db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(routes)
+      .where(eq(routes.userId, userId));
+    return Number(result[0]?.count || 0);
   }
 
   // Get routes for a set of users, sorted oldest first
@@ -1079,15 +1100,6 @@ export class WorkerStorage {
       .orderBy(desc(polarActivities.startDate));
   }
 
-  // Get count of routes by userId
-  async getRouteCountByUserId(userId: string): Promise<number> {
-    const [result] = await this.db
-      .select({ count: sql<number>`count(*)` })
-      .from(routes)
-      .where(eq(routes.userId, userId));
-    return Number(result?.count || 0);
-  }
-
   // Get count of territories by userId
   async getTerritoryCountByUserId(userId: string): Promise<number> {
     const [result] = await this.db
@@ -1670,6 +1682,16 @@ export class WorkerStorage {
         content TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_reactions (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        reaction_type TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      // Create unique index for one reaction per user per target
+      await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_reactions_unique ON feed_reactions(user_id, target_type, target_id)`);
     } catch (_) {}
   }
 
@@ -1743,6 +1765,41 @@ export class WorkerStorage {
       : [];
     const commentCountMap = new Map(commentCounts.map(c => [c.feedEventId, c.count]));
 
+    // Batch fetch reaction counts for all events
+    const reactionCounts = eventIds.length > 0
+      ? await this.db
+          .select({
+            targetId: feedReactions.targetId,
+            reactionType: feedReactions.reactionType,
+            count: sql<number>`COUNT(*)`,
+          })
+          .from(feedReactions)
+          .where(and(
+            eq(feedReactions.targetType, 'event'),
+            inArray(feedReactions.targetId, eventIds)
+          ))
+          .groupBy(feedReactions.targetId, feedReactions.reactionType)
+      : [];
+    const likeCountMap = new Map<string, number>();
+    const dislikeCountMap = new Map<string, number>();
+    for (const r of reactionCounts) {
+      if (r.reactionType === 'like') likeCountMap.set(r.targetId, r.count);
+      else if (r.reactionType === 'dislike') dislikeCountMap.set(r.targetId, r.count);
+    }
+
+    // Batch fetch user's own reactions for all events
+    const userReactions = eventIds.length > 0
+      ? await this.db
+          .select({ targetId: feedReactions.targetId, reactionType: feedReactions.reactionType })
+          .from(feedReactions)
+          .where(and(
+            eq(feedReactions.userId, userId),
+            eq(feedReactions.targetType, 'event'),
+            inArray(feedReactions.targetId, eventIds)
+          ))
+      : [];
+    const userReactionMap = new Map(userReactions.map(r => [r.targetId, r.reactionType as 'like' | 'dislike']));
+
     // Build result from cached data (no more individual queries)
     const result: FeedEventWithDetails[] = [];
     for (const event of events) {
@@ -1768,6 +1825,9 @@ export class WorkerStorage {
       }
 
       const commentCount = commentCountMap.get(event.id) || 0;
+      const likeCount = likeCountMap.get(event.id) || 0;
+      const dislikeCount = dislikeCountMap.get(event.id) || 0;
+      const userReaction = userReactionMap.get(event.id) || null;
 
       result.push({
         ...event,
@@ -1776,13 +1836,16 @@ export class WorkerStorage {
         routeName,
         activityDate,
         commentCount,
+        likeCount,
+        dislikeCount,
+        userReaction,
       });
     }
 
     return result;
   }
 
-  async getFeedEventComments(eventId: string): Promise<FeedCommentWithUser[]> {
+  async getFeedEventComments(eventId: string, viewerUserId?: string): Promise<FeedCommentWithUser[]> {
     await this.ensureFeedTables();
 
     const rawComments = await this.db
@@ -1796,6 +1859,7 @@ export class WorkerStorage {
         userName: users.name,
         userUsername: users.username,
         userAvatar: users.avatar,
+        userColor: users.color,
       })
       .from(feedComments)
       .innerJoin(users, eq(feedComments.userId, users.id))
@@ -1803,6 +1867,42 @@ export class WorkerStorage {
       .orderBy(feedComments.createdAt);
 
     if (rawComments.length === 0) return [];
+
+    // Batch fetch reaction counts for all comments
+    const commentIds = rawComments.map(c => c.id);
+    const reactionCounts = commentIds.length > 0
+      ? await this.db
+          .select({
+            targetId: feedReactions.targetId,
+            reactionType: feedReactions.reactionType,
+            count: sql<number>`COUNT(*)`,
+          })
+          .from(feedReactions)
+          .where(and(
+            eq(feedReactions.targetType, 'comment'),
+            inArray(feedReactions.targetId, commentIds)
+          ))
+          .groupBy(feedReactions.targetId, feedReactions.reactionType)
+      : [];
+    const likeCounts = new Map<string, number>();
+    const dislikeCounts = new Map<string, number>();
+    for (const r of reactionCounts) {
+      if (r.reactionType === 'like') likeCounts.set(r.targetId, r.count);
+      else dislikeCounts.set(r.targetId, r.count);
+    }
+
+    // Batch fetch viewer's reactions
+    const viewerReactions = viewerUserId && commentIds.length > 0
+      ? await this.db
+          .select({ targetId: feedReactions.targetId, reactionType: feedReactions.reactionType })
+          .from(feedReactions)
+          .where(and(
+            eq(feedReactions.userId, viewerUserId),
+            eq(feedReactions.targetType, 'comment'),
+            inArray(feedReactions.targetId, commentIds)
+          ))
+      : [];
+    const viewerReactionMap = new Map(viewerReactions.map(r => [r.targetId, r.reactionType as 'like' | 'dislike']));
 
     const allComments: FeedCommentWithUser[] = rawComments.map((row) => ({
       id: row.id,
@@ -1816,8 +1916,12 @@ export class WorkerStorage {
         username: row.userUsername,
         name: row.userName,
         avatar: row.userAvatar,
+        color: row.userColor,
       },
       replies: [],
+      likeCount: likeCounts.get(row.id) || 0,
+      dislikeCount: dislikeCounts.get(row.id) || 0,
+      userReaction: viewerReactionMap.get(row.id) || null,
     }));
 
     // Group into top-level + replies
@@ -1831,6 +1935,96 @@ export class WorkerStorage {
       }
     }
     return topLevel;
+  }
+
+  /** Get top preview comments for a feed event — prioritizes comments with replies and most likes */
+  async getPreviewComments(eventId: string, viewerUserId: string, limit: number = 3): Promise<FeedCommentWithUser[]> {
+    const allComments = await this.getFeedEventComments(eventId, viewerUserId);
+    if (allComments.length === 0) return [];
+
+    // Sort: comments with replies first, then by like count desc, then by createdAt asc
+    const sorted = [...allComments].sort((a, b) => {
+      const aReplies = (a.replies?.length || 0) > 0 ? 1 : 0;
+      const bReplies = (b.replies?.length || 0) > 0 ? 1 : 0;
+      if (bReplies !== aReplies) return bReplies - aReplies;
+      if (b.likeCount !== a.likeCount) return b.likeCount - a.likeCount;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
+    // Take up to limit, and for each include at most 1 reply
+    const preview = sorted.slice(0, limit).map(c => ({
+      ...c,
+      replies: c.replies && c.replies.length > 0 ? [c.replies[0]] : [],
+    }));
+
+    return preview;
+  }
+
+  /** Toggle a reaction (like/dislike). Returns updated counts. */
+  async toggleReaction(userId: string, targetType: 'event' | 'comment', targetId: string, reactionType: 'like' | 'dislike'): Promise<{ likeCount: number; dislikeCount: number; userReaction: 'like' | 'dislike' | null }> {
+    await this.ensureFeedTables();
+
+    // Check if user already has a reaction on this target
+    const [existing] = await this.db
+      .select()
+      .from(feedReactions)
+      .where(and(
+        eq(feedReactions.userId, userId),
+        eq(feedReactions.targetType, targetType),
+        eq(feedReactions.targetId, targetId)
+      ));
+
+    if (existing) {
+      if (existing.reactionType === reactionType) {
+        // Same reaction — remove it (toggle off)
+        await this.db.delete(feedReactions).where(eq(feedReactions.id, existing.id));
+      } else {
+        // Different reaction — switch
+        await this.db.update(feedReactions)
+          .set({ reactionType })
+          .where(eq(feedReactions.id, existing.id));
+      }
+    } else {
+      // No existing reaction — create new
+      await this.db.insert(feedReactions).values({
+        userId,
+        targetType,
+        targetId,
+        reactionType,
+      });
+    }
+
+    // Fetch updated counts
+    const counts = await this.db
+      .select({
+        reactionType: feedReactions.reactionType,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(feedReactions)
+      .where(and(
+        eq(feedReactions.targetType, targetType),
+        eq(feedReactions.targetId, targetId)
+      ))
+      .groupBy(feedReactions.reactionType);
+
+    let likeCount = 0;
+    let dislikeCount = 0;
+    for (const c of counts) {
+      if (c.reactionType === 'like') likeCount = c.count;
+      else if (c.reactionType === 'dislike') dislikeCount = c.count;
+    }
+
+    // Get user's current reaction
+    const [current] = await this.db
+      .select({ reactionType: feedReactions.reactionType })
+      .from(feedReactions)
+      .where(and(
+        eq(feedReactions.userId, userId),
+        eq(feedReactions.targetType, targetType),
+        eq(feedReactions.targetId, targetId)
+      ));
+
+    return { likeCount, dislikeCount, userReaction: (current?.reactionType as 'like' | 'dislike') || null };
   }
 
   async addFeedComment(data: InsertFeedComment): Promise<FeedComment> {

@@ -44,13 +44,21 @@ export function PendingRequests({ userId }: PendingRequestsProps) {
       });
       return await response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['/api/friends/requests', userId] });
       queryClient.invalidateQueries({ queryKey: ['/api/friends', userId] });
-      toast({
-        title: '✅ Solicitud aceptada',
-        description: 'Ahora son amigos',
-      });
+      queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
+      if (data.colorChanged) {
+        toast({
+          title: '✅ Solicitud aceptada',
+          description: `Se cambió tu color de territorio automáticamente para evitar conflictos.`,
+        });
+      } else {
+        toast({
+          title: '✅ Solicitud aceptada',
+          description: 'Ahora son amigos',
+        });
+      }
     },
     onError: (error: Error) => {
       toast({

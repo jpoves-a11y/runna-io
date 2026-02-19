@@ -218,6 +218,16 @@ export const feedComments = sqliteTable("feed_comments", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Feed reactions (likes/dislikes for events and comments)
+export const feedReactions = sqliteTable("feed_reactions", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  targetType: text("target_type").notNull(), // 'event' | 'comment'
+  targetId: text("target_id").notNull(), // feed_event.id or feed_comment.id
+  reactionType: text("reaction_type").notNull(), // 'like' | 'dislike'
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   routes: many(routes),
@@ -438,6 +448,11 @@ export const insertFeedCommentSchema = createInsertSchema(feedComments).omit({
   createdAt: true,
 });
 
+export const insertFeedReactionSchema = createInsertSchema(feedReactions).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertConquestMetricSchema = createInsertSchema(conquestMetrics).omit({
   id: true,
   createdAt: true,
@@ -511,6 +526,9 @@ export type InsertFeedEvent = z.infer<typeof insertFeedEventSchema>;
 export type FeedComment = typeof feedComments.$inferSelect;
 export type InsertFeedComment = z.infer<typeof insertFeedCommentSchema>;
 
+export type FeedReaction = typeof feedReactions.$inferSelect;
+export type InsertFeedReaction = z.infer<typeof insertFeedReactionSchema>;
+
 export type EmailNotification = typeof emailNotifications.$inferSelect;
 export const insertEmailNotificationSchema = createInsertSchema(emailNotifications);
 export type InsertEmailNotification = z.infer<typeof insertEmailNotificationSchema>;
@@ -540,9 +558,15 @@ export type FeedEventWithDetails = FeedEvent & {
   routeName?: string | null;
   activityDate?: string | null;
   commentCount: number;
+  likeCount: number;
+  dislikeCount: number;
+  userReaction: 'like' | 'dislike' | null;
 };
 
 export type FeedCommentWithUser = FeedComment & {
-  user: Pick<User, 'id' | 'username' | 'name' | 'avatar'>;
+  user: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'>;
   replies?: FeedCommentWithUser[];
+  likeCount: number;
+  dislikeCount: number;
+  userReaction: 'like' | 'dislike' | null;
 };

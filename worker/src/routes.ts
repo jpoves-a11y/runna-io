@@ -4,11 +4,88 @@ import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
 import { EmailService } from './email';
+import { USER_COLORS } from '../../shared/colors';
 import type { Env } from './index';
 
 // Helper function to get database instance
 function getDb(env: Env) {
   return createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN);
+}
+
+/**
+ * Get all colors used by a user's friends (and the user themselves).
+ * Returns the set of colors that would conflict for a given user joining a friend group.
+ */
+async function getFriendGroupColors(storage: WorkerStorage, userId: string): Promise<Set<string>> {
+  const friendIds = await storage.getFriendIds(userId);
+  const colors = new Set<string>();
+  for (const fid of friendIds) {
+    const friend = await storage.getUser(fid);
+    if (friend) colors.add(friend.color.toUpperCase());
+  }
+  return colors;
+}
+
+/**
+ * Find a color from USER_COLORS that doesn't conflict with any colors in the provided sets.
+ * Returns null if no color is available (very unlikely with 12 colors).
+ */
+function findAvailableColor(usedColors: Set<string>): string | null {
+  for (const color of USER_COLORS) {
+    if (!usedColors.has(color.toUpperCase())) {
+      return color;
+    }
+  }
+  return null;
+}
+
+/**
+ * When two users are about to become friends, check if they have the same color.
+ * If so, auto-reassign the second user (accepter) to an available color.
+ * Also checks against all friends of both users to avoid any group conflicts.
+ * Returns the new color assigned, or null if no change was needed.
+ */
+async function resolveColorConflictOnFriendship(
+  storage: WorkerStorage,
+  user1Id: string,
+  user2Id: string
+): Promise<{ changed: boolean; newColor?: string; userId?: string }> {
+  const user1 = await storage.getUser(user1Id);
+  const user2 = await storage.getUser(user2Id);
+  if (!user1 || !user2) return { changed: false };
+
+  // Collect all colors in the combined friend group
+  const user1FriendColors = await getFriendGroupColors(storage, user1Id);
+  const user2FriendColors = await getFriendGroupColors(storage, user2Id);
+
+  // Add the users' own colors
+  user1FriendColors.add(user1.color.toUpperCase());
+  user2FriendColors.add(user2.color.toUpperCase());
+
+  // Check if user2's color conflicts with user1 or any of user1's friends
+  if (user1FriendColors.has(user2.color.toUpperCase())) {
+    // user2 needs a new color - find one not used by either friend group
+    const allUsed = new Set([...user1FriendColors, ...user2FriendColors]);
+    const newColor = findAvailableColor(allUsed);
+    if (newColor) {
+      await storage.updateUser(user2Id, { color: newColor });
+      console.log(`[COLOR CONFLICT] Auto-changed ${user2.name}'s color from ${user2.color} to ${newColor}`);
+      return { changed: true, newColor, userId: user2Id };
+    }
+  }
+
+  // Also check if user1's color conflicts with user2's friends
+  if (user2FriendColors.has(user1.color.toUpperCase())) {
+    const allUsed = new Set([...user1FriendColors, ...user2FriendColors]);
+    const newColor = findAvailableColor(allUsed);
+    if (newColor) {
+      await storage.updateUser(user1Id, { color: newColor });
+      console.log(`[COLOR CONFLICT] Auto-changed ${user1.name}'s color from ${user1.color} to ${newColor}`);
+      return { changed: true, newColor, userId: user1Id };
+    }
+  }
+
+  return { changed: false };
 }
 
 async function hashPassword(password: string): Promise<string> {
@@ -1025,7 +1102,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       
       const updateData: Partial<{ name: string; color: string; avatar: string }> = {};
       if (name !== undefined) updateData.name = name;
-      if (color !== undefined) updateData.color = color;
+      if (color !== undefined) {
+        // Check if the new color conflicts with any friend's color
+        const friendColors = await getFriendGroupColors(storage, id);
+        if (friendColors.has(color.toUpperCase())) {
+          return c.json({ error: 'Este color ya lo usa uno de tus amigos. Elige otro.' }, 400);
+        }
+        updateData.color = color;
+      }
       if (avatar !== undefined) updateData.avatar = avatar;
 
       const updatedUser = await storage.updateUser(id, updateData);
@@ -1332,22 +1416,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       await storage.deleteRouteById(routeId);
 
       // Rebuild territories after delete — smart reprocess like Polar delete
+      // SAFETY: Only reprocess the affected user to avoid CPU timeout (error 1102).
+      // Friend-group reprocessing is too expensive and can wipe all territory data.
       try {
-        const hasInteractions = await storage.hasConquestInteractions(userId);
-        if (hasInteractions) {
-          console.log('[DELETE ROUTE] User has conquest interactions, doing friend-group reprocess');
-          await reprocessFriendGroupTerritoriesChronologically(storage, userId);
-        } else {
-          console.log('[DELETE ROUTE] No conquest interactions, doing user-only reprocess');
-          await reprocessUserTerritories(storage, userId);
-        }
+        console.log('[DELETE ROUTE] Reprocessing user territories only (safe mode)');
+        await reprocessUserTerritories(storage, userId);
       } catch (e) {
         console.error('[DELETE ROUTE] Error reprocessing territories:', e);
-        try {
-          await reprocessUserTerritories(storage, userId);
-        } catch (e2) {
-          console.error('[DELETE ROUTE] Fallback reprocess also failed:', e2);
-        }
       }
 
       return c.json({ success: true });
@@ -1401,6 +1476,132 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Admin: Reprocess territories for a SINGLE user (lightweight, avoids CPU timeout)
+  app.post('/api/admin/reprocess-user/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return c.json({ error: `User '${userId}' not found` }, 404);
+      }
+
+      // Simple single-user reprocess (no friend-group stealing, just rebuild own territory)
+      await reprocessUserTerritories(storage, userId);
+
+      const updatedUser = await storage.getUser(userId);
+      return c.json({
+        success: true,
+        userId,
+        name: updatedUser?.name,
+        totalArea: updatedUser?.totalArea || 0,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Admin: Batch reprocess territories for a user (processes N routes at a time)
+  // Call repeatedly with increasing offset until done=true
+  app.post('/api/admin/reprocess-user-batch/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json().catch(() => ({}));
+      const batchSize = body.batchSize || 20;
+      const offset = body.offset || 0;
+
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return c.json({ error: `User '${userId}' not found` }, 404);
+      }
+
+      const totalRoutes = await storage.getRouteCountByUserId(userId);
+
+      // On first batch (offset=0), delete existing territories
+      if (offset === 0) {
+        await storage.deleteTerritoriesByUserId(userId);
+      }
+
+      // Get current territory geometry if continuing
+      let currentGeometry: any = null;
+      if (offset > 0) {
+        const existingTerritories = await storage.getTerritoriesByUserId(userId);
+        if (existingTerritories.length > 0) {
+          currentGeometry = existingTerritories[0].geometry;
+        }
+      }
+
+      // Get batch of routes
+      const batchRoutes = await storage.getRoutesByUserIdChronologicalPaginated(userId, batchSize, offset);
+      let processed = 0;
+
+      for (const route of batchRoutes) {
+        try {
+          const coords: [number, number][] = Array.isArray(route.coordinates)
+            ? route.coordinates
+            : typeof route.coordinates === 'string'
+              ? JSON.parse(route.coordinates)
+              : [];
+          if (coords.length < 3) continue;
+
+          const simplifiedCoords = simplifyCoordinates(coords, 150);
+          const lineString = turf.lineString(
+            simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
+          );
+          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+          if (!buffered) continue;
+
+          if (currentGeometry) {
+            try {
+              const toFeature = (geom: any) => geom.type === 'MultiPolygon'
+                ? turf.multiPolygon(geom.coordinates)
+                : turf.polygon(geom.coordinates);
+              const currentFeature = toFeature(currentGeometry);
+              const newFeature = toFeature(buffered.geometry);
+              const union = turf.union(turf.featureCollection([currentFeature, newFeature]));
+              if (union) currentGeometry = union.geometry;
+            } catch (err) {
+              console.error('[BATCH REPROCESS] Error merging geometry:', err);
+            }
+          } else {
+            currentGeometry = buffered.geometry;
+          }
+          processed++;
+        } catch (err) {
+          console.error(`[BATCH REPROCESS] Error processing route ${route.id}:`, err);
+        }
+      }
+
+      // Save progress
+      if (currentGeometry) {
+        const totalArea = turf.area(currentGeometry);
+        await storage.updateTerritoryGeometry(userId, null, currentGeometry, totalArea);
+        await storage.updateUserTotalArea(userId, totalArea);
+      }
+
+      const nextOffset = offset + batchSize;
+      const done = nextOffset >= totalRoutes;
+
+      return c.json({
+        success: true,
+        userId,
+        name: user.name,
+        totalRoutes,
+        processed,
+        offset,
+        nextOffset: done ? null : nextOffset,
+        done,
+        currentArea: currentGeometry ? turf.area(currentGeometry) : 0,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   // Admin: Full cleanup of a user's data (routes, territories, activities) so they can reimport fresh
   app.post('/api/admin/cleanup-user/:username', async (c) => {
     try {
@@ -1440,12 +1641,19 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       await storage.updateUser(userId, { totalArea: 0, totalDistance: 0 });
       console.log(`[ADMIN CLEANUP] Reset user stats`);
 
-      // 7. Reprocess friend group territories (friends keep their territories, just recalculated without this user's old data)
+      // 7. Reprocess friend group territories — SAFE: only reprocess each user individually
       try {
-        await reprocessFriendGroupTerritoriesChronologically(storage, userId);
-        console.log(`[ADMIN CLEANUP] Reprocessed friend group territories`);
+        const friendIds = await storage.getFriendIds(userId);
+        for (const fid of friendIds) {
+          try {
+            await reprocessUserTerritories(storage, fid);
+          } catch (e) {
+            console.error(`[ADMIN CLEANUP] Error reprocessing friend ${fid}:`, e);
+          }
+        }
+        console.log(`[ADMIN CLEANUP] Reprocessed friend territories individually`);
       } catch (e) {
-        console.error('[ADMIN CLEANUP] Error reprocessing friend group:', e);
+        console.error('[ADMIN CLEANUP] Error reprocessing friends:', e);
       }
 
       return c.json({
@@ -1864,9 +2072,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   app.get('/api/feed/events/:eventId/comments', async (c) => {
     try {
       const eventId = c.req.param('eventId');
+      const viewerUserId = c.req.query('userId') || undefined;
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const comments = await storage.getFeedEventComments(eventId);
+      const comments = await storage.getFeedEventComments(eventId, viewerUserId);
       return c.json(comments);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -2013,6 +2222,76 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Toggle reaction (like/dislike) on a feed event or comment
+  app.post('/api/feed/reactions', async (c) => {
+    try {
+      const { userId, targetType, targetId, reactionType } = await c.req.json();
+      if (!userId || !targetType || !targetId || !reactionType) {
+        return c.json({ error: 'userId, targetType, targetId, and reactionType are required' }, 400);
+      }
+      if (!['event', 'comment'].includes(targetType)) {
+        return c.json({ error: 'targetType must be "event" or "comment"' }, 400);
+      }
+      if (!['like', 'dislike'].includes(reactionType)) {
+        return c.json({ error: 'reactionType must be "like" or "dislike"' }, 400);
+      }
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const result = await storage.toggleReaction(userId, targetType, targetId, reactionType);
+
+      // Send push notification to the content owner (only for likes, not dislikes, and only if reaction was added)
+      if (result.userReaction === reactionType) {
+        try {
+          let ownerId: string | null = null;
+          if (targetType === 'event') {
+            const event = await storage.getFeedEvent(targetId);
+            if (event) ownerId = event.userId;
+          } else if (targetType === 'comment') {
+            const comment = await storage.getFeedCommentById(targetId);
+            if (comment) ownerId = comment.userId;
+          }
+          if (ownerId && ownerId !== userId) {
+            const { notifyReaction } = await import('./notifications');
+            await notifyReaction(storage, userId, ownerId, reactionType, targetType, c.env);
+          }
+        } catch (notifErr) {
+          console.error('[REACTION] Push notification error:', notifErr);
+        }
+      }
+
+      return c.json(result);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Get preview comments for a feed event (top 3 prioritized)
+  // Admin: Initialize feed tables (lightweight)
+  app.post('/api/admin/init-feed-tables', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      await storage.ensureFeedTables();
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/feed/events/:eventId/preview-comments', async (c) => {
+    try {
+      const eventId = c.req.param('eventId');
+      const viewerUserId = c.req.query('userId') || '';
+      const limit = parseInt(c.req.query('limit') || '3');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comments = await storage.getPreviewComments(eventId, viewerUserId, limit);
+      return c.json(comments);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.get('/api/territories', async (c) => {
     try {
       const db = getDb(c.env);
@@ -2060,6 +2339,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "Already friends" }, 400);
       }
 
+      // Check for color conflict - warn but don't block (they can change before accepting)
+      const sender = await storage.getUser(userId);
+      const recipient = await storage.getUser(friendId);
+      let colorWarning = false;
+      if (sender && recipient && sender.color.toUpperCase() === recipient.color.toUpperCase()) {
+        colorWarning = true;
+      }
+
       // Create friend request instead of direct friendship
       const request = await storage.createFriendRequest({
         senderId: userId,
@@ -2102,7 +2389,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         console.error('[EMAIL] Failed to send friend request email:', emailErr);
       }
 
-      return c.json({ success: true, requestId: request.id });
+      return c.json({ success: true, requestId: request.id, colorWarning });
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
     }
@@ -2223,6 +2510,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "Request already processed" }, 400);
       }
 
+      // Auto-resolve color conflicts before creating friendship
+      const colorResult = await resolveColorConflictOnFriendship(storage, request.senderId, userId);
+
       // Create bidirectional friendship
       await storage.createBidirectionalFriendship(request.senderId, request.recipientId);
       
@@ -2266,18 +2556,20 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       // Reprocess territories for the new friend group
-      // When two users become friends, their overlapping territories need 
-      // to be recalculated chronologically (newer steals from older)
+      // DISABLED: This was causing CPU timeout (error 1102) and wiping all territory data.
+      // Territory stealing is handled at route-upload time instead.
+      // If needed, use /api/admin/reprocess-user-batch/:userId manually.
+      /*
       try {
         console.log(`[FRIEND ACCEPT] Reprocessing territories for new friends: ${request.senderId} <-> ${userId}`);
         await reprocessFriendGroupTerritoriesChronologically(storage, request.senderId);
         console.log(`[FRIEND ACCEPT] Territory reprocessing complete`);
       } catch (reprocessErr) {
         console.error('[FRIEND ACCEPT] Failed to reprocess territories:', reprocessErr);
-        // Don't fail the friendship creation if territory reprocessing fails
       }
+      */
 
-      return c.json({ success: true });
+      return c.json({ success: true, colorChanged: colorResult.changed, newColor: colorResult.newColor || null });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -2520,6 +2812,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "Cannot accept your own invite" }, 400);
       }
 
+      // Auto-resolve color conflicts before creating friendship
+      const colorResult = await resolveColorConflictOnFriendship(storage, invite.userId, userId);
+
       await storage.createBidirectionalFriendship(invite.userId, userId);
       await storage.deleteFriendInvite(invite.id);
 
@@ -2527,7 +2822,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const { notifyFriendRequestAccepted } = await import('./notifications');
       await notifyFriendRequestAccepted(storage, invite.userId, userId, c.env);
 
-      return c.json({ success: true, friendId: invite.userId });
+      return c.json({ success: true, friendId: invite.userId, colorChanged: colorResult.changed, newColor: colorResult.newColor || null });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -3780,25 +4075,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       // Rebuild territories after delete.
-      // Only do the expensive friend-group chronological reprocess if the user
-      // has conquest interactions. Otherwise just rebuild the user's own territories.
+      // SAFETY: Only reprocess the affected user to avoid CPU timeout (error 1102).
       try {
-        const hasInteractions = await storage.hasConquestInteractions(userId);
-        if (hasInteractions) {
-          console.log('[DELETE] User has conquest interactions, doing friend-group reprocess');
-          await reprocessFriendGroupTerritoriesChronologically(storage, userId);
-        } else {
-          console.log('[DELETE] No conquest interactions, doing user-only reprocess');
-          await reprocessUserTerritories(storage, userId);
-        }
+        console.log('[DELETE] Reprocessing user territories only (safe mode)');
+        await reprocessUserTerritories(storage, userId);
       } catch (e) {
         console.error('Error reprocessing territories after delete:', e);
-        // Fallback: at least rebuild this user's territories
-        try {
-          await reprocessUserTerritories(storage, userId);
-        } catch (e2) {
-          console.error('Fallback reprocess also failed:', e2);
-        }
       }
 
       return c.json({ success: true });

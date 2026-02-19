@@ -1,9 +1,9 @@
 // Runna.io Service Worker - Optimized caching for performance
-const CACHE_NAME = 'runna-io-v18';
-const STATIC_CACHE = 'runna-static-v18';
-const TILE_CACHE = 'runna-tiles-v18';
-const API_CACHE = 'runna-api-v18';
-const IMAGE_CACHE = 'runna-images-v18';
+const CACHE_NAME = 'runna-io-v20';
+const STATIC_CACHE = 'runna-static-v20';
+const TILE_CACHE = 'runna-tiles-v20';
+const API_CACHE = 'runna-api-v20';
+const IMAGE_CACHE = 'runna-images-v20';
 
 // Critical assets to pre-cache for offline support
 const STATIC_ASSETS = [
@@ -40,6 +40,10 @@ self.addEventListener('activate', (event) => {
     })
   );
   self.clients.claim();
+  // Force all open tabs to reload with fresh content
+  self.clients.matchAll({ type: 'window' }).then((clients) => {
+    clients.forEach((client) => client.navigate(client.url));
+  });
 });
 
 // Fetch event - Strategic caching based on resource type
@@ -179,21 +183,20 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // JS/CSS assets - StaleWhileRevalidate (use cache, update in background)
+  // JS/CSS assets - NetworkFirst (always fetch fresh, fall back to cache)
   if (request.destination === 'script' || request.destination === 'style' || 
       url.pathname.match(/\.(js|css)$/i)) {
     event.respondWith(
       caches.open(STATIC_CACHE).then((cache) => {
-        return cache.match(request).then((cached) => {
-          const fetchPromise = fetch(request).then((response) => {
-            if (response.ok) {
-              cache.put(request, response.clone());
-            }
-            return response;
+        return fetch(request).then((response) => {
+          if (response.ok) {
+            cache.put(request, response.clone());
+          }
+          return response;
+        }).catch(() => {
+          return cache.match(request).then((cached) => {
+            return cached || new Response('', { status: 503 });
           });
-          
-          // Return cached version immediately, but update cache in background
-          return cached || fetchPromise;
         });
       })
     );

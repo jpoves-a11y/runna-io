@@ -63,25 +63,34 @@ export default function ActivityPage() {
   };
 
   const handleTouchStart = (e: React.TouchEvent) => {
-    if (scrollRef.current && scrollRef.current.scrollTop === 0) {
+    // Only allow pull-to-refresh when strictly at the very top of the page
+    if (scrollRef.current && scrollRef.current.scrollTop <= 0) {
       touchStartY.current = e.touches[0].clientY;
+    } else {
+      touchStartY.current = 0;
     }
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (!scrollRef.current) return;
+    if (!scrollRef.current || touchStartY.current === 0) return;
+    
+    // If we've scrolled away from top since touch started, cancel
+    if (scrollRef.current.scrollTop > 0) {
+      touchStartY.current = 0;
+      return;
+    }
     
     const touchY = e.touches[0].clientY;
     const pullDistance = touchY - touchStartY.current;
     
     // Only prevent default when at top and pulling down
-    if (scrollRef.current.scrollTop === 0 && pullDistance > 0) {
+    if (pullDistance > 0) {
       e.preventDefault();
     }
   };
 
   const handleTouchEnd = (e: React.TouchEvent) => {
-    if (!scrollRef.current || scrollRef.current.scrollTop > 0) return;
+    if (!scrollRef.current || touchStartY.current === 0 || scrollRef.current.scrollTop > 0) return;
     
     const touchY = e.changedTouches[0].clientY;
     const pullDistance = touchY - touchStartY.current;

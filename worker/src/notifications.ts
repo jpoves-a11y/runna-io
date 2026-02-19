@@ -8,7 +8,7 @@ export const TERRITORY_LOSS_MESSAGES = [
   '{user} piso tu patio y se llevo {area}. Sal a poner orden.',
   '{user} se llevo {area} de tu mapa. Hoy no se duerme.',
   '{user} te robo {area}. Tus zapatillas piden justicia.',
-  '{user} se llevo {area}. Tu mapa llora, tu piernas no.',
+  '{user} se llevo {area}. Tu mapa llora, tus piernas no.',
   '{user} marco {area} en tu zona. Responde con kilometros.',
   '{user} se llevo {area} de tu imperio. A correr o a llorar.',
   '{user} te recorto {area}. Tu revancha esta en modo sprint.',
@@ -336,5 +336,112 @@ export async function notifyAreaOvertake(
     console.log(`✅ Sent area overtake notification to ${victimUserId}`);
   } catch (error) {
     console.error('Error sending area overtake notification:', error);
+  }
+}
+
+/**
+ * Send push notification when someone reacts (like/dislike) to a post or comment.
+ */
+export async function notifyReaction(
+  storage: WorkerStorage,
+  reactorUserId: string,
+  targetOwnerId: string,
+  reactionType: 'like' | 'dislike',
+  targetType: 'event' | 'comment',
+  env: any
+): Promise<void> {
+  try {
+    // Don't notify yourself
+    if (reactorUserId === targetOwnerId) return;
+
+    const subscriptions = await storage.getPushSubscriptionsByUserId(targetOwnerId);
+    if (subscriptions.length === 0) return;
+
+    const reactor = await storage.getUser(reactorUserId);
+    const reactorName = reactor?.name || 'Alguien';
+
+    const emoji = reactionType === 'like' ? '👍' : '👎';
+    const actionText = reactionType === 'like' ? 'le gustó' : 'no le gustó';
+    const targetText = targetType === 'event' ? 'tu publicación' : 'tu comentario';
+
+    const payload = {
+      title: `${emoji} ${reactorName} reaccionó`,
+      body: `A ${reactorName} ${actionText} ${targetText}`,
+      tag: `reaction-${targetType}-${reactionType}`,
+      data: {
+        url: '/',
+        type: 'reaction',
+        reactorId: reactorUserId,
+      },
+    };
+
+    const pushSubs = subscriptions.map((sub) => ({
+      endpoint: sub.endpoint,
+      keys: { p256dh: sub.p256dh, auth: sub.auth },
+    }));
+
+    await sendPushToUser(
+      pushSubs,
+      payload,
+      env.VAPID_PUBLIC_KEY || '',
+      env.VAPID_PRIVATE_KEY || '',
+      env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+    );
+
+    console.log(`✅ Sent reaction notification to ${targetOwnerId} from ${reactorName}`);
+  } catch (error) {
+    console.error('Error sending reaction notification:', error);
+  }
+}
+
+/**
+ * Send push notification when someone comments on a post.
+ */
+export async function notifyComment(
+  storage: WorkerStorage,
+  commenterUserId: string,
+  postOwnerId: string,
+  commentText: string,
+  env: any
+): Promise<void> {
+  try {
+    // Don't notify yourself
+    if (commenterUserId === postOwnerId) return;
+
+    const subscriptions = await storage.getPushSubscriptionsByUserId(postOwnerId);
+    if (subscriptions.length === 0) return;
+
+    const commenter = await storage.getUser(commenterUserId);
+    const commenterName = commenter?.name || 'Alguien';
+
+    const preview = commentText.length > 60 ? commentText.substring(0, 60) + '...' : commentText;
+
+    const payload = {
+      title: `💬 ${commenterName} comentó`,
+      body: preview,
+      tag: 'comment',
+      data: {
+        url: '/',
+        type: 'comment',
+        commenterId: commenterUserId,
+      },
+    };
+
+    const pushSubs = subscriptions.map((sub) => ({
+      endpoint: sub.endpoint,
+      keys: { p256dh: sub.p256dh, auth: sub.auth },
+    }));
+
+    await sendPushToUser(
+      pushSubs,
+      payload,
+      env.VAPID_PUBLIC_KEY || '',
+      env.VAPID_PRIVATE_KEY || '',
+      env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+    );
+
+    console.log(`✅ Sent comment notification to ${postOwnerId} from ${commenterName}`);
+  } catch (error) {
+    console.error('Error sending comment notification:', error);
   }
 }

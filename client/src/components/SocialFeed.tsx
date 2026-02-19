@@ -1,16 +1,15 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { useQuery, useMutation, useInfiniteQuery } from '@tanstack/react-query';
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import UserInfoDialog from '@/components/UserInfoDialog';
 import {
-  MapPin, Users, Swords, Trophy, MessageCircle, Send, ChevronDown, ChevronUp, Trash2, Reply, Loader2
+  MapPin, Users, Swords, Trophy, MessageCircle, Send, Trash2, Reply, Loader2,
+  ThumbsUp, ThumbsDown, CornerDownRight
 } from 'lucide-react';
 import type { FeedEventWithDetails, FeedCommentWithUser } from '@shared/schema';
 
@@ -104,12 +103,12 @@ function preciseTimeAgo(dateStr: string): string {
     const months = Math.floor(days / 30);
     const years = Math.floor(days / 365);
     if (mins < 1) return 'ahora';
-    if (mins === 1) return 'hace 1 minuto';
-    if (mins < 60) return `hace ${mins} minutos`;
-    if (hours === 1) return 'hace 1 hora';
-    if (hours < 24) return `hace ${hours} horas`;
-    if (days === 1) return 'hace 1 día';
-    if (days < 30) return `hace ${days} días`;
+    if (mins === 1) return 'hace 1 min';
+    if (mins < 60) return `hace ${mins} min`;
+    if (hours === 1) return 'hace 1h';
+    if (hours < 24) return `hace ${hours}h`;
+    if (days === 1) return 'ayer';
+    if (days < 30) return `hace ${days}d`;
     if (months === 1) return 'hace 1 mes';
     if (months < 12) return `hace ${months} meses`;
     if (years === 1) return 'hace 1 año';
@@ -125,45 +124,162 @@ function formatArea(sqMeters: number): string {
   return `${Math.round(sqMeters)} m²`;
 }
 
-function UserAvatar({ user, size = 'sm' }: { user: { name: string; color: string; avatar?: string | null }; size?: 'sm' | 'md' }) {
-  const dim = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+// ─── Memoized Atomic Components ──────────────────────────────────────────────
+
+const UserAvatar = memo(function UserAvatar({ user, size = 'sm', onClick }: { user: { name: string; color: string; avatar?: string | null }; size?: 'sm' | 'md' | 'xs'; onClick?: () => void }) {
+  const dims = { xs: 'w-6 h-6 text-[9px]', sm: 'w-8 h-8 text-[11px]', md: 'w-10 h-10 text-sm' };
+  const ringSize = { xs: 1.5, sm: 2, md: 2.5 };
+  const dim = dims[size];
+  const ring = ringSize[size];
+  const Wrapper = onClick ? 'button' : 'div';
   if (user.avatar) {
-    return <img src={user.avatar} alt={user.name} className={`${dim} rounded-full object-cover border-2`} style={{ borderColor: user.color }} />;
+    return (
+      <Wrapper onClick={onClick} className={`${dim} rounded-full overflow-hidden flex-shrink-0`} style={{ boxShadow: `0 0 0 ${ring}px ${user.color}` }}>
+        <img src={user.avatar} alt={user.name} className="w-full h-full rounded-full object-cover" loading="lazy" decoding="async" />
+      </Wrapper>
+    );
   }
   return (
-    <div className={`${dim} rounded-full flex items-center justify-center text-white font-bold border-2`} style={{ backgroundColor: user.color, borderColor: user.color }}>
+    <Wrapper onClick={onClick} className={`${dim} rounded-full flex items-center justify-center text-white font-bold flex-shrink-0`} style={{ backgroundColor: user.color }}>
       {user.name.charAt(0).toUpperCase()}
+    </Wrapper>
+  );
+});
+
+const ReactionButton = memo(function ReactionButton({ type, count, active, onClick, size = 'sm' }: {
+  type: 'like' | 'dislike'; count: number; active: boolean; onClick: () => void; size?: 'md' | 'sm' | 'xs';
+}) {
+  const Icon = type === 'like' ? ThumbsUp : ThumbsDown;
+  const activeColor = type === 'like' ? 'text-blue-500' : 'text-red-500';
+  const activeBg = type === 'like' ? 'bg-blue-500/10' : 'bg-red-500/10';
+  const sizeMap = {
+    xs: { icon: 'w-3 h-3', text: 'text-[10px]', btn: 'h-6 px-1.5 gap-0.5' },
+    sm: { icon: 'w-3.5 h-3.5', text: 'text-[11px]', btn: 'h-7 px-2 gap-1' },
+    md: { icon: 'w-4 h-4', text: 'text-xs', btn: 'h-8 px-2 gap-1' },
+  };
+  const s = sizeMap[size];
+
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center justify-center ${s.btn} rounded-full transition-all duration-100
+        active:scale-90
+        ${active ? `${activeColor} ${activeBg} font-semibold` : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'}`}
+    >
+      <Icon className={`${s.icon} ${active ? 'fill-current' : ''}`} />
+      {count > 0 && <span className={s.text}>{count}</span>}
+    </button>
+  );
+});
+
+// ─── Comment Row (compact, with inline actions) ─────────────────────────────
+
+const CommentRow = memo(function CommentRow({
+  comment, isReply, currentUserId, onReply, onDelete, onUserClick, onReaction, renderMentionedText,
+}: {
+  comment: FeedCommentWithUser;
+  isReply?: boolean;
+  currentUserId: string;
+  onReply: (commentId: string, userName: string) => void;
+  onDelete: (commentId: string) => void;
+  onUserClick: (userId: string) => void;
+  onReaction: (targetId: string, reactionType: 'like' | 'dislike') => void;
+  renderMentionedText: (text: string) => React.ReactNode;
+}) {
+  const user = comment.user as any;
+
+  return (
+    <div className={`flex gap-2 py-1.5 ${isReply ? 'ml-8' : ''}`}>
+      <UserAvatar
+        user={{ name: user.name, color: user.color || '#888', avatar: user.avatar }}
+        size="xs"
+        onClick={() => onUserClick(user.id)}
+      />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <button
+            className="text-[12px] font-semibold hover:underline leading-none"
+            style={{ color: user.color || undefined }}
+            onClick={() => onUserClick(user.id)}
+          >
+            {user.name}
+          </button>
+          <span className="text-[10px] text-muted-foreground leading-none">{preciseTimeAgo(comment.createdAt)}</span>
+        </div>
+        <p className="text-[12px] text-gray-800 dark:text-foreground/85 break-words leading-tight mt-0.5">{renderMentionedText(comment.content)}</p>
+        <div className="flex items-center gap-0 mt-0.5">
+          <ReactionButton type="like" count={comment.likeCount} active={comment.userReaction === 'like'} onClick={() => onReaction(comment.id, 'like')} size="xs" />
+          <ReactionButton type="dislike" count={comment.dislikeCount} active={comment.userReaction === 'dislike'} onClick={() => onReaction(comment.id, 'dislike')} size="xs" />
+          {!isReply && (
+            <button className="text-[10px] text-muted-foreground hover:text-foreground ml-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full hover:bg-muted/40 transition-colors active:scale-90" onClick={() => onReply(comment.id, user.name)}>
+              <Reply className="w-3 h-3" />Responder
+            </button>
+          )}
+          {comment.userId === currentUserId && (
+            <button className="text-muted-foreground hover:text-red-400 ml-auto flex items-center justify-center w-5 h-5 rounded-full hover:bg-red-500/10 transition-colors active:scale-75" onClick={() => onDelete(comment.id)}>
+              <Trash2 className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
-}
+});
 
-function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEvent; currentUserId: string; onUserClick: (userId: string) => void }) {
-  const [showComments, setShowComments] = useState(false);
+// ─── Event Card ──────────────────────────────────────────────────────────────
+
+const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEvent; currentUserId: string; onUserClick: (userId: string) => void }) {
+  const [showAllComments, setShowAllComments] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [replyTo, setReplyTo] = useState<{ id: string; name: string } | null>(null);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
+  // Local optimistic state for post reactions
+  const [localLikeCount, setLocalLikeCount] = useState(event.likeCount);
+  const [localDislikeCount, setLocalDislikeCount] = useState(event.dislikeCount);
+  const [localUserReaction, setLocalUserReaction] = useState(event.userReaction);
   const { toast } = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch friends for @mention suggestions
+  // Sync local state when event prop updates
+  useEffect(() => {
+    setLocalLikeCount(event.likeCount);
+    setLocalDislikeCount(event.dislikeCount);
+    setLocalUserReaction(event.userReaction);
+  }, [event.likeCount, event.dislikeCount, event.userReaction]);
+
+  // Fetch friends for @mention suggestions — long cache
   const { data: friends } = useQuery<Array<{ id: string; name: string; username: string; color: string; avatar?: string | null }>>({
     queryKey: ['/api/friends', currentUserId],
     queryFn: async () => {
       const res = await apiRequest('GET', `/api/friends/${currentUserId}`);
       return res.json();
     },
-    staleTime: 60000,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
   });
 
-  const { data: comments, isLoading: loadingComments } = useQuery<FeedCommentWithUser[]>({
-    queryKey: ['/api/feed/events', event.id, 'comments'],
+  // Preview comments (always loaded) — cached longer for performance
+  const { data: previewComments } = useQuery<FeedCommentWithUser[]>({
+    queryKey: ['/api/feed/events', event.id, 'preview-comments', currentUserId],
     queryFn: async () => {
-      const res = await apiRequest('GET', `/api/feed/events/${event.id}/comments`);
+      const res = await apiRequest('GET', `/api/feed/events/${event.id}/preview-comments?userId=${currentUserId}&limit=2`);
       return res.json();
     },
-    enabled: showComments,
+    enabled: event.commentCount > 0,
+    staleTime: 60000,
+    gcTime: 5 * 60 * 1000,
+  });
+
+  // All comments (loaded on demand)
+  const { data: allComments, isLoading: loadingAllComments } = useQuery<FeedCommentWithUser[]>({
+    queryKey: ['/api/feed/events', event.id, 'comments', currentUserId],
+    queryFn: async () => {
+      const res = await apiRequest('GET', `/api/feed/events/${event.id}/comments?userId=${currentUserId}`);
+      return res.json();
+    },
+    enabled: showAllComments,
   });
 
   const addCommentMutation = useMutation({
@@ -178,7 +294,7 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
       setCommentText('');
       setReplyTo(null);
       queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'comments'] });
-      // Update comment count in feed
+      queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'preview-comments'] });
       queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
     },
     onError: (err: Error) => {
@@ -192,13 +308,54 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'comments'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'preview-comments'] });
       queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
     },
   });
 
+  const reactionMutation = useMutation({
+    mutationFn: async ({ targetType, targetId, reactionType }: { targetType: 'event' | 'comment'; targetId: string; reactionType: 'like' | 'dislike' }) => {
+      const res = await apiRequest('POST', '/api/feed/reactions', { userId: currentUserId, targetType, targetId, reactionType });
+      return res.json();
+    },
+    onSuccess: (data, variables) => {
+      if (variables.targetType === 'event') {
+        setLocalLikeCount(data.likeCount);
+        setLocalDislikeCount(data.dislikeCount);
+        setLocalUserReaction(data.userReaction);
+        queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'comments'] });
+        queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'preview-comments'] });
+      }
+    },
+  });
+
+  const handlePostReaction = (reactionType: 'like' | 'dislike') => {
+    // Optimistic update
+    if (localUserReaction === reactionType) {
+      // Toggle off
+      setLocalUserReaction(null);
+      if (reactionType === 'like') setLocalLikeCount(c => Math.max(0, c - 1));
+      else setLocalDislikeCount(c => Math.max(0, c - 1));
+    } else {
+      // Switch or new
+      if (localUserReaction === 'like') setLocalLikeCount(c => Math.max(0, c - 1));
+      if (localUserReaction === 'dislike') setLocalDislikeCount(c => Math.max(0, c - 1));
+      setLocalUserReaction(reactionType);
+      if (reactionType === 'like') setLocalLikeCount(c => c + 1);
+      else setLocalDislikeCount(c => c + 1);
+    }
+    reactionMutation.mutate({ targetType: 'event', targetId: event.id, reactionType });
+  };
+
+  const handleCommentReaction = (targetId: string, reactionType: 'like' | 'dislike') => {
+    reactionMutation.mutate({ targetType: 'comment', targetId, reactionType });
+  };
+
   const handleReply = (commentId: string, userName: string) => {
     setReplyTo({ id: commentId, name: userName });
-    setShowComments(true);
+    if (!showAllComments) setShowAllComments(true);
     setTimeout(() => inputRef.current?.focus(), 100);
   };
 
@@ -232,7 +389,7 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
     }
   };
 
-  const renderMentionedText = (text: string) => {
+  const renderMentionedText = useCallback((text: string) => {
     return text.split(/(@[\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/).map((part, i) => {
       if (part.startsWith('@')) {
         const mentionName = part.slice(1).toLowerCase();
@@ -251,7 +408,7 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
       }
       return part;
     });
-  };
+  }, [friends, onUserClick]);
 
   const renderEventContent = () => {
     const isOwn = event.userId === currentUserId;
@@ -261,90 +418,89 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
     switch (event.eventType) {
       case 'activity':
         return (
-          <div className="flex items-start gap-3">
-            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
-              <UserAvatar user={event.user} size="md" />
-            </button>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm">
-                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
-                {' '}corrió{event.activityDate ? ` ${preciseTimeAgo(event.activityDate)}` : ''}
-                {event.routeName ? (
-                  <> y completó <span className="font-medium">"{event.routeName}"</span></>
-                ) : (
-                  ' y completó una actividad'
-                )}
-                {victims.length > 0 && (
-                  <>
-                    {' '}y robó territorio a{' '}
-                    {victims.map((v, i) => (
-                      <span key={v.id}>
-                        {i > 0 && (i === victims.length - 1 ? ' y ' : ', ')}
-                        <span
-                          className="font-semibold cursor-pointer hover:underline"
-                          style={{ color: v.color }}
-                          onClick={() => onUserClick(v.id)}
-                        >
-                          {v.id === currentUserId ? 'ti' : v.name}
+          <>
+            {/* Post header */}
+            <div className="flex items-start gap-2.5">
+              <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
+                  <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.activityDate || event.createdAt)}</span>
+                </div>
+                <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">
+                  {event.routeName ? (
+                    <>Completó <span className="font-medium text-gray-900 dark:text-foreground/90">"{event.routeName}"</span></>
+                  ) : (
+                    'Completó una actividad'
+                  )}
+                  {victims.length > 0 && (
+                    <>
+                      {' '}y robó territorio a{' '}
+                      {victims.map((v, i) => (
+                        <span key={v.id}>
+                          {i > 0 && (i === victims.length - 1 ? ' y ' : ', ')}
+                          <span
+                            className="font-semibold cursor-pointer hover:underline"
+                            style={{ color: v.color }}
+                            onClick={() => onUserClick(v.id)}
+                          >
+                            {v.id === currentUserId ? 'ti' : v.name}
+                          </span>
                         </span>
-                      </span>
-                    ))}
-                  </>
-                )}
-              </p>
-              <div className="flex flex-wrap gap-2 mt-1.5">
-                {event.distance && (
-                  <Badge variant="secondary" className="text-xs">
-                    <MapPin className="w-3 h-3 mr-1" />{formatDistance(event.distance)}
-                  </Badge>
-                )}
-                {event.duration && (
-                  <Badge variant="secondary" className="text-xs">
-                    🕐 {formatDuration(event.duration)}
-                  </Badge>
-                )}
-                {event.newArea && event.newArea > 0 && (
-                  <Badge variant="secondary" className="text-xs bg-green-500/20 text-green-400">
-                    +{formatArea(event.newArea)}
-                  </Badge>
-                )}
-                {victims.map((v) => (
-                  <Badge key={v.id} variant="destructive" className="text-xs">
-                    <Swords className="w-3 h-3 mr-1" />
-                    {formatArea(v.areaStolen)} de {v.id === currentUserId ? 'ti' : v.name}
-                  </Badge>
-                ))}
+                      ))}
+                    </>
+                  )}
+                </p>
               </div>
             </div>
-          </div>
+
+            {/* Stats badges — compact */}
+            <div className="flex flex-wrap gap-1 mt-2 ml-[50px]">
+              {event.distance && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/8 dark:bg-primary/15 text-[11px] font-medium text-primary">
+                  <MapPin className="w-3 h-3" />{formatDistance(event.distance)}
+                </span>
+              )}
+              {event.duration && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted/80 dark:bg-muted/60 text-[11px] font-medium">
+                  🕐 {formatDuration(event.duration)}
+                </span>
+              )}
+              {event.newArea && event.newArea > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  +{formatArea(event.newArea)}
+                </span>
+              )}
+              {victims.map((v) => (
+                <span key={v.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/10 text-[11px] font-semibold text-red-600 dark:text-red-400">
+                  <Swords className="w-3 h-3" />
+                  {formatArea(v.areaStolen)} de {v.id === currentUserId ? 'ti' : v.name}
+                </span>
+              ))}
+            </div>
+          </>
         );
 
       case 'territory_stolen':
         return (
-          <div className="flex items-start gap-3">
-            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
-              <UserAvatar user={event.user} size="md" />
-            </button>
+          <div className="flex items-start gap-2.5">
+            <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
             <div className="flex-1 min-w-0">
-              <p className="text-sm">
-                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
-                {' '}ha robado territorio a{' '}
-                <span
-                  className="font-semibold cursor-pointer hover:underline"
-                  style={{ color: event.victim?.color }}
-                  onClick={() => event.victim && onUserClick(event.victim.id)}
-                >
+              <div className="flex items-center gap-1.5">
+                <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
+                <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.createdAt)}</span>
+              </div>
+              <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">
+                Ha robado territorio a{' '}
+                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.victim?.color }} onClick={() => event.victim && onUserClick(event.victim.id)}>
                   {event.victim?.id === currentUserId ? 'ti' : event.victim?.name || 'alguien'}
                 </span>
-                {event.routeName && (
-                  <span className="text-muted-foreground"> en "{event.routeName}"</span>
-                )}
+                {event.routeName && <span className="text-muted-foreground"> en "{event.routeName}"</span>}
               </p>
               {event.areaStolen && (
-                <Badge variant="destructive" className="text-xs mt-1.5">
-                  <Swords className="w-3 h-3 mr-1" />
-                  {formatArea(event.areaStolen)} robados
-                </Badge>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-red-500/10 text-[11px] font-semibold text-red-600 dark:text-red-400">
+                  <Swords className="w-3 h-3" />{formatArea(event.areaStolen)} robados
+                </span>
               )}
             </div>
           </div>
@@ -352,34 +508,30 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
 
       case 'ran_together': {
         let ranWith: Array<{ id: string; name: string }> = [];
-        try {
-          ranWith = event.ranTogetherWith ? JSON.parse(event.ranTogetherWith) : [];
-        } catch { /* ignore */ }
+        try { ranWith = event.ranTogetherWith ? JSON.parse(event.ranTogetherWith) : []; } catch { }
         return (
-          <div className="flex items-start gap-3">
-            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
-              <UserAvatar user={event.user} size="md" />
-            </button>
+          <div className="flex items-start gap-2.5">
+            <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
             <div className="flex-1 min-w-0">
-              <p className="text-sm">
-                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
-                {' '}ha corrido junto a{' '}
+              <div className="flex items-center gap-1.5">
+                <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
+                <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.createdAt)}</span>
+              </div>
+              <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">
+                Ha corrido junto a{' '}
                 {ranWith.map((u, i) => (
                   <span key={u.id}>
                     {i > 0 && (i === ranWith.length - 1 ? ' y ' : ', ')}
-                    <span
-                      className="font-semibold cursor-pointer hover:underline"
-                      onClick={() => onUserClick(u.id)}
-                    >
+                    <span className="font-semibold cursor-pointer hover:underline" onClick={() => onUserClick(u.id)}>
                       {u.id === currentUserId ? 'ti' : u.name}
                     </span>
                   </span>
                 ))}
               </p>
               {event.distance && (
-                <Badge variant="secondary" className="text-xs mt-1.5">
-                  <Users className="w-3 h-3 mr-1" />{formatDistance(event.distance)}
-                </Badge>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-muted/80 dark:bg-muted/60 text-[11px] font-medium">
+                  <Users className="w-3 h-3 text-primary" />{formatDistance(event.distance)}
+                </span>
               )}
             </div>
           </div>
@@ -388,21 +540,20 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
 
       case 'personal_record':
         return (
-          <div className="flex items-start gap-3">
-            <button onClick={() => onUserClick(event.userId)} className="flex-shrink-0">
-              <UserAvatar user={event.user} size="md" />
-            </button>
+          <div className="flex items-start gap-2.5">
+            <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
             <div className="flex-1 min-w-0">
-              <p className="text-sm">
-                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</span>
-                {' '}ha batido un récord personal
-              </p>
-              <Badge className="text-xs mt-1.5 bg-yellow-500/20 text-yellow-400">
-                <Trophy className="w-3 h-3 mr-1" />
+              <div className="flex items-center gap-1.5">
+                <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
+                <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.createdAt)}</span>
+              </div>
+              <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">Ha batido un récord personal</p>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-amber-500/10 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                <Trophy className="w-3 h-3" />
                 {event.recordType === 'longest_run' ? 'Carrera más larga' :
                   event.recordType === 'fastest_pace' ? 'Ritmo más rápido' :
                     event.recordType === 'biggest_conquest' ? 'Mayor conquista' : 'Récord'}
-              </Badge>
+              </span>
             </div>
           </div>
         );
@@ -412,109 +563,114 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
     }
   };
 
-  const timeAgo = preciseTimeAgo(event.createdAt);
+  // Comments to display
+  const displayedComments = showAllComments ? allComments : previewComments;
+  const hasMoreComments = event.commentCount > 2 && !showAllComments;
 
   return (
-    <Card className="p-3 bg-card/50 border-border/50">
-      {renderEventContent()}
+    <Card className="overflow-hidden
+      border border-emerald-200/60 dark:border-emerald-500/20
+      bg-gradient-to-br from-emerald-50/40 to-white dark:from-emerald-950/30 dark:to-card
+      shadow-sm hover:shadow-md transition-shadow duration-200">
 
-      <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/30">
-        <span className="text-xs text-muted-foreground">{timeAgo}</span>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-xs text-muted-foreground h-7 px-2"
-          onClick={() => setShowComments(!showComments)}
-        >
-          <MessageCircle className="w-3.5 h-3.5 mr-1" />
-          {event.commentCount > 0 ? `${event.commentCount}` : 'Comentar'}
-          {showComments ? <ChevronUp className="w-3 h-3 ml-1" /> : <ChevronDown className="w-3 h-3 ml-1" />}
-        </Button>
+      {/* Post content */}
+      <div className="p-3 pb-2">
+        {renderEventContent()}
       </div>
 
-      {showComments && (
-        <div className="mt-2 space-y-2">
-          {loadingComments ? (
+      {/* Action bar */}
+      <div className="flex items-center gap-1 px-3 py-1 border-t border-emerald-100/80 dark:border-border/40">
+        <ReactionButton type="like" count={localLikeCount} active={localUserReaction === 'like'} onClick={() => handlePostReaction('like')} size="sm" />
+        <ReactionButton type="dislike" count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} size="sm" />
+        <button
+          onClick={() => {
+            if (event.commentCount > 0 && !showAllComments) setShowAllComments(true);
+            setTimeout(() => inputRef.current?.focus(), 80);
+          }}
+          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all active:scale-90 ml-auto"
+        >
+          <MessageCircle className="w-3.5 h-3.5" />
+          {event.commentCount > 0 ? event.commentCount : 'Comentar'}
+        </button>
+      </div>
+
+      {/* Comments section */}
+      {(event.commentCount > 0 || showAllComments) && (
+        <div className="border-t border-emerald-100/80 dark:border-border/40 bg-gray-50/80 dark:bg-black/40">
+          {/* Preview or full comments */}
+          {displayedComments && displayedComments.length > 0 && (
+            <div className="px-3 pt-1">
+              {displayedComments.map((comment, idx) => (
+                <div key={comment.id}>
+                  {/* Elegant vertical separator between top-level comments */}
+                  {idx > 0 && (
+                    <div className="flex items-center ml-3 my-0.5">
+                      <div className="w-px h-3 bg-gradient-to-b from-transparent via-border/60 dark:via-emerald-500/25 to-transparent rounded-full" />
+                    </div>
+                  )}
+                  <CommentRow
+                    comment={comment}
+                    currentUserId={currentUserId}
+                    onReply={handleReply}
+                    onDelete={(id) => deleteCommentMutation.mutate(id)}
+                    onUserClick={onUserClick}
+                    onReaction={handleCommentReaction}
+                    renderMentionedText={renderMentionedText}
+                  />
+                  {/* Replies with thread indicator */}
+                  {comment.replies && comment.replies.length > 0 && (
+                    <div className="ml-4 border-l-2 border-primary/12 dark:border-emerald-500/20 pl-1">
+                      {comment.replies.map((reply) => (
+                        <CommentRow
+                          key={reply.id}
+                          comment={reply}
+                          isReply
+                          currentUserId={currentUserId}
+                          onReply={handleReply}
+                          onDelete={(id) => deleteCommentMutation.mutate(id)}
+                          onUserClick={onUserClick}
+                          onReaction={handleCommentReaction}
+                          renderMentionedText={renderMentionedText}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Loading state for all comments */}
+          {showAllComments && loadingAllComments && (
             <div className="flex justify-center py-2">
               <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
-          ) : (
-            comments && comments.length > 0 && (
-              <div className="space-y-2">
-                {comments.map((comment) => (
-                  <div key={comment.id} className="space-y-1.5">
-                    {/* Top-level comment */}
-                    <div className="flex items-start gap-2 bg-background/50 rounded-lg p-2">
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0 bg-muted-foreground">
-                        {comment.user.name.charAt(0).toUpperCase()}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1">
-                          <span className="text-xs font-semibold">{comment.user.name}</span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {preciseTimeAgo(comment.createdAt)}
-                          </span>
-                        </div>
-                        <p className="text-xs text-foreground/80 break-words">{renderMentionedText(comment.content)}</p>
-                        <div className="flex gap-2 mt-0.5">
-                          <button className="text-[10px] text-muted-foreground hover:text-foreground" onClick={() => handleReply(comment.id, comment.user.name)}>
-                            <Reply className="w-3 h-3 inline mr-0.5" />Responder
-                          </button>
-                          {comment.userId === currentUserId && (
-                            <button className="text-[10px] text-muted-foreground hover:text-red-400" onClick={() => deleteCommentMutation.mutate(comment.id)}>
-                              <Trash2 className="w-3 h-3 inline mr-0.5" />Borrar
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Replies */}
-                    {comment.replies && comment.replies.length > 0 && (
-                      <div className="ml-6 space-y-1.5">
-                        {comment.replies.map((reply) => (
-                          <div key={reply.id} className="flex items-start gap-2 bg-background/30 rounded-lg p-2">
-                            <div className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0 bg-muted-foreground/80">
-                              {reply.user.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1">
-                                <span className="text-[11px] font-semibold">{reply.user.name}</span>
-                                <span className="text-[10px] text-muted-foreground">
-                                  {preciseTimeAgo(reply.createdAt)}
-                                </span>
-                              </div>
-                              <p className="text-xs text-foreground/80 break-words">{renderMentionedText(reply.content)}</p>
-                              {reply.userId === currentUserId && (
-                                <button className="text-[10px] text-muted-foreground hover:text-red-400 mt-0.5" onClick={() => deleteCommentMutation.mutate(reply.id)}>
-                                  <Trash2 className="w-3 h-3 inline mr-0.5" />Borrar
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )
           )}
 
-          {/* Comment input */}
-          <div className="flex items-center gap-2">
-            <div className="flex-1">
-              {replyTo && (
-                <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1">
-                  <Reply className="w-3 h-3" />
-                  Respondiendo a {replyTo.name}
-                  <button onClick={() => setReplyTo(null)} className="ml-1 hover:text-foreground">✕</button>
-                </div>
-              )}
-              <div className="relative">
+          {/* "Ver más" button */}
+          {hasMoreComments && (
+            <button
+              onClick={() => setShowAllComments(true)}
+              className="w-full text-center text-[11px] text-muted-foreground hover:text-foreground py-1.5 transition-colors"
+            >
+              Ver los {event.commentCount} comentarios
+            </button>
+          )}
+
+          {/* Comment input — compact */}
+          <div className="px-3 py-2 border-t border-emerald-100/60 dark:border-border/30">
+            {replyTo && (
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1">
+                <CornerDownRight className="w-2.5 h-2.5" />
+                Respondiendo a <span className="font-medium">{replyTo.name}</span>
+                <button onClick={() => setReplyTo(null)} className="ml-1 hover:text-foreground text-xs">✕</button>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              <div className="flex-1 relative">
                 <Input
                   ref={inputRef}
-                  placeholder={replyTo ? 'Escribe tu respuesta...' : 'Escribe un comentario... (usa @ para mencionar)'}
+                  placeholder={replyTo ? 'Respuesta...' : 'Comentar... (@ para mencionar)'}
                   value={commentText}
                   onChange={handleCommentChange}
                   onKeyDown={(e) => {
@@ -525,7 +681,7 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
                       setShowMentions(false);
                     }
                   }}
-                  className="h-8 text-xs"
+                  className="h-7 text-[12px] bg-background/60 dark:bg-background/40 border-border/30 rounded-full px-3"
                   maxLength={500}
                 />
                 {showMentions && friends && friends.length > 0 && (() => {
@@ -535,13 +691,10 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
                       {filtered.map(f => (
                         <button
                           key={f.id}
-                          className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent/50 text-left text-xs"
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-accent/50 text-left text-[11px] transition-colors"
                           onMouseDown={(e) => { e.preventDefault(); insertMention(f.name); }}
                         >
-                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0"
-                            style={{ backgroundColor: f.color }}>
-                            {f.avatar ? <img src={f.avatar} alt="" className="w-5 h-5 rounded-full object-cover" /> : f.name.charAt(0).toUpperCase()}
-                          </div>
+                          <UserAvatar user={{ name: f.name, color: f.color, avatar: f.avatar }} size="xs" />
                           <span className="font-medium">{f.name}</span>
                           <span className="text-muted-foreground">@{f.username}</span>
                         </button>
@@ -550,26 +703,28 @@ function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEve
                   ) : null;
                 })()}
               </div>
+              <Button
+                size="sm"
+                className="h-7 w-7 p-0 rounded-full"
+                variant="ghost"
+                disabled={!commentText.trim() || addCommentMutation.isPending}
+                onClick={() => addCommentMutation.mutate()}
+              >
+                {addCommentMutation.isPending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+              </Button>
             </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-8 w-8 p-0"
-              disabled={!commentText.trim() || addCommentMutation.isPending}
-              onClick={() => addCommentMutation.mutate()}
-            >
-              {addCommentMutation.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-            </Button>
           </div>
         </div>
       )}
     </Card>
   );
-}
+});
+
+// ─── Social Feed (main export) ───────────────────────────────────────────────
 
 export function SocialFeed() {
   const { user: currentUser } = useSession();
@@ -579,10 +734,10 @@ export function SocialFeed() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const LIMIT = 30;
 
-  const handleUserClick = (userId: string) => {
+  const handleUserClick = useCallback((userId: string) => {
     setSelectedUserId(userId);
     setIsDialogOpen(true);
-  };
+  }, []);
 
   const { data: events, isLoading, isError, refetch } = useQuery<FeedEventWithDetails[]>({
     queryKey: ['/api/feed', currentUser?.id, page],
@@ -592,6 +747,8 @@ export function SocialFeed() {
       return res.json();
     },
     enabled: !!currentUser,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 
   const mergedEvents = useMemo(() => {
@@ -599,12 +756,17 @@ export function SocialFeed() {
     return mergeEvents(events);
   }, [events]);
 
+  const handleDialogChange = useCallback((open: boolean) => {
+    if (!open) setSelectedUserId(null);
+    setIsDialogOpen(open);
+  }, []);
+
   if (!currentUser) return null;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -631,14 +793,14 @@ export function SocialFeed() {
   }
 
   return (
-    <div ref={scrollRef} className="space-y-3 pb-4">
+    <div ref={scrollRef} className="space-y-2.5 pb-4">
       {mergedEvents.map((event) => (
         <EventCard key={event.id} event={event} currentUserId={currentUser.id} onUserClick={handleUserClick} />
       ))}
 
       {events.length >= LIMIT && (
-        <div className="flex justify-center">
-          <Button variant="ghost" size="sm" onClick={() => setPage(p => p + 1)}>
+        <div className="flex justify-center pt-1">
+          <Button variant="ghost" size="sm" className="text-xs" onClick={() => setPage(p => p + 1)}>
             Cargar más
           </Button>
         </div>
@@ -648,7 +810,7 @@ export function SocialFeed() {
         userId={selectedUserId}
         currentUserId={currentUser?.id}
         open={isDialogOpen}
-        onOpenChange={(open) => { if (!open) setSelectedUserId(null); setIsDialogOpen(open); }}
+        onOpenChange={handleDialogChange}
       />
     </div>
   );

@@ -65,6 +65,7 @@ export function EphemeralPhotoViewer({ userId }: EphemeralPhotoViewerProps) {
               openPhoto(photos[0]);
             }
           } else {
+            setPendingPhotos([]);
             setHasCheckedOnLoad(true);
           }
         }
@@ -75,7 +76,19 @@ export function EphemeralPhotoViewer({ userId }: EphemeralPhotoViewerProps) {
 
     check();
     const interval = setInterval(check, 30000);
-    return () => clearInterval(interval);
+
+    // Also re-check when the app becomes visible (e.g. after push notification tap)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        check();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, [userId, hasCheckedOnLoad, openPhoto]);
 
   // When new pending photos arrive via polling and we're not viewing one, auto-open
