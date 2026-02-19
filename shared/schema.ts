@@ -176,6 +176,22 @@ export const emailPreferences = sqliteTable("email_preferences", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Inactivity Reminders Table (tracks sent push reminders for users inactive 2+ days)
+export const inactivityReminders = sqliteTable("inactivity_reminders", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  messageIndex: integer("message_index").notNull(), // Index in the INACTIVITY_REMINDER_MESSAGES array
+  sentAt: text("sent_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+// Territory loss notification tracking (avoid repeating the same message back-to-back)
+export const territoryLossNotifications = sqliteTable("territory_loss_notifications", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  messageIndex: integer("message_index").notNull(), // Index in the TERRITORY_LOSS_MESSAGES array
+  sentAt: text("sent_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Social Feed Tables
 export const feedEvents = sqliteTable("feed_events", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
@@ -214,6 +230,8 @@ export const usersRelations = relations(users, ({ many, one }) => ({
   stravaActivities: many(stravaActivities),
   feedEvents: many(feedEvents),
   feedComments: many(feedComments),
+  inactivityReminders: many(inactivityReminders),
+  territoryLossNotifications: many(territoryLossNotifications),
 }));
 
 export const polarAccountsRelations = relations(polarAccounts, ({ one }) => ({
@@ -309,6 +327,20 @@ export const stravaActivitiesRelations = relations(stravaActivities, ({ one }) =
   territory: one(territories, {
     fields: [stravaActivities.territoryId],
     references: [territories.id],
+  }),
+}));
+
+export const inactivityRemindersRelations = relations(inactivityReminders, ({ one }) => ({
+  user: one(users, {
+    fields: [inactivityReminders.userId],
+    references: [users.id],
+  }),
+}));
+
+export const territoryLossNotificationsRelations = relations(territoryLossNotifications, ({ one }) => ({
+  user: one(users, {
+    fields: [territoryLossNotifications.userId],
+    references: [users.id],
   }),
 }));
 
@@ -417,6 +449,16 @@ export const insertEphemeralPhotoSchema = createInsertSchema(ephemeralPhotos).om
   viewed: true,
 });
 
+export const insertInactivityReminderSchema = createInsertSchema(inactivityReminders).omit({
+  id: true,
+  sentAt: true,
+});
+
+export const insertTerritoryLossNotificationSchema = createInsertSchema(territoryLossNotifications).omit({
+  id: true,
+  sentAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -456,6 +498,12 @@ export type InsertConquestMetric = z.infer<typeof insertConquestMetricSchema>;
 
 export type EphemeralPhoto = typeof ephemeralPhotos.$inferSelect;
 export type InsertEphemeralPhoto = z.infer<typeof insertEphemeralPhotoSchema>;
+
+export type InactivityReminder = typeof inactivityReminders.$inferSelect;
+export type InsertInactivityReminder = z.infer<typeof insertInactivityReminderSchema>;
+
+export type TerritoryLossNotification = typeof territoryLossNotifications.$inferSelect;
+export type InsertTerritoryLossNotification = z.infer<typeof insertTerritoryLossNotificationSchema>;
 
 export type FeedEvent = typeof feedEvents.$inferSelect;
 export type InsertFeedEvent = z.infer<typeof insertFeedEventSchema>;

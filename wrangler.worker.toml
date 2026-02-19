@@ -22,6 +22,17 @@ RESEND_FROM = "onboarding@resend.dev"
 # wrangler secret put RESEND_API_KEY -c wrangler.worker.toml
 # wrangler secret put DATABASE_URL -c wrangler.worker.toml
 # wrangler secret put TURSO_AUTH_TOKEN -c wrangler.worker.toml
+# wrangler secret put UPSTASH_CRON_SECRET -c wrangler.worker.toml
+#
+# ===== Upstash Inactivity Reminders Setup =====
+# 1. Create an Upstash account at https://upstash.com
+# 2. Create a QStash schedule (every 12 hours):
+#    - URL: https://runna-io-api.<your-subdomain>.workers.dev/api/tasks/inactivity-check
+#    - Method: POST
+#    - Schedule: 0 */12 * * *  (every 12 hours)
+#    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
+# 3. Set the secret:
+#    wrangler secret put UPSTASH_CRON_SECRET -c wrangler.worker.toml
 
 # Para desplegar el Worker:
 # 1. cd worker && npm install && cd ..

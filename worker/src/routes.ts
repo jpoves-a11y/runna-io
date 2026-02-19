@@ -1035,6 +1035,23 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Delete user account and all associated data
+  app.delete('/api/users/:id', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const id = c.req.param('id');
+      const user = await storage.getUser(id);
+      if (!user) {
+        return c.json({ error: 'User not found' }, 404);
+      }
+      await storage.deleteUser(id);
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   // Upload avatar image
   app.post('/api/user/avatar', async (c) => {
     try {
@@ -1438,6 +1455,64 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       });
     } catch (error: any) {
       console.error('[ADMIN CLEANUP] Error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // ===== CRON: Inactivity Reminders (called by Upstash every 12h) =====
+  app.post('/api/tasks/inactivity-check', async (c) => {
+    try {
+      // Verify Upstash cron secret (or allow manual trigger with admin key)
+      const authHeader = c.req.header('Authorization');
+      const cronSecret = (c.env as any).UPSTASH_CRON_SECRET;
+      
+      // Allow if: Upstash signature matches, or Authorization Bearer matches cron secret
+      if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const { checkAndSendInactivityReminders } = await import('./inactivityReminders');
+      const result = await checkAndSendInactivityReminders(storage, c.env);
+
+      return c.json({
+        success: true,
+        message: 'Inactivity check completed',
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('[CRON INACTIVITY] Error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // ===== CRON: Inactivity Reminders (called by Upstash every 12h) =====
+  app.post('/api/tasks/inactivity-check', async (c) => {
+    try {
+      // Verify Upstash cron secret (or allow manual trigger with admin key)
+      const authHeader = c.req.header('Authorization');
+      const cronSecret = (c.env as any).UPSTASH_CRON_SECRET;
+      
+      // Allow if: Upstash signature matches, or Authorization Bearer matches cron secret
+      if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const { checkAndSendInactivityReminders } = await import('./inactivityReminders');
+      const result = await checkAndSendInactivityReminders(storage, c.env);
+
+      return c.json({
+        success: true,
+        message: 'Inactivity check completed',
+        ...result,
+      });
+    } catch (error: any) {
+      console.error('[CRON INACTIVITY] Error:', error);
       return c.json({ error: error.message }, 500);
     }
   });

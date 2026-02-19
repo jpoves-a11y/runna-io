@@ -1,6 +1,62 @@
 import type { WorkerStorage } from './storage';
 import { sendPushToUser } from './pushHelper';
 
+export const TERRITORY_LOSS_MESSAGES = [
+  '{user} se llevo {area} de tu reino. Dejalo pasar? Ni de chiste.',
+  '{user} te recorto el mapa con {area}. Hora de la tijera inversa.',
+  '{user} se quedo con {area} de tu territorio. Tu orgullo esta en modo venganza.',
+  '{user} piso tu patio y se llevo {area}. Sal a poner orden.',
+  '{user} se llevo {area} de tu mapa. Hoy no se duerme.',
+  '{user} te robo {area}. Tus zapatillas piden justicia.',
+  '{user} se llevo {area}. Tu mapa llora, tu piernas no.',
+  '{user} marco {area} en tu zona. Responde con kilometros.',
+  '{user} se llevo {area} de tu imperio. A correr o a llorar.',
+  '{user} te recorto {area}. Tu revancha esta en modo sprint.',
+  '{user} se llevo {area} de tu reino. Hoy se corre con rabia fina.',
+  '{user} te saco {area} del mapa. Que empiece la persecucion.',
+  '{user} se llevo {area}. Tu GPS pide represalias.',
+  '{user} te bajo {area} de territorio. Haz que se arrepienta.',
+  '{user} se quedo con {area}. Tu ego ya calento.',
+  '{user} se llevo {area} de tu zona. Devuelvelo con estilo.',
+  '{user} te robo {area}. No eres tu, es el. Corrige eso.',
+  '{user} se llevo {area}. Tu cardio tiene asuntos pendientes.',
+  '{user} te quito {area} de tu patio. Hoy no hay excusas.',
+  '{user} se llevo {area}. La remontada empieza ahora.',
+  '{user} te saco {area}. Ponte serio, pero con gracia.',
+  '{user} se llevo {area}. Hora de marcar territorio otra vez.',
+  '{user} te quito {area}. Tu proxima carrera tiene nombre y apellido.',
+  '{user} se llevo {area}. Que tu siguiente run sea venganza elegante.',
+  '{user} te robo {area}. Hoy el mapa se recupera a pulso.',
+  '{user} se llevo {area}. Dejalo? Ni en tus suenos.',
+  '{user} te quito {area}. Te vas a quedar mirando? Corre.',
+  '{user} se llevo {area}. A ver si tus piernas tambien saben hablar.',
+  '{user} te robo {area}. Tu respuesta no cabe en excusas.',
+  '{user} se llevo {area}. Dale una clase de territorio 101.',
+  '{user} te recorto {area}. Tu turno de devolver el favor.',
+  '{user} se llevo {area}. Que no te lo cuenten, recuperalo.',
+  '{user} te quito {area}. Te pico? Entonces sal ya.',
+  '{user} se llevo {area}. Tiempo de callar y correr.',
+  '{user} te robo {area}. Hoy toca revancha con estilo.',
+];
+
+function getRandomTerritoryLossMessage(
+  conquerorHandle: string,
+  areaText: string,
+  lastMessageIndex?: number | null
+): { message: string; index: number } {
+  let index: number;
+  do {
+    index = Math.floor(Math.random() * TERRITORY_LOSS_MESSAGES.length);
+  } while (index === lastMessageIndex && TERRITORY_LOSS_MESSAGES.length > 1);
+
+  return {
+    message: TERRITORY_LOSS_MESSAGES[index]
+      .replace('{user}', conquerorHandle)
+      .replace('{area}', areaText),
+    index,
+  };
+}
+
 export async function notifyTerritoryLoss(
   storage: WorkerStorage,
   victimUserId: string,
@@ -18,17 +74,25 @@ export async function notifyTerritoryLoss(
 
     // Get conqueror's name
     const conqueror = await storage.getUser(conquerorUserId);
-    const conquerorName = conqueror?.name || conqueror?.username || 'Alguien';
+    const conquerorHandle = conqueror?.username
+      ? `@${conqueror.username}`
+      : conqueror?.name
+        ? `@${conqueror.name}`
+        : '@alguien';
 
     // Include km² in notification body
-    const areaText = stolenAreaM2 
-      ? ` ${(stolenAreaM2 / 1000000).toFixed(2)} km² de` 
-      : ' parte de';
+    const areaText = stolenAreaM2
+      ? `${(stolenAreaM2 / 1000000).toFixed(2)} km²`
+      : 'algo de';
+
+    const lastNotification = await storage.getLastTerritoryLossNotification(victimUserId);
+    const lastIndex = lastNotification?.messageIndex ?? null;
+    const { message, index } = getRandomTerritoryLossMessage(conquerorHandle, areaText, lastIndex);
 
     // Prepare notification payload
     const payload = {
       title: '🚨 ¡Te han robado territorio!',
-      body: `${conquerorName} te ha robado${areaText} tu territorio`,
+      body: message,
       tag: 'territory-loss',
       data: {
         url: '/',
@@ -54,6 +118,8 @@ export async function notifyTerritoryLoss(
       env.VAPID_PRIVATE_KEY || '',
       env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
     );
+
+    await storage.saveTerritoryLossNotification(victimUserId, index);
 
     console.log(`✅ Sent territory loss notification to user ${victimUserId}`);
   } catch (error) {

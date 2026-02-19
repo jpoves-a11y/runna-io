@@ -17,6 +17,8 @@ import {
   ephemeralPhotos,
   feedEvents,
   feedComments,
+  inactivityReminders,
+  territoryLossNotifications,
   type User,
   type InsertUser,
   type Route,
@@ -47,6 +49,8 @@ import {
   type InsertEmailPreferences,
   type EphemeralPhoto,
   type InsertEphemeralPhoto,
+  type InactivityReminder,
+  type TerritoryLossNotification,
   type UserWithStats,
   type TerritoryWithUser,
   type RouteWithTerritory,
@@ -92,6 +96,32 @@ export class WorkerStorage {
       .values(insertUser)
       .returning();
     return user;
+  }
+
+  async deleteUser(userId: string): Promise<void> {
+    // Delete from all child tables first to avoid FK constraint issues
+    await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
+    await this.db.delete(feedEvents).where(eq(feedEvents.userId, userId));
+    await this.db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.senderId, userId));
+    await this.db.delete(inactivityReminders).where(eq(inactivityReminders.userId, userId));
+    await this.db.delete(territoryLossNotifications).where(eq(territoryLossNotifications.userId, userId));
+    await this.db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
+    await this.db.delete(emailPreferences).where(eq(emailPreferences.userId, userId));
+    await this.db.delete(emailNotifications).where(eq(emailNotifications.userId, userId));
+    await this.db.delete(conquestMetrics).where(eq(conquestMetrics.attackerId, userId));
+    await this.db.delete(conquestMetrics).where(eq(conquestMetrics.defenderId, userId));
+    await this.db.delete(polarActivities).where(eq(polarActivities.userId, userId));
+    await this.db.delete(polarAccounts).where(eq(polarAccounts.userId, userId));
+    await this.db.delete(stravaActivities).where(eq(stravaActivities.userId, userId));
+    await this.db.delete(stravaAccounts).where(eq(stravaAccounts.userId, userId));
+    await this.db.delete(friendRequests).where(eq(friendRequests.senderId, userId));
+    await this.db.delete(friendRequests).where(eq(friendRequests.recipientId, userId));
+    await this.db.delete(friendInvites).where(eq(friendInvites.userId, userId));
+    await this.db.delete(friendships).where(eq(friendships.userId, userId));
+    await this.db.delete(friendships).where(eq(friendships.friendId, userId));
+    await this.db.delete(territories).where(eq(territories.userId, userId));
+    await this.db.delete(routes).where(eq(routes.userId, userId));
+    await this.db.delete(users).where(eq(users.id, userId));
   }
 
   async getAllUsersWithStats(): Promise<UserWithStats[]> {
@@ -1836,5 +1866,113 @@ export class WorkerStorage {
       .from(feedComments)
       .where(eq(feedComments.id, commentId));
     return comment || undefined;
+  }
+
+  // ===== Inactivity Reminders =====
+
+  /**
+   * Ensure the inactivity_reminders table exists (auto-create if missing)
+   */
+  async ensureInactivityRemindersTable(): Promise<void> {
+    try {
+      await this.db.run(sql`
+        CREATE TABLE IF NOT EXISTS inactivity_reminders (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          message_index INTEGER NOT NULL,
+          sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    } catch (e) {
+      // Table likely already exists
+    }
+  }
+
+  /**
+   * Get the date of the user's last activity (most recent route completedAt).
+   * Returns null if user has never uploaded an activity.
+   */
+  async getLastActivityDate(userId: string): Promise<string | null> {
+    const result = await this.db
+      .select({ completedAt: routes.completedAt })
+      .from(routes)
+      .where(eq(routes.userId, userId))
+      .orderBy(desc(routes.completedAt))
+      .limit(1);
+    return result.length > 0 ? result[0].completedAt : null;
+  }
+
+  /**
+   * Get the last inactivity reminder sent to a user.
+   */
+  async getLastInactivityReminder(userId: string): Promise<InactivityReminder | null> {
+    await this.ensureInactivityRemindersTable();
+    const result = await this.db
+      .select()
+      .from(inactivityReminders)
+      .where(eq(inactivityReminders.userId, userId))
+      .orderBy(desc(inactivityReminders.sentAt))
+      .limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  /**
+   * Save a record of sending an inactivity reminder.
+   */
+  async saveInactivityReminder(userId: string, messageIndex: number): Promise<void> {
+    await this.ensureInactivityRemindersTable();
+    await this.db
+      .insert(inactivityReminders)
+      .values({
+        userId,
+        messageIndex,
+      });
+  }
+
+  // ===== Territory Loss Notifications =====
+
+  /**
+   * Ensure the territory_loss_notifications table exists (auto-create if missing)
+   */
+  async ensureTerritoryLossNotificationsTable(): Promise<void> {
+    try {
+      await this.db.run(sql`
+        CREATE TABLE IF NOT EXISTS territory_loss_notifications (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          message_index INTEGER NOT NULL,
+          sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    } catch (e) {
+      // Table likely already exists
+    }
+  }
+
+  /**
+   * Get the last territory loss notification sent to a user.
+   */
+  async getLastTerritoryLossNotification(userId: string): Promise<TerritoryLossNotification | null> {
+    await this.ensureTerritoryLossNotificationsTable();
+    const result = await this.db
+      .select()
+      .from(territoryLossNotifications)
+      .where(eq(territoryLossNotifications.userId, userId))
+      .orderBy(desc(territoryLossNotifications.sentAt))
+      .limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  /**
+   * Save a record of sending a territory loss notification.
+   */
+  async saveTerritoryLossNotification(userId: string, messageIndex: number): Promise<void> {
+    await this.ensureTerritoryLossNotificationsTable();
+    await this.db
+      .insert(territoryLossNotifications)
+      .values({
+        userId,
+        messageIndex,
+      });
   }
 }

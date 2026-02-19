@@ -18,6 +18,7 @@ export interface Env {
   EMAIL_PROVIDER?: 'resend' | 'sendgrid';
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM?: string;
+  UPSTASH_CRON_SECRET?: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
