@@ -114,6 +114,21 @@ export function AvatarDialog({
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest('DELETE', '/api/user/avatar', { userId });
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/user', userId] });
+      toast({ title: 'Avatar eliminado', description: 'Se ha eliminado tu foto de perfil' });
+      onOpenChange(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    },
+  });
+
   const handleUpload = () => {
     if (!selectedFile || !previewUrl) return;
     // Export cropped PNG 512x512 and send as File
