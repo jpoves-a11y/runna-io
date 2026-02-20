@@ -467,19 +467,32 @@ async function processTerritoryConquest(
   };
 }
 
+// Helper to safely compute union of two geometries, returning null on failure
+function safeUnion(geomA: any, geomB: any): any | null {
+  try {
+    const toFeature = (geom: any) => geom.type === 'MultiPolygon'
+      ? turf.multiPolygon(geom.coordinates)
+      : turf.polygon(geom.coordinates);
+    const result = turf.union(turf.featureCollection([toFeature(geomA), toFeature(geomB)]));
+    return result ? result.geometry : null;
+  } catch (err) {
+    console.error('[TERRITORY] safeUnion failed:', err);
+    return null;
+  }
+}
+
 // Rebuild territories for a user from all their remaining routes
 // Used after route deletion to recalculate territory accurately
+// SAFE: computes full geometry before deleting anything
 async function reprocessUserTerritories(
   storage: WorkerStorage,
   userId: string
 ): Promise<void> {
-  // Delete all existing territories for this user
-  await storage.deleteTerritoriesByUserId(userId);
-
   // Get all of the user's routes, ordered chronologically (oldest first)
   const userRoutes = await storage.getRoutesByUserIdChronological(userId);
 
   let currentGeometry: any = null;
+  let processedCount = 0;
 
   for (const route of userRoutes) {
     try {
@@ -499,25 +512,17 @@ async function reprocessUserTerritories(
       if (!buffered) continue;
 
       if (currentGeometry) {
-        // Merge with existing territory
-        try {
-          const toFeature = (geom: any) => geom.type === 'MultiPolygon'
-            ? turf.multiPolygon(geom.coordinates)
-            : turf.polygon(geom.coordinates);
-          const currentFeature = toFeature(currentGeometry);
-          const newFeature = toFeature(buffered.geometry);
-          const union = turf.union(
-            turf.featureCollection([currentFeature, newFeature])
-          );
-          if (union) {
-            currentGeometry = union.geometry;
-          }
-        } catch (err) {
-          console.error('[REPROCESS] Error merging geometry:', err);
+        // Merge with existing territory using safe union
+        const merged = safeUnion(currentGeometry, buffered.geometry);
+        if (merged) {
+          currentGeometry = merged;
+        } else {
+          console.error(`[REPROCESS] Error merging route ${route.id}, skipping`);
         }
       } else {
         currentGeometry = buffered.geometry;
       }
+      processedCount++;
     } catch (err) {
       console.error(`[REPROCESS] Error processing route ${route.id}:`, err);
     }
@@ -525,9 +530,20 @@ async function reprocessUserTerritories(
 
   if (currentGeometry) {
     const totalArea = turf.area(currentGeometry);
-    await storage.updateTerritoryGeometry(userId, null, currentGeometry, totalArea);
-    await storage.updateUserTotalArea(userId, totalArea);
+    
+    // Safety check: only proceed if the rebuilt area seems reasonable
+    if (totalArea > 0 && isFinite(totalArea)) {
+      // Now safe to delete and replace
+      await storage.deleteTerritoriesByUserId(userId);
+      await storage.updateTerritoryGeometry(userId, null, currentGeometry, totalArea);
+      await storage.updateUserTotalArea(userId, totalArea);
+      console.log(`[REPROCESS] Rebuilt territory for user ${userId}: ${processedCount} routes, ${(totalArea/1000000).toFixed(4)} km²`);
+    } else {
+      console.error(`[REPROCESS] Invalid rebuilt area (${totalArea}), not replacing territories`);
+    }
   } else {
+    // No valid routes — safe to clear
+    await storage.deleteTerritoriesByUserId(userId);
     await storage.updateUserTotalArea(userId, 0);
   }
 }

@@ -75,6 +75,27 @@ function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.Mult
   return turf.polygon(geometry.coordinates);
 }
 
+// Helper to safely parse a geometry (handles string or object, Polygon or MultiPolygon)
+function safeParseGeometry(geometry: any): any {
+  if (typeof geometry === 'string') {
+    try { return JSON.parse(geometry); } catch { return null; }
+  }
+  return geometry;
+}
+
+// Helper to safely compute union of two geometries, returning null on failure
+function safeUnion(geomA: any, geomB: any): any | null {
+  try {
+    const featureA = geometryToFeature(geomA);
+    const featureB = geometryToFeature(geomB);
+    const result = turf.union(turf.featureCollection([featureA, featureB]));
+    return result ? result.geometry : null;
+  } catch (err) {
+    console.error('[TERRITORY] safeUnion failed:', err);
+    return null;
+  }
+}
+
 export class WorkerStorage {
   constructor(private db: Database) {}
 
@@ -466,13 +487,22 @@ export class WorkerStorage {
     subtractionGeometry: any
   ): Promise<{ updatedTerritory: Territory | null; stolenArea: number }> {
     // Parse geometry from JSON string (SQLite stores as text)
-    const parsedGeometry = typeof territory.geometry === 'string' 
-      ? JSON.parse(territory.geometry) 
-      : territory.geometry;
+    const parsedGeometry = safeParseGeometry(territory.geometry);
+    if (!parsedGeometry) {
+      console.error(`[TERRITORY] Could not parse geometry for territory ${territory.id}`);
+      return { updatedTerritory: territory, stolenArea: 0 };
+    }
 
     // Use helper to handle both Polygon and MultiPolygon
-    const originalFeature = geometryToFeature(parsedGeometry);
-    const subtractionFeature = geometryToFeature(subtractionGeometry);
+    let originalFeature: turf.Feature<turf.Polygon | turf.MultiPolygon>;
+    let subtractionFeature: turf.Feature<turf.Polygon | turf.MultiPolygon>;
+    try {
+      originalFeature = geometryToFeature(parsedGeometry);
+      subtractionFeature = geometryToFeature(subtractionGeometry);
+    } catch (err) {
+      console.error(`[TERRITORY] Could not create features for territory ${territory.id}:`, err);
+      return { updatedTerritory: territory, stolenArea: 0 };
+    }
     
     // Calculate the intersection (what's being stolen)
     const intersection = turf.intersect(
@@ -530,10 +560,8 @@ export class WorkerStorage {
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
       try {
-        // Parse geometry from JSON string (SQLite stores as text)
-        const parsedGeometry = typeof userTerritory.geometry === 'string' 
-          ? JSON.parse(userTerritory.geometry) 
-          : userTerritory.geometry;
+        const parsedGeometry = safeParseGeometry(userTerritory.geometry);
+        if (!parsedGeometry) continue;
         
         const userFeature = geometryToFeature(parsedGeometry);
         const overlap = turf.intersect(
@@ -551,28 +579,91 @@ export class WorkerStorage {
     // True new area = buffer area - overlap with own territories
     const actualNewArea = newArea - existingAreaInBuffer;
 
-    // Merge all territories into one unified geometry
+    // === SAFE MERGE: compute merged geometry FIRST, before any deletions ===
     let finalGeometry = newGeometry;
+    let mergeSucceeded = true;
+    
     for (const userTerritory of userTerritories) {
       try {
-        // Parse geometry from JSON string (SQLite stores as text)
-        const parsedGeometry = typeof userTerritory.geometry === 'string' 
-          ? JSON.parse(userTerritory.geometry) 
-          : userTerritory.geometry;
+        const parsedGeometry = safeParseGeometry(userTerritory.geometry);
+        if (!parsedGeometry) continue;
         
-        const userFeature = geometryToFeature(parsedGeometry);
-        const currentFeature = geometryToFeature(finalGeometry);
-        const union = turf.union(
-          turf.featureCollection([currentFeature, userFeature])
-        );
-        if (union) {
-          finalGeometry = union.geometry;
+        const merged = safeUnion(finalGeometry, parsedGeometry);
+        if (merged) {
+          finalGeometry = merged;
+        } else {
+          // Union failed for this territory - log but DON'T skip it
+          // We'll still have the old territory's area in the final count
+          console.error(`[TERRITORY] Union failed for territory ${userTerritory.id}, geometry may be corrupt`);
+          mergeSucceeded = false;
         }
       } catch (err) {
         console.error('[TERRITORY] Error merging territories:', err);
+        mergeSucceeded = false;
       }
     }
 
+    // Validate the final geometry before committing
+    let finalArea: number;
+    try {
+      finalArea = turf.area(finalGeometry);
+      if (finalArea <= 0 || !isFinite(finalArea)) {
+        throw new Error(`Invalid final area: ${finalArea}`);
+      }
+    } catch (err) {
+      console.error('[TERRITORY] Final geometry validation failed, keeping existing territories:', err);
+      // SAFETY: If we can't validate the merged geometry, DON'T delete anything.
+      // Just add the new buffer as a separate territory.
+      const [territory] = await this.db
+        .insert(territories)
+        .values({
+          userId,
+          routeId,
+          geometry: JSON.stringify(newGeometry),
+          area: newArea,
+          conqueredAt: new Date(),
+        })
+        .returning();
+
+      // Recalculate total from all territories
+      const totalArea = await this.getUserTotalAreaFromTerritories(userId);
+
+      return {
+        territory,
+        totalArea,
+        newArea: actualNewArea,
+        existingArea: existingAreaInBuffer,
+      };
+    }
+
+    // Additional safety check: merged area should be >= each individual territory's area
+    // If the merged area is suspiciously small (less than 50% of existing), something went wrong
+    const existingTotalArea = userTerritories.reduce((sum, t) => sum + (t.area || 0), 0);
+    if (existingTotalArea > 0 && finalArea < existingTotalArea * 0.5) {
+      console.error(`[TERRITORY] SAFETY: Merged area (${finalArea}) is much less than existing (${existingTotalArea}). Aborting merge to prevent data loss.`);
+      // Add new territory alongside existing ones instead of replacing
+      const [territory] = await this.db
+        .insert(territories)
+        .values({
+          userId,
+          routeId,
+          geometry: JSON.stringify(newGeometry),
+          area: newArea,
+          conqueredAt: new Date(),
+        })
+        .returning();
+
+      const totalArea = await this.getUserTotalAreaFromTerritories(userId);
+
+      return {
+        territory,
+        totalArea,
+        newArea: actualNewArea,
+        existingArea: existingAreaInBuffer,
+      };
+    }
+
+    // === Everything validated - now safe to delete old and insert new ===
     // Delete all old territories
     await this.db
       .delete(territories)
@@ -585,14 +676,14 @@ export class WorkerStorage {
         userId,
         routeId,
         geometry: JSON.stringify(finalGeometry),
-        area: turf.area(finalGeometry),
+        area: finalArea,
         conqueredAt: new Date(),
       })
       .returning();
 
     return {
       territory,
-      totalArea: turf.area(finalGeometry),
+      totalArea: finalArea,
       newArea: actualNewArea,
       existingArea: existingAreaInBuffer,
     };

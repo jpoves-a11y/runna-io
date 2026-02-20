@@ -2,8 +2,9 @@ import { area } from '@turf/area';
 import { difference } from '@turf/difference';
 import { featureCollection } from '@turf/helpers';
 import { intersect } from '@turf/intersect';
-import { polygon } from '@turf/helpers';
+import { polygon, multiPolygon } from '@turf/helpers';
 import { union } from '@turf/union';
+import type { Feature, Polygon, MultiPolygon } from 'geojson';
 import {
   users,
   routes,
@@ -52,6 +53,27 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, sql, and } from "drizzle-orm";
+
+// Helper function to create a turf feature from either Polygon or MultiPolygon geometry
+function geometryToFeature(geometry: any): Feature<Polygon | MultiPolygon> {
+  if (geometry.type === 'MultiPolygon') {
+    return multiPolygon(geometry.coordinates) as Feature<MultiPolygon>;
+  }
+  return polygon(geometry.coordinates) as Feature<Polygon>;
+}
+
+// Helper to safely compute union of two geometries, returning null on failure
+function safeUnion(geomA: any, geomB: any): any | null {
+  try {
+    const featureA = geometryToFeature(geomA);
+    const featureB = geometryToFeature(geomB);
+    const result = union(featureCollection([featureA, featureB]));
+    return result ? result.geometry : null;
+  } catch (err) {
+    console.error('[TERRITORY] safeUnion failed:', err);
+    return null;
+  }
+}
 
 export interface IStorage {
   // Users
@@ -319,12 +341,20 @@ export class DatabaseStorage implements IStorage {
       throw new Error('Territory not found');
     }
 
-    const originalPoly = polygon(territory.geometry.coordinates);
-    const subtractionPoly = polygon(subtractionGeometry.coordinates);
+    // Handle both Polygon and MultiPolygon geometries
+    let originalFeature: Feature<Polygon | MultiPolygon>;
+    let subtractionFeature: Feature<Polygon | MultiPolygon>;
+    try {
+      originalFeature = geometryToFeature(territory.geometry);
+      subtractionFeature = geometryToFeature(subtractionGeometry);
+    } catch (err) {
+      console.error(`[TERRITORY] Could not create features for territory ${territoryId}:`, err);
+      return { updatedTerritory: territory, stolenArea: 0 };
+    }
     
     // Calculate the intersection (what's being stolen)
     const intersection = intersect(
-      featureCollection([originalPoly, subtractionPoly])
+      featureCollection([originalFeature, subtractionFeature])
     );
     
     if (!intersection) {
@@ -336,7 +366,7 @@ export class DatabaseStorage implements IStorage {
     
     // Calculate the difference (what remains)
     const diff = difference(
-      featureCollection([originalPoly, subtractionPoly])
+      featureCollection([originalFeature, subtractionFeature])
     );
     
     if (!diff) {
@@ -370,16 +400,16 @@ export class DatabaseStorage implements IStorage {
     newArea: number;
     existingArea: number;
   }> {
-    const newPoly = polygon(newGeometry.coordinates);
+    const newFeature = geometryToFeature(newGeometry);
     let newArea = area(newGeometry);
     let existingAreaInBuffer = 0;
 
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
       try {
-        const userPoly = polygon(userTerritory.geometry.coordinates);
+        const userFeature = geometryToFeature(userTerritory.geometry);
         const overlap = intersect(
-          featureCollection([newPoly, userPoly])
+          featureCollection([newFeature, userFeature])
         );
         
         if (overlap) {
@@ -393,44 +423,72 @@ export class DatabaseStorage implements IStorage {
     // True new area = buffer area - overlap with own territories
     const actualNewArea = newArea - existingAreaInBuffer;
 
-    // Merge all territories into one unified geometry
+    // === SAFE MERGE: compute merged geometry FIRST, before any deletions ===
     let finalGeometry = newGeometry;
     for (const userTerritory of userTerritories) {
       try {
-        const userPoly = polygon(userTerritory.geometry.coordinates);
-        const unionResult = union(
-          featureCollection([
-            polygon(finalGeometry.coordinates),
-            userPoly
-          ])
-        );
-        if (unionResult) {
-          finalGeometry = unionResult.geometry;
+        const merged = safeUnion(finalGeometry, userTerritory.geometry);
+        if (merged) {
+          finalGeometry = merged;
+        } else {
+          console.error(`[TERRITORY] Union failed for territory ${userTerritory.id}`);
         }
       } catch (err) {
         console.error('[TERRITORY] Error merging territories:', err);
       }
     }
 
-    // Delete all old territories
+    // Validate the final geometry before committing
+    let finalArea: number;
+    try {
+      finalArea = area(finalGeometry);
+      if (finalArea <= 0 || !isFinite(finalArea)) {
+        throw new Error(`Invalid final area: ${finalArea}`);
+      }
+    } catch (err) {
+      console.error('[TERRITORY] Final geometry validation failed, keeping existing territories:', err);
+      const [territory] = await db
+        .insert(territories)
+        .values({ userId, routeId, geometry: newGeometry, area: newArea })
+        .returning();
+
+      const allUserTerritories = await this.getTerritoriesByUserId(userId);
+      const totalArea = allUserTerritories.reduce((sum, t) => sum + t.area, 0);
+      return { territory, totalArea, newArea: actualNewArea, existingArea: existingAreaInBuffer };
+    }
+
+    // Safety check: merged area shouldn't be much less than existing
+    const existingTotalArea = userTerritories.reduce((sum, t) => sum + (t.area || 0), 0);
+    if (existingTotalArea > 0 && finalArea < existingTotalArea * 0.5) {
+      console.error(`[TERRITORY] SAFETY: Merged area (${finalArea}) << existing (${existingTotalArea}). Adding alongside.`);
+      const [territory] = await db
+        .insert(territories)
+        .values({ userId, routeId, geometry: newGeometry, area: newArea })
+        .returning();
+
+      const allUserTerritories = await this.getTerritoriesByUserId(userId);
+      const totalArea = allUserTerritories.reduce((sum, t) => sum + t.area, 0);
+      return { territory, totalArea, newArea: actualNewArea, existingArea: existingAreaInBuffer };
+    }
+
+    // === Everything validated - now safe to delete old and insert new ===
     await db
       .delete(territories)
       .where(eq(territories.userId, userId));
 
-    // Create new unified territory
     const [territory] = await db
       .insert(territories)
       .values({
         userId,
         routeId,
         geometry: finalGeometry,
-        area: area(finalGeometry),
+        area: finalArea,
       })
       .returning();
 
     return {
       territory,
-      totalArea: area(finalGeometry),
+      totalArea: finalArea,
       newArea: actualNewArea,
       existingArea: existingAreaInBuffer,
     };
