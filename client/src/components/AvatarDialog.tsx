@@ -51,48 +51,48 @@ export function AvatarDialog({
       formData.append('avatar', file);
       formData.append('userId', userId);
 
-      let response: Response;
-      try {
-        const fullUrl = `${API_BASE}/api/user/avatar`;
-        response = await fetch(fullUrl, {
-          method: 'POST',
-          body: formData,
-          credentials: 'include',
-        });
-      } catch (netErr: any) {
-        console.error('Network error uploading avatar', netErr);
-        throw new Error(netErr?.message || 'Network error during avatar upload');
-      }
-
-      // Read body once to avoid "body is disturbed or locked" errors
-      let bodyText: string = '';
-      try {
-        bodyText = await response.text();
-      } catch (readErr: any) {
-        console.error('Failed reading response body', readErr, { status: response.status, type: response.type });
-        throw new Error(readErr?.message || `Failed reading response body: ${response.status}`);
-      }
-
-      const contentType = response.headers.get('content-type') || '';
-      if (!response.ok) {
-        const detail = `status=${response.status} content-type=${contentType} body=${bodyText}`;
-        console.error('Upload failed', detail);
-        // Try parse JSON message
+      const fullUrl = `${API_BASE}/api/user/avatar`;
+      let attempts = 0;
+      let lastError: any = null;
+      while (attempts < 2) {
+        attempts += 1;
         try {
-          const parsed = JSON.parse(bodyText);
-          const msg = parsed?.message || JSON.stringify(parsed);
-          throw new Error(`${msg} (${detail})`);
-        } catch {
-          throw new Error(`${bodyText || 'Upload failed'} (${detail})`);
+          const response = await fetch(fullUrl, {
+            method: 'POST',
+            body: formData,
+            credentials: 'include',
+          });
+
+          const bodyText = await response.text().catch(() => '');
+          const contentType = response.headers.get('content-type') || '';
+          if (!response.ok) {
+            const detail = `status=${response.status} content-type=${contentType} body=${bodyText}`;
+            // If service returned 503, retry once after short delay
+            if (response.status === 503 && attempts < 2) {
+              await new Promise(r => setTimeout(r, 500));
+              continue;
+            }
+            try {
+              const parsed = JSON.parse(bodyText);
+              const msg = parsed?.message || JSON.stringify(parsed);
+              throw new Error(`${msg} (${detail})`);
+            } catch {
+              throw new Error(`${bodyText || 'Upload failed'} (${detail})`);
+            }
+          }
+
+          try {
+            return contentType.includes('application/json') ? JSON.parse(bodyText) : { success: true, avatar: bodyText } as any;
+          } catch (e) {
+            return { success: true, avatar: bodyText } as any;
+          }
+        } catch (err: any) {
+          lastError = err;
+          // network error: retry once
+          if (attempts < 2) await new Promise(r => setTimeout(r, 500));
         }
       }
-
-      try {
-        return contentType.includes('application/json') ? JSON.parse(bodyText) : { success: true, avatar: bodyText } as any;
-      } catch (e) {
-        console.warn('Response not JSON for avatar upload:', bodyText);
-        return { success: true, avatar: bodyText } as any;
-      }
+      throw lastError || new Error('Upload failed');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/user', userId] });
@@ -397,17 +397,44 @@ export function AvatarDialog({
             <Avatar className="h-40 w-40 ring-4 ring-offset-4"
               style={{ '--tw-ring-color': userColor } as React.CSSProperties}
             >
-              <AvatarImage 
-                src={previewUrl || currentAvatar || undefined} 
-                className="object-cover"
-                onError={() => {
-                  setPreviewLoadError(true);
-                  // if preview URL failed, revoke it
-                  if (previewUrl) {
-                    try { URL.revokeObjectURL(previewUrl); } catch {};
-                  }
-                }}
-              />
+                  {previewUrl && !previewLoadError ? (
+                    // Cropper viewport
+                    <div className="w-[300px] h-[300px] rounded-full overflow-hidden bg-muted/10 relative touch-none">
+                      <div
+                        role="img"
+                        aria-label="Recortar imagen"
+                        onPointerDown={onPointerDown}
+                        onPointerMove={onPointerMove}
+                        onPointerUp={onPointerUp}
+                        onPointerCancel={onPointerUp}
+                        onTouchStart={onTouchStart}
+                        onTouchMove={onTouchMove}
+                        onTouchEnd={onTouchEnd}
+                        className="w-full h-full relative"
+                        style={{ touchAction: 'none' }}
+                      >
+                        <img
+                          src={previewUrl}
+                          alt="preview"
+                          draggable={false}
+                          className="absolute top-0 left-0 select-none"
+                          style={{
+                            left: `${pos.x}px`,
+                            top: `${pos.y}px`,
+                            width: cropImgRef.current ? `${cropImgRef.current.naturalWidth * baseFitScale * cropScale}px` : 'auto',
+                            height: cropImgRef.current ? `${cropImgRef.current.naturalHeight * baseFitScale * cropScale}px` : 'auto',
+                          }}
+                        />
+                        {/* circular overlay border */}
+                        <div className="pointer-events-none absolute inset-0 rounded-full border-2 border-white/60" />
+                      </div>
+                    </div>
+                  ) : (
+                    <AvatarImage 
+                      src={currentAvatar || undefined} 
+                      className="object-cover"
+                    />
+                  )}
               <AvatarFallback style={{ backgroundColor: userColor }}>
                 <span className="text-white text-5xl font-bold">
                   {getInitials(userName)}
@@ -417,28 +444,48 @@ export function AvatarDialog({
           </div>
 
           {previewUrl && !previewLoadError ? (
-            <div className="flex gap-2 w-full">
-              <Button
-                onClick={handleCancel}
-                variant="outline"
-                className="flex-1"
-                disabled={uploadMutation.isPending}
-              >
-                <X className="h-4 w-4 mr-2" />
-                Cancelar
-              </Button>
-              <Button
-                onClick={handleUpload}
-                className="flex-1 gradient-primary"
-                disabled={uploadMutation.isPending}
-              >
-                {uploadMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Camera className="h-4 w-4 mr-2" />
-                )}
-                Guardar
-              </Button>
+            <div className="flex flex-col gap-2 w-full">
+              <div className="flex items-center gap-2">
+                <label className="text-[12px] text-muted-foreground">Zoom</label>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={4}
+                  step={0.01}
+                  value={cropScale}
+                  onChange={(e) => {
+                    const newScale = Number(e.target.value);
+                    // keep center stable when zooming
+                    const rect = (e.target as HTMLInputElement).closest('.sm:max-w-md')?.getBoundingClientRect();
+                    setCropScale(newScale);
+                  }}
+                  className="flex-1"
+                />
+                <Button variant="outline" onClick={() => { setCropScale(1); setPos({ x: 0, y: 0 }); }} className="ml-2">Reset</Button>
+              </div>
+              <div className="flex gap-2 w-full">
+                <Button
+                  onClick={handleCancel}
+                  variant="outline"
+                  className="flex-1"
+                  disabled={uploadMutation.isPending}
+                >
+                  <X className="h-4 w-4 mr-2" />
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={handleUpload}
+                  className="flex-1 gradient-primary"
+                  disabled={uploadMutation.isPending}
+                >
+                  {uploadMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Camera className="h-4 w-4 mr-2" />
+                  )}
+                  Guardar
+                </Button>
+              </div>
             </div>
           ) : (
             <>
