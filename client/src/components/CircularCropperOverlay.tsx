@@ -1,4 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Loader2, X, Camera } from 'lucide-react';
 
 type Props = {
   imageUrl: string;
@@ -142,15 +144,50 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     const delta = -e.deltaY;
+    const rect = (containerRef.current as HTMLElement).getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const oldS = baseFitScale * scale;
     const newScale = Math.max(0.5, Math.min(4, scale * (1 + delta / 1000)));
+    const newS = baseFitScale * newScale;
+    setPos((p) => {
+      const nx = p.x + (1 - newS / oldS) * (cx - p.x);
+      const ny = p.y + (1 - newS / oldS) * (cy - p.y);
+      return { x: nx, y: ny };
+    });
     setScale(newScale);
   };
 
-  const exportFile = async () => {
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    try {
+      const file = await exportFile();
+      if (!file) {
+        console.error('CircularCropperOverlay: export returned no file');
+        setIsSaving(false);
+        return;
+      }
+      // call onSave; allow onSave to return a promise
+      const maybe = (onSave as unknown as (...args: any[]) => any)(file);
+      if (maybe && typeof maybe.then === 'function') {
+        await maybe;
+      }
+    } catch (err) {
+      console.error('Error while saving avatar crop', err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const exportFile = async (): Promise<File | null> => {
     const img = imgRef.current;
     const container = containerRef.current;
-    if (!img || !container) return;
-    const vp = Math.min(600, container.clientWidth);
+    if (!img || !container) return null;
+    const maxVp = Math.min(800, Math.max(300, fullscreen ? Math.min(window.innerWidth, window.innerHeight) * 0.9 : container.clientWidth));
+    const vp = Math.min(800, Math.max(300, maxVp));
     const s = baseFitScale * scale;
     const naturalW = img.naturalWidth;
     const naturalH = img.naturalHeight;
@@ -170,10 +207,9 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
     ctx.clip();
     ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, outSize, outSize);
     const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/png'));
-    if (!blob) return;
+    if (!blob) return null;
     const file = new File([blob], 'avatar.png', { type: 'image/png' });
-    // revoke url later in parent
-    onSave(file);
+    return file;
   };
 
   return (
@@ -206,10 +242,14 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
           value={scale}
           onChange={(e) => setScale(Number(e.target.value))}
           className="flex-1"
+          disabled={isSaving}
         />
-        <button className="btn" onClick={() => { setScale(1); setPos({ x: 0, y: 0 }); }}>Reset</button>
-        <button className="btn" onClick={onCancel}>Cancelar</button>
-        <button className="btn btn-primary" onClick={exportFile}>Guardar</button>
+        <button className="btn" onClick={() => { setScale(1); setPos({ x: 0, y: 0 }); }} disabled={isSaving}>Reset</button>
+        <button className="btn" onClick={onCancel} disabled={isSaving}>Cancelar</button>
+        <button className="btn btn-primary flex items-center gap-2" onClick={handleSave} disabled={isSaving}>
+          {isSaving ? <Loader2 className="animate-spin h-4 w-4" /> : <Camera className="h-4 w-4" />}
+          <span>{isSaving ? 'Guardando...' : 'Guardar'}</span>
+        </button>
       </div>
     </div>
   );
