@@ -1414,25 +1414,47 @@ export default function ProfilePage() {
                 setCropPendingFile(null);
               }}
               onSave={async (file) => {
-                try {
-                  const formData = new FormData();
-                  formData.append('avatar', file);
-                  formData.append('userId', user.id);
-                  const fullUrl = `${API_BASE}/api/user/avatar`;
-                  const res = await fetch(fullUrl, { method: 'POST', body: formData, credentials: 'include' });
-                  if (!res.ok) {
-                    const text = await res.text().catch(() => '');
-                    throw new Error(`${res.status}: ${text}`);
+                const formData = new FormData();
+                formData.append('avatar', file);
+                formData.append('userId', user.id);
+                const fullUrl = `${API_BASE}/api/user/avatar`;
+                let attempts = 0;
+                let lastErr: any = null;
+                while (attempts < 2) {
+                  attempts += 1;
+                  try {
+                    const res = await fetch(fullUrl, { method: 'POST', body: formData, credentials: 'include' });
+                    const bodyText = await res.text().catch(() => '');
+                    const contentType = res.headers.get('content-type') || '';
+                    if (!res.ok) {
+                      const detail = `status=${res.status} content-type=${contentType} body=${bodyText}`;
+                      if (res.status === 503 && attempts < 2) {
+                        await new Promise(r => setTimeout(r, 500));
+                        continue;
+                      }
+                      try {
+                        const parsed = JSON.parse(bodyText);
+                        const msg = parsed?.message || JSON.stringify(parsed);
+                        throw new Error(`${msg} (${detail})`);
+                      } catch {
+                        throw new Error(`${bodyText || 'Upload failed'} (${detail})`);
+                      }
+                    }
+
+                    // success
+                    try { URL.revokeObjectURL(cropImageUrl); } catch {}
+                    setIsCroppingAvatar(false);
+                    setCropImageUrl(null);
+                    setCropPendingFile(null);
+                    queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] });
+                    toast({ title: '✅ Avatar actualizado', description: 'Tu foto de perfil ha sido actualizada' });
+                    return;
+                  } catch (err: any) {
+                    lastErr = err;
+                    if (attempts < 2) await new Promise(r => setTimeout(r, 500));
                   }
-                  try { URL.revokeObjectURL(cropImageUrl); } catch {}
-                  setIsCroppingAvatar(false);
-                  setCropImageUrl(null);
-                  setCropPendingFile(null);
-                  queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] });
-                  toast({ title: '✅ Avatar actualizado', description: 'Tu foto de perfil ha sido actualizada' });
-                } catch (err: any) {
-                  toast({ title: 'Error', description: err?.message || 'Error subiendo avatar', variant: 'destructive' });
                 }
+                toast({ title: 'Error', description: lastErr?.message || 'Error subiendo avatar', variant: 'destructive' });
               }}
             />
           </div>
