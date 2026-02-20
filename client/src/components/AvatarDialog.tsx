@@ -30,7 +30,8 @@ export function AvatarDialog({
   currentAvatar, 
   userName,
   userColor,
-  userId 
+  userId,
+  onStartCrop,
 }: AvatarDialogProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
