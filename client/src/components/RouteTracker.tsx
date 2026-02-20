@@ -200,13 +200,24 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   }, [isTracking, isPaused]);
 
   // --- Cleanup on unmount ---
-  useEffect(() => { return () => { releaseWakeLock(); closeTrackingNotification(); }; }, []);
+  useEffect(() => { return () => {
+    releaseWakeLock(); closeTrackingNotification();
+    if (watchIdRef.current) { clearWatch(watchIdRef.current); watchIdRef.current = null; }
+    if (displayTimerRef.current) { window.clearInterval(displayTimerRef.current); displayTimerRef.current = null; }
+  }; }, []);
 
   // --- Controls ---
   const handleStart = async () => {
+    // Ensure no stale state from previous recordings
+    clearTrackingState();
+    if (routeLineRef.current && mapRef.current) {
+      mapRef.current.removeLayer(routeLineRef.current);
+      routeLineRef.current = null;
+    }
     const now = Date.now();
     startTimeRef.current = now; pausedDurationRef.current = 0; lastPauseTimeRef.current = null; coordsRef.current = [];
     setIsTracking(true); setIsPaused(false); setDistance(0); setDisplayDuration(0);
+    setIsSaving(false); setConfirmStop(false); setPauseTaps(0);
     const ok = await acquireWakeLock(); setScreenLockActive(ok);
     showTrackingNotification(); startDisplayTimer(); startGpsWatch();
     saveTrackingState({ coordinates: [], startTime: now, pausedDuration: 0, lastPauseTime: null, isPaused: false });
@@ -239,12 +250,31 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     if (!confirmStop) { setConfirmStop(true); return; }
     if (isSaving) return;
     setIsSaving(true);
-    if (watchIdRef.current) clearWatch(watchIdRef.current);
-    if (displayTimerRef.current) window.clearInterval(displayTimerRef.current);
-    releaseWakeLock(); closeTrackingNotification(); clearTrackingState();
     const finalDuration = getRealDurationSec();
-    const finalCoords = coordsRef.current;
-    onComplete({ coordinates: finalCoords, distance: calculateDistance(finalCoords), duration: finalDuration });
+    const finalCoords = [...coordsRef.current];
+    const finalDistance = calculateDistance(finalCoords);
+    // Stop all tracking immediately
+    if (watchIdRef.current) { clearWatch(watchIdRef.current); watchIdRef.current = null; }
+    if (displayTimerRef.current) { window.clearInterval(displayTimerRef.current); displayTimerRef.current = null; }
+    releaseWakeLock(); closeTrackingNotification();
+    // Clear localStorage and reset all internal state to prevent stale data
+    clearTrackingState();
+    setIsTracking(false);
+    coordsRef.current = [];
+    startTimeRef.current = 0;
+    pausedDurationRef.current = 0;
+    lastPauseTimeRef.current = null;
+    setDistance(0);
+    setDisplayDuration(0);
+    setConfirmStop(false);
+    setPauseTaps(0);
+    // Remove polyline from map
+    if (routeLineRef.current && mapRef.current) {
+      mapRef.current.removeLayer(routeLineRef.current);
+      routeLineRef.current = null;
+    }
+    // Submit the completed route with captured data
+    onComplete({ coordinates: finalCoords, distance: finalDistance, duration: finalDuration });
   };
 
   const handleCancelTracking = () => {
