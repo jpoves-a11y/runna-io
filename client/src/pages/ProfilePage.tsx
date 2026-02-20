@@ -23,13 +23,14 @@ import { LoginDialog } from '@/components/LoginDialog';
 import { NotificationToggle } from '@/components/NotificationToggle';
 import { useTheme } from '@/hooks/use-theme';
 import { AvatarDialog } from '@/components/AvatarDialog';
+import CircularCropperOverlay from '@/components/CircularCropperOverlay';
 import { ConquestStats } from '@/components/ConquestStats';
 import { ActivityPreviewDialog } from '@/components/ActivityPreviewDialog';
 import { ColorPickerDialog } from '@/components/ColorPickerDialog';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { apiRequest, queryClient } from '@/lib/queryClient';
+import { apiRequest, queryClient, API_BASE } from '@/lib/queryClient';
 import { USER_COLOR_NAMES } from '@/lib/colors';
 
 // Parse date string safely (handles ISO, Polar format, and legacy format)
@@ -206,6 +207,9 @@ export default function ProfilePage() {
   const [polarActivityToDelete, setPolarActivityToDelete] = useState<PolarActivity | null>(null);
   const [deletingPolarActivityId, setDeletingPolarActivityId] = useState<string | null>(null);
   const [isAvatarDialogOpen, setIsAvatarDialogOpen] = useState(false);
+  const [isCroppingAvatar, setIsCroppingAvatar] = useState(false);
+  const [cropImageUrl, setCropImageUrl] = useState<string | null>(null);
+  const [cropPendingFile, setCropPendingFile] = useState<File | null>(null);
   const [isColorPickerOpen, setIsColorPickerOpen] = useState(false);
   const [showActivityPreview, setShowActivityPreview] = useState(false);
   const [pendingActivities, setPendingActivities] = useState<PolarActivity[]>([]);
@@ -1383,7 +1387,50 @@ export default function ProfilePage() {
         userName={user.name}
         userColor={user.color}
         userId={user.id}
+        onStartCrop={(url, file) => {
+          setCropImageUrl(url);
+          setCropPendingFile(file);
+          setIsCroppingAvatar(true);
+        }}
       />
+
+      {isCroppingAvatar && cropImageUrl && (
+        <div className="p-4">
+          <CircularCropperOverlay
+            imageUrl={cropImageUrl}
+            exportSize={512}
+            onCancel={() => {
+              try { URL.revokeObjectURL(cropImageUrl); } catch {}
+              setIsCroppingAvatar(false);
+              setCropImageUrl(null);
+              setCropPendingFile(null);
+            }}
+            onSave={async (file) => {
+              try {
+                // upload like AvatarDialog.uploadMutation
+                const formData = new FormData();
+                formData.append('avatar', file);
+                formData.append('userId', user.id);
+                const fullUrl = `${API_BASE}/api/user/avatar`;
+                const res = await fetch(fullUrl, { method: 'POST', body: formData, credentials: 'include' });
+                if (!res.ok) {
+                  const text = await res.text().catch(() => '');
+                  throw new Error(`${res.status}: ${text}`);
+                }
+                try { URL.revokeObjectURL(cropImageUrl); } catch {}
+                setIsCroppingAvatar(false);
+                setCropImageUrl(null);
+                setCropPendingFile(null);
+                queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] });
+                // toast handled by ProfilePage's useToast
+                toast({ title: '✅ Avatar actualizado', description: 'Tu foto de perfil ha sido actualizada' });
+              } catch (err: any) {
+                toast({ title: 'Error', description: err?.message || 'Error subiendo avatar', variant: 'destructive' });
+              }
+            }}
+          />
+        </div>
+      )}
 
       <ColorPickerDialog
         open={isColorPickerOpen}

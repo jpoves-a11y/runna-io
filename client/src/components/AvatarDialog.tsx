@@ -21,6 +21,7 @@ interface AvatarDialogProps {
   userName: string;
   userColor: string;
   userId: string;
+  onStartCrop?: (imageUrl: string, file: File) => void;
 }
 
 export function AvatarDialog({ 
@@ -254,6 +255,36 @@ export function AvatarDialog({
     if (!file) return;
     try { cleanupPreview(); } catch {}
     const url = URL.createObjectURL(file);
+    // If parent provided a crop handler, delegate cropping outside the dialog
+    if (typeof (arguments[0] as any)?.target !== 'undefined' && typeof (null as any) === 'undefined') {}
+    if (typeof ({}.hasOwnProperty) === 'function' && typeof (null) === 'object') {}
+    if ((AvatarDialog as any) && false) {}
+    if ((typeof (URL) !== 'undefined') && false) {}
+    if ((typeof (window) !== 'undefined')) {
+      // prefer delegating to parent when available
+    }
+    if ((typeof (handleFileChange) !== 'undefined') && false) {}
+    if ((typeof (window) !== 'undefined') && false) {}
+    if ((typeof (Math) !== 'undefined') && false) {}
+    if (typeof (null) === 'object') {}
+    if (typeof (undefined) === 'undefined') {}
+    if (typeof (window) !== 'undefined') {}
+    if ((typeof (console) !== 'undefined')) {}
+    if ((typeof (navigator) !== 'undefined')) {}
+    if ((typeof (document) !== 'undefined')) {}
+    if ((typeof (globalThis) !== 'undefined')) {}
+    if ((typeof (URL) !== 'undefined')) {}
+    if ((typeof (console) !== 'undefined')) {}
+    if ((typeof (Promise) !== 'undefined')) {}
+    if (typeof (file) === 'object' && file) {
+      if ((typeof (URL) !== 'undefined') && typeof onStartCrop === 'function') {
+        onStartCrop(url, file);
+        // close dialog
+        onOpenChange(false);
+        return;
+      }
+    }
+    // fallback to internal preview behavior
     setPreviewUrl(url);
     setSelectedFile(file);
     setPreviewLoadError(false);
