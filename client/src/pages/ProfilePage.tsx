@@ -1395,40 +1395,47 @@ export default function ProfilePage() {
       />
 
       {isCroppingAvatar && cropImageUrl && (
-        <div className="p-4">
-          <CircularCropperOverlay
-            imageUrl={cropImageUrl}
-            exportSize={512}
-            onCancel={() => {
-              try { URL.revokeObjectURL(cropImageUrl); } catch {}
-              setIsCroppingAvatar(false);
-              setCropImageUrl(null);
-              setCropPendingFile(null);
-            }}
-            onSave={async (file) => {
-              try {
-                // upload like AvatarDialog.uploadMutation
-                const formData = new FormData();
-                formData.append('avatar', file);
-                formData.append('userId', user.id);
-                const fullUrl = `${API_BASE}/api/user/avatar`;
-                const res = await fetch(fullUrl, { method: 'POST', body: formData, credentials: 'include' });
-                if (!res.ok) {
-                  const text = await res.text().catch(() => '');
-                  throw new Error(`${res.status}: ${text}`);
-                }
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60" onClick={() => {
+            try { URL.revokeObjectURL(cropImageUrl); } catch {}
+            setIsCroppingAvatar(false);
+            setCropImageUrl(null);
+            setCropPendingFile(null);
+          }} />
+          <div className="relative w-full max-w-4xl p-6">
+            <CircularCropperOverlay
+              imageUrl={cropImageUrl}
+              exportSize={512}
+              fullscreen={true}
+              onCancel={() => {
                 try { URL.revokeObjectURL(cropImageUrl); } catch {}
                 setIsCroppingAvatar(false);
                 setCropImageUrl(null);
                 setCropPendingFile(null);
-                queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] });
-                // toast handled by ProfilePage's useToast
-                toast({ title: '✅ Avatar actualizado', description: 'Tu foto de perfil ha sido actualizada' });
-              } catch (err: any) {
-                toast({ title: 'Error', description: err?.message || 'Error subiendo avatar', variant: 'destructive' });
-              }
-            }}
-          />
+              }}
+              onSave={async (file) => {
+                try {
+                  const formData = new FormData();
+                  formData.append('avatar', file);
+                  formData.append('userId', user.id);
+                  const fullUrl = `${API_BASE}/api/user/avatar`;
+                  const res = await fetch(fullUrl, { method: 'POST', body: formData, credentials: 'include' });
+                  if (!res.ok) {
+                    const text = await res.text().catch(() => '');
+                    throw new Error(`${res.status}: ${text}`);
+                  }
+                  try { URL.revokeObjectURL(cropImageUrl); } catch {}
+                  setIsCroppingAvatar(false);
+                  setCropImageUrl(null);
+                  setCropPendingFile(null);
+                  queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] });
+                  toast({ title: '✅ Avatar actualizado', description: 'Tu foto de perfil ha sido actualizada' });
+                } catch (err: any) {
+                  toast({ title: 'Error', description: err?.message || 'Error subiendo avatar', variant: 'destructive' });
+                }
+              }}
+            />
+          </div>
         </div>
       )}
 

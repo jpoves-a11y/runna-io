@@ -5,9 +5,10 @@ type Props = {
   exportSize?: number; // final avatar size in px
   onSave: (file: File) => void;
   onCancel: () => void;
+  fullscreen?: boolean;
 };
 
-export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onCancel }: Props) {
+export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onCancel, fullscreen = true }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -24,7 +25,8 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
     img.onload = () => {
       imgRef.current = img;
       const container = containerRef.current;
-      const vp = Math.min(600, (container?.clientWidth ?? 600));
+      const maxVp = fullscreen ? Math.min(window.innerWidth, window.innerHeight) * 0.9 : (container?.clientWidth ?? 600);
+      const vp = Math.min(800, Math.max(300, maxVp));
       const fit = Math.max(vp / img.naturalWidth, vp / img.naturalHeight);
       setBaseFitScale(fit);
       setScale(1);
@@ -34,16 +36,19 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
       draw();
     };
     img.src = imageUrl;
-    return () => {};
+    const onResize = () => draw();
+    window.addEventListener('resize', onResize);
+    return () => { window.removeEventListener('resize', onResize); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageUrl]);
+  }, [imageUrl, fullscreen]);
 
   const draw = () => {
     const canvas = canvasRef.current;
     const img = imgRef.current;
     const container = containerRef.current;
     if (!canvas || !img || !container) return;
-    const vp = Math.min(600, container.clientWidth);
+    const maxVp = fullscreen ? Math.min(window.innerWidth, window.innerHeight) * 0.9 : container.clientWidth;
+    const vp = Math.min(800, Math.max(300, maxVp));
     canvas.width = vp;
     canvas.height = vp;
     const ctx = canvas.getContext('2d');
@@ -57,13 +62,15 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
     ctx.restore();
 
     // darken outside circle
+    // darken outside circle (use evenodd)
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.beginPath();
     ctx.rect(0, 0, vp, vp);
     ctx.arc(vp / 2, vp / 2, vp / 2, 0, Math.PI * 2);
     ctx.closePath();
-    ctx.fill('evenodd');
+    // use evenodd fill to darken outside
+    try { ctx.fill('evenodd'); } catch { ctx.fill(); }
     ctx.restore();
 
     // draw circular border and clear inside (we already drew image inside)
@@ -173,7 +180,7 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
     <div className="w-full flex flex-col items-center gap-4">
       <div
         ref={containerRef}
-        className="w-full max-w-3xl"
+        className={"w-full max-w-3xl" + (fullscreen ? "" : "")}
         style={{ touchAction: 'none' }}
         onPointerDown={pointerDown}
         onPointerMove={pointerMove}
@@ -186,7 +193,7 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
       >
         <canvas
           ref={canvasRef}
-          style={{ width: '100%', height: 'auto', display: 'block', background: '#222', borderRadius: 8 }}
+          style={{ width: '100%', height: 'auto', display: 'block', background: '#222', borderRadius: fullscreen ? '9999px' : 8 }}
         />
       </div>
       <div className="w-full max-w-3xl flex items-center gap-3">
