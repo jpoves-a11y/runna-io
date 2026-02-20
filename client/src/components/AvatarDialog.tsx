@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -35,6 +35,15 @@ export function AvatarDialog({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoadError, setPreviewLoadError] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // Crop UI state
+  const cropImgRef = useRef<HTMLImageElement | null>(null);
+  const [cropScale, setCropScale] = useState(1);
+  const [baseFitScale, setBaseFitScale] = useState(1);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const draggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0, origX: 0, origY: 0 });
+  const lastTouchDistRef = useRef<number | null>(null);
+  const cropViewportPx = 300; // on-screen viewport size (square)
 
   const uploadMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -205,14 +214,27 @@ export function AvatarDialog({
       const previewUrlLocal = URL.createObjectURL(processedFile);
       setPreviewLoadError(false);
       setPreviewUrl(previewUrlLocal);
+      // reset crop UI state so user starts centered and at fit scale
+      setTimeout(() => {
+        setCropScale(1);
+        setBaseFitScale(1);
+        setPos({ x: 0, y: 0 });
+      }, 0);
     })();
   };
 
   const handleUpload = () => {
-    if (selectedFile) {
-      // ensure we send a File (could be Blob wrapped as File)
-      uploadMutation.mutate(selectedFile);
-    }
+    if (!selectedFile || !previewUrl) return;
+    // Export cropped PNG 512x512 and send as File
+    (async () => {
+      try {
+        const croppedFile = await exportCroppedFile();
+        setSelectedFile(croppedFile);
+        uploadMutation.mutate(croppedFile);
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Fallo al recortar la imagen', variant: 'destructive' });
+      }
+    })();
   };
 
   const handleCancel = () => {
@@ -228,6 +250,127 @@ export function AvatarDialog({
     if (previewUrl) {
       try { URL.revokeObjectURL(previewUrl); } catch {};
     }
+  };
+
+  // When previewUrl changes, load image into crop image ref to compute fit scale
+  useEffect(() => {
+    if (!previewUrl) return;
+    const img = new Image();
+    img.onload = () => {
+      // compute base fit so the image covers the viewport (cover)
+      const fit = Math.max(cropViewportPx / img.naturalWidth, cropViewportPx / img.naturalHeight);
+      setBaseFitScale(fit);
+      setCropScale(1);
+      // center image so it fills viewport
+      const displayedW = img.naturalWidth * fit;
+      const displayedH = img.naturalHeight * fit;
+      setPos({ x: (cropViewportPx - displayedW) / 2, y: (cropViewportPx - displayedH) / 2 });
+      cropImgRef.current = img;
+    };
+    img.onerror = () => {
+      setPreviewLoadError(true);
+    };
+    img.src = previewUrl;
+    return () => {
+      // don't revoke previewUrl here; handled elsewhere
+    };
+  }, [previewUrl]);
+
+  // Helper: distance between two touch points
+  const touchDistance = (a: Touch, b: Touch) => {
+    const dx = a.clientX - b.clientX;
+    const dy = a.clientY - b.clientY;
+    return Math.hypot(dx, dy);
+  };
+
+  // Handlers for pointer interactions on crop area
+  const onPointerDown = (e: React.PointerEvent) => {
+    const el = e.currentTarget as HTMLElement;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    draggingRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY, origX: pos.x, origY: pos.y };
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
+    setPos({ x: dragStartRef.current.origX + dx, y: dragStartRef.current.origY + dy });
+  };
+  const onPointerUp = (_e: React.PointerEvent) => {
+    draggingRef.current = false;
+  };
+
+  // Touch handlers for pinch zoom and drag
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      draggingRef.current = true;
+      dragStartRef.current = { x: t.clientX, y: t.clientY, origX: pos.x, origY: pos.y };
+    } else if (e.touches.length === 2) {
+      lastTouchDistRef.current = touchDistance(e.touches[0], e.touches[1]);
+    }
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 1 && draggingRef.current) {
+      const t = e.touches[0];
+      const dx = t.clientX - dragStartRef.current.x;
+      const dy = t.clientY - dragStartRef.current.y;
+      setPos({ x: dragStartRef.current.origX + dx, y: dragStartRef.current.origY + dy });
+    } else if (e.touches.length === 2) {
+      const dist = touchDistance(e.touches[0], e.touches[1]);
+      const last = lastTouchDistRef.current ?? dist;
+      const delta = dist - last;
+      if (Math.abs(delta) > 2) {
+        const newScale = Math.max(0.5, Math.min(4, cropScale * (1 + delta / 200)));
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+        const s = baseFitScale * cropScale;
+        const s2 = baseFitScale * newScale;
+        setPos((p) => {
+          const nx = p.x + (1 - s2 / s) * (midX - p.x);
+          const ny = p.y + (1 - s2 / s) * (midY - p.y);
+          return { x: nx, y: ny };
+        });
+        setCropScale(newScale);
+      }
+      lastTouchDistRef.current = dist;
+    }
+    e.preventDefault?.();
+  };
+  const onTouchEnd = (_e: React.TouchEvent) => {
+    draggingRef.current = false;
+    lastTouchDistRef.current = null;
+  };
+
+  // Export canvas based on current crop state -> PNG blob -> File
+  const exportCroppedFile = async (): Promise<File> => {
+    if (!cropImgRef.current) throw new Error('Imagen no cargada');
+    const img = cropImgRef.current;
+    const naturalW = img.naturalWidth;
+    const naturalH = img.naturalHeight;
+    const s = baseFitScale * cropScale;
+    const displayedW = naturalW * s;
+    const displayedH = naturalH * s;
+    const srcX = Math.max(0, (-pos.x) / s);
+    const srcY = Math.max(0, (-pos.y) / s);
+    const srcW = Math.min(naturalW - srcX, cropViewportPx / s);
+    const srcH = Math.min(naturalH - srcY, cropViewportPx / s);
+    const outSize = 512;
+    const canvas = document.createElement('canvas');
+    canvas.width = outSize;
+    canvas.height = outSize;
+    const ctx = canvas.getContext('2d')!;
+    ctx.clearRect(0, 0, outSize, outSize);
+    ctx.beginPath();
+    ctx.arc(outSize / 2, outSize / 2, outSize / 2, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, outSize, outSize);
+    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+    if (!blob) throw new Error('No se pudo generar la imagen');
+    const file = new File([blob], 'avatar.png', { type: 'image/png' });
+    return file;
   };
 
   const getInitials = (name: string) => {
