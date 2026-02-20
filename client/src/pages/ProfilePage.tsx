@@ -1454,6 +1454,34 @@ export default function ProfilePage() {
                     if (attempts < 2) await new Promise(r => setTimeout(r, 500));
                   }
                 }
+                // If backend returned 503/Offline but maybe processed the upload, poll the user record a few times
+                const offlineMsg = String(lastErr?.message || '').toLowerCase().includes('offline') || String(lastErr?.message || '').includes('503');
+                if (offlineMsg) {
+                  const maxChecks = 10;
+                  let found = false;
+                  for (let i = 0; i < maxChecks; i++) {
+                    try {
+                      const res2 = await fetch(`${API_BASE}/api/user/${user.id}`, { credentials: 'include' });
+                      if (res2.ok) {
+                        const body = await res2.json();
+                        if (body?.avatar && body.avatar !== user.avatar) {
+                          found = true;
+                          break;
+                        }
+                      }
+                    } catch {}
+                    await new Promise(r => setTimeout(r, 500));
+                  }
+                  if (found) {
+                    try { URL.revokeObjectURL(cropImageUrl); } catch {}
+                    setIsCroppingAvatar(false);
+                    setCropImageUrl(null);
+                    setCropPendingFile(null);
+                    queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] });
+                    toast({ title: '✅ Avatar actualizado', description: 'Tu foto de perfil ha sido actualizada' });
+                    return;
+                  }
+                }
                 toast({ title: 'Error', description: lastErr?.message || 'Error subiendo avatar', variant: 'destructive' });
               }}
             />
