@@ -234,6 +234,16 @@ export function AvatarDialog({
     lastTouchDistRef.current = null;
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    if (!file) return;
+    try { cleanupPreview(); } catch {}
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    setSelectedFile(file);
+    setPreviewLoadError(false);
+  };
+
   // Export canvas based on current crop state -> PNG blob -> File
   const exportCroppedFile = async (): Promise<File> => {
     if (!cropImgRef.current) throw new Error('Imagen no cargada');
