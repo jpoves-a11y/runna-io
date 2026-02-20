@@ -584,7 +584,7 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
         <ReactionButton type="dislike" count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} size="sm" />
         <button
           onClick={() => {
-            if (event.commentCount > 0 && !showAllComments) setShowAllComments(true);
+            setShowAllComments(true);
             setTimeout(() => inputRef.current?.focus(), 80);
           }}
           className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all active:scale-90 ml-auto"
