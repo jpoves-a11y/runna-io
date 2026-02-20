@@ -267,7 +267,7 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
       const res = await apiRequest('GET', `/api/feed/events/${event.id}/preview-comments?userId=${currentUserId}&limit=2`);
       return res.json();
     },
-    enabled: event.commentCount > 0,
+    enabled: showAllComments,
     staleTime: 60000,
     gcTime: 5 * 60 * 1000,
   });
@@ -584,8 +584,11 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
         <ReactionButton type="dislike" count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} size="sm" />
         <button
           onClick={() => {
-            setShowAllComments(true);
-            setTimeout(() => inputRef.current?.focus(), 80);
+            setShowAllComments((s) => {
+              const next = !s;
+              if (!s && next) setTimeout(() => inputRef.current?.focus(), 80);
+              return next;
+            });
           }}
           className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all active:scale-90 ml-auto"
         >
@@ -594,8 +597,9 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
         </button>
       </div>
 
-      {/* Comments section */}
-      <div className="border-t border-emerald-100/80 dark:border-border/40 bg-gray-50/80 dark:bg-black/40">
+      {/* Comments section (collapsed by default) */}
+      {showAllComments && (
+        <div className="border-t border-emerald-100/80 dark:border-border/40 bg-gray-50/80 dark:bg-black/40">
           {/* Preview or full comments */}
           {displayedComments && displayedComments.length > 0 && (
             <div className="px-3 pt-1">
@@ -718,6 +722,7 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
             </div>
           </div>
         </div>
+      )}
     </Card>
   );
 });
@@ -730,7 +735,8 @@ export function SocialFeed() {
   const [page, setPage] = useState(0);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const LIMIT = 30;
+  const LIMIT = 5;
+  const [allEvents, setAllEvents] = useState<FeedEventWithDetails[]>([]);
 
   const handleUserClick = useCallback((userId: string) => {
     setSelectedUserId(userId);
@@ -750,9 +756,29 @@ export function SocialFeed() {
   });
 
   const mergedEvents = useMemo(() => {
-    if (!events) return [];
-    return mergeEvents(events);
-  }, [events]);
+    if (!allEvents) return [];
+    return mergeEvents(allEvents);
+  }, [allEvents]);
+
+  // Accumulate pages into `allEvents`
+  useEffect(() => {
+    if (!events) return;
+    if (page === 0) {
+      setAllEvents(events);
+    } else {
+      setAllEvents(prev => {
+        const existing = new Set(prev.map(e => e.id));
+        const additions = events.filter(e => !existing.has(e.id));
+        return [...prev, ...additions];
+      });
+    }
+  }, [events, page]);
+
+  // Reset accumulation when user changes or when refetching from first page
+  useEffect(() => {
+    setAllEvents([]);
+    setPage(0);
+  }, [currentUser?.id]);
 
   const handleDialogChange = useCallback((open: boolean) => {
     if (!open) setSelectedUserId(null);
@@ -796,10 +822,10 @@ export function SocialFeed() {
         <EventCard key={event.id} event={event} currentUserId={currentUser.id} onUserClick={handleUserClick} />
       ))}
 
-      {events.length >= LIMIT && (
+      {events && events.length >= LIMIT && (
         <div className="flex justify-center pt-1">
           <Button variant="ghost" size="sm" className="text-xs" onClick={() => setPage(p => p + 1)}>
-            Cargar más
+            Ver más
           </Button>
         </div>
       )}
