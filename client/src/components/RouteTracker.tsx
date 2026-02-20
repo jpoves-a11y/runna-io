@@ -343,44 +343,42 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
             </div>
           </div>
 
-          {/* Bottom: TINY buttons, cramped, hard to tap accidentally */}
-          <div className="fixed bottom-0 left-0 right-0 z-[1000] flex items-center justify-end gap-1 p-1" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.25rem)' }}>
+          {/* Middle: Control buttons - centered vertically */}
+          <div className="fixed left-0 right-0 top-1/2 -translate-y-1/2 z-[1000] flex items-center justify-center gap-4 p-4">
             {/* Pause/Resume: requires 2 taps when pausing */}
             <button
-              className={`w-9 h-9 rounded-md flex items-center justify-center transition-all ${
-                !isPaused && pauseTaps > 0 ? 'bg-orange-700 ring-1 ring-orange-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
+              className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
+                !isPaused && pauseTaps > 0 ? 'bg-orange-700 ring-2 ring-orange-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
               }`}
               onClick={!isPaused ? handlePauseTap : () => { setPauseTaps(0); handleResume(); }}
               title={!isPaused ? `Pausar (${pauseTaps}/2)` : 'Reanudar'}
               data-testid="button-pause"
-              style={{ opacity: 0.8 }}
             >
-              {!isPaused ? <Pause className="w-4 h-4 text-white" /> : <Play className="w-4 h-4 text-white" fill="white" />}
+              {!isPaused ? <Pause className="w-8 h-8 text-white" /> : <Play className="w-8 h-8 text-white" fill="white" />}
             </button>
 
             {/* Stop: requires 2 taps, red when confirmed */}
             <button
-              className={`w-9 h-9 rounded-md flex items-center justify-center font-black transition-all ${
-                confirmStop ? 'bg-red-700 ring-1 ring-red-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
+              className={`w-16 h-16 rounded-full flex items-center justify-center font-black transition-all shadow-lg ${
+                confirmStop ? 'bg-red-700 ring-2 ring-red-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
               }`}
               onClick={handleStop}
               disabled={isSaving}
               title={confirmStop ? '¡PULSA DE NUEVO!' : `Finalizar (${confirmStop ? '¡CONFIRMA!' : 'pulsa'}) (${Math.max(0, confirmStop ? 1 : 0)}x)`}
               data-testid="button-stop"
-              style={{ opacity: 0.8 }}
             >
-              <Square className="w-4 h-4 text-white" fill="white" />
+              <Square className="w-8 h-8 text-white" fill="white" />
             </button>
           </div>
 
           {/* Confirmation hints */}
           {pauseTaps > 0 && !isPaused && (
-            <div className="fixed bottom-14 right-12 z-[999] px-2 py-1 bg-orange-600 text-white text-[10px] font-bold rounded animate-pulse">
+            <div className="fixed top-1/2 right-24 -translate-y-1/2 z-[999] px-3 py-2 bg-orange-600 text-white text-sm font-bold rounded-lg animate-pulse shadow-lg">
               ¡PAUSAR!
             </div>
           )}
           {confirmStop && (
-            <div className="fixed bottom-14 right-2 z-[999] px-2 py-1 bg-red-600 text-white text-[10px] font-bold rounded animate-pulse">
+            <div className="fixed top-1/2 left-24 -translate-y-1/2 z-[999] px-3 py-2 bg-red-600 text-white text-sm font-bold rounded-lg animate-pulse shadow-lg">
               ¡DETENER!
             </div>
           )}
