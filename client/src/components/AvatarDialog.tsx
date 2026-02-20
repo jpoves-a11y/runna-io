@@ -1,26 +1,3 @@
-    // Mutación para eliminar la foto de perfil
-    const deleteMutation = useMutation({
-      mutationFn: async () => {
-        const response = await apiRequest('DELETE', '/api/user/avatar', { userId });
-        return await response.json();
-      },
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: ['/api/user', userId] });
-        toast({
-          title: 'Avatar eliminado',
-          description: 'Se ha eliminado tu foto de perfil',
-        });
-        onOpenChange(false);
-      },
-      onError: (error: Error) => {
-        toast({
-          title: 'Error',
-          description: error.message,
-          variant: 'destructive',
-        });
-      },
-    });
-
 import React, { useState, useRef, useEffect } from 'react';
 import { CropperCanvas } from './CropperCanvas';
 import {
