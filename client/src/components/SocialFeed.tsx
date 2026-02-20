@@ -595,8 +595,7 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
       </div>
 
       {/* Comments section */}
-      {(event.commentCount > 0 || showAllComments) && (
-        <div className="border-t border-emerald-100/80 dark:border-border/40 bg-gray-50/80 dark:bg-black/40">
+      <div className="border-t border-emerald-100/80 dark:border-border/40 bg-gray-50/80 dark:bg-black/40">
           {/* Preview or full comments */}
           {displayedComments && displayedComments.length > 0 && (
             <div className="px-3 pt-1">
@@ -719,7 +718,6 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
             </div>
           </div>
         </div>
-      )}
     </Card>
   );
 });
