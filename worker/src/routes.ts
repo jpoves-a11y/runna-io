@@ -4220,19 +4220,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           // Save routeId immediately so it's linked even if territory processing fails
           await storage.updatePolarActivity(activity.id, { routeId: route.id });
 
-          // Check if this activity is older than existing routes from other users.
-          // If so, a full chronological reprocess is needed (handled separately via admin endpoint
-          // to avoid hitting Worker CPU limits during inline processing).
-          let needsChronologicalReprocess = false;
-          try {
-            needsChronologicalReprocess = await hasNewerOverlappingRoutes(storage, route);
-          } catch (e) {
-            console.warn(`[PROCESS] hasNewerOverlappingRoutes check failed, proceeding with normal processing:`, e);
-          }
-
-          if (needsChronologicalReprocess) {
-            console.log(`[PROCESS] Activity ${activity.id} is older than some existing routes — needs chronological reprocess (use admin endpoint)`);
-          }
+          // Skip hasNewerOverlappingRoutes during inline processing to save subrequests
+          // (handled separately via admin endpoint if needed)
+          const needsChronologicalReprocess = false;
 
           console.log(`[PROCESS] Calculating territory buffer (${coordinates.length} coords)...`);
           // Simplify coordinates to avoid Worker CPU limits
@@ -4248,12 +4238,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           if (buffered) {
             console.log(`[PROCESS] Processing territory conquest...`);
             
+            // Pass env=undefined to skip email/push notifications during inline processing
+            // (saves 3+ subrequests per victim, avoids "Too many subrequests" error)
             const conquestResult = await processTerritoryConquest(
               storage,
               userId,
               route.id,
               buffered.geometry,
-              c.env,
+              undefined, // skip notifications to reduce subrequests
               startedAtStr,
               completedAtStr
             );
@@ -4265,8 +4257,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
             console.log(`[PROCESS] Territory updated: ${conquestResult.territory.id}, area: ${conquestResult.territory.area}`);
 
-            // Generate feed events
-            await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
+            // Mark as processed BEFORE feed events to ensure it's saved even if subrequest limit is hit
+            await storage.updatePolarActivity(activity.id, { 
+              routeId: route.id, 
+              processed: true, 
+              processedAt: new Date() 
+            });
 
             results.push({
               activityId: activity.id,
@@ -4283,13 +4279,21 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 victims: conquestResult.victims,
               }
             });
-          }
 
-          await storage.updatePolarActivity(activity.id, { 
-            routeId: route.id, 
-            processed: true, 
-            processedAt: new Date() 
-          });
+            // Generate feed events (non-critical, wrapped in try/catch to avoid failing the import)
+            try {
+              await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
+            } catch (feedErr) {
+              console.warn(`[PROCESS] Feed events failed (non-critical):`, feedErr);
+            }
+          } else {
+            // No buffer/territory — still mark as processed
+            await storage.updatePolarActivity(activity.id, { 
+              routeId: route.id, 
+              processed: true, 
+              processedAt: new Date() 
+            });
+          }
           console.log(`[PROCESS] ✅ Activity ${activity.id} processed successfully`);
         } catch (e) {
           console.error(`[PROCESS] ❌ Error processing activity ${activity.id}:`, e);

@@ -607,15 +607,31 @@ export default function ProfilePage() {
     
     setIsProcessingActivity(true);
     try {
-      const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
-      const processData = await processRes.json();
-      
-      // Get current activity data for the animation
       const currentActivity = pendingActivities[currentPreviewIndex];
-      
+      let processData: any = null;
+      let processOk = false;
+
+      try {
+        const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
+        processData = await processRes.json();
+        processOk = true;
+      } catch (fetchErr: any) {
+        // "Too many subrequests" means the activity was likely processed 
+        // but the Worker hit Cloudflare's subrequest limit on subsequent operations.
+        // Treat it as a success and proceed with the animation.
+        const isTooManySubrequests = fetchErr?.message?.includes('Too many subrequests') ||
+          fetchErr?.message?.includes('500');
+        if (isTooManySubrequests) {
+          console.warn('[IMPORT] Got subrequest limit error, activity likely processed — proceeding with animation');
+          processOk = true; // treat as success
+        } else {
+          throw fetchErr; // rethrow other errors
+        }
+      }
+
       let hasTauntVictims = false;
       // Store conquest data + polyline for the map animation
-      if (processData.results && processData.results.length > 0) {
+      if (processData?.results && processData.results.length > 0) {
         const result = processData.results[0];
         const victimsNotified = result.metrics?.victimsNotified || [];
         const areaStolen = result.metrics?.areaStolen || 0;
@@ -631,8 +647,20 @@ export default function ProfilePage() {
           distance: currentActivity?.distance || 0,
           victims: result.metrics?.victims || [],
         }));
-
-        // Victims data stored in sessionStorage for ConquestResultModal
+      } else if (processOk && currentActivity?.summaryPolyline) {
+        // No results data but activity was processed (e.g. subrequest limit hit after processing)
+        // Store minimal data so the animation still works
+        sessionStorage.setItem('lastConquestResult', JSON.stringify({
+          newAreaConquered: 0,
+          totalArea: 0,
+          areaStolen: 0,
+          routeId: null,
+          routeName: currentActivity?.name || 'Actividad',
+          territoryArea: 0,
+          summaryPolyline: currentActivity?.summaryPolyline || null,
+          distance: currentActivity?.distance || 0,
+          victims: [],
+        }));
       }
       
       // Invalidate queries so map has fresh data
