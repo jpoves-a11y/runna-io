@@ -253,13 +253,50 @@ async function processTerritoryConquest(
   const victimMap = new Map<string, ConquestVictimInfo>();
   const defenderCache = new Map<string, any>();
 
-  // Batch-load route times for all enemy territories (single DB call instead of N)
-  const enemyRouteIds = enemyTerritories
-    .map(t => t.routeId)
-    .filter((id): id is string => !!id);
-  const enemyRouteTimes = activityStartedAt && activityCompletedAt && enemyRouteIds.length > 0
-    ? await storage.getRouteTimesById(enemyRouteIds)
-    : new Map<string, { startedAt: string | null; completedAt: string | null }>();
+  // Batch-load routes from enemy users that started within 15 min of this activity
+  // to check ran-together against the SPECIFIC route geometry, not accumulated territory
+  const enemyUserIds = [...new Set(enemyTerritories.map(t => t.userId))];
+  let ranTogetherUserIds = new Set<string>();
+
+  if (activityStartedAt && activityCompletedAt && enemyUserIds.length > 0) {
+    try {
+      const nearbyRoutes = await storage.getRoutesInTimeWindow(enemyUserIds, activityStartedAt);
+      for (const enemyRoute of nearbyRoutes) {
+        if (!enemyRoute.startedAt || !enemyRoute.completedAt) continue;
+        const timeOverlap = activitiesOverlapInTime(
+          activityStartedAt, activityCompletedAt,
+          enemyRoute.startedAt, enemyRoute.completedAt
+        );
+        if (!timeOverlap) continue;
+
+        // Compute the specific enemy route's enclosed polygon
+        const enemyCoords: [number, number][] = Array.isArray(enemyRoute.coordinates)
+          ? enemyRoute.coordinates as [number, number][]
+          : typeof enemyRoute.coordinates === 'string'
+            ? JSON.parse(enemyRoute.coordinates)
+            : [];
+        if (enemyCoords.length < 10) continue;
+        const enemyPoly = routeToEnclosedPolygon(enemyCoords, 150);
+        if (!enemyPoly) continue;
+
+        // Check area overlap against the SPECIFIC route's polygon
+        const areaOverlap = geometriesOverlapByPercentage(
+          bufferedGeometry,
+          enemyPoly.geometry,
+          0.90
+        );
+        if (areaOverlap) {
+          console.log(`[TERRITORY] Ran together with user ${enemyRoute.userId} (route ${enemyRoute.id}) - will skip stealing from this user`);
+          ranTogetherUserIds.add(enemyRoute.userId);
+          if (!ranTogetherWith.includes(enemyRoute.userId)) {
+            ranTogetherWith.push(enemyRoute.userId);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[TERRITORY] Error checking ran-together routes:', err);
+    }
+  }
 
   // Step 1: Handle enemy territory conquest
   console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
@@ -278,39 +315,10 @@ async function processTerritoryConquest(
 
   for (const enemyTerritory of enemyTerritories) {
     try {
-      // Check if activities were done together (time + area overlap)
-      if (activityStartedAt && activityCompletedAt && enemyTerritory.routeId) {
-        const routeTime = enemyRouteTimes.get(enemyTerritory.routeId);
-        if (routeTime && routeTime.startedAt && routeTime.completedAt) {
-          // Check time overlap first (cheap)
-          const timeOverlap = activitiesOverlapInTime(
-            activityStartedAt,
-            activityCompletedAt,
-            routeTime.startedAt,
-            routeTime.completedAt
-          );
-          
-          if (timeOverlap) {
-            // Only compute expensive area overlap when time matches
-            const enemyGeometry = typeof enemyTerritory.geometry === 'string'
-              ? JSON.parse(enemyTerritory.geometry)
-              : enemyTerritory.geometry;
-            
-            const areaOverlap = geometriesOverlapByPercentage(
-              bufferedGeometry,
-              enemyGeometry,
-              0.90
-            );
-            
-            if (areaOverlap) {
-              console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together! (start times within 15min AND area 90%+ overlap)`);
-              if (!ranTogetherWith.includes(enemyTerritory.userId)) {
-                ranTogetherWith.push(enemyTerritory.userId);
-              }
-              continue;
-            }
-          }
-        }
+      // Skip if this user was identified as "ran together" (checked above against specific routes)
+      if (ranTogetherUserIds.has(enemyTerritory.userId)) {
+        console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together`);
+        continue;
       }
       
       // Use subtractFromTerritoryDirect with pre-loaded territory (avoids redundant DB read)
@@ -593,6 +601,9 @@ async function reprocessFriendGroupTerritoriesChronologically(
     routesByUser.get(r.userId)!.push(r);
   }
 
+  // Pre-compute enclosed polygons for all routes (for ran-together area checks)
+  const routePolygonCache = new Map<string, any>();
+
   // Helper to convert geometry to turf feature
   const toFeature = (geom: any) => geom.type === 'MultiPolygon'
     ? turf.multiPolygon(geom.coordinates)
@@ -612,6 +623,7 @@ async function reprocessFriendGroupTerritoriesChronologically(
       if (!enclosedPoly) continue;
 
       const routeGeometry = enclosedPoly.geometry;
+      routePolygonCache.set(route.id, routeGeometry);
       const routeOwnerFriends = friendshipMap.get(route.userId) || new Set();
 
       // --- Steal from FRIENDS only whose territory overlaps this route ---
@@ -643,20 +655,21 @@ async function reprocessFriendGroupTerritoriesChronologically(
                   otherRoute.completedAt
                 );
                 if (timeOverlap) {
-                  // Only compute expensive area overlap when time matches
-                  const areaOverlap = geometriesOverlapByPercentage(
-                    routeGeometry,
-                    otherGeometry,
-                    0.90
-                  );
-                  if (areaOverlap) {
-                    console.log(`[FRIEND REPROCESS] Ran together: route ${route.id} (${route.userId}) and user ${otherUserId} - skipping steal`);
-                    ranTogether = true;
-                    break;
+                  // Check area overlap against the SPECIFIC route's enclosed polygon, not accumulated territory
+                  const otherRoutePolygon = routePolygonCache.get(otherRoute.id);
+                  if (otherRoutePolygon) {
+                    const areaOverlap = geometriesOverlapByPercentage(
+                      routeGeometry,
+                      otherRoutePolygon,
+                      0.90
+                    );
+                    if (areaOverlap) {
+                      console.log(`[FRIEND REPROCESS] Ran together: route ${route.id} (${route.userId}) and route ${otherRoute.id} (${otherUserId}) - skipping steal`);
+                      ranTogether = true;
+                      break;
+                    }
                   }
-                  // Area didn't match even though time did - no need to check more time matches
-                  // (area overlap is against accumulated geometry, same for all otherRoutes)
-                  break;
+                  // Continue checking other routes from this user that might also match in time
                 }
               }
               if (ranTogether) continue;

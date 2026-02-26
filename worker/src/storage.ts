@@ -258,6 +258,19 @@ export class WorkerStorage {
       .orderBy(routes.completedAt);
   }
 
+  // Get routes from specific users that started within a time window of a given timestamp
+  async getRoutesInTimeWindow(userIds: string[], centerTime: string, windowMs: number = 15 * 60 * 1000): Promise<Route[]> {
+    if (userIds.length === 0) return [];
+    const center = new Date(centerTime).getTime();
+    const minTime = new Date(center - windowMs).toISOString();
+    const maxTime = new Date(center + windowMs).toISOString();
+    const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    return await this.db
+      .select()
+      .from(routes)
+      .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} >= ${minTime} AND ${routes.startedAt} <= ${maxTime}`);
+  }
+
   async getRoutesByUserId(userId: string): Promise<RouteWithTerritory[]> {
     const userRoutes = await this.db
       .select()
