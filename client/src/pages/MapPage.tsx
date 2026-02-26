@@ -34,6 +34,23 @@ export default function MapPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
 
 
+  // Restore tracking state from localStorage if app was backgrounded/refreshed
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('runna-route-tracking');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.startTime > 0) {
+          setIsTracking(true);
+          window.history.replaceState({}, '', '/?tracking=true');
+          return; // Skip popstate listener setup — we're forcing tracking
+        }
+      }
+    } catch (_) {}
+    // Normal URL-based check
+    setIsTracking(window.location.search.includes('tracking=true'));
+  }, []);
+
   useEffect(() => {
     const checkTracking = () => {
       setIsTracking(window.location.search.includes('tracking=true'));
@@ -216,6 +233,15 @@ export default function MapPage() {
     distance: number;
     duration: number;
   }) => {
+    // Minimum coordinates validation — need at least 3 GPS points for a valid route
+    if (routeData.coordinates.length < 3) {
+      toast({
+        title: 'Ruta muy corta',
+        description: `Solo se registraron ${routeData.coordinates.length} puntos GPS. Necesitas al menos 3 para guardar una ruta.`,
+        variant: 'destructive',
+      });
+      return;
+    }
     createRouteMutation.mutate(routeData);
   };
 

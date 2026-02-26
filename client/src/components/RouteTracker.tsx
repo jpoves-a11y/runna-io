@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Play, Pause, Square, MapPin, Zap, Activity, X, Smartphone, Loader2, ShieldAlert } from 'lucide-react';
+import { Play, Pause, Square, MapPin, Zap, Activity, X, Smartphone, Loader2 } from 'lucide-react';
 import { watchPosition, clearWatch, getCurrentPosition, type Coordinates } from '@/lib/geolocation';
 import { acquireWakeLock, releaseWakeLock, setupVisibilityReacquire } from '@/lib/wakeLock';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 const STORAGE_KEY = 'runna-route-tracking';
+const MIN_ACCURACY_METERS = 30; // Ignore GPS points with accuracy worse than 30m
+const MIN_MOVEMENT_METERS = 3; // Ignore points closer than 3m to last accepted point (jitter filter)
 
 interface TrackingState {
   coordinates: Array<[number, number]>;
@@ -33,6 +35,17 @@ function loadTrackingState(): TrackingState | null {
 }
 function clearTrackingState() { localStorage.removeItem(STORAGE_KEY); }
 
+// Haversine distance between two [lat, lng] points in meters
+function haversineDistance(a: [number, number], b: [number, number]): number {
+  const [lat1, lng1] = a;
+  const [lat2, lng2] = b;
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
 export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const [isTracking, setIsTracking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -44,6 +57,8 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const [confirmStop, setConfirmStop] = useState(false);
   const [pauseTaps, setPauseTaps] = useState(0);
   const pauseTapsTimeoutRef = useRef<number | null>(null);
+  const confirmStopTimeoutRef = useRef<number | null>(null);
+  const [polylineKey, setPolylineKey] = useState(0); // force re-render of polyline strip
 
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -62,13 +77,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     if (coords.length < 2) return 0;
     let total = 0;
     for (let i = 1; i < coords.length; i++) {
-      const [lat1, lng1] = coords[i - 1];
-      const [lat2, lng2] = coords[i];
-      const R = 6371000;
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLng = (lng2 - lng1) * Math.PI / 180;
-      const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-      total += R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      total += haversineDistance(coords[i - 1], coords[i]);
     }
     return total;
   }, []);
@@ -87,14 +96,34 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     displayTimerRef.current = window.setInterval(updateDisplayDuration, 1000);
   }, [updateDisplayDuration]);
 
-  // --- GPS watch ---
+  // --- GPS watch with accuracy + jitter filtering ---
   const startGpsWatch = useCallback(() => {
     if (watchIdRef.current) clearWatch(watchIdRef.current);
     watchIdRef.current = watchPosition((coords: Coordinates) => {
       const pt: [number, number] = [coords.lat, coords.lng];
+
+      // Filter: ignore low-accuracy readings
+      if (coords.accuracy && coords.accuracy > MIN_ACCURACY_METERS) {
+        return;
+      }
+
+      // Filter: ignore tiny movements (GPS jitter)
+      if (coordsRef.current.length > 0) {
+        const lastPt = coordsRef.current[coordsRef.current.length - 1];
+        if (haversineDistance(lastPt, pt) < MIN_MOVEMENT_METERS) {
+          // Still update the user marker position for visual feedback
+          if (userMarkerObjRef.current) userMarkerObjRef.current.setLatLng([coords.lat, coords.lng]);
+          return;
+        }
+      }
+
       if (userMarkerObjRef.current) userMarkerObjRef.current.setLatLng([coords.lat, coords.lng]);
       coordsRef.current = [...coordsRef.current, pt];
       setDistance(calculateDistance(coordsRef.current));
+      // Trigger polyline strip re-render every 5 new points
+      if (coordsRef.current.length % 5 === 0) {
+        setPolylineKey(prev => prev + 1);
+      }
       if (mapRef.current) {
         mapRef.current.setView(pt, 17, { animate: true });
         if (routeLineRef.current) {
@@ -199,6 +228,31 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     return () => window.clearInterval(iv);
   }, [isTracking, isPaused]);
 
+  // --- Navigation lock: prevent browser back during tracking ---
+  useEffect(() => {
+    if (!isTracking) return;
+    const handlePopState = () => {
+      // Push back to tracking URL to prevent leaving
+      window.history.pushState({}, '', '/?tracking=true');
+    };
+    // Push an extra entry so back button stays on tracking
+    window.history.pushState({}, '', '/?tracking=true');
+    window.addEventListener('popstate', handlePopState);
+
+    // Warn before closing tab/browser
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = 'Estás grabando una ruta. ¿Seguro que quieres salir?';
+      return e.returnValue;
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [isTracking]);
+
   // --- Cleanup on unmount ---
   useEffect(() => { return () => {
     releaseWakeLock(); closeTrackingNotification();
@@ -208,7 +262,6 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
 
   // --- Controls ---
   const handleStart = async () => {
-    // Ensure no stale state from previous recordings
     clearTrackingState();
     if (routeLineRef.current && mapRef.current) {
       mapRef.current.removeLayer(routeLineRef.current);
@@ -240,24 +293,29 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
 
   const handleResume = async () => {
     if (lastPauseTimeRef.current) pausedDurationRef.current += Date.now() - lastPauseTimeRef.current;
-    lastPauseTimeRef.current = null; setIsPaused(false); setPauseTaps(0);
+    lastPauseTimeRef.current = null; setIsPaused(false); setPauseTaps(0); setConfirmStop(false);
     const ok = await acquireWakeLock(); setScreenLockActive(ok);
     startDisplayTimer(); startGpsWatch();
     saveTrackingState({ coordinates: coordsRef.current, startTime: startTimeRef.current, pausedDuration: pausedDurationRef.current, lastPauseTime: null, isPaused: false });
   };
 
   const handleStop = () => {
-    if (!confirmStop) { setConfirmStop(true); return; }
+    if (!confirmStop) {
+      setConfirmStop(true);
+      // Auto-reset confirm after 3 seconds
+      if (confirmStopTimeoutRef.current) window.clearTimeout(confirmStopTimeoutRef.current);
+      confirmStopTimeoutRef.current = window.setTimeout(() => setConfirmStop(false), 3000);
+      return;
+    }
     if (isSaving) return;
+    if (confirmStopTimeoutRef.current) window.clearTimeout(confirmStopTimeoutRef.current);
     setIsSaving(true);
     const finalDuration = getRealDurationSec();
     const finalCoords = [...coordsRef.current];
     const finalDistance = calculateDistance(finalCoords);
-    // Stop all tracking immediately
     if (watchIdRef.current) { clearWatch(watchIdRef.current); watchIdRef.current = null; }
     if (displayTimerRef.current) { window.clearInterval(displayTimerRef.current); displayTimerRef.current = null; }
     releaseWakeLock(); closeTrackingNotification();
-    // Clear localStorage and reset all internal state to prevent stale data
     clearTrackingState();
     setIsTracking(false);
     coordsRef.current = [];
@@ -268,16 +326,15 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     setDisplayDuration(0);
     setConfirmStop(false);
     setPauseTaps(0);
-    // Remove polyline from map
     if (routeLineRef.current && mapRef.current) {
       mapRef.current.removeLayer(routeLineRef.current);
       routeLineRef.current = null;
     }
-    // Submit the completed route with captured data
     onComplete({ coordinates: finalCoords, distance: finalDistance, duration: finalDuration });
   };
 
   const handleCancelTracking = () => {
+    if (isTracking) return; // Cannot cancel while actively tracking — must stop first
     if (watchIdRef.current) clearWatch(watchIdRef.current);
     if (displayTimerRef.current) window.clearInterval(displayTimerRef.current);
     releaseWakeLock(); closeTrackingNotification(); clearTrackingState(); onCancel();
@@ -289,6 +346,12 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   };
   const formatDist = (m: number) => m < 1000 ? `${m.toFixed(0)} m` : `${(m / 1000).toFixed(2)} km`;
   const pace = displayDuration > 0 && distance > 0 ? (displayDuration / 60) / (distance / 1000) : 0;
+  const formatPace = (p: number) => {
+    if (p <= 0) return "0'00\"";
+    const mins = Math.floor(p);
+    const secs = Math.round((p - mins) * 60);
+    return `${mins}'${secs.toString().padStart(2, '0')}"`;
+  };
 
   return (
     <div className="absolute inset-0 flex flex-col bg-black">
@@ -333,7 +396,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
               </div>
               <div className="text-center">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><Zap className="h-3 w-3" />Ritmo</p>
-                <p className="text-xl font-bold tabular-nums" data-testid="text-pace">{pace > 0 ? `${pace.toFixed(1)}'` : "0.0'"}</p>
+                <p className="text-xl font-bold tabular-nums" data-testid="text-pace">{pace > 0 ? formatPace(pace) : "0'00\""}</p>
               </div>
             </div>
             <Button size="lg" className="w-full h-14 text-base font-semibold gradient-primary border-0 active:scale-[0.98] transition-transform" onClick={handleStart} disabled={isGettingLocation} data-testid="button-start-tracking">
@@ -342,78 +405,175 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
           </div>
         </>
       ) : (
-        /* TRACKING MODE: Black screen, huge stats, tiny controls */
-        <>
-          {/* Black background (no map = low battery) */}
-          <div className="flex-1 flex flex-col items-center justify-center relative bg-black">
-            {/* Top status bar: minimal, hard to tap */}
-            <div className="absolute left-0 right-0 z-[1000] flex items-center justify-between px-2" style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.25rem)' }}>
-              <div className="flex items-center gap-1">
-                {!isPaused && (
-                  <div className="flex items-center gap-0.5 px-2 py-0.5 bg-red-600 text-white rounded-full text-[10px] font-bold">
-                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />REC
-                  </div>
-                )}
-              </div>
-              <div className={`flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[10px] font-semibold ${screenLockActive ? 'bg-green-600 text-white' : 'bg-yellow-600 text-white'}`}>
-                <Smartphone className="w-2.5 h-2.5" />{screenLockActive ? 'OK' : '⚠'}
-              </div>
+        /* ═══════════════════════════════════════════════════════════════
+           TRACKING MODE — Designed for:
+           - Battery efficiency (black bg, no map tiles, minimal renders)
+           - No button overlap on any screen size (flex layout, no fixed positioning)
+           - Clear stat hierarchy (Time > Distance > Pace)
+           - Lightweight SVG polyline strip instead of full map
+           - Navigation locked (can't leave without stopping)
+        ═══════════════════════════════════════════════════════════════ */
+        <div className="flex-1 flex flex-col bg-black select-none">
+          {/* ── Top status bar ── */}
+          <div
+            className="flex items-center justify-between px-3 py-1 flex-shrink-0"
+            style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.25rem)' }}
+          >
+            <div className="flex items-center gap-2">
+              {isPaused ? (
+                <div className="flex items-center gap-1 px-2.5 py-1 bg-yellow-600 text-white rounded-full text-[11px] font-bold">
+                  <Pause className="w-3 h-3" />PAUSA
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 px-2.5 py-1 bg-red-600 text-white rounded-full text-[11px] font-bold">
+                  <div className="w-2 h-2 bg-white rounded-full animate-pulse" />REC
+                </div>
+              )}
             </div>
-
-            {/* HUGE stats: time + distance */}
-            <div className="flex flex-col items-center justify-center gap-6">
-              {/* Time: biggest */}
-              <div className="text-center">
-                <p className="text-7xl font-black tabular-nums text-white" data-testid="text-duration">{formatTime(displayDuration)}</p>
-              </div>
-              {/* Distance: almost as big */}
-              <div className="text-center">
-                <p className="text-5xl font-bold tabular-nums text-slate-300" data-testid="text-distance">{formatDist(distance)}</p>
-              </div>
+            <div className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold ${screenLockActive ? 'bg-green-600/80 text-white' : 'bg-yellow-600/80 text-white'}`}>
+              <Smartphone className="w-3 h-3" />{screenLockActive ? 'Pantalla ON' : '⚠ Lock'}
             </div>
           </div>
 
-          {/* Middle: Control buttons - centered vertically */}
-          <div className="fixed left-0 right-0 top-1/2 -translate-y-1/2 z-[1000] flex items-center justify-center gap-4 p-4">
-            {/* Pause/Resume: requires 2 taps when pausing */}
-            <button
-              className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg ${
-                !isPaused && pauseTaps > 0 ? 'bg-orange-700 ring-2 ring-orange-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
-              }`}
-              onClick={!isPaused ? handlePauseTap : () => { setPauseTaps(0); handleResume(); }}
-              title={!isPaused ? `Pausar (${pauseTaps}/2)` : 'Reanudar'}
-              data-testid="button-pause"
-            >
-              {!isPaused ? <Pause className="w-8 h-8 text-white" /> : <Play className="w-8 h-8 text-white" fill="white" />}
-            </button>
+          {/* ── Main stats area (takes most of the screen) ── */}
+          <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
+            {/* Time — largest */}
+            <div className="text-center mb-3">
+              <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Tiempo</p>
+              <p className="text-6xl font-black tabular-nums text-white leading-none" data-testid="text-duration">
+                {formatTime(displayDuration)}
+              </p>
+            </div>
 
-            {/* Stop: requires 2 taps, red when confirmed */}
-            <button
-              className={`w-16 h-16 rounded-full flex items-center justify-center font-black transition-all shadow-lg ${
-                confirmStop ? 'bg-red-700 ring-2 ring-red-400 scale-110' : 'bg-slate-700 hover:bg-slate-600'
-              }`}
-              onClick={handleStop}
-              disabled={isSaving}
-              title={confirmStop ? '¡PULSA DE NUEVO!' : `Finalizar (${confirmStop ? '¡CONFIRMA!' : 'pulsa'}) (${Math.max(0, confirmStop ? 1 : 0)}x)`}
-              data-testid="button-stop"
-            >
-              <Square className="w-8 h-8 text-white" fill="white" />
-            </button>
+            {/* Distance */}
+            <div className="text-center mb-3">
+              <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Distancia</p>
+              <p className="text-4xl font-bold tabular-nums text-slate-200 leading-none" data-testid="text-distance">
+                {formatDist(distance)}
+              </p>
+            </div>
+
+            {/* Pace */}
+            <div className="text-center">
+              <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Ritmo</p>
+              <p className="text-2xl font-semibold tabular-nums text-slate-400 leading-none" data-testid="text-pace">
+                {pace > 0 ? `${formatPace(pace)} /km` : "-- /km"}
+              </p>
+            </div>
           </div>
 
-          {/* Confirmation hints */}
-          {pauseTaps > 0 && !isPaused && (
-            <div className="fixed top-1/2 right-24 -translate-y-1/2 z-[999] px-3 py-2 bg-orange-600 text-white text-sm font-bold rounded-lg animate-pulse shadow-lg">
-              ¡PAUSAR!
+          {/* ── Lightweight polyline strip (SVG, no Leaflet tiles) ── */}
+          {coordsRef.current.length >= 2 && (
+            <div className="flex-shrink-0 h-16 mx-4 mb-2 rounded-xl bg-slate-900/60 border border-slate-800 overflow-hidden" key={polylineKey}>
+              <MiniPolylineStrip coordinates={[...coordsRef.current]} />
             </div>
           )}
-          {confirmStop && (
-            <div className="fixed top-1/2 left-24 -translate-y-1/2 z-[999] px-3 py-2 bg-red-600 text-white text-sm font-bold rounded-lg animate-pulse shadow-lg">
-              ¡DETENER!
+
+          {/* ── Control buttons — fixed at bottom, never overlap stats ── */}
+          <div
+            className="flex-shrink-0 flex flex-col items-center px-6 pb-4"
+            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.5rem)' }}
+          >
+            <div className="flex items-center justify-center gap-12 mb-2">
+              {/* Pause / Resume button */}
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl ${
+                    !isPaused
+                      ? pauseTaps > 0
+                        ? 'bg-orange-600 ring-4 ring-orange-400/60 scale-110'
+                        : 'bg-slate-700 active:bg-slate-600'
+                      : 'bg-green-600 active:bg-green-500'
+                  }`}
+                  onClick={!isPaused ? handlePauseTap : () => { setPauseTaps(0); handleResume(); }}
+                  data-testid="button-pause"
+                >
+                  {!isPaused
+                    ? <Pause className="w-9 h-9 text-white" />
+                    : <Play className="w-9 h-9 text-white ml-1" fill="white" />
+                  }
+                </button>
+                <span className={`text-xs font-bold transition-all ${
+                  !isPaused
+                    ? pauseTaps > 0
+                      ? 'text-orange-400 animate-pulse'
+                      : 'text-slate-500'
+                    : 'text-green-400'
+                }`}>
+                  {!isPaused
+                    ? pauseTaps > 0 ? '¡PULSA OTRA VEZ!' : 'PAUSA'
+                    : 'REANUDAR'
+                  }
+                </span>
+              </div>
+
+              {/* Stop button */}
+              <div className="flex flex-col items-center gap-1.5">
+                <button
+                  className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-200 shadow-xl ${
+                    confirmStop
+                      ? 'bg-red-600 ring-4 ring-red-400/60 scale-110'
+                      : 'bg-slate-700 active:bg-slate-600'
+                  }`}
+                  onClick={handleStop}
+                  disabled={isSaving}
+                  data-testid="button-stop"
+                >
+                  <Square className="w-9 h-9 text-white" fill="white" />
+                </button>
+                <span className={`text-xs font-bold transition-all ${
+                  confirmStop ? 'text-red-400 animate-pulse' : 'text-slate-500'
+                }`}>
+                  {confirmStop ? '¡PULSA OTRA VEZ!' : 'PARAR'}
+                </span>
+              </div>
             </div>
-          )}
-        </>
+          </div>
+        </div>
       )}
     </div>
+  );
+}
+
+/** Lightweight SVG polyline strip — no Leaflet, no tiles, minimal battery usage */
+function MiniPolylineStrip({ coordinates }: { coordinates: Array<[number, number]> }) {
+  if (coordinates.length < 2) return null;
+
+  // Project to simple XY (lat/lng → equirectangular)
+  const lats = coordinates.map(c => c[0]);
+  const lngs = coordinates.map(c => c[1]);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+  const padLat = (maxLat - minLat) * 0.15 || 0.0005;
+  const padLng = (maxLng - minLng) * 0.15 || 0.0005;
+
+  const W = 300, H = 50;
+  const rangeX = (maxLng - minLng + 2 * padLng) || 1;
+  const rangeY = (maxLat - minLat + 2 * padLat) || 1;
+
+  const points = coordinates.map(([lat, lng]) => {
+    const x = ((lng - minLng + padLng) / rangeX) * W;
+    const y = H - ((lat - minLat + padLat) / rangeY) * H;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  // Current position dot
+  const lastCoord = coordinates[coordinates.length - 1];
+  const dotX = ((lastCoord[1] - minLng + padLng) / rangeX) * W;
+  const dotY = H - ((lastCoord[0] - minLat + padLat) / rangeY) * H;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+      <polyline
+        points={points}
+        fill="none"
+        stroke="#22c55e"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.8"
+      />
+      <circle cx={dotX} cy={dotY} r="4" fill="#22c55e" stroke="white" strokeWidth="1.5" />
+    </svg>
   );
 }

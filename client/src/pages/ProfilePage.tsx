@@ -602,6 +602,7 @@ export default function ProfilePage() {
   };
 
   // Step 2: Process a single activity and navigate to map with animation
+  // Uses a polling loop to handle batch-size-1 processing with retry logic
   const handleAcceptActivity = async () => {
     if (!user?.id) return;
     
@@ -610,22 +611,31 @@ export default function ProfilePage() {
       const currentActivity = pendingActivities[currentPreviewIndex];
       let processData: any = null;
       let processOk = false;
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY = 2000; // 2s between retries on subrequest limit
+      let attempt = 0;
 
-      try {
-        const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
-        processData = await processRes.json();
-        processOk = true;
-      } catch (fetchErr: any) {
-        // "Too many subrequests" means the activity was likely processed 
-        // but the Worker hit Cloudflare's subrequest limit on subsequent operations.
-        // Treat it as a success and proceed with the animation.
-        const isTooManySubrequests = fetchErr?.message?.includes('Too many subrequests') ||
-          fetchErr?.message?.includes('500');
-        if (isTooManySubrequests) {
-          console.warn('[IMPORT] Got subrequest limit error, activity likely processed — proceeding with animation');
-          processOk = true; // treat as success
-        } else {
-          throw fetchErr; // rethrow other errors
+      while (attempt < MAX_RETRIES) {
+        attempt++;
+        try {
+          const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
+          processData = await processRes.json();
+          processOk = true;
+          break; // Success, exit retry loop
+        } catch (fetchErr: any) {
+          // Only retry on "Too many subrequests" — a specific Cloudflare Worker limit
+          const isTooManySubrequests = fetchErr?.message?.includes('Too many subrequests');
+          if (isTooManySubrequests && attempt < MAX_RETRIES) {
+            console.warn(`[IMPORT] Subrequest limit hit, retrying (${attempt}/${MAX_RETRIES})...`);
+            toast({
+              title: 'Procesando...',
+              description: `Reintentando (${attempt}/${MAX_RETRIES})...`,
+            });
+            await new Promise(r => setTimeout(r, RETRY_DELAY));
+            continue;
+          }
+          // If it's not a subrequest issue, or last retry, rethrow
+          throw fetchErr;
         }
       }
 

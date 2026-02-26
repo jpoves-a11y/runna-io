@@ -398,6 +398,8 @@ async function processTerritoryConquest(
   await storage.updateUserTotalArea(userId, result.totalArea);
 
   // Step 4: Send deferred emails/notifications (non-critical, best-effort)
+  // CAP: Only send notifications for the top MAX_NOTIFICATIONS victims (by stolen area) to prevent subrequest explosion
+  const MAX_NOTIFICATIONS = 5;
   if (deferredNotifications.length > 0 && env) {
     const attacker = await storage.getUser(userId);
     if (attacker) {
@@ -408,7 +410,14 @@ async function processTerritoryConquest(
         notifyFn = mod.notifyTerritoryLoss;
       } catch (_e) { /* notifications not available */ }
 
-      for (const notif of deferredNotifications) {
+      // Sort by stolen area descending and cap at MAX_NOTIFICATIONS
+      const sortedNotifs = [...deferredNotifications].sort((a, b) => b.stolenArea - a.stolenArea);
+      const cappedNotifs = sortedNotifs.slice(0, MAX_NOTIFICATIONS);
+      if (deferredNotifications.length > MAX_NOTIFICATIONS) {
+        console.log(`[TERRITORY] Capping notifications: ${deferredNotifications.length} victims, sending to top ${MAX_NOTIFICATIONS}`);
+      }
+
+      for (const notif of cappedNotifs) {
         try {
           const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
           const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
@@ -1310,17 +1319,22 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 );
 
                 // 2. Check if user overtook any friends in total area
+                // CAP: Only check top 10 friends (sorted by closest area) to limit subrequests
+                const MAX_FRIEND_CHECKS = 10;
                 const friendIds = await storage.getFriendIds(routeData.userId);
                 const userAreaKm2 = conquestResult.totalArea / 1000000;
+                const previousAreaKm2 = (conquestResult.totalArea - conquestResult.newAreaConquered) / 1000000;
                 
-                for (const friendId of friendIds) {
+                const friendsToCheck = friendIds.slice(0, MAX_FRIEND_CHECKS);
+                if (friendIds.length > MAX_FRIEND_CHECKS) {
+                  console.log(`[NOTIFY] Capping friend overtake checks: ${friendIds.length} friends, checking top ${MAX_FRIEND_CHECKS}`);
+                }
+                
+                for (const friendId of friendsToCheck) {
                   try {
                     const friend = await storage.getUser(friendId);
                     if (friend && friend.totalArea !== null && friend.totalArea !== undefined) {
                       const friendAreaKm2 = friend.totalArea / 1000000;
-                      // User now has more area than friend
-                      // Check if before this activity they had less (new area pushed them over)
-                      const previousAreaKm2 = (conquestResult.totalArea - conquestResult.newAreaConquered) / 1000000;
                       if (previousAreaKm2 < friendAreaKm2 && userAreaKm2 >= friendAreaKm2) {
                         await notifyAreaOvertake(
                           storage,
@@ -3229,6 +3243,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   app.post('/api/strava/process/:userId', async (c) => {
+    const stravaProcessStart = Date.now();
+    const STRAVA_MAX_PROCESSING_TIME = 25000; // 25s safety limit
+    const STRAVA_BATCH_SIZE = 1; // Process 1 at a time like Polar
+    
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -3236,7 +3254,21 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const unprocessed = await storage.getUnprocessedStravaActivities(userId);
       const results: any[] = [];
 
-      for (const activity of unprocessed) {
+      console.log(`[STRAVA PROCESS] Starting - ${unprocessed.length} unprocessed for user ${userId}`);
+      
+      if (unprocessed.length === 0) {
+        return c.json({ processed: 0, results: [], remaining: 0, message: 'No activities to process' });
+      }
+
+      const toBatch = unprocessed.slice(0, STRAVA_BATCH_SIZE);
+      
+      for (const activity of toBatch) {
+        // Check timeout
+        if (Date.now() - stravaProcessStart > STRAVA_MAX_PROCESSING_TIME) {
+          console.warn(`[STRAVA PROCESS] Timeout approaching - stopping at ${results.length} processed`);
+          break;
+        }
+
         if (!activity.summaryPolyline) {
           await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
           continue;
@@ -3245,7 +3277,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         try {
           const startDate = coerceDate(activity.startDate);
           if (!startDate) {
-            console.log(`[PROCESS] Skipping activity ${activity.id} - invalid start date`);
+            console.log(`[STRAVA PROCESS] Skipping activity ${activity.id} - invalid start date`);
             await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
             continue;
           }
@@ -3256,27 +3288,25 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           if (coordinates.length >= 3) {
             const startedAtStr = startDate.toISOString();
             const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
-            const route = await storage.createRoute({
-              userId: activity.userId,
-              name: activity.name,
-              coordinates,
-              distance: activity.distance,
-              duration: activity.duration,
-              startedAt: startedAtStr,
-              completedAt: completedAtStr,
-            });
-
-            // Check if this activity is older than existing routes from other users
-            let needsChronologicalReprocess = false;
-            try {
-              needsChronologicalReprocess = await hasNewerOverlappingRoutes(storage, route);
-            } catch (e) {
-              console.warn(`[STRAVA PROCESS] hasNewerOverlappingRoutes check failed:`, e);
+            
+            // ANTI-DUPLICATE: Check if a route with same date+distance already exists
+            let route = await storage.findRouteByDateAndDistance(userId, startedAtStr, activity.distance);
+            if (route) {
+              console.log(`[STRAVA PROCESS] Found existing route by date+distance: ${route.id} - reusing`);
+            } else {
+              route = await storage.createRoute({
+                userId: activity.userId,
+                name: activity.name,
+                coordinates,
+                distance: activity.distance,
+                duration: activity.duration,
+                startedAt: startedAtStr,
+                completedAt: completedAtStr,
+              });
             }
 
-            if (needsChronologicalReprocess) {
-              console.log(`[STRAVA PROCESS] Activity ${activity.id} is older than some existing routes — needs chronological reprocess (use admin endpoint)`);
-            }
+            // Save routeId immediately
+            await storage.updateStravaActivity(activity.id, { routeId: route.id });
 
             const simplifiedCoords = simplifyCoordinates(coordinates, 150);
             const lineString = turf.lineString(
@@ -3285,12 +3315,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
 
             if (buffered) {
+              // Pass env=undefined to skip inline notifications (saves subrequests)
               const conquestResult = await processTerritoryConquest(
                 storage,
                 userId,
                 route.id,
                 buffered.geometry,
-                c.env,
+                undefined, // skip notifications to reduce subrequests
                 startedAtStr,
                 completedAtStr
               );
@@ -3300,9 +3331,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
               }
 
-              // Generate feed events
-              await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
-
+              // Mark as processed BEFORE feed events
               await storage.updateStravaActivity(activity.id, {
                 processed: true,
                 processedAt: new Date(),
@@ -3318,11 +3347,27 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   totalArea: conquestResult.totalArea,
                   newAreaConquered: conquestResult.newAreaConquered,
                   areaStolen: conquestResult.areaStolen,
-                ranTogetherWith: conquestResult.ranTogetherWith,
-                victimsNotified: conquestResult.victimsNotified,
+                  ranTogetherWith: conquestResult.ranTogetherWith,
+                  victimsNotified: conquestResult.victimsNotified,
+                  victims: conquestResult.victims,
                 }
               });
+
+              // Generate feed events (non-critical)
+              try {
+                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
+              } catch (feedErr) {
+                console.warn(`[STRAVA PROCESS] Feed events failed (non-critical):`, feedErr);
+              }
+            } else {
+              await storage.updateStravaActivity(activity.id, { 
+                routeId: route.id, 
+                processed: true, 
+                processedAt: new Date() 
+              });
             }
+          } else {
+            await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
           }
         } catch (err) {
           console.error('Error processing Strava activity:', err);
@@ -3330,9 +3375,20 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         }
       }
 
-      return c.json({ processed: results.length, results });
+      const remaining = unprocessed.length - toBatch.length;
+      const processingTime = Date.now() - stravaProcessStart;
+      console.log(`[STRAVA PROCESS] Completed in ${processingTime}ms - ${results.length} processed, ${remaining} remaining`);
+
+      return c.json({ 
+        processed: results.length, 
+        results, 
+        remaining,
+        processingTime,
+        message: remaining > 0 ? `${results.length} procesadas, ${remaining} pendientes.` : `${results.length} procesadas correctamente`
+      });
     } catch (error: any) {
-      return c.json({ error: error.message }, 500);
+      console.error('[STRAVA PROCESS] Critical error:', error);
+      return c.json({ error: error.message, processed: 0, remaining: -1 }, 500);
     }
   });
 
@@ -3367,85 +3423,115 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: 'Failed to get valid Strava token' }, 401);
       }
 
-      // Fetch recent activities from Strava (last 30 days)
+      // Fetch recent activities from Strava (last 30 days) with pagination
       const after = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
-      const activitiesResponse = await fetch(
-        `https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=50`,
-        {
-          headers: { 'Authorization': `Bearer ${validToken}` },
-        }
-      );
-
-      if (!activitiesResponse.ok) {
-        console.error('Failed to fetch Strava activities:', await activitiesResponse.text());
-        return c.json({ error: 'Failed to fetch activities from Strava' }, 500);
-      }
-
-      const stravaActivitiesList: any[] = await activitiesResponse.json();
+      const STRAVA_MAX_PAGES = 3; // Max pages to fetch per invocation
+      const DETAIL_FETCH_BUDGET = 10; // Max detail fetches to stay under subrequest limits
+      const STRAVA_SYNC_TIMEOUT = 20000; // 20s safety limit
+      const stravaSyncStart = Date.now();
+      let detailFetchesUsed = 0;
       let imported = 0;
+      let totalFetched = 0;
+      let hasMore = false;
 
-      for (const activity of stravaActivitiesList) {
-        // Only process runs and walks
-        if (!['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
-          continue;
+      for (let page = 1; page <= STRAVA_MAX_PAGES; page++) {
+        // Check time limit
+        if (Date.now() - stravaSyncStart > STRAVA_SYNC_TIMEOUT) {
+          console.warn(`[STRAVA SYNC] Time limit reached — stopping at page ${page}`);
+          hasMore = true;
+          break;
         }
 
-        // Check if already exists
-        const existing = await storage.getStravaActivityByStravaId(activity.id);
-        if (existing) {
-          continue;
-        }
-
-        // IMPORTANT: /athlete/activities returns a summary without GPS data
-        // We need to fetch the detailed activity to get the polyline (GPS route)
-        let summaryPolyline = null;
-        try {
-          const detailedResponse = await fetch(
-            `https://www.strava.com/api/v3/activities/${activity.id}?include_all_efforts=false`,
-            {
-              headers: { 'Authorization': `Bearer ${validToken}` },
-            }
-          );
-          
-          if (detailedResponse.ok) {
-            const detailedActivity = await detailedResponse.json();
-            summaryPolyline = detailedActivity.map?.summary_polyline || null;
-          } else {
-            console.warn(`Failed to fetch detailed activity ${activity.id}:`, await detailedResponse.text());
+        const activitiesResponse = await fetch(
+          `https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=50&page=${page}`,
+          {
+            headers: { 'Authorization': `Bearer ${validToken}` },
           }
-        } catch (err) {
-          console.warn(`Error fetching detailed Strava activity ${activity.id}:`, err);
+        );
+
+        if (!activitiesResponse.ok) {
+          console.error('Failed to fetch Strava activities:', await activitiesResponse.text());
+          if (page === 1) {
+            return c.json({ error: 'Failed to fetch activities from Strava' }, 500);
+          }
+          break; // Partial success on subsequent pages
         }
 
-        // Only import activities that have GPS data (polyline)
-        // Activities without GPS won't be useful for territory calculation
-        if (!summaryPolyline) {
-          console.log(`Skipping activity ${activity.id} - no GPS data (polyline)`);
-          continue;
+        const stravaActivitiesList: any[] = await activitiesResponse.json();
+        totalFetched += stravaActivitiesList.length;
+
+        if (stravaActivitiesList.length === 0) break; // No more activities
+
+        for (const activity of stravaActivitiesList) {
+          // Only process runs and walks
+          if (!['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+            continue;
+          }
+
+          // Check if already exists
+          const existing = await storage.getStravaActivityByStravaId(activity.id);
+          if (existing) {
+            continue;
+          }
+
+          // Budget-limited detail fetch for GPS polyline
+          if (detailFetchesUsed >= DETAIL_FETCH_BUDGET) {
+            console.log(`[STRAVA SYNC] Detail fetch budget exhausted (${DETAIL_FETCH_BUDGET}), skipping remaining`);
+            hasMore = true;
+            break;
+          }
+
+          let summaryPolyline = null;
+          try {
+            detailFetchesUsed++;
+            const detailedResponse = await fetch(
+              `https://www.strava.com/api/v3/activities/${activity.id}?include_all_efforts=false`,
+              {
+                headers: { 'Authorization': `Bearer ${validToken}` },
+              }
+            );
+            
+            if (detailedResponse.ok) {
+              const detailedActivity = await detailedResponse.json();
+              summaryPolyline = detailedActivity.map?.summary_polyline || null;
+            } else {
+              console.warn(`Failed to fetch detailed activity ${activity.id}:`, await detailedResponse.text());
+            }
+          } catch (err) {
+            console.warn(`Error fetching detailed Strava activity ${activity.id}:`, err);
+          }
+
+          if (!summaryPolyline) {
+            console.log(`Skipping activity ${activity.id} - no GPS data (polyline)`);
+            continue;
+          }
+
+          await storage.createStravaActivity({
+            stravaActivityId: activity.id,
+            userId,
+            routeId: null,
+            territoryId: null,
+            name: activity.name,
+            activityType: activity.type,
+            distance: activity.distance,
+            duration: activity.moving_time,
+            startDate: new Date(activity.start_date),
+            summaryPolyline,
+            processed: false,
+            processedAt: null,
+          });
+          imported++;
         }
 
-        // Store the activity
-        await storage.createStravaActivity({
-          stravaActivityId: activity.id,
-          userId,
-          routeId: null,
-          territoryId: null,
-          name: activity.name,
-          activityType: activity.type,
-          distance: activity.distance,
-          duration: activity.moving_time,
-          startDate: new Date(activity.start_date),
-          summaryPolyline,
-          processed: false,
-          processedAt: null,
-        });
-        imported++;
+        // If less than 50 results, there are no more pages
+        if (stravaActivitiesList.length < 50) break;
+        hasMore = true; // There might be more pages
       }
 
       // Update last sync time
       await storage.updateStravaAccount(userId, { lastSyncAt: new Date() });
 
-      return c.json({ imported, total: stravaActivitiesList.length });
+      return c.json({ imported, total: totalFetched, hasMore });
     } catch (error: any) {
       console.error('Strava sync error:', error);
       return c.json({ error: error.message }, 500);
@@ -3719,15 +3805,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         console.log('Account created');
       }
 
-      // Trigger initial full + incremental sync in background (best effort)
-      console.log('[BACKFILL] Triggering initial Polar sync...');
+      // Trigger initial sync in background via waitUntil (properly registered with runtime)
+      // Only trigger one sync (sync-full and sync are identical), wrapped in waitUntil to prevent
+      // the promise being dropped when the response is sent.
+      console.log('[BACKFILL] Triggering initial Polar sync via waitUntil...');
       const baseUrl = c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
-      fetch(`${baseUrl}/api/polar/sync-full/${userId}`, { method: 'POST' })
-        .then(res => console.log(`[BACKFILL] Initial full sync triggered: ${res.status}`))
-        .catch(err => console.error('[BACKFILL] Initial full sync failed:', err));
-      fetch(`${baseUrl}/api/polar/sync/${userId}`, { method: 'POST' })
-        .then(res => console.log(`[BACKFILL] Initial incremental sync triggered: ${res.status}`))
-        .catch(err => console.error('[BACKFILL] Initial incremental sync failed:', err));
+      c.executionCtx.waitUntil(
+        new Promise<void>(resolve => setTimeout(resolve, 2000)).then(() =>
+          fetch(`${baseUrl}/api/polar/sync/${userId}`, { method: 'POST' })
+            .then(res => console.log(`[BACKFILL] Initial sync triggered: ${res.status}`))
+            .catch(err => console.error('[BACKFILL] Initial sync failed:', err))
+        )
+      );
 
       console.log('Polar callback success - redirecting to:', `${FRONTEND_URL}/profile?polar_connected=true`);
       return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
@@ -3805,12 +3894,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // Non-transactional fallback: GET /v3/exercises returns all exercises from last 30 days
   // regardless of transaction commit state. Used to reimport deleted activities.
+  // SAFETY: Bounded by MAX_EXERCISES and MAX_SYNC_TIME to prevent Cloudflare Worker timeout/subrequest saturation.
   const syncPolarExercisesDirect = async (
     polarAccount: { polarUserId: number; accessToken: string },
     userId: string,
     storage: WorkerStorage
   ) => {
     console.log('[DIRECT SYNC] Using non-transactional GET /v3/exercises endpoint...');
+    const syncStartTime = Date.now();
+    const MAX_SYNC_TIME = 20000; // 20s safety limit
+    const MAX_EXERCISES = 15; // Max exercises to process per invocation
+    const GPX_FETCH_BUDGET = 8; // Max external GPX fetches to stay under subrequest limits
+    let gpxFetchesUsed = 0;
     
     try {
       const listResponse = await fetch(
@@ -3840,8 +3935,23 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       let imported = 0;
       let skipped = 0;
       let errors = 0;
+      let processed = 0;
+      let stoppedEarly = false;
 
       for (const exercise of exercises) {
+        // SAFETY: Check time and exercise limits
+        if (Date.now() - syncStartTime > MAX_SYNC_TIME) {
+          console.warn(`[DIRECT SYNC] ⏱️ Time limit reached (${MAX_SYNC_TIME}ms) — stopping at ${processed} exercises`);
+          stoppedEarly = true;
+          break;
+        }
+        if (processed >= MAX_EXERCISES) {
+          console.warn(`[DIRECT SYNC] 📊 Exercise limit reached (${MAX_EXERCISES}) — stopping`);
+          stoppedEarly = true;
+          break;
+        }
+        processed++;
+
         try {
           const exerciseId = exercise.id;
           if (!exerciseId) {
@@ -3921,9 +4031,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             }
           }
 
-          // Fallback: try GPX endpoint if no inline route
-          if (!summaryPolyline) {
+          // Fallback: try GPX endpoint if no inline route (budget-limited)
+          if (!summaryPolyline && gpxFetchesUsed < GPX_FETCH_BUDGET) {
             try {
+              gpxFetchesUsed++;
               const gpxResponse = await fetch(
                 `https://www.polaraccesslink.com/v3/exercises/${exerciseId}/gpx`,
                 {
@@ -3948,6 +4059,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             } catch (e) {
               console.error(`[DIRECT SYNC]    ❌ GPX error: ${e}`);
             }
+          } else if (!summaryPolyline && gpxFetchesUsed >= GPX_FETCH_BUDGET) {
+            console.log(`[DIRECT SYNC]    ⏭️ GPX budget exhausted (${GPX_FETCH_BUDGET}), skipping GPX fetch`);
           }
 
           // Save to database
@@ -3975,13 +4088,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         }
       }
 
-      console.log(`\n[DIRECT SYNC] 📊 RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exercises.length} total`);
+      const remaining = stoppedEarly ? exercises.length - processed : 0;
+      console.log(`\n[DIRECT SYNC] 📊 RESULT: ${imported} imported, ${skipped} skipped, ${errors} errors out of ${exercises.length} total (processed ${processed}, remaining ~${remaining})`);
       return {
         imported,
         total: exercises.length,
         skipped,
         errors,
-        message: `${imported} importadas de ${exercises.length} (direct sync)`,
+        remaining,
+        message: `${imported} importadas de ${exercises.length} (direct sync)${stoppedEarly ? ` — parado temprano, ~${remaining} pendientes` : ''}`,
       };
     } catch (error: any) {
       console.error('[DIRECT SYNC] Error:', error);

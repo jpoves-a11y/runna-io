@@ -127,8 +127,14 @@ export function ConquestResultModal({
 
   return (
     <>
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-1rem)] max-w-sm mx-auto gap-0 overflow-hidden rounded-2xl border-0 shadow-2xl p-0" style={{ padding: '0', paddingTop: '0', paddingBottom: '0' }}>
+    <Dialog open={open} onOpenChange={(v) => { /* Only allow programmatic close via the button */ if (!v) return; onOpenChange(v); }}>
+      <DialogContent
+        className="w-[calc(100%-1rem)] max-w-sm mx-auto gap-0 overflow-hidden rounded-2xl border-0 shadow-2xl p-0 [&>button]:hidden"
+        style={{ padding: '0', paddingTop: '0', paddingBottom: '0' }}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        onPointerDownOutside={(e) => e.preventDefault()}
+      >
         {/* Green gradient header */}
         <div className="relative bg-gradient-to-br from-emerald-500 via-green-500 to-teal-600 px-5 pt-6 pb-8 text-white text-center">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_70%)]" />
@@ -229,10 +235,10 @@ export function ConquestResultModal({
                     {/* Photo action area */}
                     {senderId && (
                       sentVictims.has(victim.userId) ? (
-                        <div className="flex items-center justify-center gap-2 px-3 py-2 bg-emerald-50 dark:bg-emerald-950/30 border-t border-emerald-200/50 dark:border-emerald-800/30">
-                          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                            Foto enviada
+                        <div className="flex items-center justify-center gap-2 px-3 py-2.5 bg-emerald-50 dark:bg-emerald-950/30 border-t border-emerald-200/50 dark:border-emerald-800/30">
+                          <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                          <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                            ✅ Foto enviada
                           </span>
                         </div>
                       ) : (
@@ -241,10 +247,10 @@ export function ConquestResultModal({
                             setSelectedVictim(victim);
                             setShowTauntCamera(true);
                           }}
-                          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-gradient-to-r from-red-500 via-orange-500 to-amber-500 text-white text-sm font-bold active:scale-[0.98] transition-all duration-200 hover:brightness-110"
+                          className="w-full flex items-center justify-center gap-2.5 px-3 py-3.5 bg-gradient-to-r from-red-500 via-orange-500 to-amber-500 text-white text-base font-black active:scale-[0.97] transition-all duration-200 hover:brightness-110 animate-pulse"
                         >
-                          <Camera className="h-4 w-4" />
-                          <span>📸 Enviar foto de conquista</span>
+                          <Camera className="h-5 w-5" />
+                          <span>📸 ¡ENVIAR FOTO!</span>
                         </button>
                       )
                     )}
@@ -254,10 +260,10 @@ export function ConquestResultModal({
             </div>
           )}
 
-          {/* Action Button */}
+          {/* Action Button — only way to close */}
           <Button
             onClick={() => onOpenChange(false)}
-            className="w-full h-12 bg-primary hover:bg-primary/90 rounded-xl text-base font-semibold shadow-lg"
+            className="w-full h-14 bg-primary hover:bg-primary/90 rounded-xl text-lg font-bold shadow-lg"
           >
             Ver en el mapa
           </Button>
