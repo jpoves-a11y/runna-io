@@ -603,7 +603,7 @@ export default function ProfilePage() {
 
   // Step 2: Process a single activity and navigate to map with animation
   // Uses a polling loop to handle batch-size-1 processing with retry logic
-  const handleAcceptActivity = async () => {
+  const handleAcceptActivity = async (customName?: string) => {
     if (!user?.id) return;
     
     setIsProcessingActivity(true);
@@ -653,12 +653,20 @@ export default function ProfilePage() {
           totalArea: result.metrics?.totalArea || 0,
           areaStolen: result.metrics?.areaStolen || 0,
           routeId: result.routeId,
-          routeName: currentActivity?.name || 'Actividad',
+          routeName: customName || currentActivity?.name || 'Actividad',
           territoryArea: result.area || 0,
           summaryPolyline: currentActivity?.summaryPolyline || null,
           distance: currentActivity?.distance || 0,
           victims: result.metrics?.victims || [],
         }));
+        // If user gave a custom name during import preview, rename the route
+        if (customName && result.routeId) {
+          try {
+            await apiRequest('PATCH', `/api/routes/${result.routeId}/name`, { userId: user.id, name: customName });
+          } catch (e) {
+            console.warn('[IMPORT] Could not rename route:', e);
+          }
+        }
       } else if (processOk && currentActivity?.summaryPolyline) {
         // No results data but activity was processed (e.g. subrequest limit hit after processing)
         // Store minimal data so the animation still works
@@ -667,7 +675,7 @@ export default function ProfilePage() {
           totalArea: 0,
           areaStolen: 0,
           routeId: null,
-          routeName: currentActivity?.name || 'Actividad',
+          routeName: customName || currentActivity?.name || 'Actividad',
           territoryArea: 0,
           summaryPolyline: currentActivity?.summaryPolyline || null,
           distance: currentActivity?.distance || 0,
@@ -925,7 +933,6 @@ export default function ProfilePage() {
       <div className="flex flex-col min-h-full max-w-lg mx-auto w-full px-0">
         <div 
           className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5"
-          style={{ paddingTop: 'calc(1rem + env(safe-area-inset-top, 0px))' }}
         >
           <div className="flex items-center gap-3">
             <div className="relative p-2 rounded-xl bg-primary/10">

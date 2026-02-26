@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { MapPin, Calendar, Timer, Route, Loader2, SkipForward, Download } from 'lucide-react';
+import { MapPin, Calendar, Timer, Route, Loader2, SkipForward, Download, Pencil } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { decodePolyline } from '@/lib/polyline';
@@ -32,7 +32,7 @@ interface ActivityPreviewDialogProps {
   activity: PolarActivityPreview | null;
   currentIndex: number;
   totalCount: number;
-  onAccept: () => void;
+  onAccept: (customName?: string) => void;
   onSkip: () => void;
   isProcessing: boolean;
 }
@@ -268,6 +268,13 @@ export function ActivityPreviewDialog({
   onSkip,
   isProcessing,
 }: ActivityPreviewDialogProps) {
+  const [customName, setCustomName] = useState('');
+
+  // Reset custom name when activity changes
+  useEffect(() => {
+    if (activity) setCustomName(activity.name || '');
+  }, [activity?.id]);
+
   if (!activity) return null;
 
   return (
@@ -292,14 +299,25 @@ export function ActivityPreviewDialog({
         </div>
 
         <div className="space-y-2 p-3" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}>
-          {/* Activity name + type */}
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm sm:text-base truncate flex-1 mr-2">
-              {activity.name}
-            </h3>
-            <Badge variant="secondary" className="text-xs flex-shrink-0">
-              {activity.activityType}
-            </Badge>
+          {/* Editable activity name */}
+          <div className="relative rounded-xl border-2 border-dashed border-primary/40 bg-primary/[0.03] dark:bg-primary/[0.06] p-3 transition-colors focus-within:border-primary/70 focus-within:bg-primary/[0.06]">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                <Pencil className="w-3 h-3" />
+                Nombre de la actividad
+              </label>
+              <Badge variant="secondary" className="text-[10px] flex-shrink-0 h-5">
+                {activity.activityType}
+              </Badge>
+            </div>
+            <input
+              type="text"
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder="Dale un nombre épico..."
+              className="w-full bg-transparent text-sm font-semibold text-foreground placeholder:text-muted-foreground/50 focus:outline-none"
+            />
+            <p className="text-[10px] text-muted-foreground/60 mt-1">¿Una carrera especial? ¡Ponle un nombre memorable!</p>
           </div>
 
           {/* Mini-map preview */}
@@ -336,7 +354,10 @@ export function ActivityPreviewDialog({
           {/* Action buttons */}
           <div className="flex gap-2 pt-1">
             <Button
-              onClick={onAccept}
+              onClick={() => {
+                const nameToUse = customName.trim() && customName.trim() !== activity.name ? customName.trim() : undefined;
+                onAccept(nameToUse);
+              }}
               disabled={isProcessing || !activity.summaryPolyline}
               className="flex-1 bg-primary hover:bg-primary/90 text-sm h-11"
             >
@@ -348,7 +369,7 @@ export function ActivityPreviewDialog({
               ) : (
                 <>
                   <Download className="h-4 w-4 mr-2 flex-shrink-0" />
-                  <span className="truncate">Importar y ver en mapa</span>
+                  <span className="truncate">Importar actividad</span>
                 </>
               )}
             </Button>

@@ -54,7 +54,7 @@ export default function ActivityPage() {
       if (activeTab === 'my') {
         await queryClient.invalidateQueries({ queryKey: ['/api/routes', currentUser.id] });
       } else {
-        await queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+        await queryClient.invalidateQueries({ queryKey: ['/api/feed', currentUser.id] });
       }
       await new Promise(resolve => setTimeout(resolve, 500));
     } finally {
@@ -123,7 +123,6 @@ export default function ActivityPage() {
       {/* Subtabs */}
       <div
         className="flex border-b border-border/50 sticky top-0 bg-background z-10"
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
         <button
           className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
@@ -147,19 +146,18 @@ export default function ActivityPage() {
         </button>
       </div>
 
-      {/* Content */}
+      {/* Content — CSS display toggle prevents unmount/remount so scroll & cache survive */}
       <div className="px-0">
-        {activeTab === 'feed' ? (
-          <div className="p-3">
-            <SocialFeed />
-          </div>
-        ) : (
-          isLoading ? (
+        <div className="p-3" style={{ display: activeTab === 'feed' ? 'block' : 'none' }}>
+          <SocialFeed />
+        </div>
+        <div style={{ display: activeTab === 'my' ? 'block' : 'none' }}>
+          {isLoading ? (
             <LoadingState message="Cargando actividades..." />
           ) : (
             <ActivityFeed routes={routes} />
-          )
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

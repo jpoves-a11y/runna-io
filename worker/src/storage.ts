@@ -20,6 +20,12 @@ import {
   feedReactions,
   inactivityReminders,
   territoryLossNotifications,
+  competitions,
+  treasures,
+  userPowers,
+  competitionStats,
+  weeklySummaries,
+  userNicknames,
   type User,
   type InsertUser,
   type Route,
@@ -63,6 +69,17 @@ import {
   type InsertFeedReaction,
   type FeedEventWithDetails,
   type FeedCommentWithUser,
+  type Competition,
+  type Treasure,
+  type UserPower,
+  type CompetitionStat,
+  type WeeklySummary,
+  type UserNickname,
+  type TreasurePowerType,
+  type TreasureRarity,
+  TREASURE_DEFINITIONS,
+  RARITY_CONFIG,
+  ZARAGOZA_BOUNDS,
 } from '../../shared/schema';
 import { eq, desc, sql, and, inArray } from 'drizzle-orm';
 import { type Database } from './db';
@@ -1928,11 +1945,32 @@ export class WorkerStorage {
 
       let routeName: string | null = null;
       let activityDate: string | null = null;
+      let routeCoordinates: [number, number][] | null = null;
       if (event.routeId) {
         const route = routeMap.get(event.routeId);
         if (route) {
           routeName = route.name;
           activityDate = route.startedAt;
+          // Parse and downsample coordinates for feed animation (max 80 points)
+          try {
+            const raw: [number, number][] = typeof route.coordinates === 'string'
+              ? JSON.parse(route.coordinates)
+              : (route.coordinates as any) || [];
+            if (raw.length > 0) {
+              if (raw.length <= 80) {
+                routeCoordinates = raw;
+              } else {
+                const step = raw.length / 80;
+                const sampled: [number, number][] = [];
+                for (let i = 0; i < 80; i++) {
+                  sampled.push(raw[Math.min(Math.floor(i * step), raw.length - 1)]);
+                }
+                // Always include the last point
+                sampled.push(raw[raw.length - 1]);
+                routeCoordinates = sampled;
+              }
+            }
+          } catch { /* ignore parse errors */ }
         }
       }
 
@@ -1947,6 +1985,7 @@ export class WorkerStorage {
         victim,
         routeName,
         activityDate,
+        routeCoordinates,
         commentCount,
         likeCount,
         dislikeCount,
@@ -2280,5 +2319,462 @@ export class WorkerStorage {
         userId,
         messageIndex,
       });
+  }
+
+  // ============ COMPETITION SYSTEM ============
+
+  async ensureCompetitionTables(): Promise<void> {
+    try {
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS competitions (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        starts_at TEXT NOT NULL,
+        ends_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'upcoming',
+        config TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS treasures (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        competition_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        power_type TEXT NOT NULL,
+        rarity TEXT NOT NULL,
+        lat REAL NOT NULL,
+        lng REAL NOT NULL,
+        collected_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        collected_at TEXT,
+        spawned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1
+      )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS user_powers (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        competition_id TEXT NOT NULL,
+        power_type TEXT NOT NULL,
+        treasure_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'available',
+        activated_at TEXT,
+        used_at TEXT,
+        expires_at TEXT,
+        metadata TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS competition_stats (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        competition_id TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        total_area REAL NOT NULL DEFAULT 0,
+        total_distance REAL NOT NULL DEFAULT 0,
+        total_duration INTEGER NOT NULL DEFAULT 0,
+        activities_count INTEGER NOT NULL DEFAULT 0,
+        treasures_collected INTEGER NOT NULL DEFAULT 0,
+        area_stolen REAL NOT NULL DEFAULT 0,
+        unique_victims INTEGER NOT NULL DEFAULT 0,
+        ran_together_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_competition_stats_unique ON competition_stats(competition_id, user_id)`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS weekly_summaries (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        competition_id TEXT NOT NULL,
+        week_number INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS user_nicknames (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        set_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        nickname TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+    } catch (_) {}
+  }
+
+  // --- Competition CRUD ---
+
+  async getActiveCompetition(): Promise<Competition | null> {
+    await this.ensureCompetitionTables();
+    // Return active or upcoming (for countdown)
+    const result = await this.db
+      .select()
+      .from(competitions)
+      .where(sql`${competitions.status} IN ('upcoming', 'active')`)
+      .orderBy(desc(competitions.createdAt))
+      .limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  async getCompetitionById(id: string): Promise<Competition | null> {
+    await this.ensureCompetitionTables();
+    const result = await this.db.select().from(competitions).where(eq(competitions.id, id)).limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  async createCompetition(data: InsertCompetition): Promise<Competition> {
+    await this.ensureCompetitionTables();
+    const [comp] = await this.db.insert(competitions).values(data).returning();
+    return comp;
+  }
+
+  async updateCompetitionStatus(id: string, status: string): Promise<void> {
+    await this.ensureCompetitionTables();
+    await this.db.update(competitions).set({ status }).where(eq(competitions.id, id));
+  }
+
+  // --- Treasure methods ---
+
+  async getActiveTreasures(competitionId: string): Promise<Treasure[]> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    return await this.db
+      .select()
+      .from(treasures)
+      .where(and(
+        eq(treasures.competitionId, competitionId),
+        eq(treasures.active, true),
+        sql`${treasures.collectedBy} IS NULL`,
+        sql`${treasures.expiresAt} > ${now}`
+      ));
+  }
+
+  async getTreasureById(id: string): Promise<Treasure | null> {
+    await this.ensureCompetitionTables();
+    const result = await this.db.select().from(treasures).where(eq(treasures.id, id)).limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  async createTreasure(data: InsertTreasure): Promise<Treasure> {
+    await this.ensureCompetitionTables();
+    const [t] = await this.db.insert(treasures).values(data).returning();
+    return t;
+  }
+
+  async collectTreasure(treasureId: string, userId: string): Promise<Treasure | null> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    // Atomic: only collect if not yet collected
+    await this.db
+      .update(treasures)
+      .set({ collectedBy: userId, collectedAt: now, active: false })
+      .where(and(
+        eq(treasures.id, treasureId),
+        sql`${treasures.collectedBy} IS NULL`,
+        eq(treasures.active, true)
+      ));
+    return this.getTreasureById(treasureId);
+  }
+
+  async getAllTreasuresForCompetition(competitionId: string): Promise<Treasure[]> {
+    await this.ensureCompetitionTables();
+    return await this.db.select().from(treasures).where(eq(treasures.competitionId, competitionId));
+  }
+
+  // --- User Powers ---
+
+  async getUserPowers(userId: string, competitionId: string): Promise<UserPower[]> {
+    await this.ensureCompetitionTables();
+    return await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId)
+      ))
+      .orderBy(desc(userPowers.createdAt));
+  }
+
+  async getAvailablePowers(userId: string, competitionId: string): Promise<UserPower[]> {
+    await this.ensureCompetitionTables();
+    return await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId),
+        eq(userPowers.status, 'available')
+      ));
+  }
+
+  async getActivePowersForUser(userId: string, competitionId: string): Promise<UserPower[]> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    return await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId),
+        eq(userPowers.status, 'active'),
+        sql`(${userPowers.expiresAt} IS NULL OR ${userPowers.expiresAt} > ${now})`
+      ));
+  }
+
+  async createUserPower(data: InsertUserPower): Promise<UserPower> {
+    await this.ensureCompetitionTables();
+    const [p] = await this.db.insert(userPowers).values(data).returning();
+    return p;
+  }
+
+  async activatePower(powerId: string): Promise<void> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    await this.db
+      .update(userPowers)
+      .set({ status: 'active', activatedAt: now })
+      .where(and(eq(userPowers.id, powerId), eq(userPowers.status, 'available')));
+  }
+
+  async setPowerExpiration(powerId: string, expiresAt: string): Promise<void> {
+    await this.ensureCompetitionTables();
+    await this.db.update(userPowers).set({ expiresAt }).where(eq(userPowers.id, powerId));
+  }
+
+  async getAllPushSubscriptions() {
+    return await this.db.select().from(pushSubscriptions);
+  }
+
+  async usePower(powerId: string): Promise<void> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    await this.db
+      .update(userPowers)
+      .set({ status: 'used', usedAt: now })
+      .where(and(
+        eq(userPowers.id, powerId),
+        sql`${userPowers.status} IN ('available', 'active')`
+      ));
+  }
+
+  async getPowerById(powerId: string): Promise<UserPower | null> {
+    await this.ensureCompetitionTables();
+    const result = await this.db.select().from(userPowers).where(eq(userPowers.id, powerId)).limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  /** Check if user has an active (not expired) shield power */
+  async hasActiveShield(userId: string, competitionId: string): Promise<boolean> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId),
+        eq(userPowers.powerType, 'shield'),
+        eq(userPowers.status, 'active'),
+        sql`(${userPowers.expiresAt} IS NULL OR ${userPowers.expiresAt} > ${now})`
+      ))
+      .limit(1);
+    return result.length > 0;
+  }
+
+  /** Check if user has an active time_bomb */
+  async hasActiveTimeBomb(userId: string, competitionId: string): Promise<boolean> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId),
+        eq(userPowers.powerType, 'time_bomb'),
+        eq(userPowers.status, 'active'),
+        sql`(${userPowers.expiresAt} IS NULL OR ${userPowers.expiresAt} > ${now})`
+      ))
+      .limit(1);
+    return result.length > 0;
+  }
+
+  /** Check if user has invisible territory (capa de sombras) */
+  async hasInvisibility(userId: string, competitionId: string): Promise<boolean> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId),
+        eq(userPowers.powerType, 'invisibility'),
+        eq(userPowers.status, 'active'),
+        sql`(${userPowers.expiresAt} IS NULL OR ${userPowers.expiresAt} > ${now})`
+      ))
+      .limit(1);
+    return result.length > 0;
+  }
+
+  // --- Competition Stats ---
+
+  async getOrCreateCompetitionStats(competitionId: string, userId: string): Promise<CompetitionStat> {
+    await this.ensureCompetitionTables();
+    const existing = await this.db
+      .select()
+      .from(competitionStats)
+      .where(and(
+        eq(competitionStats.competitionId, competitionId),
+        eq(competitionStats.userId, userId)
+      ))
+      .limit(1);
+    if (existing.length > 0) return existing[0];
+    const [created] = await this.db.insert(competitionStats).values({
+      competitionId,
+      userId,
+      totalArea: 0,
+      totalDistance: 0,
+      totalDuration: 0,
+      activitiesCount: 0,
+      treasuresCollected: 0,
+      areaStolen: 0,
+      uniqueVictims: 0,
+      ranTogetherCount: 0,
+    }).returning();
+    return created;
+  }
+
+  async updateCompetitionStats(
+    competitionId: string,
+    userId: string,
+    updates: Partial<{
+      totalArea: number;
+      totalDistance: number;
+      totalDuration: number;
+      activitiesCount: number;
+      treasuresCollected: number;
+      areaStolen: number;
+      uniqueVictims: number;
+      ranTogetherCount: number;
+    }>
+  ): Promise<void> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    await this.db
+      .update(competitionStats)
+      .set({ ...updates, updatedAt: now })
+      .where(and(
+        eq(competitionStats.competitionId, competitionId),
+        eq(competitionStats.userId, userId)
+      ));
+  }
+
+  async incrementCompetitionStats(
+    competitionId: string,
+    userId: string,
+    increments: {
+      distance?: number;
+      duration?: number;
+      activities?: number;
+      treasures?: number;
+      areaStolen?: number;
+      ranTogether?: number;
+    }
+  ): Promise<void> {
+    await this.ensureCompetitionTables();
+    await this.getOrCreateCompetitionStats(competitionId, userId);
+    const now = new Date().toISOString();
+    const setClauses: string[] = [`updated_at = '${now}'`];
+    if (increments.distance) setClauses.push(`total_distance = total_distance + ${increments.distance}`);
+    if (increments.duration) setClauses.push(`total_duration = total_duration + ${increments.duration}`);
+    if (increments.activities) setClauses.push(`activities_count = activities_count + ${increments.activities}`);
+    if (increments.treasures) setClauses.push(`treasures_collected = treasures_collected + ${increments.treasures}`);
+    if (increments.areaStolen) setClauses.push(`area_stolen = area_stolen + ${increments.areaStolen}`);
+    if (increments.ranTogether) setClauses.push(`ran_together_count = ran_together_count + ${increments.ranTogether}`);
+    await this.db.run(sql.raw(`UPDATE competition_stats SET ${setClauses.join(', ')} WHERE competition_id = '${competitionId}' AND user_id = '${userId}'`));
+  }
+
+  async getCompetitionLeaderboard(competitionId: string): Promise<(CompetitionStat & { user: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> })[]> {
+    await this.ensureCompetitionTables();
+    const stats = await this.db
+      .select()
+      .from(competitionStats)
+      .where(eq(competitionStats.competitionId, competitionId))
+      .orderBy(desc(competitionStats.totalArea));
+    // Enrich with user info
+    const userIds = stats.map(s => s.userId);
+    if (userIds.length === 0) return [];
+    const usersData = await this.db.select().from(users).where(inArray(users.id, userIds));
+    const userMap = new Map(usersData.map(u => [u.id, u]));
+    return stats.map(s => ({
+      ...s,
+      user: (() => {
+        const u = userMap.get(s.userId);
+        return { id: u?.id || s.userId, username: u?.username || '', name: u?.name || '', color: u?.color || '#888', avatar: u?.avatar || null };
+      })(),
+    }));
+  }
+
+  // --- Weekly Summaries ---
+
+  async getWeeklySummary(competitionId: string, weekNumber: number): Promise<WeeklySummary | null> {
+    await this.ensureCompetitionTables();
+    const result = await this.db
+      .select()
+      .from(weeklySummaries)
+      .where(and(
+        eq(weeklySummaries.competitionId, competitionId),
+        eq(weeklySummaries.weekNumber, weekNumber)
+      ))
+      .limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  async createWeeklySummary(data: { competitionId: string; weekNumber: number; data: string }): Promise<WeeklySummary> {
+    await this.ensureCompetitionTables();
+    const [ws] = await this.db.insert(weeklySummaries).values(data).returning();
+    return ws;
+  }
+
+  // --- User Nicknames ---
+
+  async getActiveNickname(targetUserId: string): Promise<UserNickname | null> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    const result = await this.db
+      .select()
+      .from(userNicknames)
+      .where(and(
+        eq(userNicknames.targetUserId, targetUserId),
+        sql`${userNicknames.expiresAt} > ${now}`
+      ))
+      .orderBy(desc(userNicknames.createdAt))
+      .limit(1);
+    return result.length > 0 ? result[0] : null;
+  }
+
+  async createNickname(data: { targetUserId: string; setByUserId: string; nickname: string; expiresAt: string }): Promise<UserNickname> {
+    await this.ensureCompetitionTables();
+    const [nn] = await this.db.insert(userNicknames).values(data).returning();
+    return nn;
+  }
+
+  // --- DB Reset for competition ---
+
+  async resetForCompetition(): Promise<{ deletedRoutes: number; deletedTerritories: number }> {
+    // Delete in dependency order
+    await this.db.run(sql`DELETE FROM feed_reactions`);
+    await this.db.run(sql`DELETE FROM feed_comments`);
+    await this.db.run(sql`DELETE FROM feed_events`);
+    await this.db.run(sql`DELETE FROM conquest_metrics`);
+    await this.db.run(sql`DELETE FROM ephemeral_photos`);
+    await this.db.run(sql`DELETE FROM email_notifications`);
+    await this.db.run(sql`DELETE FROM inactivity_reminders`);
+    try { await this.db.run(sql`DELETE FROM territory_loss_notifications`); } catch (_) {}
+    // Count before delete
+    const routeCount = await this.db.select({ count: sql<number>`count(*)` }).from(routes);
+    const terrCount = await this.db.select({ count: sql<number>`count(*)` }).from(territories);
+    await this.db.run(sql`DELETE FROM territories`);
+    await this.db.run(sql`DELETE FROM routes`);
+    // Reset users' totalArea
+    await this.db.run(sql`UPDATE users SET total_area = 0`);
+    // Mark polar/strava activities as unprocessed so they can be reimported
+    await this.db.run(sql`UPDATE polar_activities SET processed = 0, route_id = NULL, territory_id = NULL`);
+    await this.db.run(sql`UPDATE strava_activities SET processed = 0, route_id = NULL, territory_id = NULL`);
+    return {
+      deletedRoutes: routeCount[0]?.count || 0,
+      deletedTerritories: terrCount[0]?.count || 0,
+    };
   }
 }

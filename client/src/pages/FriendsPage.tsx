@@ -96,7 +96,6 @@ export default function FriendsPage() {
       <div className="flex flex-col h-full overflow-hidden">
         <div 
           className="flex-1 overflow-y-auto"
-          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }}
         >
           {currentUser && (
             <div className="p-3 md:p-4 space-y-3 bg-muted/30">

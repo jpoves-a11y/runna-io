@@ -264,62 +264,61 @@ export function ActivityFeed({ routes }: ActivityFeedProps) {
                 </div>
                 Detalle de actividad
               </DialogTitle>
-              <DialogDescription asChild>
-                <div className="text-sm text-white/85">
-                  {isRenaming ? (
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <Input
-                        value={renamingValue}
-                        onChange={(e) => setRenamingValue(e.target.value)}
-                        className="h-7 text-sm bg-white/20 border-white/30 text-white placeholder:text-white/50 focus-visible:ring-white/40"
-                        autoFocus
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && renamingValue.trim() && selectedRoute) {
-                            renameRouteMutation.mutate({ routeId: selectedRoute.id, name: renamingValue.trim() });
-                          }
-                          if (e.key === 'Escape') setIsRenaming(false);
-                        }}
-                      />
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-white hover:bg-white/20 shrink-0"
-                        onClick={() => {
-                          if (renamingValue.trim() && selectedRoute) {
-                            renameRouteMutation.mutate({ routeId: selectedRoute.id, name: renamingValue.trim() });
-                          }
-                        }}
-                        disabled={renameRouteMutation.isPending}
-                      >
-                        <Check className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-white hover:bg-white/20 shrink-0"
-                        onClick={() => setIsRenaming(false)}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <span
-                      className="inline-flex items-center gap-1.5 cursor-pointer hover:text-white transition-colors"
-                      onClick={() => {
-                        setRenamingValue(selectedRoute?.name || '');
-                        setIsRenaming(true);
-                      }}
-                    >
-                      {selectedRoute?.name || 'Ruta'}
-                      <Pencil className="h-3 w-3 opacity-60" />
-                    </span>
-                  )}
-                </div>
+              <DialogDescription className="text-sm text-white/85">
+                Revisa y personaliza tu actividad
               </DialogDescription>
             </DialogHeader>
           </div>
 
-          <div className="space-y-2 p-3" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}>
+          <div className="space-y-2.5 p-3" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}>
+            {/* Rename section */}
+            <div className="rounded-xl border-2 border-dashed border-primary/30 bg-primary/[0.03] dark:bg-primary/[0.06] p-3 transition-all focus-within:border-primary/60 focus-within:bg-primary/[0.06]">
+              {isRenaming ? (
+                <div>
+                  <label className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1 mb-1.5">
+                    <Pencil className="w-3 h-3" />
+                    Renombrar actividad
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      value={renamingValue}
+                      onChange={(e) => setRenamingValue(e.target.value)}
+                      className="h-8 text-sm flex-1"
+                      placeholder="Ej: Carrera matutina por el parque"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && renamingValue.trim() && selectedRoute) {
+                          renameRouteMutation.mutate({ routeId: selectedRoute.id, name: renamingValue.trim() });
+                        }
+                        if (e.key === 'Escape') setIsRenaming(false);
+                      }}
+                    />
+                    <Button size="icon" variant="default" className="h-8 w-8 shrink-0 rounded-lg"
+                      onClick={() => { if (renamingValue.trim() && selectedRoute) renameRouteMutation.mutate({ routeId: selectedRoute.id, name: renamingValue.trim() }); }}
+                      disabled={renameRouteMutation.isPending}>
+                      <Check className="h-4 w-4" />
+                    </Button>
+                    <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 rounded-lg" onClick={() => setIsRenaming(false)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="w-full flex items-center gap-2.5 text-left group"
+                  onClick={() => { setRenamingValue(selectedRoute?.name || ''); setIsRenaming(true); }}
+                >
+                  <div className="bg-primary/10 rounded-lg p-1.5 group-hover:bg-primary/20 transition-colors">
+                    <Pencil className="w-4 h-4 text-primary" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate">{selectedRoute?.name || 'Sin nombre'}</p>
+                    <p className="text-[10px] text-muted-foreground">Toca para renombrar tu actividad</p>
+                  </div>
+                </button>
+              )}
+            </div>
+
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="secondary" className="gap-1">
                 <MapPin className="h-3 w-3" />

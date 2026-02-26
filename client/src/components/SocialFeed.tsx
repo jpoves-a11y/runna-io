@@ -1,78 +1,95 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useInfiniteQuery } from '@tanstack/react-query';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
-import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import UserInfoDialog from '@/components/UserInfoDialog';
+import { FeedRouteAnimation } from '@/components/FeedRouteAnimation';
 import {
-  MapPin, Users, Swords, Trophy, MessageCircle, Send, Trash2, Reply, Loader2,
-  ThumbsUp, ThumbsDown, CornerDownRight
+  MapPin, Users, Swords, Trophy, MessageCircle, Send, Trash2, Loader2,
+  Heart, ThumbsDown, CornerDownRight, Clock, Flame
 } from 'lucide-react';
 import type { FeedEventWithDetails, FeedCommentWithUser } from '@shared/schema';
 
-// Merged event: activity event + any territory_stolen events from the same route
+// ─── Types ───────────────────────────────────────────────────────────────────
+
 interface MergedFeedEvent extends FeedEventWithDetails {
   victims?: Array<{ id: string; name: string; color: string; avatar?: string | null; areaStolen: number }>;
 }
 
-/** Group activity + territory_stolen events by routeId+userId into single merged events */
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
 function mergeEvents(events: FeedEventWithDetails[]): MergedFeedEvent[] {
   const result: MergedFeedEvent[] = [];
-  // Map routeId+userId -> index in result where the activity event is
   const activityIndex = new Map<string, number>();
-  // Track territory_stolen events that got merged (to skip them)
+  const activityByUser = new Map<string, number[]>();
   const merged = new Set<string>();
 
-  // First pass: identify activity events and collect territory_stolen events
+  // Pass 1: Add all activity events
   for (const event of events) {
-    if (event.eventType === 'activity' && event.routeId) {
-      const key = `${event.routeId}:${event.userId}`;
-      const idx = result.length;
-      activityIndex.set(key, idx);
+    if (event.eventType === 'activity') {
+      if (event.routeId) {
+        activityIndex.set(`${event.routeId}:${event.userId}`, result.length);
+      }
+      const existing = activityByUser.get(event.userId) || [];
+      existing.push(result.length);
+      activityByUser.set(event.userId, existing);
       result.push({ ...event, victims: [] });
     }
   }
 
-  // Second pass: merge territory_stolen into their activity event
+  // Pass 2: Merge territory_stolen into matching activities
   for (const event of events) {
-    if (event.eventType === 'territory_stolen' && event.routeId) {
-      const key = `${event.routeId}:${event.userId}`;
-      const idx = activityIndex.get(key);
-      if (idx !== undefined && result[idx]) {
-        const victim = event.victim;
-        if (victim) {
-          result[idx].victims!.push({
-            id: victim.id,
-            name: victim.name,
-            color: victim.color,
-            avatar: victim.avatar,
-            areaStolen: event.areaStolen || 0,
-          });
+    if (event.eventType !== 'territory_stolen') continue;
+    let targetIdx: number | undefined;
+
+    // Try exact routeId:userId match
+    if (event.routeId) {
+      targetIdx = activityIndex.get(`${event.routeId}:${event.userId}`);
+    }
+
+    // Fallback: closest activity from same user within 5 min
+    if (targetIdx === undefined) {
+      const userActivities = activityByUser.get(event.userId) || [];
+      const eventTime = new Date(event.createdAt).getTime();
+      let bestDist = Infinity;
+      for (const idx of userActivities) {
+        const actTime = new Date(result[idx].createdAt).getTime();
+        const dist = Math.abs(eventTime - actTime);
+        if (dist < 300000 && dist < bestDist) {
+          bestDist = dist;
+          targetIdx = idx;
         }
-        // Also add the comment count from territory_stolen to the activity
-        result[idx].commentCount += event.commentCount;
-        merged.add(event.id);
       }
+    }
+
+    if (targetIdx !== undefined && result[targetIdx]) {
+      const victim = event.victim;
+      if (victim) {
+        result[targetIdx].victims!.push({
+          id: victim.id,
+          name: victim.name,
+          color: victim.color,
+          avatar: victim.avatar,
+          areaStolen: event.areaStolen || 0,
+        });
+      }
+      result[targetIdx].commentCount += event.commentCount;
+      merged.add(event.id);
     }
   }
 
-  // Third pass: add non-merged events (territory_stolen without matching activity, ran_together, personal_record, etc.)
+  // Pass 3: Add remaining events — suppress territory_stolen if same user has activity
   for (const event of events) {
-    if (event.eventType === 'activity') continue; // already added
-    if (merged.has(event.id)) continue; // was merged into activity
+    if (event.eventType === 'activity') continue;
+    if (merged.has(event.id)) continue;
+    if (event.eventType === 'territory_stolen' && activityByUser.has(event.userId)) continue;
     result.push({ ...event });
   }
 
-  // Sort by createdAt descending (since we broke order during grouping)
-  result.sort((a, b) => {
-    const da = new Date(a.createdAt).getTime();
-    const db = new Date(b.createdAt).getTime();
-    return db - da;
-  });
-
+  result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   return result;
 }
 
@@ -89,10 +106,18 @@ function formatDuration(seconds: number): string {
   return `${m}m ${s}s`;
 }
 
+function formatPace(distMeters: number, durSeconds: number): string | null {
+  if (!distMeters || distMeters < 100) return null;
+  const minPerKm = (durSeconds / 60) / (distMeters / 1000);
+  if (minPerKm > 20 || minPerKm < 2) return null;
+  const mins = Math.floor(minPerKm);
+  const secs = Math.round((minPerKm - mins) * 60);
+  return `${mins}:${secs.toString().padStart(2, '0')} /km`;
+}
+
 function preciseTimeAgo(dateStr: string): string {
   try {
     const now = Date.now();
-    // Append Z to force UTC parsing — SQLite CURRENT_TIMESTAMP stores UTC without timezone indicator
     const normalized = dateStr.includes('Z') || dateStr.includes('+') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
     const then = new Date(normalized).getTime();
     const diffMs = now - then;
@@ -124,55 +149,91 @@ function formatArea(sqMeters: number): string {
   return `${Math.round(sqMeters)} m²`;
 }
 
-// ─── Memoized Atomic Components ──────────────────────────────────────────────
+// ─── UserAvatar ──────────────────────────────────────────────────────────────
 
-const UserAvatar = memo(function UserAvatar({ user, size = 'sm', onClick }: { user: { name: string; color: string; avatar?: string | null }; size?: 'sm' | 'md' | 'xs'; onClick?: () => void }) {
+const UserAvatar = memo(function UserAvatar({
+  user,
+  size = 'sm',
+  onClick,
+}: {
+  user: { name: string; color: string; avatar?: string | null };
+  size?: 'xs' | 'sm' | 'md';
+  onClick?: () => void;
+}) {
   const dims = { xs: 'w-6 h-6 text-[9px]', sm: 'w-8 h-8 text-[11px]', md: 'w-10 h-10 text-sm' };
-  const ringSize = { xs: 1.5, sm: 2, md: 2.5 };
-  const dim = dims[size];
-  const ring = ringSize[size];
+  const ringPx = { xs: 1.5, sm: 2, md: 2.5 };
   const Wrapper = onClick ? 'button' : 'div';
+
   if (user.avatar) {
     return (
-      <Wrapper onClick={onClick} className={`${dim} rounded-full overflow-hidden flex-shrink-0`} style={{ boxShadow: `0 0 0 ${ring}px ${user.color}` }}>
+      <Wrapper onClick={onClick} className={`${dims[size]} rounded-full overflow-hidden flex-shrink-0 transition-transform active:scale-95`} style={{ boxShadow: `0 0 0 ${ringPx[size]}px ${user.color}` }}>
         <img src={user.avatar} alt={user.name} className="w-full h-full rounded-full object-cover" loading="lazy" decoding="async" />
       </Wrapper>
     );
   }
   return (
-    <Wrapper onClick={onClick} className={`${dim} rounded-full flex items-center justify-center text-white font-bold flex-shrink-0`} style={{ backgroundColor: user.color }}>
+    <Wrapper onClick={onClick} className={`${dims[size]} rounded-full flex items-center justify-center text-white font-bold flex-shrink-0 transition-transform active:scale-95`} style={{ backgroundColor: user.color }}>
       {user.name.charAt(0).toUpperCase()}
     </Wrapper>
   );
 });
 
-const ReactionButton = memo(function ReactionButton({ type, count, active, onClick, size = 'sm' }: {
-  type: 'like' | 'dislike'; count: number; active: boolean; onClick: () => void; size?: 'md' | 'sm' | 'xs';
-}) {
-  const Icon = type === 'like' ? ThumbsUp : ThumbsDown;
-  const activeColor = type === 'like' ? 'text-blue-500' : 'text-red-500';
-  const activeBg = type === 'like' ? 'bg-blue-500/10' : 'bg-red-500/10';
-  const sizeMap = {
-    xs: { icon: 'w-3 h-3', text: 'text-[10px]', btn: 'h-6 px-1.5 gap-0.5' },
-    sm: { icon: 'w-3.5 h-3.5', text: 'text-[11px]', btn: 'h-7 px-2 gap-1' },
-    md: { icon: 'w-4 h-4', text: 'text-xs', btn: 'h-8 px-2 gap-1' },
-  };
-  const s = sizeMap[size];
+// ─── Like Button (Heart) ─────────────────────────────────────────────────────
 
+const LikeButton = memo(function LikeButton({
+  count, active, onClick,
+}: { count: number; active: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className={`inline-flex items-center justify-center ${s.btn} rounded-full transition-all duration-100
-        active:scale-90
-        ${active ? `${activeColor} ${activeBg} font-semibold` : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'}`}
+      className={`inline-flex items-center gap-1.5 py-1.5 transition-all duration-150 active:scale-90
+        ${active ? 'text-red-500' : 'text-muted-foreground hover:text-red-400'}`}
     >
-      <Icon className={`${s.icon} ${active ? 'fill-current' : ''}`} />
-      {count > 0 && <span className={s.text}>{count}</span>}
+      <Heart className={`w-[18px] h-[18px] transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
+      {count > 0 && <span className="text-xs font-medium tabular-nums">{count}</span>}
     </button>
   );
 });
 
-// ─── Comment Row (compact, with inline actions) ─────────────────────────────
+// ─── Dislike Button ──────────────────────────────────────────────────────────
+
+const DislikeButton = memo(function DislikeButton({
+  count, active, onClick,
+}: { count: number; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 py-1.5 transition-all duration-150 active:scale-90
+        ${active ? 'text-orange-500' : 'text-muted-foreground hover:text-orange-400'}`}
+    >
+      <ThumbsDown className={`w-[16px] h-[16px] transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
+      {count > 0 && <span className="text-xs font-medium tabular-nums">{count}</span>}
+    </button>
+  );
+});
+
+// ─── Mini Reaction (for comments) ────────────────────────────────────────────
+
+const MiniReaction = memo(function MiniReaction({
+  type, count, active, onClick,
+}: { type: 'like' | 'dislike'; count: number; active: boolean; onClick: () => void }) {
+  const Icon = type === 'like' ? Heart : ThumbsDown;
+  const activeColor = type === 'like' ? 'text-red-500' : 'text-orange-500';
+  const hoverColor = type === 'like' ? 'hover:text-red-400' : 'hover:text-orange-400';
+
+  return (
+    <button
+      onClick={onClick}
+      className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded transition-all duration-100 active:scale-90
+        ${active ? `${activeColor} font-semibold` : `text-muted-foreground ${hoverColor}`}`}
+    >
+      <Icon className={`w-3 h-3 ${active ? 'fill-current' : ''}`} />
+      {count > 0 && <span className="text-[10px]">{count}</span>}
+    </button>
+  );
+});
+
+// ─── Comment Row ─────────────────────────────────────────────────────────────
 
 const CommentRow = memo(function CommentRow({
   comment, isReply, currentUserId, onReply, onDelete, onUserClick, onReaction, renderMentionedText,
@@ -189,34 +250,38 @@ const CommentRow = memo(function CommentRow({
   const user = comment.user as any;
 
   return (
-    <div className={`flex gap-2 py-1.5 ${isReply ? 'ml-8' : ''}`}>
+    <div className={`flex items-start gap-2.5 ${isReply ? 'ml-8 mt-2' : 'mt-3 first:mt-0'}`}>
       <UserAvatar
         user={{ name: user.name, color: user.color || '#888', avatar: user.avatar }}
         size="xs"
         onClick={() => onUserClick(user.id)}
       />
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <button
-            className="text-[12px] font-semibold hover:underline leading-none"
-            style={{ color: user.color || undefined }}
-            onClick={() => onUserClick(user.id)}
-          >
-            {user.name}
-          </button>
-          <span className="text-[10px] text-muted-foreground leading-none">{preciseTimeAgo(comment.createdAt)}</span>
+        {/* Comment bubble */}
+        <div className="rounded-2xl bg-white dark:bg-white/[0.05] px-3.5 py-2 shadow-[0_0.5px_2px_rgba(0,0,0,0.06)] dark:shadow-none">
+          <div className="flex items-center gap-1.5">
+            <button
+              className="text-[12px] font-bold hover:underline leading-tight"
+              style={{ color: user.color || undefined }}
+              onClick={() => onUserClick(user.id)}
+            >
+              {user.name}
+            </button>
+            <span className="text-[10px] text-muted-foreground/70">{preciseTimeAgo(comment.createdAt)}</span>
+          </div>
+          <p className="text-[13px] text-foreground/85 break-words leading-relaxed mt-0.5">{renderMentionedText(comment.content)}</p>
         </div>
-        <p className="text-[12px] text-gray-800 dark:text-foreground/85 break-words leading-tight mt-0.5">{renderMentionedText(comment.content)}</p>
-        <div className="flex items-center gap-0 mt-0.5">
-          <ReactionButton type="like" count={comment.likeCount} active={comment.userReaction === 'like'} onClick={() => onReaction(comment.id, 'like')} size="xs" />
-          <ReactionButton type="dislike" count={comment.dislikeCount} active={comment.userReaction === 'dislike'} onClick={() => onReaction(comment.id, 'dislike')} size="xs" />
+        {/* Meta row */}
+        <div className="flex items-center gap-3 mt-1 ml-2">
+          <MiniReaction type="like" count={comment.likeCount} active={comment.userReaction === 'like'} onClick={() => onReaction(comment.id, 'like')} />
+          <MiniReaction type="dislike" count={comment.dislikeCount} active={comment.userReaction === 'dislike'} onClick={() => onReaction(comment.id, 'dislike')} />
           {!isReply && (
-            <button className="text-[10px] text-muted-foreground hover:text-foreground ml-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full hover:bg-muted/40 transition-colors active:scale-90" onClick={() => onReply(comment.id, user.name)}>
-              <Reply className="w-3 h-3" />Responder
+            <button className="text-[10px] text-muted-foreground hover:text-foreground font-semibold transition-colors" onClick={() => onReply(comment.id, user.name)}>
+              Responder
             </button>
           )}
           {comment.userId === currentUserId && (
-            <button className="text-muted-foreground hover:text-red-400 ml-auto flex items-center justify-center w-5 h-5 rounded-full hover:bg-red-500/10 transition-colors active:scale-75" onClick={() => onDelete(comment.id)}>
+            <button className="text-muted-foreground/60 hover:text-red-400 ml-auto transition-colors active:scale-75" onClick={() => onDelete(comment.id)}>
               <Trash2 className="w-3 h-3" />
             </button>
           )}
@@ -228,28 +293,42 @@ const CommentRow = memo(function CommentRow({
 
 // ─── Event Card ──────────────────────────────────────────────────────────────
 
-const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }: { event: MergedFeedEvent; currentUserId: string; onUserClick: (userId: string) => void }) {
-  const [showAllComments, setShowAllComments] = useState(false);
+const EventCard = memo(function EventCard({
+  event, currentUserId, onUserClick,
+}: {
+  event: MergedFeedEvent;
+  currentUserId: string;
+  onUserClick: (userId: string) => void;
+}) {
+  const [showComments, setShowComments] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [replyTo, setReplyTo] = useState<{ id: string; name: string } | null>(null);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
-  // Local optimistic state for post reactions
-  const [localLikeCount, setLocalLikeCount] = useState(event.likeCount);
-  const [localDislikeCount, setLocalDislikeCount] = useState(event.dislikeCount);
-  const [localUserReaction, setLocalUserReaction] = useState(event.userReaction);
   const { toast } = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Sync local state when event prop updates
-  useEffect(() => {
-    setLocalLikeCount(event.likeCount);
-    setLocalDislikeCount(event.dislikeCount);
-    setLocalUserReaction(event.userReaction);
-  }, [event.likeCount, event.dislikeCount, event.userReaction]);
+  // ── Truly instant optimistic reaction state ──
+  const [localLikeCount, setLocalLikeCount] = useState(event.likeCount);
+  const [localDislikeCount, setLocalDislikeCount] = useState(event.dislikeCount);
+  const [localUserReaction, setLocalUserReaction] = useState(event.userReaction);
 
-  // Fetch friends for @mention suggestions — long cache
+  // Optimistic comment reactions
+  const [commentReactionCache, setCommentReactionCache] = useState<Map<string, { likeCount: number; dislikeCount: number; userReaction: 'like' | 'dislike' | null }>>(new Map());
+
+  // Only re-sync from server when event ID changes (not on every background refetch)
+  const lastEventIdRef = useRef(event.id);
+  useEffect(() => {
+    if (event.id !== lastEventIdRef.current) {
+      lastEventIdRef.current = event.id;
+      setLocalLikeCount(event.likeCount);
+      setLocalDislikeCount(event.dislikeCount);
+      setLocalUserReaction(event.userReaction);
+    }
+  }, [event.id, event.likeCount, event.dislikeCount, event.userReaction]);
+
+  // ── Data queries ──
   const { data: friends } = useQuery<Array<{ id: string; name: string; username: string; color: string; avatar?: string | null }>>({
     queryKey: ['/api/friends', currentUserId],
     queryFn: async () => {
@@ -260,28 +339,29 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
     gcTime: 15 * 60 * 1000,
   });
 
-  // Preview comments (always loaded) — cached longer for performance
+  // Preview comments — always load if there are comments (shown collapsed)
   const { data: previewComments } = useQuery<FeedCommentWithUser[]>({
     queryKey: ['/api/feed/events', event.id, 'preview-comments', currentUserId],
     queryFn: async () => {
       const res = await apiRequest('GET', `/api/feed/events/${event.id}/preview-comments?userId=${currentUserId}&limit=2`);
       return res.json();
     },
-    enabled: showAllComments,
+    enabled: event.commentCount > 0,
     staleTime: 60000,
     gcTime: 5 * 60 * 1000,
   });
 
-  // All comments (loaded on demand)
-  const { data: allComments, isLoading: loadingAllComments } = useQuery<FeedCommentWithUser[]>({
+  // Full comments on demand
+  const { data: allComments, isLoading: loadingComments } = useQuery<FeedCommentWithUser[]>({
     queryKey: ['/api/feed/events', event.id, 'comments', currentUserId],
     queryFn: async () => {
       const res = await apiRequest('GET', `/api/feed/events/${event.id}/comments?userId=${currentUserId}`);
       return res.json();
     },
-    enabled: showAllComments,
+    enabled: showComments,
   });
 
+  // ── Mutations ──
   const addCommentMutation = useMutation({
     mutationFn: async () => {
       await apiRequest('POST', `/api/feed/events/${event.id}/comments`, {
@@ -295,7 +375,6 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
       setReplyTo(null);
       queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'comments'] });
       queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'preview-comments'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
     },
     onError: (err: Error) => {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });
@@ -309,7 +388,6 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'comments'] });
       queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'preview-comments'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
     },
   });
 
@@ -318,437 +396,521 @@ const EventCard = memo(function EventCard({ event, currentUserId, onUserClick }:
       const res = await apiRequest('POST', '/api/feed/reactions', { userId: currentUserId, targetType, targetId, reactionType });
       return res.json();
     },
-    onSuccess: (data, variables) => {
+    // No onSuccess invalidation — trust optimistic state; rollback on error
+    onError: (_err, variables) => {
       if (variables.targetType === 'event') {
-        setLocalLikeCount(data.likeCount);
-        setLocalDislikeCount(data.dislikeCount);
-        setLocalUserReaction(data.userReaction);
-        queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
-      } else {
-        queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'comments'] });
-        queryClient.invalidateQueries({ queryKey: ['/api/feed/events', event.id, 'preview-comments'] });
+        setLocalLikeCount(event.likeCount);
+        setLocalDislikeCount(event.dislikeCount);
+        setLocalUserReaction(event.userReaction);
       }
     },
   });
 
-  const handlePostReaction = (reactionType: 'like' | 'dislike') => {
-    // Optimistic update
-    if (localUserReaction === reactionType) {
-      // Toggle off
-      setLocalUserReaction(null);
-      if (reactionType === 'like') setLocalLikeCount(c => Math.max(0, c - 1));
-      else setLocalDislikeCount(c => Math.max(0, c - 1));
-    } else {
-      // Switch or new
-      if (localUserReaction === 'like') setLocalLikeCount(c => Math.max(0, c - 1));
-      if (localUserReaction === 'dislike') setLocalDislikeCount(c => Math.max(0, c - 1));
-      setLocalUserReaction(reactionType);
-      if (reactionType === 'like') setLocalLikeCount(c => c + 1);
-      else setLocalDislikeCount(c => c + 1);
-    }
+  // ── Handlers ──
+  const handlePostReaction = useCallback((reactionType: 'like' | 'dislike') => {
+    setLocalUserReaction(prev => {
+      if (prev === reactionType) {
+        if (reactionType === 'like') setLocalLikeCount(c => Math.max(0, c - 1));
+        else setLocalDislikeCount(c => Math.max(0, c - 1));
+        return null;
+      } else {
+        if (prev === 'like') setLocalLikeCount(c => Math.max(0, c - 1));
+        if (prev === 'dislike') setLocalDislikeCount(c => Math.max(0, c - 1));
+        if (reactionType === 'like') setLocalLikeCount(c => c + 1);
+        else setLocalDislikeCount(c => c + 1);
+        return reactionType;
+      }
+    });
     reactionMutation.mutate({ targetType: 'event', targetId: event.id, reactionType });
-  };
+  }, [event.id, reactionMutation]);
 
-  const handleCommentReaction = (targetId: string, reactionType: 'like' | 'dislike') => {
+  const handleCommentReaction = useCallback((targetId: string, reactionType: 'like' | 'dislike') => {
+    setCommentReactionCache(prev => {
+      const next = new Map(prev);
+      const current = next.get(targetId);
+      if (current) {
+        const updated = { ...current };
+        if (updated.userReaction === reactionType) {
+          updated.userReaction = null;
+          if (reactionType === 'like') updated.likeCount = Math.max(0, updated.likeCount - 1);
+          else updated.dislikeCount = Math.max(0, updated.dislikeCount - 1);
+        } else {
+          if (updated.userReaction === 'like') updated.likeCount = Math.max(0, updated.likeCount - 1);
+          if (updated.userReaction === 'dislike') updated.dislikeCount = Math.max(0, updated.dislikeCount - 1);
+          updated.userReaction = reactionType;
+          if (reactionType === 'like') updated.likeCount++;
+          else updated.dislikeCount++;
+        }
+        next.set(targetId, updated);
+      } else {
+        next.set(targetId, {
+          likeCount: reactionType === 'like' ? 1 : 0,
+          dislikeCount: reactionType === 'dislike' ? 1 : 0,
+          userReaction: reactionType,
+        });
+      }
+      return next;
+    });
     reactionMutation.mutate({ targetType: 'comment', targetId, reactionType });
-  };
+  }, [reactionMutation]);
 
-  const handleReply = (commentId: string, userName: string) => {
+  const applyCommentCache = useCallback((comment: FeedCommentWithUser): FeedCommentWithUser => {
+    const cached = commentReactionCache.get(comment.id);
+    if (cached) return { ...comment, likeCount: cached.likeCount, dislikeCount: cached.dislikeCount, userReaction: cached.userReaction };
+    return comment;
+  }, [commentReactionCache]);
+
+  // Init cache when comments load
+  useEffect(() => {
+    const comments = showComments ? allComments : previewComments;
+    if (!comments) return;
+    setCommentReactionCache(prev => {
+      const next = new Map(prev);
+      const init = (c: FeedCommentWithUser) => {
+        if (!next.has(c.id)) next.set(c.id, { likeCount: c.likeCount, dislikeCount: c.dislikeCount, userReaction: c.userReaction });
+        c.replies?.forEach(init);
+      };
+      comments.forEach(init);
+      return next;
+    });
+  }, [allComments, previewComments, showComments]);
+
+  const handleReply = useCallback((commentId: string, userName: string) => {
     setReplyTo({ id: commentId, name: userName });
-    if (!showAllComments) setShowAllComments(true);
+    if (!showComments) setShowComments(true);
     setTimeout(() => inputRef.current?.focus(), 100);
-  };
+  }, [showComments]);
 
-  const insertMention = (friendName: string) => {
-    const text = commentText;
-    const beforeCursor = text.substring(0, mentionCursorPos);
+  const insertMention = useCallback((friendName: string) => {
+    const beforeCursor = commentText.substring(0, mentionCursorPos);
     const atIndex = beforeCursor.lastIndexOf('@');
     if (atIndex === -1) return;
-    const before = text.substring(0, atIndex);
-    const after = text.substring(mentionCursorPos);
-    const newText = `${before}@${friendName} ${after}`;
-    setCommentText(newText);
+    setCommentText(`${commentText.substring(0, atIndex)}@${friendName} ${commentText.substring(mentionCursorPos)}`);
     setShowMentions(false);
     setMentionFilter('');
     setTimeout(() => inputRef.current?.focus(), 50);
-  };
+  }, [commentText, mentionCursorPos]);
 
-  const handleCommentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCommentChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     const cursorPos = e.target.selectionStart || value.length;
     setCommentText(value);
     setMentionCursorPos(cursorPos);
-    const beforeCursor = value.substring(0, cursorPos);
-    const atMatch = beforeCursor.match(/@([\w\u00C0-\u024F]*)$/);
-    if (atMatch) {
-      setMentionFilter(atMatch[1].toLowerCase());
-      setShowMentions(true);
-    } else {
-      setShowMentions(false);
-      setMentionFilter('');
-    }
-  };
+    const atMatch = value.substring(0, cursorPos).match(/@([\w\u00C0-\u024F]*)$/);
+    if (atMatch) { setMentionFilter(atMatch[1].toLowerCase()); setShowMentions(true); }
+    else { setShowMentions(false); setMentionFilter(''); }
+  }, []);
 
   const renderMentionedText = useCallback((text: string) => {
     return text.split(/(@[\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/).map((part, i) => {
       if (part.startsWith('@')) {
         const mentionName = part.slice(1).toLowerCase();
-        const matchedFriend = friends?.find(f =>
-          f.name.toLowerCase() === mentionName || f.username.toLowerCase() === mentionName
-        );
-        return (
-          <span
-            key={i}
-            className="text-blue-400 font-semibold cursor-pointer hover:underline"
-            onClick={() => matchedFriend && onUserClick(matchedFriend.id)}
-          >
-            {part}
-          </span>
-        );
+        const matched = friends?.find(f => f.name.toLowerCase() === mentionName || f.username.toLowerCase() === mentionName);
+        return <span key={i} className="text-blue-500 font-semibold cursor-pointer hover:underline" onClick={() => matched && onUserClick(matched.id)}>{part}</span>;
       }
       return part;
     });
   }, [friends, onUserClick]);
 
-  const renderEventContent = () => {
-    const isOwn = event.userId === currentUserId;
-    const userName = isOwn ? 'Tú' : event.user.name;
-    const victims = (event as MergedFeedEvent).victims || [];
+  // ── Derived values ──
+  const isOwn = event.userId === currentUserId;
+  const userName = isOwn ? 'Tú' : event.user.name;
+  const victims = (event as MergedFeedEvent).victims || [];
+  const routeCoords = (event as any).routeCoordinates as [number, number][] | null | undefined;
+  const pace = event.distance && event.duration ? formatPace(event.distance, event.duration) : null;
+  const displayedComments = showComments ? allComments : previewComments;
 
+  // Event type icon + bg — conquest badge when activity has stolen territory
+  const eventTypeBadge = useMemo(() => {
+    if (event.eventType === 'activity' && victims.length > 0) {
+      return { icon: <Swords className="w-4 h-4" />, bg: 'bg-red-500/10 text-red-500' };
+    }
+    const map: Record<string, { icon: React.ReactNode; bg: string }> = {
+      activity: { icon: <Flame className="w-4 h-4" />, bg: 'bg-primary/10 text-primary' },
+      territory_stolen: { icon: <Swords className="w-4 h-4" />, bg: 'bg-red-500/10 text-red-500' },
+      ran_together: { icon: <Users className="w-4 h-4" />, bg: 'bg-blue-500/10 text-blue-500' },
+      personal_record: { icon: <Trophy className="w-4 h-4" />, bg: 'bg-amber-500/10 text-amber-500' },
+      treasure_found: { icon: <MapPin className="w-4 h-4" />, bg: 'bg-purple-500/10 text-purple-500' },
+    };
+    return map[event.eventType] || { icon: null, bg: 'bg-muted text-muted-foreground' };
+  }, [event.eventType, victims.length]);
+
+  // ── Render content by type ──
+  const renderContent = () => {
     switch (event.eventType) {
       case 'activity':
         return (
           <>
-            {/* Post header */}
-            <div className="flex items-start gap-2.5">
-              <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
-                  <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.activityDate || event.createdAt)}</span>
-                </div>
-                <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">
-                  {event.routeName ? (
-                    <>Completó <span className="font-medium text-gray-900 dark:text-foreground/90">"{event.routeName}"</span></>
-                  ) : (
-                    'Completó una actividad'
-                  )}
-                  {victims.length > 0 && (
-                    <>
-                      {' '}y robó territorio a{' '}
-                      {victims.map((v, i) => (
-                        <span key={v.id}>
-                          {i > 0 && (i === victims.length - 1 ? ' y ' : ', ')}
-                          <span
-                            className="font-semibold cursor-pointer hover:underline"
-                            style={{ color: v.color }}
-                            onClick={() => onUserClick(v.id)}
-                          >
-                            {v.id === currentUserId ? 'ti' : v.name}
-                          </span>
-                        </span>
-                      ))}
-                    </>
-                  )}
-                </p>
+            {/* Route animation hero */}
+            {routeCoords && routeCoords.length >= 2 && (
+              <div className="mt-2 rounded-xl overflow-hidden ring-1 ring-border/10">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#16a34a'} height={170} />
               </div>
-            </div>
+            )}
 
-            {/* Stats badges — compact */}
-            <div className="flex flex-wrap gap-1 mt-2 ml-[50px]">
-              {event.distance && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/8 dark:bg-primary/15 text-[11px] font-medium text-primary">
-                  <MapPin className="w-3 h-3" />{formatDistance(event.distance)}
-                </span>
-              )}
-              {event.duration && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted/80 dark:bg-muted/60 text-[11px] font-medium">
-                  🕐 {formatDuration(event.duration)}
-                </span>
-              )}
-              {event.newArea && event.newArea > 0 && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                  +{formatArea(event.newArea)}
-                </span>
-              )}
-              {victims.map((v) => (
-                <span key={v.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/10 text-[11px] font-semibold text-red-600 dark:text-red-400">
-                  <Swords className="w-3 h-3" />
-                  {formatArea(v.areaStolen)} de {v.id === currentUserId ? 'ti' : v.name}
-                </span>
-              ))}
-            </div>
+            {/* Stats grid */}
+            {(event.distance || event.duration || pace) && (
+              <div className="grid grid-cols-3 gap-1.5 mt-3">
+                {event.distance ? (
+                  <div className="text-center py-2.5 rounded-xl bg-primary/[0.06] dark:bg-primary/[0.12]">
+                    <p className="text-[16px] font-bold text-primary leading-tight">{formatDistance(event.distance)}</p>
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-widest mt-0.5">Distancia</p>
+                  </div>
+                ) : <div />}
+                {event.duration ? (
+                  <div className="text-center py-2.5 rounded-xl bg-slate-50 dark:bg-white/[0.04]">
+                    <p className="text-[16px] font-bold text-foreground/85 leading-tight">{formatDuration(event.duration)}</p>
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-widest mt-0.5">Duración</p>
+                  </div>
+                ) : <div />}
+                {pace ? (
+                  <div className="text-center py-2.5 rounded-xl bg-orange-500/[0.06] dark:bg-orange-500/[0.12]">
+                    <p className="text-[16px] font-bold text-orange-600 dark:text-orange-400 leading-tight">{pace}</p>
+                    <p className="text-[9px] text-muted-foreground uppercase tracking-widest mt-0.5">Ritmo</p>
+                  </div>
+                ) : <div />}
+              </div>
+            )}
+
+            {/* New area conquered */}
+            {event.newArea && event.newArea > 0 && (
+              <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-[12px] font-semibold text-emerald-600 dark:text-emerald-400">
+                <MapPin className="w-3.5 h-3.5" />
+                +{formatArea(event.newArea)} conquistados
+              </div>
+            )}
+
+            {/* Victims section */}
+            {victims.length > 0 && (
+              <div className="mt-3 rounded-xl border border-red-500/15 bg-red-500/[0.03] dark:bg-red-500/[0.06] overflow-hidden">
+                <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1.5">
+                  <Swords className="w-3.5 h-3.5 text-red-500" />
+                  <span className="text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider">Territorio robado</span>
+                </div>
+                <div className="px-3 pb-2.5 space-y-1">
+                  {victims.map(v => (
+                    <div key={v.id} className="flex items-center gap-2 py-1">
+                      <UserAvatar user={{ name: v.name, color: v.color, avatar: v.avatar }} size="xs" onClick={() => onUserClick(v.id)} />
+                      <button className="text-[12px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
+                        {v.id === currentUserId ? 'Ti' : v.name}
+                      </button>
+                      <span className="text-[11px] font-bold text-red-500/90 tabular-nums">{formatArea(v.areaStolen)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         );
 
       case 'territory_stolen':
         return (
-          <div className="flex items-start gap-2.5">
-            <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
-                <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.createdAt)}</span>
-              </div>
-              <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">
+          <>
+            <div className="mt-1 rounded-xl border border-red-500/15 bg-red-500/[0.03] dark:bg-red-500/[0.06] p-3">
+              <p className="text-[13px] text-foreground/80 leading-snug">
                 Ha robado territorio a{' '}
-                <span className="font-semibold cursor-pointer hover:underline" style={{ color: event.victim?.color }} onClick={() => event.victim && onUserClick(event.victim.id)}>
+                <button className="font-semibold hover:underline" style={{ color: event.victim?.color }} onClick={() => event.victim && onUserClick(event.victim.id)}>
                   {event.victim?.id === currentUserId ? 'ti' : event.victim?.name || 'alguien'}
-                </span>
-                {event.routeName && <span className="text-muted-foreground"> en "{event.routeName}"</span>}
+                </button>
               </p>
               {event.areaStolen && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-red-500/10 text-[11px] font-semibold text-red-600 dark:text-red-400">
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 mt-2 rounded-full bg-red-500/10 text-[11px] font-semibold text-red-600 dark:text-red-400">
                   <Swords className="w-3 h-3" />{formatArea(event.areaStolen)} robados
                 </span>
               )}
             </div>
-          </div>
+            {routeCoords && routeCoords.length >= 2 && (
+              <div className="mt-3 rounded-xl overflow-hidden ring-1 ring-border/10">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#dc2626'} height={140} />
+              </div>
+            )}
+          </>
         );
 
       case 'ran_together': {
         let ranWith: Array<{ id: string; name: string }> = [];
         try { ranWith = event.ranTogetherWith ? JSON.parse(event.ranTogetherWith) : []; } catch { }
         return (
-          <div className="flex items-start gap-2.5">
-            <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
-                <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.createdAt)}</span>
+          <>
+            <div className="mt-1 rounded-xl border border-blue-500/15 bg-blue-500/[0.03] dark:bg-blue-500/[0.06] p-3">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Users className="w-3.5 h-3.5 text-blue-500" />
+                <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Corrieron juntos</span>
               </div>
-              <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">
-                Ha corrido junto a{' '}
+              <p className="text-[13px] text-foreground/80 leading-snug">
                 {ranWith.map((u, i) => (
                   <span key={u.id}>
                     {i > 0 && (i === ranWith.length - 1 ? ' y ' : ', ')}
-                    <span className="font-semibold cursor-pointer hover:underline" onClick={() => onUserClick(u.id)}>
-                      {u.id === currentUserId ? 'ti' : u.name}
-                    </span>
+                    <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
+                      {u.id === currentUserId ? 'Ti' : u.name}
+                    </button>
                   </span>
                 ))}
               </p>
               {event.distance && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-muted/80 dark:bg-muted/60 text-[11px] font-medium">
-                  <Users className="w-3 h-3 text-primary" />{formatDistance(event.distance)}
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 mt-2 rounded-full bg-blue-500/10 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                  <MapPin className="w-3 h-3" />{formatDistance(event.distance)}
                 </span>
               )}
             </div>
-          </div>
+            {routeCoords && routeCoords.length >= 2 && (
+              <div className="mt-3 rounded-xl overflow-hidden ring-1 ring-border/10">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#3b82f6'} height={140} />
+              </div>
+            )}
+          </>
         );
       }
 
       case 'personal_record':
         return (
-          <div className="flex items-start gap-2.5">
-            <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <button className="text-[13px] font-bold hover:underline" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>{userName}</button>
-                <span className="text-[10px] text-muted-foreground">· {preciseTimeAgo(event.createdAt)}</span>
-              </div>
-              <p className="text-[12px] text-gray-800 dark:text-foreground/75 mt-0.5 leading-snug">Ha batido un récord personal</p>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-amber-500/10 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-                <Trophy className="w-3 h-3" />
-                {event.recordType === 'longest_run' ? 'Carrera más larga' :
-                  event.recordType === 'fastest_pace' ? 'Ritmo más rápido' :
-                    event.recordType === 'biggest_conquest' ? 'Mayor conquista' : 'Récord'}
-              </span>
-            </div>
+          <div className="mt-1 rounded-xl border border-amber-500/15 bg-amber-500/[0.03] dark:bg-amber-500/[0.06] p-4 text-center">
+            <Trophy className="w-8 h-8 text-amber-500 mx-auto mb-1.5" />
+            <p className="text-[14px] font-bold text-foreground/90">¡Récord personal!</p>
+            <span className="inline-flex items-center gap-1 px-3 py-1 mt-2 rounded-full bg-amber-500/10 text-[12px] font-semibold text-amber-600 dark:text-amber-400">
+              {event.recordType === 'longest_run' ? '🏃 Carrera más larga' :
+                event.recordType === 'fastest_pace' ? '⚡ Ritmo más rápido' :
+                  event.recordType === 'biggest_conquest' ? '🏴 Mayor conquista' : '🏆 Récord'}
+            </span>
           </div>
         );
+
+      case 'treasure_found': {
+        let treasureInfo: any = {};
+        try { treasureInfo = event.metadata ? JSON.parse(event.metadata as string) : {}; } catch {}
+        const powerEmojis: Record<string, string> = {
+          shield: '🛡️', double_area: '⚡', nickname: '🎭', steal_boost: '🏴‍☠️',
+          invisibility: '👻', time_bomb: '💀', magnet: '🧲', reveal: '🔮',
+        };
+        const rarityColors: Record<string, string> = {
+          common: 'text-gray-400 bg-gray-500/10',
+          rare: 'text-blue-400 bg-blue-500/10',
+          epic: 'text-purple-400 bg-purple-500/10',
+          legendary: 'text-amber-400 bg-amber-500/10',
+        };
+        const emoji = powerEmojis[treasureInfo.powerType] || '💎';
+        const rarityClass = rarityColors[treasureInfo.rarity] || rarityColors.common;
+        return (
+          <div className="mt-1 rounded-xl border border-purple-500/15 bg-purple-500/[0.03] dark:bg-purple-500/[0.06] p-4 text-center">
+            <span className="text-3xl">{emoji}</span>
+            <p className="text-[14px] font-bold text-foreground/90 mt-2">¡Tesoro encontrado!</p>
+            <p className="text-[12px] text-muted-foreground mt-1">{treasureInfo.treasureName || 'Tesoro misterioso'}</p>
+            <span className={`inline-flex items-center gap-1 px-3 py-1 mt-2 rounded-full text-[11px] font-bold uppercase tracking-wider ${rarityClass}`}>
+              {treasureInfo.rarity || 'common'}
+            </span>
+          </div>
+        );
+      }
 
       default:
         return null;
     }
   };
 
-  // Comments to display
-  const displayedComments = showAllComments ? allComments : previewComments;
-  const hasMoreComments = event.commentCount > 2 && !showAllComments;
-
+  // ── Main card render ──
   return (
-    <Card className="overflow-hidden
-      border border-emerald-200/60 dark:border-emerald-500/20
-      bg-gradient-to-br from-emerald-50/40 to-white dark:from-emerald-950/30 dark:to-card
-      shadow-sm hover:shadow-md transition-shadow duration-200">
+    <article className="bg-white dark:bg-card rounded-2xl overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_4px_rgba(0,0,0,0.3)] border border-border/20 dark:border-white/[0.06]">
+      {/* Accent bar */}
+      <div className="h-[3px] rounded-t-2xl" style={{ background: `linear-gradient(90deg, ${event.user.color}, ${event.user.color}50)` }} />
 
-      {/* Post content */}
-      <div className="p-3 pb-2">
-        {renderEventContent()}
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 pt-3.5 pb-2">
+        <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
+        <div className="flex-1 min-w-0">
+          <button className="text-[14px] font-bold hover:underline truncate block text-left leading-tight" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>
+            {userName}
+          </button>
+          <div className="flex items-center gap-1 text-[11px] text-muted-foreground/70 mt-0.5 leading-tight">
+            <span>{preciseTimeAgo(event.activityDate || event.createdAt)}</span>
+            {event.routeName && (
+              <><span className="opacity-50">·</span><span className="truncate">{event.routeName}</span></>
+            )}
+          </div>
+        </div>
+        <div className={`flex items-center justify-center w-8 h-8 rounded-xl ${eventTypeBadge.bg}`}>
+          {eventTypeBadge.icon}
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="px-4 pb-3">
+        {renderContent()}
       </div>
 
       {/* Action bar */}
-      <div className="flex items-center gap-1 px-3 py-1 border-t border-emerald-100/80 dark:border-border/40">
-        <ReactionButton type="like" count={localLikeCount} active={localUserReaction === 'like'} onClick={() => handlePostReaction('like')} size="sm" />
-        <ReactionButton type="dislike" count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} size="sm" />
+      <div className="flex items-center px-4 py-2 border-t border-border/15 dark:border-border/8">
+        <div className="flex items-center gap-5">
+          <LikeButton count={localLikeCount} active={localUserReaction === 'like'} onClick={() => handlePostReaction('like')} />
+          <DislikeButton count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} />
+        </div>
         <button
-          onClick={() => {
-            setShowAllComments((s) => {
-              const next = !s;
-              if (!s && next) setTimeout(() => inputRef.current?.focus(), 80);
-              return next;
-            });
-          }}
-          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all active:scale-90 ml-auto"
+          onClick={() => { const next = !showComments; setShowComments(next); if (next) setTimeout(() => inputRef.current?.focus(), 100); }}
+          className="inline-flex items-center gap-1.5 py-1.5 text-muted-foreground hover:text-foreground transition-colors ml-auto"
         >
-          <MessageCircle className="w-3.5 h-3.5" />
-          {event.commentCount > 0 ? event.commentCount : 'Comentar'}
+          <MessageCircle className="w-[17px] h-[17px]" />
+          {event.commentCount > 0 && <span className="text-xs font-medium tabular-nums">{event.commentCount}</span>}
         </button>
       </div>
 
-      {/* Comments section (collapsed by default) */}
-      {showAllComments && (
-        <div className="border-t border-emerald-100/80 dark:border-border/40 bg-gray-50/80 dark:bg-black/40">
-          {/* Preview or full comments */}
+      {/* Comment previews (collapsed) */}
+      {!showComments && previewComments && previewComments.length > 0 && (
+        <div className="px-4 pb-3 space-y-1">
+          {event.commentCount > 2 && (
+            <button onClick={() => setShowComments(true)} className="text-[12px] text-muted-foreground/70 hover:text-foreground font-medium transition-colors">
+              Ver los {event.commentCount} comentarios
+            </button>
+          )}
+          {previewComments.slice(0, 2).map(c => (
+            <div key={c.id} className="flex items-baseline gap-1.5 text-[13px] leading-snug">
+              <button className="font-bold flex-shrink-0 hover:underline" style={{ color: (c.user as any).color }} onClick={() => onUserClick(c.userId)}>
+                {(c.user as any).name}
+              </button>
+              <span className="text-foreground/75 line-clamp-1">{c.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Expanded comments */}
+      {showComments && (
+        <div className="border-t border-border/15 dark:border-border/8">
           {displayedComments && displayedComments.length > 0 && (
-            <div className="px-3 pt-1">
-              {displayedComments.map((comment, idx) => (
-                <div key={comment.id}>
-                  {/* Elegant vertical separator between top-level comments */}
-                  {idx > 0 && (
-                    <div className="flex items-center ml-3 my-0.5">
-                      <div className="w-px h-3 bg-gradient-to-b from-transparent via-border/60 dark:via-emerald-500/25 to-transparent rounded-full" />
-                    </div>
-                  )}
-                  <CommentRow
-                    comment={comment}
-                    currentUserId={currentUserId}
-                    onReply={handleReply}
-                    onDelete={(id) => deleteCommentMutation.mutate(id)}
-                    onUserClick={onUserClick}
-                    onReaction={handleCommentReaction}
-                    renderMentionedText={renderMentionedText}
-                  />
-                  {/* Replies with thread indicator */}
-                  {comment.replies && comment.replies.length > 0 && (
-                    <div className="ml-4 border-l-2 border-primary/12 dark:border-emerald-500/20 pl-1">
-                      {comment.replies.map((reply) => (
-                        <CommentRow
-                          key={reply.id}
-                          comment={reply}
-                          isReply
-                          currentUserId={currentUserId}
-                          onReply={handleReply}
-                          onDelete={(id) => deleteCommentMutation.mutate(id)}
-                          onUserClick={onUserClick}
-                          onReaction={handleCommentReaction}
-                          renderMentionedText={renderMentionedText}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="px-4 pt-3 pb-1">
+              {displayedComments.map(comment => {
+                const cached = applyCommentCache(comment);
+                return (
+                  <div key={comment.id}>
+                    <CommentRow
+                      comment={cached}
+                      currentUserId={currentUserId}
+                      onReply={handleReply}
+                      onDelete={(id) => deleteCommentMutation.mutate(id)}
+                      onUserClick={onUserClick}
+                      onReaction={handleCommentReaction}
+                      renderMentionedText={renderMentionedText}
+                    />
+                    {comment.replies && comment.replies.length > 0 && (
+                      <div className="ml-8 mt-1 pl-2.5 border-l-2 border-border/20 dark:border-border/10">
+                        {comment.replies.map(reply => {
+                          const cachedReply = applyCommentCache(reply);
+                          return (
+                            <CommentRow
+                              key={reply.id}
+                              comment={cachedReply}
+                              isReply
+                              currentUserId={currentUserId}
+                              onReply={handleReply}
+                              onDelete={(id) => deleteCommentMutation.mutate(id)}
+                              onUserClick={onUserClick}
+                              onReaction={handleCommentReaction}
+                              renderMentionedText={renderMentionedText}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {/* Loading state for all comments */}
-          {showAllComments && loadingAllComments && (
-            <div className="flex justify-center py-2">
+          {loadingComments && (
+            <div className="flex justify-center py-4">
               <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
           )}
 
-          {/* "Ver más" button */}
-          {hasMoreComments && (
-            <button
-              onClick={() => setShowAllComments(true)}
-              className="w-full text-center text-[11px] text-muted-foreground hover:text-foreground py-1.5 transition-colors"
-            >
-              Ver los {event.commentCount} comentarios
-            </button>
-          )}
-
-          {/* Comment input — compact */}
-          <div className="px-3 py-2 border-t border-emerald-100/60 dark:border-border/30">
+          {/* Comment input */}
+          <div className="px-4 py-3 border-t border-border/10 dark:border-border/5">
             {replyTo && (
-              <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1">
-                <CornerDownRight className="w-2.5 h-2.5" />
-                Respondiendo a <span className="font-medium">{replyTo.name}</span>
-                <button onClick={() => setReplyTo(null)} className="ml-1 hover:text-foreground text-xs">✕</button>
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-2">
+                <CornerDownRight className="w-3 h-3 flex-shrink-0" />
+                <span>Respondiendo a <span className="font-semibold">{replyTo.name}</span></span>
+                <button onClick={() => setReplyTo(null)} className="ml-1 hover:text-foreground text-[13px] leading-none">✕</button>
               </div>
             )}
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2.5">
               <div className="flex-1 relative">
                 <Input
                   ref={inputRef}
-                  placeholder={replyTo ? 'Respuesta...' : 'Comentar... (@ para mencionar)'}
+                  placeholder={replyTo ? 'Respuesta...' : 'Añade un comentario...'}
                   value={commentText}
                   onChange={handleCommentChange}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && commentText.trim() && !showMentions) {
-                      addCommentMutation.mutate();
-                    }
-                    if (e.key === 'Escape' && showMentions) {
-                      setShowMentions(false);
-                    }
+                    if (e.key === 'Enter' && commentText.trim() && !showMentions) addCommentMutation.mutate();
+                    if (e.key === 'Escape' && showMentions) setShowMentions(false);
                   }}
-                  className="h-7 text-[12px] bg-background/60 dark:bg-background/40 border-border/30 rounded-full px-3"
+                  className="h-9 text-[13px] bg-slate-50 dark:bg-white/[0.04] border-border/20 dark:border-white/[0.06] rounded-full px-4 placeholder:text-muted-foreground/50"
                   maxLength={500}
                 />
                 {showMentions && friends && friends.length > 0 && (() => {
                   const filtered = friends.filter(f => f.name.toLowerCase().includes(mentionFilter) || f.username.toLowerCase().includes(mentionFilter)).slice(0, 5);
                   return filtered.length > 0 ? (
-                    <div className="absolute bottom-full left-0 right-0 mb-1 bg-card border border-border rounded-lg shadow-lg max-h-32 overflow-y-auto z-50">
+                    <div className="absolute bottom-full left-0 right-0 mb-1.5 bg-white dark:bg-card border border-border/30 rounded-xl shadow-xl max-h-40 overflow-y-auto z-50">
                       {filtered.map(f => (
-                        <button
-                          key={f.id}
-                          className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-accent/50 text-left text-[11px] transition-colors"
-                          onMouseDown={(e) => { e.preventDefault(); insertMention(f.name); }}
-                        >
+                        <button key={f.id} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-white/5 text-left text-[13px] transition-colors"
+                          onMouseDown={(e) => { e.preventDefault(); insertMention(f.name); }}>
                           <UserAvatar user={{ name: f.name, color: f.color, avatar: f.avatar }} size="xs" />
-                          <span className="font-medium">{f.name}</span>
-                          <span className="text-muted-foreground">@{f.username}</span>
+                          <span className="font-semibold">{f.name}</span>
+                          <span className="text-muted-foreground/60 text-[11px]">@{f.username}</span>
                         </button>
                       ))}
                     </div>
                   ) : null;
                 })()}
               </div>
-              <Button
-                size="sm"
-                className="h-7 w-7 p-0 rounded-full"
-                variant="ghost"
+              <Button size="sm" className="h-9 w-9 p-0 rounded-full bg-primary/10 hover:bg-primary/20 dark:bg-primary/15 dark:hover:bg-primary/25" variant="ghost"
                 disabled={!commentText.trim() || addCommentMutation.isPending}
-                onClick={() => addCommentMutation.mutate()}
-              >
-                {addCommentMutation.isPending ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Send className="w-3.5 h-3.5" />
-                )}
+                onClick={() => addCommentMutation.mutate()}>
+                {addCommentMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4 text-primary" />}
               </Button>
             </div>
           </div>
         </div>
       )}
-    </Card>
+    </article>
   );
 });
 
 // ─── Social Feed (main export) ───────────────────────────────────────────────
 
+const FEED_LIMIT = 10;
+
 export function SocialFeed() {
   const { user: currentUser } = useSession();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [page, setPage] = useState(0);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const LIMIT = 5;
-  const [allEvents, setAllEvents] = useState<FeedEventWithDetails[]>([]);
 
   const handleUserClick = useCallback((userId: string) => {
     setSelectedUserId(userId);
     setIsDialogOpen(true);
   }, []);
 
-  const { data: events, isLoading, isError, refetch } = useQuery<FeedEventWithDetails[]>({
-    queryKey: ['/api/feed', currentUser?.id, page],
-    queryFn: async () => {
+  const handleDialogChange = useCallback((open: boolean) => {
+    if (!open) setSelectedUserId(null);
+    setIsDialogOpen(open);
+  }, []);
+
+  const {
+    data,
+    isLoading,
+    isError,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery<FeedEventWithDetails[]>({
+    queryKey: ['/api/feed', currentUser?.id],
+    queryFn: async ({ pageParam = 0 }) => {
       if (!currentUser) return [];
-      const res = await apiRequest('GET', `/api/feed/${currentUser.id}?limit=${LIMIT}&offset=${page * LIMIT}`);
+      const res = await apiRequest('GET', `/api/feed/${currentUser.id}?limit=${FEED_LIMIT}&offset=${pageParam as number}`);
       return res.json();
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      if (!lastPage || lastPage.length < FEED_LIMIT) return undefined;
+      return allPages.reduce((sum, p) => sum + p.length, 0);
     },
     enabled: !!currentUser,
     staleTime: 2 * 60 * 1000,
@@ -756,40 +918,15 @@ export function SocialFeed() {
   });
 
   const mergedEvents = useMemo(() => {
-    if (!allEvents) return [];
-    return mergeEvents(allEvents);
-  }, [allEvents]);
-
-  // Accumulate pages into `allEvents`
-  useEffect(() => {
-    if (!events) return;
-    if (page === 0) {
-      setAllEvents(events);
-    } else {
-      setAllEvents(prev => {
-        const existing = new Set(prev.map(e => e.id));
-        const additions = events.filter(e => !existing.has(e.id));
-        return [...prev, ...additions];
-      });
-    }
-  }, [events, page]);
-
-  // Reset accumulation when user changes or when refetching from first page
-  useEffect(() => {
-    setAllEvents([]);
-    setPage(0);
-  }, [currentUser?.id]);
-
-  const handleDialogChange = useCallback((open: boolean) => {
-    if (!open) setSelectedUserId(null);
-    setIsDialogOpen(open);
-  }, []);
+    if (!data?.pages) return [];
+    return mergeEvents(data.pages.flat());
+  }, [data]);
 
   if (!currentUser) return null;
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12">
+      <div className="flex items-center justify-center py-16">
         <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
       </div>
     );
@@ -797,7 +934,7 @@ export function SocialFeed() {
 
   if (isError) {
     return (
-      <div className="text-center py-12 text-muted-foreground">
+      <div className="text-center py-16 text-muted-foreground">
         <p className="text-sm">Error al cargar el feed</p>
         <Button variant="ghost" size="sm" className="mt-2" onClick={() => refetch()}>
           Reintentar
@@ -806,36 +943,34 @@ export function SocialFeed() {
     );
   }
 
-  if (!events || events.length === 0) {
+  if (mergedEvents.length === 0) {
     return (
-      <div className="text-center py-12 text-muted-foreground">
-        <Users className="w-8 h-8 mx-auto mb-2 opacity-40" />
+      <div className="text-center py-16 text-muted-foreground">
+        <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
         <p className="text-sm font-medium">No hay actividad reciente</p>
-        <p className="text-xs mt-1">Cuando tú o tus amigos corráis, aparecerá aquí</p>
+        <p className="text-xs mt-1 opacity-70">Cuando tú o tus amigos corráis, aparecerá aquí</p>
       </div>
     );
   }
 
   return (
-    <div ref={scrollRef} className="space-y-2.5 pb-4">
-      {mergedEvents.map((event) => (
+    <div className="space-y-3.5 pb-4">
+      {mergedEvents.map(event => (
         <EventCard key={event.id} event={event} currentUserId={currentUser.id} onUserClick={handleUserClick} />
       ))}
 
-      {events && events.length >= LIMIT && (
-        <div className="flex justify-center pt-1">
-          <Button variant="ghost" size="sm" className="text-xs" onClick={() => setPage(p => p + 1)}>
-            Ver más
+      {hasNextPage && (
+        <div className="flex justify-center pt-2 pb-2">
+          <Button variant="ghost" size="sm" className="text-xs text-muted-foreground"
+            onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+            {isFetchingNextPage
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />Cargando...</>
+              : 'Ver más'}
           </Button>
         </div>
       )}
 
-      <UserInfoDialog
-        userId={selectedUserId}
-        currentUserId={currentUser?.id}
-        open={isDialogOpen}
-        onOpenChange={handleDialogChange}
-      />
+      <UserInfoDialog userId={selectedUserId} currentUserId={currentUser?.id} open={isDialogOpen} onOpenChange={handleDialogChange} />
     </div>
   );
 }

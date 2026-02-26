@@ -225,7 +225,8 @@ async function processTerritoryConquest(
   bufferedGeometry: any,
   env?: any,
   activityStartedAt?: string,
-  activityCompletedAt?: string
+  activityCompletedAt?: string,
+  routeCoordinates?: [number, number][]
 ): Promise<{
   territory: any;
   totalArea: number;
@@ -234,17 +235,87 @@ async function processTerritoryConquest(
   victimsNotified: string[];
   victims: ConquestVictimInfo[];
   ranTogetherWith: string[]; // Users who ran together (no territory stolen)
+  treasuresCollected: any[];
+  powersUsed: string[];
 }> {
-  // Get friend IDs FIRST so we can scope the territory query
+  // Check if competition is active for ALL-VS-ALL mode
+  const competition = await storage.getActiveCompetition();
+  const isCompMode = !!(competition && competition.status === 'active');
+  
   const friendIds = await storage.getFriendIds(userId);
   
-  // Only load territories for this user + friends (not ALL users)
-  const relevantUserIds = [userId, ...friendIds];
-  const allTerritories = await storage.getTerritoriesForUsers(relevantUserIds);
+  let allTerritories: any[];
+  if (isCompMode) {
+    // Competition: ALL-VS-ALL - load ALL users' territories
+    console.log('[COMPETITION] All-vs-all mode active — loading ALL territories');
+    allTerritories = await storage.getAllTerritories();
+  } else {
+    // Normal mode: only friends
+    const relevantUserIds = [userId, ...friendIds];
+    allTerritories = await storage.getTerritoriesForUsers(relevantUserIds);
+  }
+  
   const userTerritories = allTerritories.filter(t => t.userId === userId);
-  const enemyTerritories = allTerritories.filter(t => 
-    t.userId !== userId && friendIds.includes(t.userId)
-  );
+  const enemyTerritories = isCompMode
+    ? allTerritories.filter(t => t.userId !== userId)
+    : allTerritories.filter(t => t.userId !== userId && friendIds.includes(t.userId));
+  
+  // --- Competition power checks for attacker ---
+  let hasDoubleAreaPower = false;
+  let hasStealBoostPower = false;
+  let hasMagnetPower = false;
+  let doubleAreaPowerId: string | null = null;
+  let stealBoostPowerId: string | null = null;
+  let magnetPowerId: string | null = null;
+  
+  if (isCompMode && competition) {
+    try {
+      const activePowers = await storage.getActivePowersForUser(userId, competition.id);
+      for (const power of activePowers) {
+        if (power.powerType === 'double_area') { hasDoubleAreaPower = true; doubleAreaPowerId = power.id; }
+        if (power.powerType === 'steal_boost') { hasStealBoostPower = true; stealBoostPowerId = power.id; }
+        if (power.powerType === 'magnet') { hasMagnetPower = true; magnetPowerId = power.id; }
+      }
+      if (hasDoubleAreaPower || hasStealBoostPower || hasMagnetPower) {
+        console.log(`[COMPETITION] Active powers for ${userId}: double_area=${hasDoubleAreaPower} steal_boost=${hasStealBoostPower} magnet=${hasMagnetPower}`);
+      }
+    } catch (err) {
+      console.error('[COMPETITION] Error checking active powers:', err);
+    }
+  }
+  
+  // Apply offensive geometry expansion powers
+  let attackGeometry = bufferedGeometry;
+  if (isCompMode && (hasDoubleAreaPower || hasMagnetPower)) {
+    try {
+      let currentGeom = attackGeometry;
+      if (hasDoubleAreaPower) {
+        // Double area: expand radius by sqrt(2) ≈ 1.414x → ~2x area
+        const area = turf.area(turf.feature(currentGeom));
+        const approxRadius = Math.sqrt(area / Math.PI);
+        const bufferDist = approxRadius * (Math.SQRT2 - 1);
+        const expanded = turf.buffer(turf.feature(currentGeom), bufferDist / 1000, { units: 'kilometers' });
+        if (expanded) {
+          currentGeom = expanded.geometry;
+          console.log(`[COMPETITION] DOUBLE AREA applied: ${(area/1e6).toFixed(4)} → ${(turf.area(expanded)/1e6).toFixed(4)} km²`);
+        }
+      }
+      if (hasMagnetPower) {
+        // Magnet: expand radius by sqrt(1.25) ≈ 1.118x → +25% area
+        const area = turf.area(turf.feature(currentGeom));
+        const approxRadius = Math.sqrt(area / Math.PI);
+        const bufferDist = approxRadius * (Math.sqrt(1.25) - 1);
+        const expanded = turf.buffer(turf.feature(currentGeom), bufferDist / 1000, { units: 'kilometers' });
+        if (expanded) {
+          currentGeom = expanded.geometry;
+          console.log(`[COMPETITION] MAGNET applied: +25% area`);
+        }
+      }
+      attackGeometry = currentGeom;
+    } catch (err) {
+      console.error('[COMPETITION] Error applying power geometry expansion:', err);
+    }
+  }
 
   let totalStolenArea = 0;
   const victimsNotified: string[] = [];
@@ -312,6 +383,7 @@ async function processTerritoryConquest(
 
   // Track which victims need area recalculation
   const victimsToUpdate = new Set<string>();
+  let timeBombPenalty = 0; // Area penalty from triggered time bombs
 
   for (const enemyTerritory of enemyTerritories) {
     try {
@@ -321,14 +393,51 @@ async function processTerritoryConquest(
         continue;
       }
       
+      // --- Competition defensive power checks ---
+      if (isCompMode && competition) {
+        // Shield: defender's territory is protected
+        try {
+          if (await storage.hasActiveShield(enemyTerritory.userId, competition.id)) {
+            console.log(`[COMPETITION] SHIELD active — skipping territory ${enemyTerritory.id} from ${enemyTerritory.userId}`);
+            continue;
+          }
+        } catch (_) {}
+        
+        // Invisibility: defender is invisible, skip their territory
+        try {
+          if (await storage.hasInvisibility(enemyTerritory.userId, competition.id)) {
+            console.log(`[COMPETITION] INVISIBILITY active — skipping territory ${enemyTerritory.id} from ${enemyTerritory.userId}`);
+            continue;
+          }
+        } catch (_) {}
+      }
+      
       // Use subtractFromTerritoryDirect with pre-loaded territory (avoids redundant DB read)
       const result = await storage.subtractFromTerritoryDirect(
         enemyTerritory as any,
-        bufferedGeometry
+        attackGeometry
       );
 
       if (result.stolenArea > 0) {
-        totalStolenArea += result.stolenArea;
+        // Check if defender has TIME BOMB — damage is reflected back to attacker
+        if (isCompMode && competition) {
+          try {
+            if (await storage.hasActiveTimeBomb(enemyTerritory.userId, competition.id)) {
+              console.log(`[COMPETITION] TIME BOMB triggered by ${enemyTerritory.userId}! Attacker ${userId} penalized ${(result.stolenArea/1e6).toFixed(4)} km²`);
+              timeBombPenalty += result.stolenArea;
+              // Time bomb reflected: the territory IS subtracted, but attacker gets penalized
+              victimsToUpdate.add(enemyTerritory.userId);
+              continue; // Don't credit stolen area to attacker
+            }
+          } catch (_) {}
+        }
+        
+        // Apply steal_boost multiplier for stats tracking
+        const effectiveStolenArea = hasStealBoostPower
+          ? result.stolenArea * 1.5
+          : result.stolenArea;
+        
+        totalStolenArea += effectiveStolenArea;
         victimsToUpdate.add(enemyTerritory.userId);
         
         console.log(
@@ -398,12 +507,17 @@ async function processTerritoryConquest(
   const result = await storage.addOrMergeTerritory(
     userId,
     routeId,
-    bufferedGeometry,
+    attackGeometry, // Use power-expanded geometry if applicable
     userTerritories
   );
 
-  // Step 3: Update user's total area
-  await storage.updateUserTotalArea(userId, result.totalArea);
+  // Step 3: Update user's total area (accounting for time bomb penalty)
+  let finalTotalArea = result.totalArea;
+  if (timeBombPenalty > 0) {
+    finalTotalArea = Math.max(0, result.totalArea - timeBombPenalty);
+    console.log(`[COMPETITION] Time bomb penalty applied: -${(timeBombPenalty/1e6).toFixed(4)} km²`);
+  }
+  await storage.updateUserTotalArea(userId, finalTotalArea);
 
   // Step 4: Send deferred emails/notifications (non-critical, best-effort)
   // CAP: Only send notifications for the top MAX_NOTIFICATIONS victims (by stolen area) to prevent subrequest explosion
@@ -466,21 +580,120 @@ async function processTerritoryConquest(
   }
 
   console.log(`[TERRITORY] Conquest complete:
-    - Total area: ${(result.totalArea/1000000).toFixed(4)} km²
+    - Total area: ${(finalTotalArea/1000000).toFixed(4)} km²
     - New area: ${(result.newArea/1000000).toFixed(4)} km²
     - Area stolen: ${(totalStolenArea/1000000).toFixed(4)} km²
     - Existing area in route: ${(result.existingArea/1000000).toFixed(4)} km²
     - Ran together with: ${ranTogetherWith.length > 0 ? ranTogetherWith.join(', ') : 'none'}
+    - Competition mode: ${isCompMode}
   `);
+
+  // --- Competition post-processing ---
+  const treasuresCollected: any[] = [];
+  const powersUsed: string[] = [];
+  
+  if (isCompMode && competition) {
+    // 1. Auto-collect treasures along the route (within 100m)
+    if (routeCoordinates && routeCoordinates.length > 0) {
+      try {
+        const activeTreasures = await storage.getActiveTreasures(competition.id);
+        // Sample every 5th coordinate to reduce computation
+        const sampledCoords = routeCoordinates.filter((_, i) => i % 5 === 0);
+        
+        for (const treasure of activeTreasures) {
+          let collected = false;
+          for (const coord of sampledCoords) {
+            const dist = turf.distance(
+              turf.point([coord[1], coord[0]]), // [lng, lat]
+              turf.point([treasure.lng, treasure.lat]),
+              { units: 'meters' }
+            );
+            if (dist <= 100) {
+              const result = await storage.collectTreasure(treasure.id, userId);
+              if (result) {
+                // Create power for user
+                await storage.createUserPower({
+                  id: crypto.randomUUID(),
+                  userId,
+                  competitionId: competition.id,
+                  powerType: treasure.powerType,
+                  treasureId: treasure.id,
+                  status: 'available',
+                });
+                treasuresCollected.push(result);
+                console.log(`[COMPETITION] Treasure auto-collected: ${treasure.name} (${treasure.powerType}) by ${userId}`);
+                
+                // Create feed event for treasure collection
+                try {
+                  await storage.createFeedEvent({
+                    id: crypto.randomUUID(),
+                    userId,
+                    eventType: 'treasure_found',
+                    routeId,
+                    metadata: JSON.stringify({
+                      treasureId: treasure.id,
+                      treasureName: treasure.name,
+                      powerType: treasure.powerType,
+                      rarity: treasure.rarity,
+                    }),
+                  });
+                } catch (_) {}
+              }
+              collected = true;
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[COMPETITION] Error auto-collecting treasures:', err);
+      }
+    }
+    
+    // 2. Consume "next-run" powers (these are single-use per run)
+    try {
+      if (doubleAreaPowerId) {
+        await storage.usePower(doubleAreaPowerId);
+        powersUsed.push('double_area');
+        console.log(`[COMPETITION] Power consumed: double_area (${doubleAreaPowerId})`);
+      }
+      if (stealBoostPowerId) {
+        await storage.usePower(stealBoostPowerId);
+        powersUsed.push('steal_boost');
+        console.log(`[COMPETITION] Power consumed: steal_boost (${stealBoostPowerId})`);
+      }
+      if (magnetPowerId) {
+        await storage.usePower(magnetPowerId);
+        powersUsed.push('magnet');
+        console.log(`[COMPETITION] Power consumed: magnet (${magnetPowerId})`);
+      }
+    } catch (err) {
+      console.error('[COMPETITION] Error consuming powers:', err);
+    }
+    
+    // 3. Update competition stats
+    try {
+      const uniqueVictims = Array.from(victimMap.keys()).length;
+      await storage.incrementCompetitionStats(competition.id, userId, {
+        activities: 1,
+        areaStolen: totalStolenArea,
+        treasures: treasuresCollected.length,
+        ranTogether: ranTogetherWith.length,
+      });
+    } catch (err) {
+      console.error('[COMPETITION] Error updating competition stats:', err);
+    }
+  }
 
   return {
     territory: result.territory,
-    totalArea: result.totalArea,
+    totalArea: finalTotalArea,
     newAreaConquered: result.newArea,
     areaStolen: totalStolenArea,
     victimsNotified,
     victims: Array.from(victimMap.values()).sort((a, b) => b.stolenArea - a.stolenArea),
     ranTogetherWith,
+    treasuresCollected,
+    powersUsed,
   };
 }
 
@@ -1328,7 +1541,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               enclosedPoly.geometry,
               c.env,
               routeData.startedAt,
-              routeData.completedAt
+              routeData.completedAt,
+              coords
             );
 
             // Save ran together info to the route
@@ -3353,7 +3567,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 enclosedPoly.geometry,
                 undefined, // skip notifications to reduce subrequests
                 startedAtStr,
-                completedAtStr
+                completedAtStr,
+                coordinates
               );
 
               // Save ran together info to the route
@@ -4401,7 +4616,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               enclosedPoly.geometry,
               undefined, // skip notifications to reduce subrequests
               startedAtStr,
-              completedAtStr
+              completedAtStr,
+              coordinates
             );
 
             // Save ran together info to the route
@@ -4726,6 +4942,686 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: error.message }, 500);
     }
   });
+
+  // ============ COMPETITION SYSTEM ============
+
+  // Competition name constant
+  const COMPETITION_NAME = 'La Primera Conquista del Ebro';
+  const COMPETITION_SLUG = 'la-primera-conquista-del-ebro';
+  const COMPETITION_START = '2026-03-02T09:00:00+01:00'; // Monday March 2, 9AM CET
+  const COMPETITION_END = '2026-03-30T23:59:59+02:00'; // March 30
+
+  // Zaragoza bounding box for treasure spawning (walkable/runnable areas)
+  const ZARAGOZA_BOUNDS = {
+    minLat: 41.6200, maxLat: 41.6900,
+    minLng: -0.9300, maxLng: -0.8400,
+  };
+
+  // Zaragoza street-level spawn points (pre-defined on roads/paths within the city)
+  const ZARAGOZA_SPAWN_POINTS: Array<{ lat: number; lng: number; zone: string }> = [
+    // Centro histórico
+    { lat: 41.6560, lng: -0.8773, zone: 'Plaza del Pilar' },
+    { lat: 41.6542, lng: -0.8817, zone: 'Calle Alfonso I' },
+    { lat: 41.6530, lng: -0.8770, zone: 'El Tubo' },
+    { lat: 41.6518, lng: -0.8839, zone: 'Plaza España' },
+    { lat: 41.6575, lng: -0.8782, zone: 'Paseo Echegaray' },
+    // Parque Grande / Ribera
+    { lat: 41.6370, lng: -0.8870, zone: 'Parque Grande' },
+    { lat: 41.6400, lng: -0.8830, zone: 'Cabezo Buenavista' },
+    { lat: 41.6350, lng: -0.8780, zone: 'Jardín Botánico' },
+    { lat: 41.6420, lng: -0.8920, zone: 'Paseo Sagasta' },
+    // Expo / Ribera norte
+    { lat: 41.6620, lng: -0.9080, zone: 'Expo Zaragoza' },
+    { lat: 41.6630, lng: -0.8970, zone: 'Puente del Tercer Milenio' },
+    { lat: 41.6600, lng: -0.8850, zone: 'Puente de Piedra' },
+    // Delicias / Romareda
+    { lat: 41.6480, lng: -0.9070, zone: 'Estación Delicias' },
+    { lat: 41.6430, lng: -0.9000, zone: 'Parque Delicias' },
+    { lat: 41.6400, lng: -0.8950, zone: 'Romareda' },
+    // Actur / Universidad
+    { lat: 41.6700, lng: -0.8760, zone: 'Campus Río Ebro' },
+    { lat: 41.6680, lng: -0.8880, zone: 'Actur' },
+    { lat: 41.6650, lng: -0.8650, zone: 'Parque del Agua' },
+    // La Almozara / Casablanca
+    { lat: 41.6550, lng: -0.9100, zone: 'La Almozara' },
+    { lat: 41.6320, lng: -0.8910, zone: 'Casablanca' },
+    // San José / Las Fuentes
+    { lat: 41.6520, lng: -0.8650, zone: 'Las Fuentes' },
+    { lat: 41.6490, lng: -0.8700, zone: 'Parque Bruil' },
+    // Valdespartera / Arcosur
+    { lat: 41.6250, lng: -0.9050, zone: 'Valdespartera' },
+    { lat: 41.6280, lng: -0.8850, zone: 'Pinares de Venecia' },
+    // Arrabal / Jesús
+    { lat: 41.6610, lng: -0.8730, zone: 'Arrabal' },
+    { lat: 41.6460, lng: -0.8660, zone: 'Barrio Jesús' },
+    // Torrero / Canal Imperial
+    { lat: 41.6340, lng: -0.8730, zone: 'Canal Imperial' },
+    { lat: 41.6310, lng: -0.8800, zone: 'Torrero' },
+    // Montecanal / Rosales
+    { lat: 41.6260, lng: -0.8970, zone: 'Montecanal' },
+    { lat: 41.6290, lng: -0.9100, zone: 'Rosales del Canal' },
+  ];
+
+  // Treasure power definitions
+  const TREASURE_POWERS = {
+    shield: { name: 'Escudo de Acero', rarity: 'rare', description: 'Tu siguiente territorio es inmune a robos durante 24h', color: '#7C8CA1', emoji: '🛡️' },
+    double_area: { name: 'Doble Conquista', rarity: 'epic', description: 'Los km² de tu siguiente ruta cuentan x2', color: '#F59E0B', emoji: '⚡' },
+    nickname: { name: 'Pluma del Troll', rarity: 'common', description: 'Pon un apodo público a otro usuario durante 48h', color: '#CD7F32', emoji: '✏️' },
+    steal_boost: { name: 'Espada Voraz', rarity: 'epic', description: 'Robas un 50% más de lo normal en tu siguiente ruta', color: '#F59E0B', emoji: '⚔️' },
+    invisibility: { name: 'Capa de Sombras', rarity: 'legendary', description: 'Tu territorio es invisible en el mapa para otros durante 24h', color: '#8B5CF6', emoji: '👻' },
+    time_bomb: { name: 'Bomba Temporal', rarity: 'rare', description: 'El que te robe en las próximas 24h pierde el doble', color: '#7C8CA1', emoji: '💣' },
+    magnet: { name: 'Imán de Tierras', rarity: 'legendary', description: 'Tu siguiente ruta absorbe un 25% extra de territorios en su radio', color: '#8B5CF6', emoji: '🧲' },
+    reveal: { name: 'Ojo del Halcón', rarity: 'common', description: 'Revela la ubicación del siguiente tesoro 1h antes', color: '#CD7F32', emoji: '🦅' },
+  };
+
+  // Rarity weights for random treasure spawning
+  const RARITY_WEIGHTS = [
+    { rarity: 'common', powers: ['nickname', 'reveal'], weight: 40 },
+    { rarity: 'rare', powers: ['shield', 'time_bomb'], weight: 30 },
+    { rarity: 'epic', powers: ['double_area', 'steal_boost'], weight: 20 },
+    { rarity: 'legendary', powers: ['invisibility', 'magnet'], weight: 10 },
+  ];
+
+  function pickRandomTreasure(): { powerType: string; rarity: string; name: string } {
+    const totalWeight = RARITY_WEIGHTS.reduce((sum, r) => sum + r.weight, 0);
+    let roll = Math.random() * totalWeight;
+    for (const tier of RARITY_WEIGHTS) {
+      roll -= tier.weight;
+      if (roll <= 0) {
+        const pow = tier.powers[Math.floor(Math.random() * tier.powers.length)];
+        const info = TREASURE_POWERS[pow as keyof typeof TREASURE_POWERS];
+        return { powerType: pow, rarity: tier.rarity, name: info.name };
+      }
+    }
+    return { powerType: 'nickname', rarity: 'common', name: 'Pluma del Troll' };
+  }
+
+  function pickRandomSpawnPoint(): { lat: number; lng: number; zone: string } {
+    // Add slight randomness (±100m) to avoid exact same spots every time
+    const base = ZARAGOZA_SPAWN_POINTS[Math.floor(Math.random() * ZARAGOZA_SPAWN_POINTS.length)];
+    const jitterLat = (Math.random() - 0.5) * 0.002; // ~100m
+    const jitterLng = (Math.random() - 0.5) * 0.002;
+    return {
+      lat: base.lat + jitterLat,
+      lng: base.lng + jitterLng,
+      zone: base.zone,
+    };
+  }
+
+  // Helper: check if competition is currently active
+  function isCompetitionActive(comp: any): boolean {
+    if (!comp) return false;
+    if (comp.status === 'active') return true;
+    // Auto-detect based on timestamps
+    const now = Date.now();
+    const start = new Date(comp.startsAt).getTime();
+    const end = new Date(comp.endsAt).getTime();
+    return now >= start && now <= end;
+  }
+
+  function isCompetitionUpcoming(comp: any): boolean {
+    if (!comp) return false;
+    const now = Date.now();
+    const start = new Date(comp.startsAt).getTime();
+    return now < start;
+  }
+
+  // GET /api/competition/active — Public: returns competition state for UI
+  app.get('/api/competition/active', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp) {
+        return c.json({ competition: null, status: 'no_competition', state: 'none' });
+      }
+      const now = Date.now();
+      const start = new Date(comp.startsAt).getTime();
+      const end = new Date(comp.endsAt).getTime();
+      let status: 'upcoming' | 'active' | 'finished' = 'upcoming';
+      if (now >= start && now <= end) status = 'active';
+      else if (now > end) status = 'finished';
+      // Auto-update status if needed
+      if (status !== comp.status) {
+        await storage.updateCompetitionStatus(comp.id, status);
+      }
+      const totalDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+      const dayOfCompetition = status === 'active' ? Math.min(totalDays, Math.ceil((now - start) / (1000 * 60 * 60 * 24))) : undefined;
+      const timeUntilStart = status === 'upcoming' ? Math.max(0, start - now) : undefined;
+      return c.json({
+        competition: {
+          id: comp.id,
+          name: comp.name,
+          slug: comp.slug,
+          startsAt: comp.startsAt,
+          endsAt: comp.endsAt,
+          status,
+        },
+        status,
+        state: status, // backward compat
+        timeUntilStart,
+        dayOfCompetition,
+        totalDays,
+        treasurePowers: TREASURE_POWERS,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/admin/competition — Create competition (admin)
+  app.post('/api/admin/competition', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json().catch(() => ({}));
+      const comp = await storage.createCompetition({
+        name: body.name || COMPETITION_NAME,
+        slug: body.slug || COMPETITION_SLUG,
+        startsAt: body.startsAt || COMPETITION_START,
+        endsAt: body.endsAt || COMPETITION_END,
+        config: body.config || null,
+      });
+      return c.json(comp);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/admin/reset-for-competition — Reset DB for competition
+  app.post('/api/admin/reset-for-competition', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const result = await storage.resetForCompetition();
+      return c.json({ success: true, ...result });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/treasures/active — Active treasures for map (only during competition)
+  app.get('/api/treasures/active', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp || !isCompetitionActive(comp)) {
+        return c.json({ treasures: [] });
+      }
+      const active = await storage.getActiveTreasures(comp.id);
+      return c.json({
+        treasures: active.map(t => ({
+          id: t.id,
+          name: t.name,
+          powerType: t.powerType,
+          rarity: t.rarity,
+          lat: t.lat,
+          lng: t.lng,
+          spawnedAt: t.spawnedAt,
+          expiresAt: t.expiresAt,
+          power: TREASURE_POWERS[t.powerType as keyof typeof TREASURE_POWERS] || null,
+        })),
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/treasures/collect — Collect a treasure  
+  app.post('/api/treasures/collect', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { userId, treasureId, lat, lng } = body;
+      if (!userId || !treasureId) return c.json({ error: 'Missing userId or treasureId' }, 400);
+
+      const comp = await storage.getActiveCompetition();
+      if (!comp || !isCompetitionActive(comp)) {
+        return c.json({ error: 'No active competition' }, 400);
+      }
+
+      const treasure = await storage.getTreasureById(treasureId);
+      if (!treasure || treasure.collectedBy || !treasure.active) {
+        return c.json({ error: 'Treasure not available' }, 404);
+      }
+
+      // Check proximity (100m)
+      if (lat && lng) {
+        const dist = haversineDistance(lat, lng, treasure.lat, treasure.lng);
+        if (dist > 100) {
+          return c.json({ error: 'Too far from treasure', distance: dist }, 400);
+        }
+      }
+
+      // Collect it
+      const collected = await storage.collectTreasure(treasureId, userId);
+      if (!collected || collected.collectedBy !== userId) {
+        return c.json({ error: 'Already collected by someone else' }, 409);
+      }
+
+      // Create user power
+      const powerDef = TREASURE_POWERS[treasure.powerType as keyof typeof TREASURE_POWERS];
+      await storage.createUserPower({
+        userId,
+        competitionId: comp.id,
+        powerType: treasure.powerType,
+        treasureId: treasure.id,
+        expiresAt: null,
+        metadata: null,
+      });
+
+      // Increment stats
+      await storage.incrementCompetitionStats(comp.id, userId, { treasures: 1 });
+
+      // Create feed event
+      await storage.createFeedEvent({
+        userId,
+        eventType: 'treasure_found',
+        routeId: null,
+        victimId: null,
+        areaStolen: null,
+        distance: null,
+        duration: null,
+        newArea: null,
+        ranTogetherWith: null,
+        recordType: treasure.rarity,
+        recordValue: null,
+      });
+
+      return c.json({
+        success: true,
+        treasure: {
+          ...treasure,
+          collectedBy: userId,
+          collectedAt: new Date().toISOString(),
+        },
+        power: {
+          type: treasure.powerType,
+          name: powerDef?.name || treasure.name,
+          rarity: treasure.rarity,
+          description: powerDef?.description || '',
+          emoji: powerDef?.emoji || '📦',
+        },
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/users/:userId/powers — User's powers (only during competition)
+  app.get('/api/users/:userId/powers', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp || !isCompetitionActive(comp)) {
+        return c.json({ powers: [] });
+      }
+      const powers = await storage.getUserPowers(userId, comp.id);
+      return c.json({
+        powers: powers.map(p => ({
+          ...p,
+          definition: TREASURE_POWERS[p.powerType as keyof typeof TREASURE_POWERS] || null,
+        })),
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/powers/:powerId/activate — Activate a power (auto-use for instant ones)
+  app.post('/api/powers/:powerId/activate', async (c) => {
+    try {
+      const powerId = c.req.param('powerId');
+      const body = await c.req.json().catch(() => ({}));
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const power = await storage.getPowerById(powerId);
+      if (!power) return c.json({ error: 'Power not found' }, 404);
+      if (power.status !== 'available') return c.json({ error: 'Power already used or expired' }, 400);
+
+      const now = new Date().toISOString();
+      const in24h = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      const in48h = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+
+      // Handle per-type activation
+      switch (power.powerType) {
+        case 'shield':
+        case 'time_bomb':
+        case 'invisibility': {
+          // Time-limited passive: activate for 24h
+          await storage.activatePower(powerId);
+          // Set expiration via storage method
+          await storage.setPowerExpiration(powerId, in24h);
+          return c.json({ success: true, message: `Activado durante 24h`, expiresAt: in24h });
+        }
+        case 'double_area':
+        case 'steal_boost':
+        case 'magnet': {
+          // Next-run powers: activate (will be consumed on next route submission)
+          await storage.activatePower(powerId);
+          return c.json({ success: true, message: 'Se aplicará en tu siguiente ruta' });
+        }
+        case 'nickname': {
+          // Requires target user + nickname
+          const { targetUserId, nickname } = body;
+          if (!targetUserId || !nickname) return c.json({ error: 'Missing targetUserId or nickname' }, 400);
+          if (nickname.length > 20) return c.json({ error: 'Nickname too long (max 20 chars)' }, 400);
+          await storage.createNickname({
+            targetUserId,
+            setByUserId: power.userId,
+            nickname,
+            expiresAt: in48h,
+          });
+          await storage.usePower(powerId);
+          return c.json({ success: true, message: `Apodo "${nickname}" asignado durante 48h` });
+        }
+        case 'reveal': {
+          // Instant: no real action needed, client shows next treasure location early
+          await storage.usePower(powerId);
+          return c.json({ success: true, message: 'Recibirás la ubicación del próximo tesoro 1h antes' });
+        }
+        default:
+          return c.json({ error: 'Unknown power type' }, 400);
+      }
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/competition/leaderboard — Competition leaderboard
+  app.get('/api/competition/leaderboard', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp) return c.json({ leaderboard: [] });
+      const leaderboard = await storage.getCompetitionLeaderboard(comp.id);
+      return c.json({ leaderboard });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/competition/weekly-summary/:weekNumber
+  app.get('/api/competition/weekly-summary/:weekNumber', async (c) => {
+    try {
+      const weekNumber = parseInt(c.req.param('weekNumber'));
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp) return c.json({ summary: null });
+      const summary = await storage.getWeeklySummary(comp.id, weekNumber);
+      return c.json({ summary: summary ? JSON.parse(summary.data) : null, weekNumber });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/tasks/spawn-treasure — Cron: spawn daily treasure
+  app.post('/api/tasks/spawn-treasure', async (c) => {
+    try {
+      // Auth check
+      const authHeader = c.req.header('Authorization');
+      if (authHeader !== `Bearer ${c.env.UPSTASH_CRON_SECRET}`) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp || !isCompetitionActive(comp)) {
+        return c.json({ skipped: true, reason: 'No active competition' });
+      }
+
+      const pick = pickRandomTreasure();
+      const spot = pickRandomSpawnPoint();
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(); // 24h
+
+      const treasure = await storage.createTreasure({
+        competitionId: comp.id,
+        name: pick.name,
+        powerType: pick.powerType,
+        rarity: pick.rarity,
+        lat: spot.lat,
+        lng: spot.lng,
+        spawnedAt: now.toISOString(),
+        expiresAt,
+      });
+
+      // Send push notification to all users
+      try {
+        const allSubs = await storage.getAllPushSubscriptions();
+        const { sendPushToUser } = await import('./pushHelper');
+        const payload = JSON.stringify({
+          title: `🗺️ ¡Nuevo tesoro en ${spot.zone}!`,
+          body: `Un ${pick.name} (${pick.rarity === 'legendary' ? '💎 LEGENDARIO' : pick.rarity === 'epic' ? '✨ ÉPICO' : pick.rarity === 'rare' ? '🔵 RARO' : '🟤 COMÚN'}) ha aparecido. ¡Corre a por él!`,
+          tag: `treasure-${treasure.id}`,
+          data: { type: 'treasure_spawned', treasureId: treasure.id },
+        });
+        // Group subs by userId to avoid duplicate sends
+        const subsByUser = new Map<string, typeof allSubs>();
+        for (const sub of allSubs) {
+          if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
+          subsByUser.get(sub.userId)!.push(sub);
+        }
+        let sent = 0;
+        for (const [_, userSubs] of subsByUser) {
+          try {
+            await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY!, c.env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
+            sent++;
+          } catch (_) {}
+        }
+        console.log(`[TREASURE] Spawned ${pick.name} at ${spot.zone}, notified ${sent} users`);
+      } catch (e) {
+        console.error('[TREASURE] Push error:', e);
+      }
+
+      return c.json({ success: true, treasure });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/tasks/weekly-summary — Cron: generate weekly summary (Sundays 8PM)
+  app.post('/api/tasks/weekly-summary', async (c) => {
+    try {
+      const authHeader = c.req.header('Authorization');
+      if (authHeader !== `Bearer ${c.env.UPSTASH_CRON_SECRET}`) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const comp = await storage.getActiveCompetition();
+      if (!comp || !isCompetitionActive(comp)) {
+        return c.json({ skipped: true, reason: 'No active competition' });
+      }
+
+      // Determine week number (1-based from competition start)
+      const startDate = new Date(comp.startsAt);
+      const now = new Date();
+      const weekNumber = Math.ceil((now.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
+
+      // Get all stats for this competition
+      const leaderboard = await storage.getCompetitionLeaderboard(comp.id);
+      if (leaderboard.length === 0) {
+        return c.json({ skipped: true, reason: 'No participants yet' });
+      }
+
+      // Compute awards
+      const byArea = [...leaderboard].sort((a, b) => b.totalArea - a.totalArea);
+      const byStolen = [...leaderboard].sort((a, b) => b.areaStolen - a.areaStolen);
+      const byDistance = [...leaderboard].sort((a, b) => b.totalDistance - a.totalDistance);
+      const byActivities = [...leaderboard].sort((a, b) => b.activitiesCount - a.activitiesCount);
+      const byTreasures = [...leaderboard].sort((a, b) => b.treasuresCollected - a.treasuresCollected);
+      const byVictims = [...leaderboard].sort((a, b) => b.uniqueVictims - a.uniqueVictims);
+      const byRanTogether = [...leaderboard].sort((a, b) => b.ranTogetherCount - a.ranTogetherCount);
+
+      // MVP score: normalized combo of all metrics
+      const maxArea = byArea[0]?.totalArea || 1;
+      const maxStolen = byStolen[0]?.areaStolen || 1;
+      const maxDist = byDistance[0]?.totalDistance || 1;
+      const maxAct = byActivities[0]?.activitiesCount || 1;
+      const mvpScores = leaderboard.map(s => ({
+        ...s,
+        mvpScore: (s.totalArea / maxArea) * 0.3 + (s.areaStolen / maxStolen) * 0.25 +
+                  (s.totalDistance / maxDist) * 0.2 + (s.activitiesCount / maxAct) * 0.25,
+      })).sort((a, b) => b.mvpScore - a.mvpScore);
+
+      const summaryData = {
+        weekNumber,
+        generatedAt: now.toISOString(),
+        competitionName: comp.name,
+        participantCount: leaderboard.length,
+        awards: {
+          territory_king: { title: '🏆 Rey del Territorio', user: byArea[0]?.user, value: byArea[0]?.totalArea || 0, unit: 'm²' },
+          conqueror: { title: '🗡️ El Conquistador', user: byStolen[0]?.user, value: byStolen[0]?.areaStolen || 0, unit: 'm² robados' },
+          marathon: { title: '🏃 Maratonista', user: byDistance[0]?.user, value: byDistance[0]?.totalDistance || 0, unit: 'm' },
+          consistent: { title: '📊 El Constante', user: byActivities[0]?.user, value: byActivities[0]?.activitiesCount || 0, unit: 'actividades' },
+          treasure_hunter: { title: '💎 Cazatesoros', user: byTreasures[0]?.user, value: byTreasures[0]?.treasuresCollected || 0, unit: 'tesoros' },
+          precise: { title: '🎯 El Preciso', user: byVictims[0]?.user, value: byVictims[0]?.uniqueVictims || 0, unit: 'víctimas' },
+          social: { title: '🤝 Alma Social', user: byRanTogether[0]?.user, value: byRanTogether[0]?.ranTogetherCount || 0, unit: 'carreras juntos' },
+          mvp: { title: '⚡ MVP de la Semana', user: mvpScores[0]?.user, value: Math.round(mvpScores[0]?.mvpScore * 100) || 0, unit: 'puntos' },
+        },
+        ranking: byArea.slice(0, 10).map((s, i) => ({
+          rank: i + 1,
+          user: s.user,
+          totalArea: s.totalArea,
+          activitiesCount: s.activitiesCount,
+          areaStolen: s.areaStolen,
+        })),
+      };
+
+      await storage.createWeeklySummary({
+        competitionId: comp.id,
+        weekNumber,
+        data: JSON.stringify(summaryData),
+      });
+
+      // Push notification to all users
+      try {
+        const allSubs = await storage.getAllPushSubscriptions();
+        const { sendPushToUser } = await import('./pushHelper');
+        const payload = JSON.stringify({
+          title: `📊 Resumen Semanal — Semana ${weekNumber}`,
+          body: `¡El resumen de La Gran Conquista está listo! Abre la app para ver los premios.`,
+          tag: `weekly-summary-${weekNumber}`,
+          data: { type: 'weekly_summary', weekNumber },
+        });
+        const subsByUser = new Map<string, typeof allSubs>();
+        for (const sub of allSubs) {
+          if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
+          subsByUser.get(sub.userId)!.push(sub);
+        }
+        for (const [_, userSubs] of subsByUser) {
+          try { await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY!, c.env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com'); } catch (_) {}
+        }
+      } catch (_) {}
+
+      return c.json({ success: true, weekNumber, summary: summaryData });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/admin/spawn-treasure — Manual treasure spawn (admin/testing)
+  app.post('/api/admin/spawn-treasure', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json().catch(() => ({}));
+      const comp = await storage.getActiveCompetition();
+      if (!comp) return c.json({ error: 'No competition' }, 400);
+
+      const pick = body.powerType
+        ? { powerType: body.powerType, rarity: TREASURE_POWERS[body.powerType as keyof typeof TREASURE_POWERS]?.rarity || 'common', name: TREASURE_POWERS[body.powerType as keyof typeof TREASURE_POWERS]?.name || body.powerType }
+        : pickRandomTreasure();
+      const spot = body.lat && body.lng ? { lat: body.lat, lng: body.lng, zone: body.zone || 'Manual' } : pickRandomSpawnPoint();
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + (body.durationHours || 24) * 60 * 60 * 1000).toISOString();
+
+      const treasure = await storage.createTreasure({
+        competitionId: comp.id,
+        name: pick.name,
+        powerType: pick.powerType,
+        rarity: pick.rarity,
+        lat: spot.lat,
+        lng: spot.lng,
+        spawnedAt: now.toISOString(),
+        expiresAt,
+      });
+      return c.json({ success: true, treasure, zone: spot.zone });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // POST /api/admin/broadcast — Send push notification to all users (admin)
+  app.post('/api/admin/broadcast', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const body = await c.req.json();
+      const { title, body: msgBody, tag, data } = body;
+      if (!title || !msgBody) return c.json({ error: 'title and body required' }, 400);
+
+      const allSubs = await storage.getAllPushSubscriptions();
+      if (allSubs.length === 0) return c.json({ error: 'No subscriptions', sent: 0 }, 404);
+
+      const { sendPushToUser } = await import('./pushHelper');
+      const payload = { title, body: msgBody, tag: tag || 'broadcast', data: data || {} };
+
+      // Group subs by userId
+      const subsByUser = new Map<string, { endpoint: string; keys: { p256dh: string; auth: string } }[]>();
+      for (const sub of allSubs) {
+        if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
+        subsByUser.get(sub.userId)!.push({
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.p256dh, auth: sub.auth },
+        });
+      }
+
+      let sent = 0;
+      let failed = 0;
+      for (const [_, userSubs] of subsByUser) {
+        try {
+          await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:runna.io.service@gmail.com');
+          sent++;
+        } catch (_) { failed++; }
+      }
+      return c.json({ success: true, sent, failed, totalUsers: subsByUser.size, totalSubs: allSubs.length });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // GET /api/users/:userId/nickname — Get active nickname for user
+  app.get('/api/users/:userId/nickname', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const nickname = await storage.getActiveNickname(userId);
+      return c.json({ nickname: nickname?.nickname || null, expiresAt: nickname?.expiresAt || null });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Haversine distance in meters
+  function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
 
 }
 

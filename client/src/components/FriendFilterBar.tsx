@@ -30,7 +30,7 @@ export function FriendFilterBar({
   return (
     <div
       className="absolute left-3 right-3 z-[1000]"
-      style={{ top: 'calc(5.5rem + env(safe-area-inset-top, 0px))' }}
+      style={{ top: '5.5rem' }}
     >
       {/* Collapsed: compact bar */}
       <div className={cn(

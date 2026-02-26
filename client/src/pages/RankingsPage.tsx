@@ -96,7 +96,6 @@ export default function RankingsPage() {
       )}
       <div 
         className="p-3 sm:p-4 border-b border-border bg-card/50 backdrop-blur-sm"
-        style={{ paddingTop: 'calc(0.75rem + env(safe-area-inset-top, 0px))' }}
       >
         <h2 className="text-lg font-semibold">Ranking de Amigos</h2>
       </div>

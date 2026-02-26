@@ -143,10 +143,10 @@ export function ConquestResultModal({
               <Trophy className="h-8 w-8 text-yellow-200" />
             </div>
             <h2 className="text-xl font-bold mb-1">¡Conquista Completada!</h2>
-            {routeId && currentRouteName ? (
-              <div className="flex items-center justify-center gap-1.5">
+            {routeId ? (
+              <div className="mt-2">
                 {isRenaming ? (
-                  <div className="flex items-center gap-1 bg-white/10 rounded-lg px-2 py-1">
+                  <div className="flex items-center gap-1.5 bg-white/15 backdrop-blur-sm rounded-xl px-3 py-2">
                     <Input
                       ref={renameInputRef}
                       value={renameValue}
@@ -155,24 +155,26 @@ export function ConquestResultModal({
                         if (e.key === 'Enter' && renameValue.trim()) renameMutation.mutate(renameValue.trim());
                         if (e.key === 'Escape') { setIsRenaming(false); setRenameValue(currentRouteName); }
                       }}
-                      className="h-6 text-xs bg-transparent border-0 text-white placeholder:text-white/50 p-0 focus-visible:ring-0"
+                      placeholder="Ej: Carrera por el parque ✨"
+                      className="h-8 text-sm bg-transparent border-0 text-white placeholder:text-white/40 p-0 focus-visible:ring-0"
                       autoFocus
                     />
-                    <button onClick={() => { if (renameValue.trim()) renameMutation.mutate(renameValue.trim()); }} className="text-white/80 hover:text-white"><Check className="w-3.5 h-3.5" /></button>
-                    <button onClick={() => { setIsRenaming(false); setRenameValue(currentRouteName); }} className="text-white/80 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => { if (renameValue.trim()) renameMutation.mutate(renameValue.trim()); }} className="text-white/80 hover:text-white bg-white/10 rounded-lg p-1.5"><Check className="w-4 h-4" /></button>
+                    <button onClick={() => { setIsRenaming(false); setRenameValue(currentRouteName); }} className="text-white/60 hover:text-white p-1"><X className="w-4 h-4" /></button>
                   </div>
                 ) : (
                   <button
                     onClick={() => { setIsRenaming(true); setTimeout(() => renameInputRef.current?.focus(), 50); }}
-                    className="flex items-center gap-1 text-sm text-white/80 hover:text-white transition-colors"
+                    className="w-full flex items-center gap-2.5 bg-white/10 hover:bg-white/15 backdrop-blur-sm rounded-xl px-3 py-2.5 transition-all duration-200 group"
                   >
-                    <span className="truncate max-w-[200px]">{currentRouteName}</span>
-                    <Pencil className="w-3 h-3 flex-shrink-0" />
+                    <Pencil className="w-4 h-4 text-yellow-200 group-hover:scale-110 transition-transform flex-shrink-0" />
+                    <span className="text-sm text-white/90 truncate flex-1 text-left">{currentRouteName || 'Sin nombre'}</span>
+                    <span className="text-[10px] text-yellow-200/80 font-semibold uppercase tracking-wider flex-shrink-0">Renombrar</span>
                   </button>
                 )}
               </div>
             ) : (
-              <p className="text-sm text-white/80">Tu actividad ha sido procesada</p>
+              <p className="text-sm text-white/80 mt-1">Tu actividad ha sido procesada</p>
             )}
           </div>
         </div>

@@ -8,7 +8,10 @@ import { BottomNav } from "@/components/BottomNav";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { EphemeralPhotoViewer } from "@/components/EphemeralPhotoViewer";
 import { OnboardingTutorial, shouldShowOnboarding } from "@/components/OnboardingTutorial";
-import { useSession } from "@/hooks/use-session";
+import { CompetitionBanner } from "@/components/CompetitionBanner";
+import { CompetitionIntroDialog } from "@/components/CompetitionIntroDialog";
+import { WeeklySummaryDialog } from "@/components/WeeklySummaryDialog";
+import { CompetitionFinalDialog } from "@/components/CompetitionFinalDialog";import { CompetitionAnnouncementDialog } from '@/components/CompetitionAnnouncementDialog';import { useSession } from "@/hooks/use-session";
 import { usePrefetch } from "@/hooks/use-prefetch";
 import { Play } from "lucide-react";
 import { MapSkeleton, LoadingState } from "@/components/LoadingState";
@@ -231,6 +234,7 @@ function AppContent() {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-background">
+      <CompetitionBanner />
       <main
         ref={(el) => (mainRef.current = el)}
         className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
@@ -253,6 +257,10 @@ function AppContent() {
       <StartActivityButton />
       <EphemeralPhotoWrapper />
       <OnboardingWrapper />
+      <CompetitionAnnouncementDialog />
+      <CompetitionIntroDialog />
+      <WeeklySummaryDialog />
+      <CompetitionFinalDialog />
       <Toaster />
     </div>
   );

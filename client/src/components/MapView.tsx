@@ -7,10 +7,12 @@ import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 import { DEFAULT_CENTER, getCurrentPosition } from '@/lib/geolocation';
 import { useTheme } from '@/hooks/use-theme';
 import { useMapTilePrefetch } from '@/hooks/use-map-tile-prefetch';
+import type { Treasure } from '@/hooks/use-competition';
 
 interface MapViewProps {
   territories: TerritoryWithUser[];
   routes?: RouteWithTerritory[];
+  treasures?: Treasure[];
   center?: { lat: number; lng: number };
   onLocationFound?: (coords: { lat: number; lng: number }) => void;
   onTerritoryClick?: (userId: string) => void;
@@ -36,16 +38,18 @@ const TILE_URLS = {
   light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
 };
 
-export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false, visibleUserIds = null }: MapViewProps) {
+export function MapView({ territories, routes = [], treasures = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false, visibleUserIds = null }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   // Persistent layer groups for efficient add/remove without full redraw
   const territoryGroupRef = useRef<L.LayerGroup | null>(null);
   const routeGroupRef = useRef<L.LayerGroup | null>(null);
+  const treasureGroupRef = useRef<L.LayerGroup | null>(null);
   // Track which layers correspond to which data IDs for diffing
   const territoryLayersRef = useRef<Map<number, L.Polygon>>(new Map());
   const routeLayersRef = useRef<Map<number, L.Polyline>>(new Map());
+  const treasureLayersRef = useRef<Map<string, L.Marker>>(new Map());
   // Canvas renderer for better polygon/polyline performance
   const canvasRendererRef = useRef<L.Canvas | null>(null);
   const [isLocating, setIsLocating] = useState(false);
@@ -87,8 +91,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     // Create persistent layer groups for territories and routes
     const territoryGroup = L.layerGroup().addTo(map);
     const routeGroup = L.layerGroup().addTo(map);
+    const treasureGroup = L.layerGroup().addTo(map);
     territoryGroupRef.current = territoryGroup;
     routeGroupRef.current = routeGroup;
+    treasureGroupRef.current = treasureGroup;
 
     mapRef.current = map;
     setMapStyle(initialStyle);
@@ -124,8 +130,10 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
       mapRef.current = null;
       territoryGroupRef.current = null;
       routeGroupRef.current = null;
+      treasureGroupRef.current = null;
       territoryLayersRef.current.clear();
       routeLayersRef.current.clear();
+      treasureLayersRef.current.clear();
     };
   }, []);
 
@@ -412,6 +420,115 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
     };
   }, [territories, visibleUserIds]);
 
+  // === TREASURE MARKER DIFFING ===
+  useEffect(() => {
+    if (!mapRef.current || !treasureGroupRef.current) return;
+
+    const treasureGroup = treasureGroupRef.current;
+    const existingLayers = treasureLayersRef.current;
+
+    const newTreasureIds = new Set(treasures.map(t => t.id));
+    const existingIds = new Set(existingLayers.keys());
+
+    // Remove treasures that no longer exist
+    for (const [id, layer] of existingLayers) {
+      if (!newTreasureIds.has(id)) {
+        treasureGroup.removeLayer(layer);
+        existingLayers.delete(id);
+      }
+    }
+
+    // Rarity colors
+    const rarityColors: Record<string, { bg: string; border: string; glow: string; pulse: string }> = {
+      common: { bg: '#6b7280', border: '#9ca3af', glow: 'rgba(107,114,128,0.4)', pulse: 'rgba(107,114,128,0.2)' },
+      rare: { bg: '#3b82f6', border: '#60a5fa', glow: 'rgba(59,130,246,0.5)', pulse: 'rgba(59,130,246,0.2)' },
+      epic: { bg: '#a855f7', border: '#c084fc', glow: 'rgba(168,85,247,0.5)', pulse: 'rgba(168,85,247,0.2)' },
+      legendary: { bg: '#f59e0b', border: '#fbbf24', glow: 'rgba(245,158,11,0.6)', pulse: 'rgba(245,158,11,0.3)' },
+    };
+
+    // Add new treasures
+    treasures.forEach((treasure) => {
+      if (existingIds.has(treasure.id)) return;
+
+      const colors = rarityColors[treasure.rarity] || rarityColors.common;
+      const emoji = treasure.power?.emoji || '💎';
+
+      const icon = L.divIcon({
+        className: 'treasure-marker',
+        html: `
+          <div style="position: relative; width: 40px; height: 40px;">
+            <div style="
+              position: absolute;
+              inset: -4px;
+              border-radius: 50%;
+              background: ${colors.pulse};
+              animation: treasure-pulse 2s ease-in-out infinite;
+            "></div>
+            <div style="
+              position: relative;
+              width: 40px;
+              height: 40px;
+              border-radius: 50%;
+              background: radial-gradient(circle at 30% 30%, ${colors.border}, ${colors.bg});
+              border: 2px solid ${colors.border};
+              box-shadow: 0 0 12px ${colors.glow}, 0 2px 8px rgba(0,0,0,0.3);
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-size: 18px;
+              cursor: pointer;
+            ">${emoji}</div>
+          </div>
+        `,
+        iconSize: [40, 40],
+        iconAnchor: [20, 20],
+      });
+
+      const marker = L.marker([treasure.lat, treasure.lng], { icon });
+      
+      const isDark = document.documentElement.classList.contains('dark');
+      const popupBg = isDark ? '#1e1e1e' : 'white';
+      const popupText = isDark ? '#e5e5e5' : '#1a1a1a';
+      
+      marker.bindPopup(`
+        <div style="padding: 12px; min-width: 180px; font-family: system-ui, sans-serif;">
+          <div style="text-align: center; margin-bottom: 8px;">
+            <span style="font-size: 28px;">${emoji}</span>
+          </div>
+          <div style="text-align: center;">
+            <div style="font-weight: 700; font-size: 14px; color: ${popupText}; margin-bottom: 4px;">
+              ${treasure.name}
+            </div>
+            <div style="
+              display: inline-block;
+              padding: 2px 8px;
+              border-radius: 9999px;
+              background: ${colors.bg}20;
+              color: ${colors.bg};
+              font-size: 10px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+              margin-bottom: 6px;
+            ">${treasure.rarity}</div>
+            <div style="font-size: 11px; color: ${isDark ? '#999' : '#666'}; line-height: 1.4;">
+              ${treasure.power?.description || ''}
+            </div>
+            <div style="font-size: 10px; color: ${isDark ? '#666' : '#999'}; margin-top: 6px;">
+              ¡Corre a menos de 100m para recogerlo!
+            </div>
+          </div>
+        </div>
+      `, {
+        className: 'custom-popup treasure-popup',
+        maxWidth: 220,
+      });
+
+      treasureGroup.addLayer(marker);
+      existingLayers.set(treasure.id, marker);
+    });
+  }, [treasures]);
+
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();
   };
@@ -553,6 +670,16 @@ export function MapView({ territories, routes = [], center = DEFAULT_CENTER, onL
         
         .animate-ping {
           animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+        
+        @keyframes treasure-pulse {
+          0%, 100% { transform: scale(1); opacity: 0.6; }
+          50% { transform: scale(1.6); opacity: 0; }
+        }
+        
+        .treasure-marker {
+          background: none !important;
+          border: none !important;
         }
       `}</style>
     </div>

@@ -13,6 +13,8 @@ import { ConquestResultModal } from '@/components/ConquestResultModal';
 
 import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
+import { useTreasures, useCompetition } from '@/hooks/use-competition';
+import { PowerInventory } from '@/components/PowerInventory';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
 import type { TerritoryWithUser, RouteWithTerritory, UserWithStats } from '@shared/schema';
@@ -160,6 +162,12 @@ export default function MapPage() {
     setVisibleUserIds(new Set());
   }, []);
 
+  // Fetch competition treasures (must be before any conditional returns to satisfy Rules of Hooks)
+  const { data: treasureData } = useTreasures();
+  const activeTreasures = treasureData?.treasures ?? [];
+  const { isActive: isCompetitionActive } = useCompetition();
+  const [showPowerInventory, setShowPowerInventory] = useState(false);
+
   const createRouteMutation = useMutation({
     mutationFn: async (routeData: {
       coordinates: Array<[number, number]>;
@@ -295,7 +303,6 @@ export default function MapPage() {
     );
   }
 
-  // Show map immediately with loading states for data
   // Only show skeleton if user session is still loading
   if (userLoading) {
     return <MapSkeleton />;
@@ -306,6 +313,7 @@ export default function MapPage() {
       <MapView 
         territories={territories} 
         routes={userRoutes}
+        treasures={activeTreasures}
         center={userLocation || DEFAULT_CENTER}
         onTerritoryClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
         isLoadingTerritories={territoriesLoading}
@@ -348,7 +356,17 @@ export default function MapPage() {
         routeId={conquestData?.routeId}
         routeName={conquestData?.routeName}
       />
-
+      {/* Powers button during competition */}
+      {isCompetitionActive && currentUser && (
+        <button
+          onClick={() => setShowPowerInventory(true)}
+          className="absolute left-3 bottom-4 z-[1000] w-11 h-11 rounded-full bg-card/95 backdrop-blur-md border border-border shadow-md flex items-center justify-center text-lg hover:bg-card active:scale-95 transition-all"
+          title="Poderes"
+        >
+          ⚡
+        </button>
+      )}
+      <PowerInventory open={showPowerInventory} onClose={() => setShowPowerInventory(false)} />
     </div>
   );
 }

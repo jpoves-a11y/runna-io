@@ -228,6 +228,80 @@ export const feedReactions = sqliteTable("feed_reactions", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// ============ COMPETITION SYSTEM ============
+
+export const competitions = sqliteTable("competitions", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  name: text("name").notNull(),
+  slug: text("slug").notNull().unique(),
+  startsAt: text("starts_at").notNull(), // ISO timestamp
+  endsAt: text("ends_at").notNull(), // ISO timestamp
+  status: text("status").notNull().default('upcoming'), // 'upcoming' | 'active' | 'finished'
+  config: text("config"), // JSON config (treasure spawn settings, etc.)
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const treasures = sqliteTable("treasures", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  competitionId: text("competition_id").notNull(),
+  name: text("name").notNull(),
+  powerType: text("power_type").notNull(), // 'shield' | 'double_area' | 'nickname' | 'steal_boost' | 'invisibility' | 'time_bomb' | 'magnet' | 'reveal'
+  rarity: text("rarity").notNull(), // 'common' | 'rare' | 'epic' | 'legendary'
+  lat: real("lat").notNull(),
+  lng: real("lng").notNull(),
+  collectedBy: text("collected_by").references(() => users.id, { onDelete: 'set null' }),
+  collectedAt: text("collected_at"),
+  spawnedAt: text("spawned_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(), // Treasure disappears after this
+  active: integer("active", { mode: 'boolean' }).notNull().default(true),
+});
+
+export const userPowers = sqliteTable("user_powers", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  competitionId: text("competition_id").notNull(),
+  powerType: text("power_type").notNull(),
+  treasureId: text("treasure_id").notNull(),
+  status: text("status").notNull().default('available'), // 'available' | 'active' | 'used' | 'expired'
+  activatedAt: text("activated_at"),
+  usedAt: text("used_at"),
+  expiresAt: text("expires_at"), // For time-limited powers once activated
+  metadata: text("metadata"), // JSON — e.g. { targetUserId, nickname } for 'nickname' power
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const competitionStats = sqliteTable("competition_stats", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  competitionId: text("competition_id").notNull(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  totalArea: real("total_area").notNull().default(0),
+  totalDistance: real("total_distance").notNull().default(0),
+  totalDuration: integer("total_duration").notNull().default(0),
+  activitiesCount: integer("activities_count").notNull().default(0),
+  treasuresCollected: integer("treasures_collected").notNull().default(0),
+  areaStolen: real("area_stolen").notNull().default(0),
+  uniqueVictims: integer("unique_victims").notNull().default(0),
+  ranTogetherCount: integer("ran_together_count").notNull().default(0),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const weeklySummaries = sqliteTable("weekly_summaries", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  competitionId: text("competition_id").notNull(),
+  weekNumber: integer("week_number").notNull(),
+  data: text("data").notNull(), // JSON with rankings per category
+  generatedAt: text("generated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const userNicknames = sqliteTable("user_nicknames", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  targetUserId: text("target_user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  setByUserId: text("set_by_user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  nickname: text("nickname").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   routes: many(routes),
@@ -474,6 +548,43 @@ export const insertTerritoryLossNotificationSchema = createInsertSchema(territor
   sentAt: true,
 });
 
+// Competition insert schemas
+export const insertCompetitionSchema = createInsertSchema(competitions).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+});
+
+export const insertTreasureSchema = createInsertSchema(treasures).omit({
+  id: true,
+  collectedBy: true,
+  collectedAt: true,
+  active: true,
+});
+
+export const insertUserPowerSchema = createInsertSchema(userPowers).omit({
+  id: true,
+  createdAt: true,
+  status: true,
+  activatedAt: true,
+  usedAt: true,
+});
+
+export const insertCompetitionStatsSchema = createInsertSchema(competitionStats).omit({
+  id: true,
+  updatedAt: true,
+});
+
+export const insertWeeklySummarySchema = createInsertSchema(weeklySummaries).omit({
+  id: true,
+  generatedAt: true,
+});
+
+export const insertUserNicknameSchema = createInsertSchema(userNicknames).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -529,6 +640,24 @@ export type InsertFeedComment = z.infer<typeof insertFeedCommentSchema>;
 export type FeedReaction = typeof feedReactions.$inferSelect;
 export type InsertFeedReaction = z.infer<typeof insertFeedReactionSchema>;
 
+export type Competition = typeof competitions.$inferSelect;
+export type InsertCompetition = z.infer<typeof insertCompetitionSchema>;
+
+export type Treasure = typeof treasures.$inferSelect;
+export type InsertTreasure = z.infer<typeof insertTreasureSchema>;
+
+export type UserPower = typeof userPowers.$inferSelect;
+export type InsertUserPower = z.infer<typeof insertUserPowerSchema>;
+
+export type CompetitionStat = typeof competitionStats.$inferSelect;
+export type InsertCompetitionStat = z.infer<typeof insertCompetitionStatsSchema>;
+
+export type WeeklySummary = typeof weeklySummaries.$inferSelect;
+export type InsertWeeklySummary = z.infer<typeof insertWeeklySummarySchema>;
+
+export type UserNickname = typeof userNicknames.$inferSelect;
+export type InsertUserNickname = z.infer<typeof insertUserNicknameSchema>;
+
 export type EmailNotification = typeof emailNotifications.$inferSelect;
 export const insertEmailNotificationSchema = createInsertSchema(emailNotifications);
 export type InsertEmailNotification = z.infer<typeof insertEmailNotificationSchema>;
@@ -557,6 +686,7 @@ export type FeedEventWithDetails = FeedEvent & {
   victim?: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> | null;
   routeName?: string | null;
   activityDate?: string | null;
+  routeCoordinates?: [number, number][] | null;
   commentCount: number;
   likeCount: number;
   dislikeCount: number;
@@ -570,3 +700,112 @@ export type FeedCommentWithUser = FeedComment & {
   dislikeCount: number;
   userReaction: 'like' | 'dislike' | null;
 };
+
+// Competition extended types
+export type TreasureRarity = 'common' | 'rare' | 'epic' | 'legendary';
+export type TreasurePowerType = 'shield' | 'double_area' | 'nickname' | 'steal_boost' | 'invisibility' | 'time_bomb' | 'magnet' | 'reveal';
+export type CompetitionStatus = 'upcoming' | 'active' | 'finished';
+export type PowerStatus = 'available' | 'active' | 'used' | 'expired';
+
+export interface TreasureDefinition {
+  powerType: TreasurePowerType;
+  name: string;
+  description: string;
+  rarity: TreasureRarity;
+  emoji: string;
+  color: string; // hex
+  duration?: number; // hours the power lasts once activated, if applicable
+}
+
+export const TREASURE_DEFINITIONS: Record<TreasurePowerType, TreasureDefinition> = {
+  shield: {
+    powerType: 'shield',
+    name: 'Escudo de Acero',
+    description: 'Tu siguiente territorio es inmune a robos durante 24h',
+    rarity: 'rare',
+    emoji: '🛡️',
+    color: '#7C8CA1',
+    duration: 24,
+  },
+  double_area: {
+    powerType: 'double_area',
+    name: 'Doble Conquista',
+    description: 'Los km² de tu siguiente ruta cuentan x2',
+    rarity: 'epic',
+    emoji: '⚡',
+    color: '#F59E0B',
+  },
+  nickname: {
+    powerType: 'nickname',
+    name: 'Pluma del Troll',
+    description: 'Pon un apodo público a otro usuario durante 48h',
+    rarity: 'common',
+    emoji: '✏️',
+    color: '#CD7F32',
+    duration: 48,
+  },
+  steal_boost: {
+    powerType: 'steal_boost',
+    name: 'Espada Voraz',
+    description: 'Robas un 50% más de lo normal en tu siguiente ruta',
+    rarity: 'epic',
+    emoji: '⚔️',
+    color: '#F59E0B',
+  },
+  invisibility: {
+    powerType: 'invisibility',
+    name: 'Capa de Sombras',
+    description: 'Tu territorio es invisible en el mapa para otros durante 24h',
+    rarity: 'legendary',
+    emoji: '👻',
+    color: '#8B5CF6',
+    duration: 24,
+  },
+  time_bomb: {
+    powerType: 'time_bomb',
+    name: 'Bomba Temporal',
+    description: 'El usuario que te robe en las próximas 24h pierde el doble',
+    rarity: 'rare',
+    emoji: '💣',
+    color: '#7C8CA1',
+    duration: 24,
+  },
+  magnet: {
+    powerType: 'magnet',
+    name: 'Imán de Tierras',
+    description: 'Tu siguiente ruta absorbe un 25% extra de territorios en su radio',
+    rarity: 'legendary',
+    emoji: '🧲',
+    color: '#8B5CF6',
+  },
+  reveal: {
+    powerType: 'reveal',
+    name: 'Ojo del Halcón',
+    description: 'Revela la ubicación del siguiente tesoro 1h antes que los demás',
+    rarity: 'common',
+    emoji: '🦅',
+    color: '#CD7F32',
+  },
+};
+
+export const RARITY_CONFIG: Record<TreasureRarity, { label: string; color: string; bgGradient: string; probability: number }> = {
+  common: { label: 'Común', color: '#CD7F32', bgGradient: 'from-amber-700 to-yellow-600', probability: 0.40 },
+  rare: { label: 'Raro', color: '#7C8CA1', bgGradient: 'from-slate-400 to-blue-300', probability: 0.30 },
+  epic: { label: 'Épico', color: '#F59E0B', bgGradient: 'from-amber-400 to-orange-500', probability: 0.20 },
+  legendary: { label: 'Legendario', color: '#8B5CF6', bgGradient: 'from-violet-500 to-purple-600', probability: 0.10 },
+};
+
+// Zaragoza bounding box for treasure spawning (roads/land within city)
+export const ZARAGOZA_BOUNDS = {
+  north: 41.6800,
+  south: 41.6100,
+  east: -0.8300,
+  west: -0.9400,
+  center: { lat: 41.6488, lng: -0.8891 },
+};
+
+// Competition dates
+export const COMPETITION_START = '2026-03-02T09:00:00+01:00';
+export const COMPETITION_END = '2026-03-30T23:59:59+02:00';
+export const COMPETITION_NAME = 'La Primera Conquista del Ebro';
+export const COMPETITION_SLUG = 'la-primera-conquista-del-ebro';
