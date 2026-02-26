@@ -1629,16 +1629,33 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               }
             });
           } else {
-            // Encode polyline even without territory
+            // No valid polygon — still create activity feed event
+            try {
+              await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+            } catch (feedErr) {
+              console.warn('[FEED] Feed event failed for route without polygon:', feedErr);
+            }
             const summaryPolyline = encodePolyline(coords);
             return c.json({ route, summaryPolyline });
           }
         } catch (error) {
           console.error('Error calculating territory:', error);
+          // Still create activity feed event on territory error
+          try {
+            await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+          } catch (feedErr) {
+            console.warn('[FEED] Feed event failed after territory error:', feedErr);
+          }
           const summaryPolyline = encodePolyline(coords);
           return c.json({ route, summaryPolyline });
         }
       } else {
+        // Short route (<10 coords) — still create activity feed event
+        try {
+          await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+        } catch (feedErr) {
+          console.warn('[FEED] Feed event failed for short route:', feedErr);
+        }
         return c.json({ route });
       }
     } catch (error: any) {
@@ -3611,6 +3628,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 console.warn(`[STRAVA PROCESS] Feed events failed (non-critical):`, feedErr);
               }
             } else {
+              // No valid polygon — still create activity feed event
+              try {
+                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+              } catch (feedErr) {
+                console.warn('[STRAVA] Feed event failed for route without polygon:', feedErr);
+              }
               await storage.updateStravaActivity(activity.id, { 
                 routeId: route.id, 
                 processed: true, 
@@ -3618,6 +3641,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               });
             }
           } else {
+            // Short route — still create route + activity feed event if we have coords
             await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
           }
         } catch (err) {
@@ -4663,7 +4687,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               console.warn(`[PROCESS] Feed events failed (non-critical):`, feedErr);
             }
           } else {
-            // No buffer/territory — still mark as processed
+            // No valid polygon — still create activity feed event
+            try {
+              await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+            } catch (feedErr) {
+              console.warn('[POLAR] Feed event failed for route without polygon:', feedErr);
+            }
             await storage.updatePolarActivity(activity.id, { 
               routeId: route.id, 
               processed: true, 

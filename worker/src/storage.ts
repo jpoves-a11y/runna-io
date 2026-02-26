@@ -413,25 +413,14 @@ export class WorkerStorage {
         userName: users.name,
         userUsername: users.username,
         userColor: users.color,
+        ranTogetherWith: routes.ranTogetherWith,
       })
       .from(territories)
       .leftJoin(users, eq(territories.userId, users.id))
+      .leftJoin(routes, eq(territories.routeId, routes.id))
       .orderBy(desc(territories.conqueredAt));
 
-    return allTerritories.map((t) => ({
-      id: t.id,
-      userId: t.userId,
-      routeId: t.routeId,
-      geometry: t.geometry,
-      area: t.area,
-      conqueredAt: t.conqueredAt,
-      user: {
-        id: t.userId,
-        username: t.userUsername || '',
-        name: t.userName || '',
-        color: t.userColor || '#000000',
-      },
-    }));
+    return this._enrichTerritoriesWithCoRunnerColors(allTerritories);
   }
 
   async getTerritoriesByUserId(userId: string): Promise<Territory[]> {
@@ -465,26 +454,75 @@ export class WorkerStorage {
         userName: users.name,
         userUsername: users.username,
         userColor: users.color,
+        ranTogetherWith: routes.ranTogetherWith,
       })
       .from(territories)
       .leftJoin(users, eq(territories.userId, users.id))
+      .leftJoin(routes, eq(territories.routeId, routes.id))
       .where(inArray(territories.userId, userIds))
       .orderBy(desc(territories.conqueredAt));
 
-    return results.map((t) => ({
-      id: t.id,
-      userId: t.userId,
-      routeId: t.routeId,
-      geometry: t.geometry,
-      area: t.area,
-      conqueredAt: t.conqueredAt,
-      user: {
-        id: t.userId,
-        username: t.userUsername || '',
-        name: t.userName || '',
-        color: t.userColor || '#000000',
-      },
-    }));
+    return this._enrichTerritoriesWithCoRunnerColors(results);
+  }
+
+  // Helper: resolve co-runner user colors for territories that have ranTogetherWith
+  private async _enrichTerritoriesWithCoRunnerColors(
+    rows: Array<{
+      id: string; userId: string; routeId: string | null;
+      geometry: string; area: number; conqueredAt: string;
+      userName: string | null; userUsername: string | null; userColor: string | null;
+      ranTogetherWith?: string | null;
+    }>
+  ): Promise<TerritoryWithUser[]> {
+    // Collect all co-runner user IDs across all territories
+    const coRunnerIds = new Set<string>();
+    const parsedRanTogether = new Map<string, string[]>();
+    for (const t of rows) {
+      if (t.ranTogetherWith) {
+        try {
+          const ids: string[] = JSON.parse(t.ranTogetherWith);
+          if (Array.isArray(ids) && ids.length > 0) {
+            parsedRanTogether.set(t.id, ids);
+            ids.forEach(id => coRunnerIds.add(id));
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+
+    // Batch-fetch co-runner user colors in a single query
+    let coRunnerColorMap = new Map<string, string>();
+    if (coRunnerIds.size > 0) {
+      const coRunnerUsers = await this.db
+        .select({ id: users.id, color: users.color })
+        .from(users)
+        .where(inArray(users.id, [...coRunnerIds]));
+      coRunnerColorMap = new Map(coRunnerUsers.map(u => [u.id, u.color]));
+    }
+
+    return rows.map((t) => {
+      const coRunnerUserIds = parsedRanTogether.get(t.id);
+      const ranTogetherWithColors = coRunnerUserIds
+        ? coRunnerUserIds
+            .map(uid => ({ id: uid, color: coRunnerColorMap.get(uid) || '#888888' }))
+            .filter(u => u.id !== t.userId) // don't include the owner in co-runners
+        : undefined;
+
+      return {
+        id: t.id,
+        userId: t.userId,
+        routeId: t.routeId,
+        geometry: t.geometry,
+        area: t.area,
+        conqueredAt: t.conqueredAt,
+        user: {
+          id: t.userId,
+          username: t.userUsername || '',
+          name: t.userName || '',
+          color: t.userColor || '#000000',
+        },
+        ranTogetherWithColors: ranTogetherWithColors && ranTogetherWithColors.length > 0 ? ranTogetherWithColors : undefined,
+      };
+    });
   }
 
   async deleteTerritoryById(id: string): Promise<void> {
@@ -1425,25 +1463,14 @@ export class WorkerStorage {
         userName: users.name,
         userUsername: users.username,
         userColor: users.color,
+        ranTogetherWith: routes.ranTogetherWith,
       })
       .from(territories)
       .leftJoin(users, eq(territories.userId, users.id))
+      .leftJoin(routes, eq(territories.routeId, routes.id))
       .where(sql`${territories.userId} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`);
 
-    return territoryData.map((t) => ({
-      id: t.id,
-      userId: t.userId,
-      routeId: t.routeId,
-      geometry: t.geometry,
-      area: t.area,
-      conqueredAt: t.conqueredAt,
-      user: {
-        id: t.userId,
-        username: t.userUsername || '',
-        name: t.userName || '',
-        color: t.userColor || '#000000',
-      },
-    }));
+    return this._enrichTerritoriesWithCoRunnerColors(territoryData);
   }
 
   async searchUsers(query: string, currentUserId: string, limit: number = 20): Promise<User[]> {

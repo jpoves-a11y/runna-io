@@ -52,6 +52,8 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
   const treasureLayersRef = useRef<Map<string, L.Marker>>(new Map());
   // Canvas renderer for better polygon/polyline performance
   const canvasRendererRef = useRef<L.Canvas | null>(null);
+  // SVG renderer for shared-run territories (allows SVG pattern fills)
+  const svgRendererRef = useRef<L.SVG | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
@@ -65,6 +67,10 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
     // Create a shared canvas renderer for all vector layers - much faster than SVG
     const canvasRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
     canvasRendererRef.current = canvasRenderer;
+
+    // SVG renderer for shared-run territories (supports pattern fills)
+    const svgRenderer = L.svg({ padding: 0.5 });
+    svgRendererRef.current = svgRenderer;
 
     // Initialize map with optimized settings for smooth panning
     const map = L.map(mapContainer.current, {
@@ -264,30 +270,86 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
       let leafletCoords: Array<Array<[number, number]>> | Array<Array<Array<[number, number]>>>;
       
       if (parsedGeometry.type === 'MultiPolygon') {
-        // MultiPolygon: coordinates is array of polygons, each polygon is array of rings
-        // Each ring is array of [lng, lat] coordinates
         leafletCoords = parsedGeometry.coordinates.map((polygon: number[][][]) =>
           polygon.map((ring: number[][]) =>
             ring.map((coord: number[]) => [coord[1], coord[0]] as [number, number])
           )
         );
       } else {
-        // Polygon: coordinates is array of rings, each ring is array of [lng, lat]
         leafletCoords = parsedGeometry.coordinates.map((ring: number[][]) =>
           ring.map((coord: number[]) => [coord[1], coord[0]] as [number, number])
         );
       }
 
-      const polygon = L.polygon(leafletCoords as any, {
-        color: territory.user.color,
-        fillColor: territory.user.color,
-        fillOpacity: 0.35,
-        weight: 3,
-        opacity: 0.9,
-        lineCap: 'round',
-        lineJoin: 'round',
-        renderer: canvasRendererRef.current || undefined, // Canvas renderer for better perf
-      });
+      // Check if this is a shared run territory (ran together with others)
+      const isSharedRun = territory.ranTogetherWithColors && territory.ranTogetherWithColors.length > 0;
+      let polygon: L.Polygon;
+
+      if (isSharedRun && svgRendererRef.current) {
+        // Shared run: use SVG renderer with diagonal stripe pattern
+        const coColors = territory.ranTogetherWithColors!;
+        const allColors = [territory.user.color, ...coColors.map(c => c.color)];
+        const patternId = `stripe_${territory.id.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+        polygon = L.polygon(leafletCoords as any, {
+          color: territory.user.color,
+          fillColor: `url(#${patternId})` as any,
+          fillOpacity: 0.45,
+          weight: 3,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+          renderer: svgRendererRef.current,
+        });
+
+        // Create SVG <pattern> defs when polygon is rendered
+        polygon.on('add', () => {
+          const rendererEl = (svgRendererRef.current as any)?._container as SVGSVGElement | undefined;
+          if (!rendererEl) return;
+
+          let defs = rendererEl.querySelector('defs');
+          if (!defs) {
+            defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+            rendererEl.insertBefore(defs, rendererEl.firstChild);
+          }
+
+          if (!defs.querySelector(`#${patternId}`)) {
+            const stripeW = 7;
+            const totalW = stripeW * allColors.length;
+
+            const pat = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+            pat.setAttribute('id', patternId);
+            pat.setAttribute('patternUnits', 'userSpaceOnUse');
+            pat.setAttribute('width', String(totalW));
+            pat.setAttribute('height', String(totalW));
+            pat.setAttribute('patternTransform', 'rotate(45)');
+
+            allColors.forEach((c, i) => {
+              const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+              rect.setAttribute('x', String(i * stripeW));
+              rect.setAttribute('y', '0');
+              rect.setAttribute('width', String(stripeW));
+              rect.setAttribute('height', String(totalW));
+              rect.setAttribute('fill', c);
+              pat.appendChild(rect);
+            });
+
+            defs.appendChild(pat);
+          }
+        });
+      } else {
+        // Normal territory: solid fill with canvas renderer
+        polygon = L.polygon(leafletCoords as any, {
+          color: territory.user.color,
+          fillColor: territory.user.color,
+          fillOpacity: 0.35,
+          weight: 3,
+          opacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+          renderer: canvasRendererRef.current || undefined,
+        });
+      }
 
       // Determine popup colors based on current theme
       const isDark = document.documentElement.classList.contains('dark');
@@ -378,7 +440,7 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
       // Add hover effect
       polygon.on('mouseover', () => {
         polygon.setStyle({
-          fillOpacity: 0.5,
+          fillOpacity: isSharedRun ? 0.65 : 0.5,
           weight: 4,
         });
         polygon.bringToFront();
@@ -386,7 +448,7 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
 
       polygon.on('mouseout', () => {
         polygon.setStyle({
-          fillOpacity: 0.35,
+          fillOpacity: isSharedRun ? 0.45 : 0.35,
           weight: 3,
         });
       });

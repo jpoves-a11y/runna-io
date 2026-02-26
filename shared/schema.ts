@@ -674,6 +674,7 @@ export type UserWithStats = User & {
 
 export type TerritoryWithUser = Territory & {
   user: Pick<User, 'id' | 'username' | 'name' | 'color'>;
+  ranTogetherWithColors?: Array<{ id: string; color: string }>;
 };
 
 export type RouteWithTerritory = Route & {
