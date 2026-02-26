@@ -105,10 +105,11 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
       const pt: [number, number] = [coords.lat, coords.lng];
 
       // Always update GPS accuracy for the signal indicator
-      if (coords.accuracy) setGpsAccuracy(coords.accuracy);
+      if (coords.accuracy !== undefined) setGpsAccuracy(coords.accuracy);
 
-      // Filter: ignore low-accuracy readings
-      if (coords.accuracy && coords.accuracy > MIN_ACCURACY_METERS) {
+      // Filter: reject readings with unknown or poor accuracy
+      // (cell-tower/IP-based fixes often report no accuracy or >30m and can be hundreds of km off)
+      if (!coords.accuracy || coords.accuracy > MIN_ACCURACY_METERS) {
         return;
       }
 
