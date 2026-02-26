@@ -511,25 +511,21 @@ async function reprocessUserTerritories(
           ? JSON.parse(route.coordinates)
           : [];
 
-      if (coords.length < 3) continue;
+      if (coords.length < 10) continue;
 
-      const simplifiedCoords = simplifyCoordinates(coords, 150);
-      const lineString = turf.lineString(
-        simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
-      );
-      const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-      if (!buffered) continue;
+      const enclosedPoly = routeToEnclosedPolygon(coords, 150);
+      if (!enclosedPoly) continue;
 
       if (currentGeometry) {
         // Merge with existing territory using safe union
-        const merged = safeUnion(currentGeometry, buffered.geometry);
+        const merged = safeUnion(currentGeometry, enclosedPoly.geometry);
         if (merged) {
           currentGeometry = merged;
         } else {
           console.error(`[REPROCESS] Error merging route ${route.id}, skipping`);
         }
       } else {
-        currentGeometry = buffered.geometry;
+        currentGeometry = enclosedPoly.geometry;
       }
       processedCount++;
     } catch (err) {
@@ -610,16 +606,12 @@ async function reprocessFriendGroupTerritoriesChronologically(
           ? JSON.parse(route.coordinates)
           : [];
 
-      if (coords.length < 3) continue;
+      if (coords.length < 10) continue;
 
-      const simplifiedCoords = simplifyCoordinates(coords, 150);
-      const lineString = turf.lineString(
-        simplifiedCoords.map((c: [number, number]) => [c[1], c[0]])
-      );
-      const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-      if (!buffered) continue;
+      const enclosedPoly = routeToEnclosedPolygon(coords, 150);
+      if (!enclosedPoly) continue;
 
-      const routeGeometry = buffered.geometry;
+      const routeGeometry = enclosedPoly.geometry;
       const routeOwnerFriends = friendshipMap.get(route.userId) || new Set();
 
       // --- Steal from FRIENDS only whose territory overlaps this route ---
@@ -793,6 +785,44 @@ function simplifyCoordinates(coords: Array<[number, number]>, maxPoints: number 
   }
   
   return simplified;
+}
+
+/**
+ * Convert a GPS route to a closed polygon representing the enclosed area.
+ * Always closes the route by connecting last point → first point.
+ * Returns the polygon geometry, or null if the route has too few points.
+ */
+function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimplifyPoints: number = 150): ReturnType<typeof turf.polygon> | null {
+  if (coords.length < 10) return null;
+
+  const simplified = simplifyCoordinates(coords, maxSimplifyPoints);
+  // Flip [lat, lng] → [lng, lat] for GeoJSON convention
+  const ring = simplified.map((c: [number, number]) => [c[1], c[0]]);
+
+  // Close the ring: always connect last point to first point
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    ring.push([first[0], first[1]]);
+  }
+
+  try {
+    // Create the polygon from the closed ring
+    const poly = turf.polygon([ring]);
+    // Validate: area must be > 0
+    const area = turf.area(poly);
+    if (!area || area <= 0 || !isFinite(area)) return null;
+    return poly;
+  } catch (e) {
+    // If the ring is self-intersecting or degenerate, try to salvage
+    // by using buffer(0) trick or convex hull as fallback
+    try {
+      const line = turf.lineString(ring.slice(0, -1)); // remove closing point for lineString
+      const hull = turf.convex(turf.explode(line));
+      if (hull && turf.area(hull) > 0) return hull;
+    } catch (_) {}
+    return null;
+  }
 }
 
 // Helper to refresh Strava access token if expired
@@ -1273,21 +1303,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         ? JSON.parse(routeData.coordinates)
         : routeData.coordinates;
 
-      if (coords.length >= 3) {
+      if (coords.length >= 10) {
         try {
-          const simplifiedCoords = simplifyCoordinates(coords, 150);
-          const lineString = turf.lineString(
-            simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
-          );
+          const enclosedPoly = routeToEnclosedPolygon(coords, 150);
           
-          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-          
-          if (buffered) {
+          if (enclosedPoly) {
             const conquestResult = await processTerritoryConquest(
               storage,
               routeData.userId,
               route.id,
-              buffered.geometry,
+              enclosedPoly.geometry,
               c.env,
               routeData.startedAt,
               routeData.completedAt
@@ -1576,14 +1601,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             : typeof route.coordinates === 'string'
               ? JSON.parse(route.coordinates)
               : [];
-          if (coords.length < 3) continue;
+          if (coords.length < 10) continue;
 
-          const simplifiedCoords = simplifyCoordinates(coords, 150);
-          const lineString = turf.lineString(
-            simplifiedCoords.map((coord: [number, number]) => [coord[1], coord[0]])
-          );
-          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-          if (!buffered) continue;
+          const enclosedPoly = routeToEnclosedPolygon(coords, 150);
+          if (!enclosedPoly) continue;
 
           if (currentGeometry) {
             try {
@@ -1591,14 +1612,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 ? turf.multiPolygon(geom.coordinates)
                 : turf.polygon(geom.coordinates);
               const currentFeature = toFeature(currentGeometry);
-              const newFeature = toFeature(buffered.geometry);
+              const newFeature = toFeature(enclosedPoly.geometry);
               const union = turf.union(turf.featureCollection([currentFeature, newFeature]));
               if (union) currentGeometry = union.geometry;
             } catch (err) {
               console.error('[BATCH REPROCESS] Error merging geometry:', err);
             }
           } else {
-            currentGeometry = buffered.geometry;
+            currentGeometry = enclosedPoly.geometry;
           }
           processed++;
         } catch (err) {
@@ -3285,7 +3306,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const decoded = decodePolyline(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
-          if (coordinates.length >= 3) {
+          if (coordinates.length >= 10) {
             const startedAtStr = startDate.toISOString();
             const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
             
@@ -3308,19 +3329,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             // Save routeId immediately
             await storage.updateStravaActivity(activity.id, { routeId: route.id });
 
-            const simplifiedCoords = simplifyCoordinates(coordinates, 150);
-            const lineString = turf.lineString(
-              simplifiedCoords.map(coord => [coord[1], coord[0]])
-            );
-            const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
+            const enclosedPoly = routeToEnclosedPolygon(coordinates, 150);
 
-            if (buffered) {
+            if (enclosedPoly) {
               // Pass env=undefined to skip inline notifications (saves subrequests)
               const conquestResult = await processTerritoryConquest(
                 storage,
                 userId,
                 route.id,
-                buffered.geometry,
+                enclosedPoly.geometry,
                 undefined, // skip notifications to reduce subrequests
                 startedAtStr,
                 completedAtStr
@@ -4310,7 +4327,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const decoded = decodePolyline(activity.summaryPolyline);
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
-          if (coordinates.length < 3) {
+          if (coordinates.length < 10) {
             console.log(`[PROCESS] Skipping activity ${activity.id} - insufficient coordinates (${coordinates.length})`);
             await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
             continue;
@@ -4355,18 +4372,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           // (handled separately via admin endpoint if needed)
           const needsChronologicalReprocess = false;
 
-          console.log(`[PROCESS] Calculating territory buffer (${coordinates.length} coords)...`);
-          // Simplify coordinates to avoid Worker CPU limits
-          const simplifiedCoords = simplifyCoordinates(coordinates, 150);
-          console.log(`[PROCESS] Simplified to ${simplifiedCoords.length} coords`);
-          
-          const lineString = turf.lineString(
-            simplifiedCoords.map(coord => [coord[1], coord[0]])
-          );
-          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-          console.log(`[PROCESS] Buffer calculated`);
+          console.log(`[PROCESS] Calculating enclosed territory (${coordinates.length} coords)...`);
+          const enclosedPoly = routeToEnclosedPolygon(coordinates, 150);
+          console.log(`[PROCESS] Enclosed polygon calculated`);
 
-          if (buffered) {
+          if (enclosedPoly) {
             console.log(`[PROCESS] Processing territory conquest...`);
             
             // Pass env=undefined to skip email/push notifications during inline processing
@@ -4375,7 +4385,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               storage,
               userId,
               route.id,
-              buffered.geometry,
+              enclosedPoly.geometry,
               undefined, // skip notifications to reduce subrequests
               startedAtStr,
               completedAtStr
