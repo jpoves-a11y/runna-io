@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Map, Trophy, Activity, User, Users } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 
@@ -11,12 +12,28 @@ const navItems = [
 
 export function BottomNav() {
   const [location] = useLocation();
+  const [isTrackingActive, setIsTrackingActive] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.location.search.includes('tracking=true') || !!localStorage.getItem('runna-route-tracking');
+  });
 
-  // Hide nav during tracking — wouter v3 doesn't include query string,
-  // so check window.location.search AND localStorage tracking state
-  const isTrackingUrl = typeof window !== 'undefined' && window.location.search.includes('tracking=true');
-  const isTrackingStorage = typeof window !== 'undefined' && !!localStorage.getItem('runna-route-tracking');
-  if (isTrackingUrl || isTrackingStorage) return null;
+  // Reactively hide nav during tracking via custom event + polling fallback
+  useEffect(() => {
+    const checkTracking = () => {
+      const active = window.location.search.includes('tracking=true') || !!localStorage.getItem('runna-route-tracking');
+      setIsTrackingActive(active);
+    };
+    window.addEventListener('runna-tracking-changed', checkTracking);
+    window.addEventListener('storage', checkTracking);
+    const interval = setInterval(checkTracking, 500);
+    return () => {
+      window.removeEventListener('runna-tracking-changed', checkTracking);
+      window.removeEventListener('storage', checkTracking);
+      clearInterval(interval);
+    };
+  }, []);
+
+  if (isTrackingActive) return null;
 
   const isPathActive = (path: string) => {
     if (path === '/') {

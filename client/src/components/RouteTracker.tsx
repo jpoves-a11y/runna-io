@@ -65,6 +65,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const mapRef = useRef<L.Map | null>(null);
   const routeLineRef = useRef<L.Polyline | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const preTrackWatchRef = useRef<number | null>(null);
   const displayTimerRef = useRef<number | null>(null);
   const userMarkerObjRef = useRef<L.Marker | null>(null);
 
@@ -166,6 +167,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     mapRef.current = map;
     getCurrentPosition()
       .then((pos) => {
+        if (pos.accuracy !== undefined) setGpsAccuracy(pos.accuracy);
         map.setView([pos.lat, pos.lng], 17);
         const icon = L.divIcon({ className: 'current-location-marker', html: '<div class="relative flex items-center justify-center"><div class="absolute w-8 h-8 bg-primary/30 rounded-full animate-ping"></div><div class="relative w-4 h-4 bg-primary rounded-full border-2 border-white shadow-lg"></div></div>', iconSize: [32, 32], iconAnchor: [16, 16] });
         userMarkerObjRef.current = L.marker([pos.lat, pos.lng], { icon }).addTo(map);
@@ -179,6 +181,21 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     };
   }, []);
 
+  // --- Pre-tracking GPS watch for accuracy indicator + marker updates ---
+  useEffect(() => {
+    if (isTracking) {
+      if (preTrackWatchRef.current !== null) { clearWatch(preTrackWatchRef.current); preTrackWatchRef.current = null; }
+      return;
+    }
+    preTrackWatchRef.current = watchPosition((coords) => {
+      if (coords.accuracy !== undefined) setGpsAccuracy(coords.accuracy);
+      if (userMarkerObjRef.current) userMarkerObjRef.current.setLatLng([coords.lat, coords.lng]);
+    });
+    return () => {
+      if (preTrackWatchRef.current !== null) { clearWatch(preTrackWatchRef.current); preTrackWatchRef.current = null; }
+    };
+  }, [isTracking]);
+
   // --- Restore state on mount ---
   useEffect(() => {
     const saved = loadTrackingState();
@@ -189,6 +206,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
       coordsRef.current = saved.coordinates;
       setDistance(calculateDistance(saved.coordinates));
       setIsTracking(true);
+      window.dispatchEvent(new Event('runna-tracking-changed'));
       if (saved.isPaused) {
         setIsPaused(true);
         updateDisplayDuration();
@@ -278,6 +296,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     const ok = await acquireWakeLock(); setScreenLockActive(ok);
     showTrackingNotification(); startDisplayTimer(); startGpsWatch();
     saveTrackingState({ coordinates: [], startTime: now, pausedDuration: 0, lastPauseTime: null, isPaused: false });
+    window.dispatchEvent(new Event('runna-tracking-changed'));
   };
 
   const handlePauseTap = () => {
@@ -322,6 +341,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     releaseWakeLock(); closeTrackingNotification();
     clearTrackingState();
     setIsTracking(false);
+    window.dispatchEvent(new Event('runna-tracking-changed'));
     coordsRef.current = [];
     startTimeRef.current = 0;
     pausedDurationRef.current = 0;
@@ -341,7 +361,9 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     if (isTracking) return; // Cannot cancel while actively tracking — must stop first
     if (watchIdRef.current) clearWatch(watchIdRef.current);
     if (displayTimerRef.current) window.clearInterval(displayTimerRef.current);
-    releaseWakeLock(); closeTrackingNotification(); clearTrackingState(); onCancel();
+    releaseWakeLock(); closeTrackingNotification(); clearTrackingState();
+    window.dispatchEvent(new Event('runna-tracking-changed'));
+    onCancel();
   };
 
   const formatTime = (s: number) => {
@@ -389,6 +411,9 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
             )}
           </div>
           <div className="bg-card border-t border-border p-4 space-y-4" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
+            <div className="flex items-center justify-center py-1">
+              <GpsSignalIndicator accuracy={gpsAccuracy} />
+            </div>
             <div className="grid grid-cols-3 gap-3">
               <div className="text-center">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1 flex items-center justify-center gap-1"><Activity className="h-3 w-3" />Tiempo</p>

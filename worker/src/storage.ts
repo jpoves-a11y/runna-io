@@ -278,7 +278,11 @@ export class WorkerStorage {
           parsedCoordinates = route.coordinates as Array<[number, number]>;
         } else if (typeof route.coordinates === 'string') {
           try {
-            const parsed = JSON.parse(route.coordinates) as Array<[number, number]>;
+            let parsed = JSON.parse(route.coordinates);
+            // Handle double-encoded JSON strings (legacy bug: coordinates were JSON.stringify'd twice)
+            if (typeof parsed === 'string') {
+              try { parsed = JSON.parse(parsed); } catch (_) {}
+            }
             parsedCoordinates = Array.isArray(parsed) ? parsed : [];
           } catch (e) {
             console.error('Error parsing route coordinates:', e);
