@@ -206,6 +206,67 @@ async function generateFeedEvents(
         ranTogetherWith: JSON.stringify(ranNames),
       });
     }
+
+    // 4. Personal records check
+    try {
+      if (distance && distance >= 500) {
+        const userRoutes = await storage.getRoutesByUserIdChronological(userId);
+        const previousRoutes = userRoutes.filter(r => r.id !== routeId);
+
+        // Longest run (only if >1 km and the user has at least 1 previous route)
+        if (previousRoutes.length > 0 && distance > 1000) {
+          const maxPrevDistance = Math.max(...previousRoutes.map(r => r.distance || 0));
+          if (distance > maxPrevDistance) {
+            await storage.createFeedEvent({
+              userId,
+              eventType: 'personal_record',
+              routeId,
+              recordType: 'longest_run',
+              recordValue: distance,
+            });
+          }
+        }
+
+        // Fastest pace (min/km) — only for runs >= 1 km
+        if (distance >= 1000 && duration && duration > 0) {
+          const pace = (duration / 60) / (distance / 1000); // min/km
+          const prevPaces = previousRoutes
+            .filter(r => r.distance && r.distance >= 1000 && r.duration && r.duration > 0)
+            .map(r => (r.duration / 60) / (r.distance / 1000));
+          if (prevPaces.length > 0) {
+            const bestPrevPace = Math.min(...prevPaces);
+            if (pace < bestPrevPace) {
+              await storage.createFeedEvent({
+                userId,
+                eventType: 'personal_record',
+                routeId,
+                recordType: 'fastest_pace',
+                recordValue: pace,
+              });
+            }
+          }
+        }
+
+        // Biggest conquest
+        if (conquestResult.newAreaConquered > 0 && previousRoutes.length > 0) {
+          // Check previous feed events for biggest conquest
+          try {
+            const prevConquests = await storage.getMaxConquestArea(userId);
+            if (conquestResult.newAreaConquered > prevConquests) {
+              await storage.createFeedEvent({
+                userId,
+                eventType: 'personal_record',
+                routeId,
+                recordType: 'biggest_conquest',
+                recordValue: conquestResult.newAreaConquered,
+              });
+            }
+          } catch (_) { /* ignore if method doesn't exist */ }
+        }
+      }
+    } catch (prErr) {
+      console.warn('[FEED] Personal record check failed (non-critical):', prErr);
+    }
   } catch (e) {
     console.error('[FEED] Error creating feed events:', e);
   }
@@ -626,7 +687,6 @@ async function processTerritoryConquest(
                 // Create feed event for treasure collection
                 try {
                   await storage.createFeedEvent({
-                    id: crypto.randomUUID(),
                     userId,
                     eventType: 'treasure_found',
                     routeId,
@@ -3641,8 +3701,28 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
               });
             }
           } else {
-            // Short route — still create route + activity feed event if we have coords
-            await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+            // Short route (<10 coords) — still create route + activity feed event
+            try {
+              const startedAtShort = startDate.toISOString();
+              const completedAtShort = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+              let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAtShort, activity.distance);
+              if (!shortRoute) {
+                shortRoute = await storage.createRoute({
+                  userId: activity.userId,
+                  name: activity.name,
+                  coordinates,
+                  distance: activity.distance,
+                  duration: activity.duration,
+                  startedAt: startedAtShort,
+                  completedAt: completedAtShort,
+                });
+              }
+              await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+              await storage.updateStravaActivity(activity.id, { routeId: shortRoute.id, processed: true, processedAt: new Date() });
+            } catch (feedErr) {
+              console.warn('[STRAVA] Short route feed event failed:', feedErr);
+              await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+            }
           }
         } catch (err) {
           console.error('Error processing Strava activity:', err);
@@ -4586,8 +4666,28 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
           if (coordinates.length < 10) {
-            console.log(`[PROCESS] Skipping activity ${activity.id} - insufficient coordinates (${coordinates.length})`);
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            console.log(`[PROCESS] Short Polar activity ${activity.id} (${coordinates.length} coords) — creating route + feed event without territory`);
+            try {
+              const startedAtShort = startDate.toISOString();
+              const completedAtShort = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+              let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAtShort, activity.distance);
+              if (!shortRoute) {
+                shortRoute = await storage.createRoute({
+                  userId: activity.userId,
+                  name: activity.name,
+                  coordinates,
+                  distance: activity.distance,
+                  duration: activity.duration,
+                  startedAt: startedAtShort,
+                  completedAt: completedAtShort,
+                });
+              }
+              await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+              await storage.updatePolarActivity(activity.id, { routeId: shortRoute.id, processed: true, processedAt: new Date() });
+            } catch (feedErr) {
+              console.warn('[POLAR] Short route feed event failed:', feedErr);
+              await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            }
             continue;
           }
 
@@ -5255,14 +5355,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         userId,
         eventType: 'treasure_found',
         routeId: null,
-        victimId: null,
-        areaStolen: null,
-        distance: null,
-        duration: null,
-        newArea: null,
-        ranTogetherWith: null,
-        recordType: treasure.rarity,
-        recordValue: null,
+        metadata: JSON.stringify({
+          treasureName: treasure.name,
+          powerType: treasure.powerType,
+          rarity: treasure.rarity,
+        }),
       });
 
       return c.json({

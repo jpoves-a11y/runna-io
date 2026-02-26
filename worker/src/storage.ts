@@ -1828,8 +1828,11 @@ export class WorkerStorage {
         ran_together_with TEXT,
         record_type TEXT,
         record_value REAL,
+        metadata TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
+      // Add metadata column to existing tables that don't have it yet
+      try { await this.db.run(sql`ALTER TABLE feed_events ADD COLUMN metadata TEXT`); } catch (_) { /* column already exists */ }
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_comments (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
         feed_event_id TEXT NOT NULL REFERENCES feed_events(id) ON DELETE CASCADE,
@@ -1848,7 +1851,9 @@ export class WorkerStorage {
       )`);
       // Create unique index for one reaction per user per target
       await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_reactions_unique ON feed_reactions(user_id, target_type, target_id)`);
-    } catch (_) {}
+    } catch (e) {
+      console.error('[FEED] ensureFeedTables error:', e);
+    }
   }
 
   async createFeedEvent(data: InsertFeedEvent): Promise<FeedEvent> {
@@ -1858,6 +1863,15 @@ export class WorkerStorage {
       .values(data)
       .returning();
     return event;
+  }
+
+  async getMaxConquestArea(userId: string): Promise<number> {
+    await this.ensureFeedTables();
+    const result = await this.db
+      .select({ max: sql<number>`COALESCE(MAX(${feedEvents.newArea}), 0)` })
+      .from(feedEvents)
+      .where(and(eq(feedEvents.userId, userId), eq(feedEvents.eventType, 'activity')));
+    return result[0]?.max || 0;
   }
 
   async deleteFeedEventsByRouteId(routeId: string): Promise<void> {

@@ -196,7 +196,7 @@ export const territoryLossNotifications = sqliteTable("territory_loss_notificati
 export const feedEvents = sqliteTable("feed_events", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  eventType: text("event_type").notNull(), // 'activity' | 'territory_stolen' | 'personal_record' | 'ran_together'
+  eventType: text("event_type").notNull(), // 'activity' | 'territory_stolen' | 'personal_record' | 'ran_together' | 'treasure_found'
   routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
   victimId: text("victim_id").references(() => users.id, { onDelete: 'set null' }),
   areaStolen: real("area_stolen"), // m² stolen from victim
@@ -206,6 +206,7 @@ export const feedEvents = sqliteTable("feed_events", {
   ranTogetherWith: text("ran_together_with"), // JSON array of { id, name }
   recordType: text("record_type"), // 'longest_run' | 'fastest_pace' | 'biggest_conquest'
   recordValue: real("record_value"),
+  metadata: text("metadata"), // JSON string for extra event-specific data (e.g. treasure info)
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

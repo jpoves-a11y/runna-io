@@ -76,16 +76,23 @@ function mergeEvents(events: FeedEventWithDetails[]): MergedFeedEvent[] {
           areaStolen: event.areaStolen || 0,
         });
       }
-      result[targetIdx].commentCount += event.commentCount;
+      // Don't add commentCount from territory_stolen — comments are fetched by the activity event's ID
       merged.add(event.id);
     }
   }
 
-  // Pass 3: Add remaining events — suppress territory_stolen if same user has activity
+  // Pass 3: Add remaining events (ran_together, personal_record, treasure_found, unmerged territory_stolen)
   for (const event of events) {
     if (event.eventType === 'activity') continue;
     if (merged.has(event.id)) continue;
-    if (event.eventType === 'territory_stolen' && activityByUser.has(event.userId)) continue;
+    // Only suppress territory_stolen if it was successfully merged into an activity above
+    // (unmerged territory_stolen events with no matching activity should still show)
+    if (event.eventType === 'territory_stolen') {
+      // Check if this specific event's routeId matches any activity — if so, it should have been merged
+      if (event.routeId && activityIndex.has(`${event.routeId}:${event.userId}`)) continue;
+      // If we couldn't merge it into any matching activity by routeId, and there's a close activity by time,
+      // it was already added to merged set in Pass 2. Otherwise show it standalone.
+    }
     result.push({ ...event });
   }
 
@@ -662,22 +669,53 @@ const EventCard = memo(function EventCard({
         );
       }
 
-      case 'personal_record':
+      case 'personal_record': {
+        const recordLabel = event.recordType === 'longest_run' ? '🏃 Carrera más larga' :
+          event.recordType === 'fastest_pace' ? '⚡ Ritmo más rápido' :
+            event.recordType === 'biggest_conquest' ? '🏴 Mayor conquista' : '🏆 Récord';
+        let recordDetail = '';
+        if (event.recordValue) {
+          if (event.recordType === 'longest_run') {
+            recordDetail = formatDistance(event.recordValue);
+          } else if (event.recordType === 'fastest_pace') {
+            const mins = Math.floor(event.recordValue);
+            const secs = Math.round((event.recordValue - mins) * 60);
+            recordDetail = `${mins}:${secs.toString().padStart(2, '0')} min/km`;
+          } else if (event.recordType === 'biggest_conquest') {
+            recordDetail = `${(event.recordValue / 1000000).toFixed(3)} km²`;
+          }
+        }
         return (
-          <div className="mt-1 rounded-xl border border-amber-500/15 bg-amber-500/[0.03] dark:bg-amber-500/[0.06] p-4 text-center">
-            <Trophy className="w-8 h-8 text-amber-500 mx-auto mb-1.5" />
-            <p className="text-[14px] font-bold text-foreground/90">¡Récord personal!</p>
-            <span className="inline-flex items-center gap-1 px-3 py-1 mt-2 rounded-full bg-amber-500/10 text-[12px] font-semibold text-amber-600 dark:text-amber-400">
-              {event.recordType === 'longest_run' ? '🏃 Carrera más larga' :
-                event.recordType === 'fastest_pace' ? '⚡ Ritmo más rápido' :
-                  event.recordType === 'biggest_conquest' ? '🏴 Mayor conquista' : '🏆 Récord'}
-            </span>
-          </div>
+          <>
+            <div className="mt-1 rounded-xl border border-amber-500/15 bg-amber-500/[0.03] dark:bg-amber-500/[0.06] p-4 text-center">
+              <Trophy className="w-8 h-8 text-amber-500 mx-auto mb-1.5" />
+              <p className="text-[14px] font-bold text-foreground/90">¡Récord personal!</p>
+              <span className="inline-flex items-center gap-1 px-3 py-1 mt-2 rounded-full bg-amber-500/10 text-[12px] font-semibold text-amber-600 dark:text-amber-400">
+                {recordLabel}
+              </span>
+              {recordDetail && (
+                <p className="text-[16px] font-bold text-amber-600 dark:text-amber-400 mt-2">{recordDetail}</p>
+              )}
+            </div>
+            {routeCoords && routeCoords.length >= 2 && (
+              <div className="mt-3 rounded-xl overflow-hidden ring-1 ring-border/10">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#f59e0b'} height={140} />
+              </div>
+            )}
+          </>
         );
+      }
 
       case 'treasure_found': {
         let treasureInfo: any = {};
-        try { treasureInfo = event.metadata ? JSON.parse(event.metadata as string) : {}; } catch {}
+        try {
+          if (event.metadata) {
+            treasureInfo = JSON.parse(event.metadata as string);
+          } else if (event.recordType) {
+            // Legacy: manual collect stored rarity in recordType
+            treasureInfo = { rarity: event.recordType };
+          }
+        } catch {}
         const powerEmojis: Record<string, string> = {
           shield: '🛡️', double_area: '⚡', nickname: '🎭', steal_boost: '🏴‍☠️',
           invisibility: '👻', time_bomb: '💀', magnet: '🧲', reveal: '🔮',
