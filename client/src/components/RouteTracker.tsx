@@ -56,6 +56,7 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const [pauseTaps, setPauseTaps] = useState(0);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null); // latest GPS accuracy in meters
   const pauseTapsTimeoutRef = useRef<number | null>(null);
   const confirmStopTimeoutRef = useRef<number | null>(null);
   const [polylineKey, setPolylineKey] = useState(0); // force re-render of polyline strip
@@ -101,6 +102,9 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
     if (watchIdRef.current) clearWatch(watchIdRef.current);
     watchIdRef.current = watchPosition((coords: Coordinates) => {
       const pt: [number, number] = [coords.lat, coords.lng];
+
+      // Always update GPS accuracy for the signal indicator
+      if (coords.accuracy) setGpsAccuracy(coords.accuracy);
 
       // Filter: ignore low-accuracy readings
       if (coords.accuracy && coords.accuracy > MIN_ACCURACY_METERS) {
@@ -434,6 +438,10 @@ export function RouteTracker({ onComplete, onCancel }: RouteTrackerProps) {
               <Smartphone className="w-3 h-3" />{screenLockActive ? 'Pantalla ON' : '⚠ Lock'}
             </div>
           </div>
+          {/* ── GPS Signal indicator ── */}
+          <div className="flex items-center justify-center gap-2 py-1 flex-shrink-0">
+            <GpsSignalIndicator accuracy={gpsAccuracy} />
+          </div>
 
           {/* ── Main stats area (takes most of the screen) ── */}
           <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
@@ -575,5 +583,49 @@ function MiniPolylineStrip({ coordinates }: { coordinates: Array<[number, number
       />
       <circle cx={dotX} cy={dotY} r="4" fill="#22c55e" stroke="white" strokeWidth="1.5" />
     </svg>
+  );
+}
+
+/** GPS signal quality indicator — shows accuracy as colored bars */
+function GpsSignalIndicator({ accuracy }: { accuracy: number | null }) {
+  // Determine signal quality: green (≤5m), yellow-green (≤10m), yellow (≤20m), orange (≤30m), red (>30m), grey (no signal)
+  let level: number; // 0-4 bars
+  let color: string;
+  let label: string;
+
+  if (accuracy === null) {
+    level = 0; color = '#6b7280'; label = 'Sin GPS';
+  } else if (accuracy <= 5) {
+    level = 4; color = '#22c55e'; label = `${Math.round(accuracy)}m · Excelente`;
+  } else if (accuracy <= 10) {
+    level = 3; color = '#84cc16'; label = `${Math.round(accuracy)}m · Buena`;
+  } else if (accuracy <= 20) {
+    level = 2; color = '#eab308'; label = `${Math.round(accuracy)}m · Aceptable`;
+  } else if (accuracy <= 30) {
+    level = 1; color = '#f97316'; label = `${Math.round(accuracy)}m · Débil`;
+  } else {
+    level = 0; color = '#ef4444'; label = `${Math.round(accuracy)}m · Mala`;
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {/* Signal bars */}
+      <div className="flex items-end gap-[2px] h-3">
+        {[1, 2, 3, 4].map(bar => (
+          <div
+            key={bar}
+            className="rounded-sm transition-colors duration-500"
+            style={{
+              width: '3px',
+              height: `${bar * 3}px`,
+              backgroundColor: bar <= level ? color : '#374151',
+            }}
+          />
+        ))}
+      </div>
+      <span className="text-[10px] font-semibold transition-colors duration-500" style={{ color }}>
+        {label}
+      </span>
+    </div>
   );
 }

@@ -618,7 +618,9 @@ export default function ProfilePage() {
       while (attempt < MAX_RETRIES) {
         attempt++;
         try {
-          const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`);
+          const processRes = await apiRequest('POST', `/api/polar/process/${user.id}`, {
+            activityId: currentActivity?.id || null,
+          });
           processData = await processRes.json();
           processOk = true;
           break; // Success, exit retry loop

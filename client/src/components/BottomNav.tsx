@@ -12,8 +12,11 @@ const navItems = [
 export function BottomNav() {
   const [location] = useLocation();
 
-  // Hide nav during tracking
-  if (location.includes('tracking=true')) return null;
+  // Hide nav during tracking — wouter v3 doesn't include query string,
+  // so check window.location.search AND localStorage tracking state
+  const isTrackingUrl = typeof window !== 'undefined' && window.location.search.includes('tracking=true');
+  const isTrackingStorage = typeof window !== 'undefined' && !!localStorage.getItem('runna-route-tracking');
+  if (isTrackingUrl || isTrackingStorage) return null;
 
   const isPathActive = (path: string) => {
     if (path === '/') {

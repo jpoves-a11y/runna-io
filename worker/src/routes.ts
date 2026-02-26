@@ -4076,11 +4076,11 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             duration: duration,
             startDate: startDateISO,
             summaryPolyline,
-            processed: false,
-            processedAt: null,
+            processed: summaryPolyline ? false : true, // Auto-mark no-GPS activities as processed (can't be displayed anyway)
+            processedAt: summaryPolyline ? null : new Date().toISOString(),
           });
 
-          console.log(`[DIRECT SYNC]    ✅ IMPORTED!`);
+          console.log(`[DIRECT SYNC]    ✅ IMPORTED!${!summaryPolyline ? ' (no GPS, auto-processed)' : ''}`);
           imported++;
         } catch (e) {
           console.error(`[DIRECT SYNC]    ❌ Error: ${e}`);
@@ -4253,19 +4253,35 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     
     try {
       const userId = c.req.param('userId');
+      const body = await c.req.json().catch(() => ({}));
+      const requestedActivityId = body?.activityId || null; // Client can request a specific activity
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const unprocessed = await storage.getUnprocessedPolarActivities(userId);
       
-      console.log(`[PROCESS] Starting - ${unprocessed.length} unprocessed Polar activities for user ${userId}`);
+      console.log(`[PROCESS] Starting - ${unprocessed.length} unprocessed Polar activities for user ${userId}${requestedActivityId ? ` (requested: ${requestedActivityId})` : ''}`);
       
       if (unprocessed.length === 0) {
         return c.json({ processed: 0, results: [], message: 'No activities to process' });
       }
 
       const results: any[] = [];
-      const BATCH_SIZE = 1; // Process 1 at a time to avoid Worker CPU limits
-      const toBatch = unprocessed.slice(0, BATCH_SIZE);
+      
+      // If a specific activityId was requested, process only that one
+      // Otherwise fall back to the newest unprocessed (batch=1)
+      let toBatch: typeof unprocessed;
+      if (requestedActivityId) {
+        const requested = unprocessed.find(a => a.id === requestedActivityId);
+        if (!requested) {
+          // Activity not found or already processed — check if it exists at all
+          console.log(`[PROCESS] Requested activity ${requestedActivityId} not in unprocessed list, may already be processed`);
+          return c.json({ processed: 0, results: [], message: 'Activity already processed or not found' });
+        }
+        toBatch = [requested];
+      } else {
+        const BATCH_SIZE = 1;
+        toBatch = unprocessed.slice(0, BATCH_SIZE);
+      }
       
       console.log(`[PROCESS] Processing batch of ${toBatch.length} activities (${unprocessed.length - toBatch.length} remaining)`);
 

@@ -171,7 +171,7 @@ export default function MapPage() {
       const response = await apiRequest('POST', '/api/routes', {
         userId: currentUser.id,
         name: `Ruta ${new Date().toLocaleDateString('es-ES')}`,
-        coordinates: JSON.stringify(routeData.coordinates),
+        coordinates: routeData.coordinates,
         distance: routeData.distance,
         duration: routeData.duration,
         startedAt: new Date(Date.now() - routeData.duration * 1000).toISOString(),

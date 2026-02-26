@@ -197,9 +197,13 @@ export class WorkerStorage {
   }
 
   async createRoute(insertRoute: InsertRoute): Promise<Route> {
+    // Safely stringify coordinates — avoid double-encoding if already a string
+    const coordsValue = typeof insertRoute.coordinates === 'string'
+      ? insertRoute.coordinates
+      : JSON.stringify(insertRoute.coordinates);
     const routeValues = {
       ...insertRoute,
-      coordinates: JSON.stringify(insertRoute.coordinates), // Convert array to JSON string for SQLite
+      coordinates: coordsValue,
     };
     const [route] = await this.db
       .insert(routes)

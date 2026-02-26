@@ -190,6 +190,8 @@ function AppContent() {
 
   const animateAndNavigate = (to: string, direction: 'left' | 'right') => {
     if (isAnimating) return;
+    // Block navigation during active tracking
+    if (window.location.search.includes('tracking=true') || localStorage.getItem('runna-route-tracking')) return;
     setAnimDirection(direction);
     setIsAnimating(true);
     // exit animation
@@ -232,7 +234,7 @@ function AppContent() {
       <main
         ref={(el) => (mainRef.current = el)}
         className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-        style={{ paddingBottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
+        style={{ paddingBottom: (window.location.search.includes('tracking=true') || localStorage.getItem('runna-route-tracking')) ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
