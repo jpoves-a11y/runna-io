@@ -1165,6 +1165,22 @@ export default function ProfilePage() {
                 </Button>
               </div>
             )}
+
+            {/* Powered by Strava — required by Strava Brand Guidelines */}
+            <div className="mt-4 pt-3 border-t border-border flex items-center justify-center">
+              <a
+                href="https://www.strava.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 opacity-70 hover:opacity-100 transition-opacity"
+              >
+                <span className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Powered by</span>
+                <svg viewBox="0 0 120 24" className="h-5" fill="#FC4C02" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M6.5 0L0 12.5h4.1L6.5 6l2.4 6.5H13L6.5 0zm5.2 12.5l2.4 5.3 2.4-5.3h3.5l-5.9 12.5L8.2 12.5h3.5z" />
+                  <text x="22" y="18" fontFamily="system-ui, -apple-system, sans-serif" fontSize="16" fontWeight="700" fill="#FC4C02">STRAVA</text>
+                </svg>
+              </a>
+            </div>
           </Card>
 
           {stravaStatus?.connected && (
