@@ -179,7 +179,7 @@ export default function MapPage() {
       const response = await apiRequest('POST', '/api/routes', {
         userId: currentUser.id,
         name: `Ruta ${new Date().toLocaleDateString('es-ES')}`,
-        coordinates: routeData.coordinates,
+        coordinates: JSON.stringify(routeData.coordinates),
         distance: routeData.distance,
         duration: routeData.duration,
         startedAt: new Date(Date.now() - routeData.duration * 1000).toISOString(),
@@ -228,6 +228,10 @@ export default function MapPage() {
       }
     },
     onError: (error: Error) => {
+      // Stop tracking mode so RouteTracker unmounts and user can retry
+      setIsTracking(false);
+      window.history.replaceState({}, '', '/');
+      window.dispatchEvent(new PopStateEvent('popstate'));
       toast({
         title: 'Error',
         description: error.message || 'No se pudo guardar la ruta',

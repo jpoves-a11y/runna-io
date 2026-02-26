@@ -1520,6 +1520,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
+
+      // Ensure coordinates is a JSON string (clients may send array or string)
+      if (body.coordinates && typeof body.coordinates !== 'string') {
+        body.coordinates = JSON.stringify(body.coordinates);
+      }
+
       const routeData = insertRouteSchema.parse(body);
       
       const route = await storage.createRoute(routeData);
