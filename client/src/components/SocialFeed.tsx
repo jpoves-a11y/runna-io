@@ -173,6 +173,55 @@ const DislikeButton = memo(function DislikeButton({
   );
 });
 
+// ─── Emblem Showcase (shelf with glow + rays) ───────────────────────────────
+
+const EmblemShowcase = memo(function EmblemShowcase({
+  src, alt, size = 'lg', accentColor = '#f59e0b', onClick,
+}: { src: string; alt: string; size?: 'md' | 'lg'; accentColor?: string; onClick?: () => void }) {
+  const dim = size === 'lg' ? 'w-24 h-24' : 'w-20 h-20';
+  const rays = [0, 45, 90, 135, 180, 225, 270, 315];
+  return (
+    <button onClick={onClick} className="relative focus:outline-none group py-2">
+      {/* Radial glow */}
+      <div
+        className="absolute inset-[-12px] rounded-full blur-2xl opacity-25 group-hover:opacity-45 transition-opacity duration-500"
+        style={{ background: `radial-gradient(circle, ${accentColor}50 0%, ${accentColor}15 40%, transparent 70%)` }}
+      />
+      {/* Rays emanating from center */}
+      <div className="absolute inset-[-16px] opacity-[0.15] group-hover:opacity-[0.35] transition-opacity duration-500 pointer-events-none">
+        {rays.map(deg => (
+          <div
+            key={deg}
+            className="absolute top-1/2 left-1/2 w-[1.5px] origin-bottom"
+            style={{
+              height: '45%',
+              transform: `translate(-50%, -100%) rotate(${deg}deg)`,
+              background: `linear-gradient(to top, ${accentColor}90, transparent)`,
+              borderRadius: '1px',
+            }}
+          />
+        ))}
+      </div>
+      {/* Subtle ring */}
+      <div
+        className="absolute inset-[-4px] rounded-full opacity-10 group-hover:opacity-20 transition-opacity duration-300"
+        style={{ border: `1px solid ${accentColor}` }}
+      />
+      {/* Emblem image */}
+      <img
+        src={src}
+        alt={alt}
+        className={`${dim} object-contain relative z-10 drop-shadow-[0_0_12px_${accentColor}40] transition-transform duration-200 group-hover:scale-110 group-active:scale-95`}
+      />
+      {/* Shelf line */}
+      <div
+        className="absolute -bottom-0 left-1/2 -translate-x-1/2 w-[65%] h-[2px] rounded-full opacity-30 group-hover:opacity-60 transition-opacity duration-300"
+        style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
+      />
+    </button>
+  );
+});
+
 // ─── Mini Reaction (for comments) ────────────────────────────────────────────
 
 const MiniReaction = memo(function MiniReaction({
@@ -577,9 +626,7 @@ const EventCard = memo(function EventCard({
             {/* Victims section */}
             {victims.length > 0 && (
               <div className="mt-3 flex flex-col items-center">
-                <button onClick={() => toggleEmblem('victims')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                  <img src="/emblemas/Emblema_robo.png" alt="Territorio robado" className="w-20 h-20 object-contain drop-shadow-lg" />
-                </button>
+                <EmblemShowcase src="/emblemas/Emblema_robo.png" alt="Territorio robado" size="md" accentColor="#ef4444" onClick={() => toggleEmblem('victims')} />
                 {expandedEmblems.has('victims') && (
                   <div className="mt-2 w-full rounded-lg border border-red-500/10 bg-red-500/[0.03] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
                     <div className="px-2.5 pt-2 pb-1">
@@ -604,9 +651,7 @@ const EventCard = memo(function EventCard({
             {/* Ran together badge (from metadata) */}
             {meta?.ranTogetherWith && meta.ranTogetherWith.length > 0 && (
               <div className="mt-3 flex flex-col items-center">
-                <button onClick={() => toggleEmblem('ranTogether')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                  <img src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" className="w-20 h-20 object-contain drop-shadow-lg" />
-                </button>
+                <EmblemShowcase src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" size="md" accentColor="#3b82f6" onClick={() => toggleEmblem('ranTogether')} />
                 {expandedEmblems.has('ranTogether') && (
                   <div className="mt-2 w-full rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
                     <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
@@ -649,9 +694,7 @@ const EventCard = memo(function EventCard({
                   const key = `record-${i}`;
                   return (
                     <div key={i} className="flex flex-col items-center">
-                      <button onClick={() => toggleEmblem(key)} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                        <img src={emblemMap[rec.type] || '/emblemas/Emblema_distancia.png'} alt={label} className="w-20 h-20 object-contain drop-shadow-lg" />
-                      </button>
+                      <EmblemShowcase src={emblemMap[rec.type] || '/emblemas/Emblema_distancia.png'} alt={label} size="md" accentColor="#f59e0b" onClick={() => toggleEmblem(key)} />
                       {expandedEmblems.has(key) && (
                         <div className="mt-1.5 text-center animate-in fade-in slide-in-from-top-2 duration-200">
                           <span className="text-[10px] font-bold text-amber-500 uppercase tracking-wider">{label}</span>
@@ -677,9 +720,7 @@ const EventCard = memo(function EventCard({
                   const key = `treasure-${i}`;
                   return (
                     <div key={i} className="flex flex-col items-center">
-                      <button onClick={() => toggleEmblem(key)} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                        <img src="/emblemas/Emblema_tesoro.png" alt="Tesoro" className="w-20 h-20 object-contain drop-shadow-lg" />
-                      </button>
+                      <EmblemShowcase src="/emblemas/Emblema_tesoro.png" alt="Tesoro" size="md" accentColor="#a855f7" onClick={() => toggleEmblem(key)} />
                       {expandedEmblems.has(key) && (
                         <div className="mt-1.5 text-center animate-in fade-in slide-in-from-top-2 duration-200">
                           <p className="text-[11px] font-semibold text-foreground/80">{t.treasureName || 'Tesoro'}</p>
@@ -710,9 +751,7 @@ const EventCard = memo(function EventCard({
         return (
           <>
             <div className="mt-2 flex flex-col items-center">
-              <button onClick={() => toggleEmblem('ev-stolen')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                <img src="/emblemas/Emblema_robo.png" alt="Robo de territorio" className="w-24 h-24 object-contain drop-shadow-lg" />
-              </button>
+              <EmblemShowcase src="/emblemas/Emblema_robo.png" alt="Robo de territorio" size="lg" accentColor="#ef4444" onClick={() => toggleEmblem('ev-stolen')} />
               {expandedEmblems.has('ev-stolen') && (
                 <div className="mt-2 w-full rounded-lg border border-red-500/10 bg-red-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Robo</span>
@@ -744,9 +783,7 @@ const EventCard = memo(function EventCard({
         return (
           <>
             <div className="mt-2 flex flex-col items-center">
-              <button onClick={() => toggleEmblem('ev-ran')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                <img src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" className="w-24 h-24 object-contain drop-shadow-lg" />
-              </button>
+              <EmblemShowcase src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" size="lg" accentColor="#3b82f6" onClick={() => toggleEmblem('ev-ran')} />
               {expandedEmblems.has('ev-ran') && (
                 <div className="mt-2 w-full rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
                   <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
@@ -801,9 +838,7 @@ const EventCard = memo(function EventCard({
         return (
           <>
             <div className="mt-2 flex flex-col items-center">
-              <button onClick={() => toggleEmblem('ev-record')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-                <img src={emblemMap[event.recordType || ''] || '/emblemas/Emblema_distancia.png'} alt="Récord" className="w-24 h-24 object-contain drop-shadow-lg" />
-              </button>
+              <EmblemShowcase src={emblemMap[event.recordType || ''] || '/emblemas/Emblema_distancia.png'} alt="Récord" size="lg" accentColor="#f59e0b" onClick={() => toggleEmblem('ev-record')} />
               {expandedEmblems.has('ev-record') && (
                 <div className="mt-2 text-center animate-in fade-in slide-in-from-top-2 duration-200">
                   <p className="text-[13px] font-bold text-foreground/90">¡Récord personal!</p>
@@ -843,9 +878,7 @@ const EventCard = memo(function EventCard({
         const rarityClass = rarityColors[treasureInfo.rarity] || rarityColors.common;
         return (
           <div className="mt-2 flex flex-col items-center">
-            <button onClick={() => toggleEmblem('ev-treasure')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
-              <img src="/emblemas/Emblema_tesoro.png" alt="Tesoro" className="w-24 h-24 object-contain drop-shadow-lg" />
-            </button>
+            <EmblemShowcase src="/emblemas/Emblema_tesoro.png" alt="Tesoro" size="lg" accentColor="#a855f7" onClick={() => toggleEmblem('ev-treasure')} />
             {expandedEmblems.has('ev-treasure') && (
               <div className="mt-2 text-center animate-in fade-in slide-in-from-top-2 duration-200">
                 <p className="text-[13px] font-bold text-foreground/90">¡Tesoro encontrado!</p>
