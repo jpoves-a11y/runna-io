@@ -35,6 +35,7 @@ const FriendsPage = lazy(() => import("@/pages/FriendsPage"));
 const AcceptFriendInvitePage = lazy(() => import("@/pages/AcceptFriendInvitePage"));
 const PrivacyPage = lazy(() => import("@/pages/PrivacyPage"));
 const TermsPage = lazy(() => import("@/pages/TermsPage"));
+const SupportPage = lazy(() => import("@/pages/SupportPage"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 function Router() {
@@ -53,6 +54,7 @@ function Router() {
           <Route path="/friends/accept/:token" component={AcceptFriendInvitePage} />
           <Route path="/privacy" component={PrivacyPage} />
           <Route path="/terms" component={TermsPage} />
+          <Route path="/support" component={SupportPage} />
           <Route component={NotFound} />
         </Switch>
       </Suspense>

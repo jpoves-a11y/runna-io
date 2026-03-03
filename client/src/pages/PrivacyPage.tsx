@@ -78,12 +78,12 @@ export default function PrivacyPage() {
             <li><strong>Contraseña:</strong> Almacenada con hash SHA-256 con salt (nunca en texto plano)</li>
           </ul>
 
-          <h3 className="font-medium mt-4 mb-2">2.2. Datos de actividades (Polar/Strava)</h3>
+          <h3 className="font-medium mt-4 mb-2">2.2. Datos de actividades (Polar/Strava/COROS)</h3>
           <ul className="list-disc list-inside space-y-1 text-muted-foreground mb-4">
             <li>ID de ejercicio y tipo de actividad</li>
             <li>Distancia y duración</li>
             <li>Fecha y hora de inicio</li>
-            <li>Ruta GPS (polyline codificado)</li>
+            <li>Ruta GPS (polyline codificado o track points)</li>
           </ul>
 
           <h3 className="font-medium mt-4 mb-2">2.3. Cloudflare Analytics</h3>
@@ -101,7 +101,7 @@ export default function PrivacyPage() {
               <tbody>
                 <tr className="border-b"><td className="py-2 px-3">Gestionar tu cuenta</td><td className="py-2 px-3">Ejecución del contrato (Art. 6.1.b)</td></tr>
                 <tr className="border-b"><td className="py-2 px-3">Mostrar actividades y territorios</td><td className="py-2 px-3">Ejecución del contrato (Art. 6.1.b)</td></tr>
-                <tr className="border-b"><td className="py-2 px-3">Sincronizar con Polar/Strava</td><td className="py-2 px-3">Consentimiento (Art. 6.1.a)</td></tr>
+                <tr className="border-b"><td className="py-2 px-3">Sincronizar con Polar/Strava/COROS</td><td className="py-2 px-3">Consentimiento (Art. 6.1.a)</td></tr>
                 <tr><td className="py-2 px-3">Enviar notificaciones por email</td><td className="py-2 px-3">Consentimiento (Art. 6.1.a)</td></tr>
               </tbody>
             </table>
@@ -143,7 +143,8 @@ export default function PrivacyPage() {
                 <tr className="border-b"><td className="py-2 px-3">Cloudflare</td><td className="py-2 px-3">Hosting, CDN, Analytics</td><td className="py-2 px-3">Global</td></tr>
                 <tr className="border-b"><td className="py-2 px-3">Resend</td><td className="py-2 px-3">Emails transaccionales</td><td className="py-2 px-3">EE.UU.</td></tr>
                 <tr className="border-b"><td className="py-2 px-3">Polar Flow</td><td className="py-2 px-3">Sincronización (opcional)</td><td className="py-2 px-3">Finlandia (UE)</td></tr>
-                <tr><td className="py-2 px-3">Strava</td><td className="py-2 px-3">Sincronización (opcional)</td><td className="py-2 px-3">EE.UU.</td></tr>
+                <tr className="border-b"><td className="py-2 px-3">Strava</td><td className="py-2 px-3">Sincronización (opcional)</td><td className="py-2 px-3">EE.UU.</td></tr>
+                <tr><td className="py-2 px-3">COROS</td><td className="py-2 px-3">Sincronización (opcional)</td><td className="py-2 px-3">Global</td></tr>
               </tbody>
             </table>
           </div>

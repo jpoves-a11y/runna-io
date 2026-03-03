@@ -1,5 +1,4 @@
-import { Trophy, Medal, Award, TrendingUp, Crown } from 'lucide-react';
-import { Card } from '@/components/ui/card';
+import { Trophy, TrendingUp, Crown, Flame, MapPin } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -12,19 +11,6 @@ interface LeaderboardTableProps {
 }
 
 export function LeaderboardTable({ users, currentUserId, onUserClick }: LeaderboardTableProps) {
-  const getRankIcon = (rank: number) => {
-    switch (rank) {
-      case 1:
-        return <Crown className="h-6 w-6 text-yellow-500 animate-bounce-in" />;
-      case 2:
-        return <Medal className="h-5 w-5 text-gray-400 animate-bounce-in" />;
-      case 3:
-        return <Award className="h-5 w-5 text-amber-600 animate-bounce-in" />;
-      default:
-        return null;
-    }
-  };
-
   const getInitials = (name: string) => {
     return name
       .split(' ')
@@ -34,31 +20,25 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
       .slice(0, 2);
   };
 
-  const getRankBadge = (rank: number) => {
-    if (rank === 1) {
-      return 'gradient-primary text-white shadow-lg';
-    }
-    if (rank === 2) {
-      return 'bg-gray-400 text-white shadow-md';
-    }
-    if (rank === 3) {
-      return 'bg-amber-600 text-white shadow-md';
-    }
-    return '';
+  const podiumMedal = (rank: number) => {
+    if (rank === 1) return { emoji: '🥇', bg: 'bg-amber-50 dark:bg-amber-950/40', border: 'border-amber-300 dark:border-amber-700', text: 'text-amber-700 dark:text-amber-300', glow: 'shadow-amber-200/50 dark:shadow-amber-800/30' };
+    if (rank === 2) return { emoji: '🥈', bg: 'bg-slate-50 dark:bg-slate-900/40', border: 'border-slate-300 dark:border-slate-600', text: 'text-slate-600 dark:text-slate-300', glow: 'shadow-slate-200/50 dark:shadow-slate-700/30' };
+    if (rank === 3) return { emoji: '🥉', bg: 'bg-orange-50 dark:bg-orange-950/40', border: 'border-orange-300 dark:border-orange-700', text: 'text-orange-700 dark:text-orange-300', glow: 'shadow-orange-200/50 dark:shadow-orange-700/30' };
+    return null;
   };
 
   return (
     <div className="flex flex-col h-full animate-fade-in">
       {/* Header */}
-      <div className="p-4 border-b border-border/50 bg-gradient-to-r from-primary/5 via-transparent to-primary/5 animate-slide-down">
+      <div className="px-5 py-4 border-b border-border/40 animate-slide-down">
         <div className="flex items-center gap-3">
-          <div className="relative p-2 rounded-xl bg-primary/10">
-            <Trophy className="h-6 w-6 text-primary" />
+          <div className="p-2 rounded-xl bg-primary/10">
+            <Trophy className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-xl font-bold">Rankings</h1>
+            <h1 className="text-lg font-bold tracking-tight">Rankings</h1>
             <p className="text-xs text-muted-foreground flex items-center gap-1">
-              <TrendingUp className="h-3 w-3" />
+              <MapPin className="h-3 w-3" />
               Territorio conquistado
             </p>
           </div>
@@ -67,91 +47,90 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
 
       {/* Leaderboard */}
       <ScrollArea className="flex-1">
-        <div className="p-3 pb-24 space-y-2 sm:p-4">
+        <div className="px-4 py-3 pb-24 space-y-1.5">
           {users.map((user, index) => {
             const rank = index + 1;
             const isCurrentUser = user.id === currentUserId;
             const isTopThree = rank <= 3;
+            const medal = podiumMedal(rank);
 
             return (
-              <Card
+              <div
                 key={user.id}
                 onClick={() => onUserClick?.(user.id)}
-                className={`p-3 sm:p-4 transition-all duration-300 hover:scale-[1.02] hover:shadow-lg animate-slide-up cursor-pointer ${
-                  isCurrentUser
-                    ? 'border-primary border-2 shadow-primary/20'
-                    : 'border-card-border hover-elevate'
-                } ${getRankBadge(rank)}`}
-                style={{
-                  animationDelay: `${index * 50}ms`,
-                }}
+                className={`
+                  flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 cursor-pointer
+                  animate-slide-up
+                  ${isCurrentUser
+                    ? 'bg-primary/8 ring-1 ring-primary/30'
+                    : medal
+                      ? `${medal.bg} border ${medal.border} shadow-sm ${medal.glow}`
+                      : 'hover:bg-muted/60'
+                  }
+                `}
+                style={{ animationDelay: `${index * 40}ms` }}
                 data-testid={`leaderboard-row-${user.id}`}
               >
-                <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-                  {/* Rank */}
-                  <div className="w-10 sm:w-14 flex items-center justify-center flex-shrink-0 relative">
-                    {getRankIcon(rank) || (
-                      <span className={`text-xl sm:text-2xl font-bold ${isTopThree ? 'text-white/80' : 'text-muted-foreground'}`}>
-                        {rank}
-                      </span>
-                    )}
-                    {isTopThree && rank === 1 && (
-                      <div className="absolute inset-0 bg-yellow-500/20 rounded-full blur-xl animate-pulse" />
-                    )}
-                  </div>
-
-                  {/* Avatar */}
-                  <div className="relative flex-shrink-0">
-                    <Avatar className={`${isTopThree ? 'h-12 sm:h-14 w-12 sm:w-14 ring-2 ring-offset-2' : 'h-10 sm:h-12 w-10 sm:w-12'} transition-all duration-300`}
-                      style={{
-                        '--tw-ring-color': isTopThree ? user.color : 'transparent'
-                      } as React.CSSProperties}
-                    >
-                      <AvatarImage src={user.avatar || undefined} />
-                      <AvatarFallback style={{ backgroundColor: user.color }}>
-                        <span className="text-white font-semibold text-xs sm:text-base">
-                          {getInitials(user.name)}
-                        </span>
-                      </AvatarFallback>
-                    </Avatar>
-                    {isTopThree && (
-                      <div className="absolute -top-1 -right-1">
-                        {getRankIcon(rank)}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* User Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1 sm:gap-2">
-                      <p className={`font-semibold truncate text-sm sm:text-base ${isTopThree ? 'sm:text-lg text-white' : ''}`} data-testid={`text-name-${user.id}`}>
-                        {user.name}
-                      </p>
-                      {isCurrentUser && (
-                        <Badge variant="secondary" className="text-xs flex-shrink-0 animate-pulse">
-                          Tú
-                        </Badge>
-                      )}
-                    </div>
-                    <p className={`text-xs sm:text-sm truncate ${isTopThree ? 'text-white/70' : 'text-muted-foreground'}`}>
-                      @{user.username}
-                    </p>
-                  </div>
-
-                  {/* Area */}
-                  <div className="text-right flex-shrink-0">
-                    <p className={`font-bold text-sm sm:text-lg ${isTopThree ? 'sm:text-2xl text-white' : ''}`} data-testid={`text-area-${user.id}`}>
-                      {(user.totalArea / 1000000).toLocaleString('es-ES', {
-                        minimumFractionDigits: 1,
-                        maximumFractionDigits: 1,
-                      })}
-                    </p>
-                    <p className={`text-xs ${isTopThree ? 'text-white/70' : 'text-muted-foreground'}`}>km²</p>
-                  </div>
+                {/* Rank number */}
+                <div className="w-8 flex-shrink-0 flex items-center justify-center">
+                  {medal ? (
+                    <span className="text-xl leading-none">{medal.emoji}</span>
+                  ) : (
+                    <span className="text-sm font-semibold text-muted-foreground/70 tabular-nums">
+                      {rank}
+                    </span>
+                  )}
                 </div>
-              </Card>
+
+                {/* Avatar */}
+                <Avatar className={`${isTopThree ? 'h-11 w-11' : 'h-9 w-9'} flex-shrink-0 transition-all`}>
+                  <AvatarImage src={user.avatar || undefined} />
+                  <AvatarFallback
+                    style={{ backgroundColor: user.color }}
+                    className="text-white font-semibold text-xs"
+                  >
+                    {getInitials(user.name)}
+                  </AvatarFallback>
+                </Avatar>
+
+                {/* User Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <p className={`font-medium truncate text-sm ${isTopThree ? 'font-semibold' : ''}`} data-testid={`text-name-${user.id}`}>
+                      {user.name}
+                    </p>
+                    {isCurrentUser && (
+                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
+                        Tú
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground truncate">
+                    @{user.username}
+                  </p>
+                </div>
+
+                {/* Area */}
+                <div className="text-right flex-shrink-0">
+                  <p className={`font-bold tabular-nums ${isTopThree ? 'text-base' : 'text-sm'}`} data-testid={`text-area-${user.id}`}>
+                    {(user.totalArea / 1000000).toLocaleString('es-ES', {
+                      minimumFractionDigits: 1,
+                      maximumFractionDigits: 1,
+                    })}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">km²</p>
+                </div>
+              </div>
             );
           })}
+
+          {users.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+              <Trophy className="h-10 w-10 mb-3 opacity-30" />
+              <p className="text-sm font-medium">Sin participantes aún</p>
+              <p className="text-xs mt-1">Añade amigos para ver el ranking</p>
+            </div>
+          )}
         </div>
       </ScrollArea>
     </div>

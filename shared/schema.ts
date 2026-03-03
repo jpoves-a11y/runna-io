@@ -106,6 +106,7 @@ export const polarActivities = sqliteTable("polar_activities", {
   summaryPolyline: text("summary_polyline"),
   processed: integer("processed").notNull().default(0),
   processedAt: text("processed_at"),
+  skipReason: text("skip_reason"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -137,6 +138,36 @@ export const stravaActivities = sqliteTable("strava_activities", {
   summaryPolyline: text("summary_polyline"), // Encoded polyline from Strava
   processed: integer("processed").notNull().default(0),
   processedAt: text("processed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+// COROS Integration Tables
+export const corosAccounts = sqliteTable("coros_accounts", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  corosOpenId: text("coros_open_id").notNull().unique(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  expiresAt: text("expires_at"),
+  lastSyncAt: text("last_sync_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const corosActivities = sqliteTable("coros_activities", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  corosWorkoutId: text("coros_workout_id").notNull().unique(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  territoryId: text("territory_id").references(() => territories.id, { onDelete: 'set null' }),
+  name: text("name").notNull(),
+  activityType: text("activity_type").notNull(), // Run, Trail Run, etc.
+  distance: real("distance").notNull(), // meters
+  duration: integer("duration").notNull(), // seconds
+  startDate: text("start_date").notNull(),
+  summaryPolyline: text("summary_polyline"), // GPS track
+  processed: integer("processed").notNull().default(0),
+  processedAt: text("processed_at"),
+  skipReason: text("skip_reason"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -300,6 +331,19 @@ export const userNicknames = sqliteTable("user_nicknames", {
   setByUserId: text("set_by_user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   nickname: text("nickname").notNull(),
   expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const territoryFortifications = sqliteTable("territory_fortifications", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'cascade' }),
+  geometry: text("geometry").notNull(), // GeoJSON of the overlap zone
+  area: real("area").notNull().default(0),
+  bboxMinLng: real("bbox_min_lng"),
+  bboxMinLat: real("bbox_min_lat"),
+  bboxMaxLng: real("bbox_max_lng"),
+  bboxMaxLat: real("bbox_max_lat"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -508,6 +552,16 @@ export const insertStravaActivitySchema = createInsertSchema(stravaActivities).o
   createdAt: true,
 });
 
+export const insertCorosAccountSchema = createInsertSchema(corosAccounts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertCorosActivitySchema = createInsertSchema(corosActivities).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({
   id: true,
   createdAt: true,
@@ -586,6 +640,11 @@ export const insertUserNicknameSchema = createInsertSchema(userNicknames).omit({
   createdAt: true,
 });
 
+export const insertTerritoryFortificationSchema = createInsertSchema(territoryFortifications).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -616,6 +675,12 @@ export type InsertStravaAccount = z.infer<typeof insertStravaAccountSchema>;
 
 export type StravaActivity = typeof stravaActivities.$inferSelect;
 export type InsertStravaActivity = z.infer<typeof insertStravaActivitySchema>;
+
+export type CorosAccount = typeof corosAccounts.$inferSelect;
+export type InsertCorosAccount = z.infer<typeof insertCorosAccountSchema>;
+
+export type CorosActivity = typeof corosActivities.$inferSelect;
+export type InsertCorosActivity = z.infer<typeof insertCorosActivitySchema>;
 
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
@@ -658,6 +723,9 @@ export type InsertWeeklySummary = z.infer<typeof insertWeeklySummarySchema>;
 
 export type UserNickname = typeof userNicknames.$inferSelect;
 export type InsertUserNickname = z.infer<typeof insertUserNicknameSchema>;
+
+export type TerritoryFortification = typeof territoryFortifications.$inferSelect;
+export type InsertTerritoryFortification = z.infer<typeof insertTerritoryFortificationSchema>;
 
 export type EmailNotification = typeof emailNotifications.$inferSelect;
 export const insertEmailNotificationSchema = createInsertSchema(emailNotifications);
@@ -705,7 +773,7 @@ export type FeedCommentWithUser = FeedComment & {
 
 // Competition extended types
 export type TreasureRarity = 'common' | 'rare' | 'epic' | 'legendary';
-export type TreasurePowerType = 'shield' | 'double_area' | 'nickname' | 'steal_boost' | 'invisibility' | 'time_bomb' | 'magnet' | 'reveal';
+export type TreasurePowerType = 'shield' | 'double_area' | 'nickname' | 'steal_boost' | 'invisibility' | 'time_bomb' | 'magnet' | 'reveal' | 'bulldozer' | 'battering_ram' | 'wall' | 'sentinel';
 export type CompetitionStatus = 'upcoming' | 'active' | 'finished';
 export type PowerStatus = 'available' | 'active' | 'used' | 'expired';
 
@@ -787,6 +855,40 @@ export const TREASURE_DEFINITIONS: Record<TreasurePowerType, TreasureDefinition>
     rarity: 'common',
     emoji: '🦅',
     color: '#CD7F32',
+  },
+  bulldozer: {
+    powerType: 'bulldozer',
+    name: 'El Arrasador',
+    description: 'Tu siguiente ruta ignora TODAS las fortalezas enemigas',
+    rarity: 'epic',
+    emoji: '🚜',
+    color: '#F59E0B',
+  },
+  battering_ram: {
+    powerType: 'battering_ram',
+    name: 'Ariete de Guerra',
+    description: 'Tu siguiente ruta tiene fuerza ×3: cada pasada rompe 3 capas de fortaleza',
+    rarity: 'legendary',
+    emoji: '🪓',
+    color: '#8B5CF6',
+  },
+  wall: {
+    powerType: 'wall',
+    name: 'Muralla Imparable',
+    description: 'Durante 24h, cada carrera fortalece el doble (+1.0 en vez de +0.5)',
+    rarity: 'rare',
+    emoji: '🧱',
+    color: '#7C8CA1',
+    duration: 24,
+  },
+  sentinel: {
+    powerType: 'sentinel',
+    name: 'Centinela',
+    description: 'Durante 24h, recibes notificación instantánea cuando alguien intenta robar tu territorio',
+    rarity: 'epic',
+    emoji: '🔔',
+    color: '#F59E0B',
+    duration: 24,
   },
 };
 

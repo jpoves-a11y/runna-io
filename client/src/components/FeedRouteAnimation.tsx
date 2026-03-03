@@ -1,252 +1,181 @@
 import { useEffect, useRef, memo } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 /**
- * Lightweight SVG route animation for feed posts.
- * No Leaflet, no tiles — just a minimalist polyline drawing animation.
- * Uses IntersectionObserver to pause when off-screen.
+ * Leaflet-based route animation for feed posts.
+ * Uses real dark map tiles (CartoDB Dark Matter) with animated polyline drawing.
+ * IntersectionObserver pauses animation when off-screen.
+ * Supports children overlay (stats bar).
  */
 
 interface FeedRouteAnimationProps {
   coordinates: [number, number][];
   userColor: string;
   height?: number;
-}
-
-// Project lat/lng to SVG pixel coordinates
-function projectCoords(
-  coords: [number, number][],
-  width: number,
-  height: number,
-  padding: number
-): { x: number; y: number }[] {
-  if (coords.length === 0) return [];
-
-  let minLat = Infinity, maxLat = -Infinity;
-  let minLng = Infinity, maxLng = -Infinity;
-
-  for (const [lat, lng] of coords) {
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
-    if (lng < minLng) minLng = lng;
-    if (lng > maxLng) maxLng = lng;
-  }
-
-  const latRange = maxLat - minLat || 0.001;
-  const lngRange = maxLng - minLng || 0.001;
-  const drawW = width - padding * 2;
-  const drawH = height - padding * 2;
-
-  // Maintain aspect ratio
-  const scaleX = drawW / lngRange;
-  const scaleY = drawH / latRange;
-  const scale = Math.min(scaleX, scaleY);
-
-  const offsetX = padding + (drawW - lngRange * scale) / 2;
-  const offsetY = padding + (drawH - latRange * scale) / 2;
-
-  return coords.map(([lat, lng]) => ({
-    x: offsetX + (lng - minLng) * scale,
-    y: offsetY + (maxLat - lat) * scale, // flip Y (lat grows up, SVG grows down)
-  }));
-}
-
-function buildPathD(points: { x: number; y: number }[]): string {
-  if (points.length === 0) return '';
-  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
-  for (let i = 1; i < points.length; i++) {
-    d += ` L ${points[i].x.toFixed(1)} ${points[i].y.toFixed(1)}`;
-  }
-  return d;
+  children?: React.ReactNode;
 }
 
 const FeedRouteAnimation = memo(function FeedRouteAnimation({
   coordinates,
   userColor,
-  height = 160,
+  height = 150,
+  children,
 }: FeedRouteAnimationProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
   const animationRef = useRef<number | null>(null);
   const isVisibleRef = useRef(false);
-  const startTimeRef = useRef<number>(0);
-  const projectedRef = useRef<{ x: number; y: number }[]>([]);
-  const widthRef = useRef(0);
+  const polylineRef = useRef<L.Polyline | null>(null);
+  const runnerRef = useRef<L.CircleMarker | null>(null);
+  const endMarkerRef = useRef<L.CircleMarker | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
-    const canvas = canvasRef.current;
-    if (!container || !canvas || coordinates.length < 2) return;
+    const mapEl = mapContainerRef.current;
+    if (!container || !mapEl || coordinates.length < 2) return;
 
-    const rect = container.getBoundingClientRect();
-    const w = rect.width || 300;
-    const h = height;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const map = L.map(mapEl, {
+      zoomControl: false,
+      attributionControl: false,
+      dragging: false,
+      scrollWheelZoom: false,
+      doubleClickZoom: false,
+      touchZoom: false,
+      boxZoom: false,
+      keyboard: false,
+    });
 
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(map);
 
-    widthRef.current = w;
-    projectedRef.current = projectCoords(coordinates, w, h, 20);
+    const latlngs = coordinates.map(([lat, lng]) => L.latLng(lat, lng));
+    const fullPolyline = L.polyline(latlngs);
+    const bounds = fullPolyline.getBounds();
+    map.fitBounds(bounds, { padding: [20, 20] });
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
+    // Ghost trail
+    L.polyline(latlngs, {
+      color: '#888',
+      weight: 2,
+      opacity: 0.15,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(map);
 
-    const points = projectedRef.current;
-    const totalPoints = points.length;
-    const ANIMATION_DURATION = 3000;
-    const PAUSE_DURATION = 800;
+    // Start marker
+    L.circleMarker(latlngs[0], {
+      radius: 5,
+      color: '#fff',
+      fillColor: '#16a34a',
+      fillOpacity: 1,
+      weight: 1.5,
+    }).addTo(map);
 
-    // Compute total path length for the faded trail
-    const segmentLengths: number[] = [0];
-    let totalLength = 0;
-    for (let i = 1; i < points.length; i++) {
-      const dx = points[i].x - points[i - 1].x;
-      const dy = points[i].y - points[i - 1].y;
-      totalLength += Math.sqrt(dx * dx + dy * dy);
-      segmentLengths.push(totalLength);
-    }
+    // Animated polyline
+    polylineRef.current = L.polyline([], {
+      color: userColor,
+      weight: 2.5,
+      opacity: 0.9,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(map);
 
-    const drawFrame = (progress: number) => {
-      ctx.clearRect(0, 0, w, h);
+    // Runner dot
+    runnerRef.current = L.circleMarker(latlngs[0], {
+      radius: 3.5,
+      color: '#fff',
+      fillColor: userColor,
+      fillOpacity: 1,
+      weight: 1.5,
+    }).addTo(map);
 
-      // Draw faded full trail (ghost path)
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(128, 128, 128, 0.12)';
-      ctx.lineWidth = 2;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (let i = 0; i < points.length; i++) {
-        if (i === 0) ctx.moveTo(points[i].x, points[i].y);
-        else ctx.lineTo(points[i].x, points[i].y);
-      }
-      ctx.stroke();
+    mapRef.current = map;
 
-      // Cubic ease-out
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const pointCount = Math.max(1, Math.floor(eased * totalPoints));
+    setTimeout(() => {
+      map.invalidateSize();
+      map.fitBounds(bounds, { padding: [20, 20] });
 
-      // Draw animated polyline
-      if (pointCount > 1) {
-        ctx.beginPath();
-        ctx.strokeStyle = userColor;
-        ctx.lineWidth = 2.5;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        for (let i = 0; i < pointCount; i++) {
-          if (i === 0) ctx.moveTo(points[i].x, points[i].y);
-          else ctx.lineTo(points[i].x, points[i].y);
+      const ANIMATION_DURATION = 3000;
+      const PAUSE_DURATION = 800;
+      const totalPoints = latlngs.length;
+
+      const startCycle = () => {
+        if (polylineRef.current) polylineRef.current.setLatLngs([]);
+        if (endMarkerRef.current) {
+          map.removeLayer(endMarkerRef.current);
+          endMarkerRef.current = null;
         }
-        ctx.stroke();
-      }
-
-      // Start marker (green)
-      ctx.beginPath();
-      ctx.arc(points[0].x, points[0].y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = '#16a34a';
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      if (progress >= 1) {
-        // End marker (red)
-        const last = points[points.length - 1];
-        ctx.beginPath();
-        ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#dc2626';
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      } else if (pointCount > 0) {
-        // Runner dot
-        const current = points[pointCount - 1];
-        ctx.beginPath();
-        ctx.arc(current.x, current.y, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = userColor;
-        ctx.fill();
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
-    };
-
-    let cycleStart = 0;
-    let isPaused = false;
-    let pauseStart = 0;
-
-    const animate = (time: number) => {
-      if (!isVisibleRef.current) {
-        animationRef.current = requestAnimationFrame(animate);
-        return;
-      }
-
-      if (isPaused) {
-        if (time - pauseStart >= PAUSE_DURATION) {
-          isPaused = false;
-          cycleStart = time;
+        if (!runnerRef.current) {
+          runnerRef.current = L.circleMarker(latlngs[0], {
+            radius: 3.5, color: '#fff', fillColor: userColor, fillOpacity: 1, weight: 1.5,
+          }).addTo(map);
         } else {
-          animationRef.current = requestAnimationFrame(animate);
-          return;
+          runnerRef.current.setLatLng(latlngs[0]);
         }
-      }
 
-      if (cycleStart === 0) cycleStart = time;
+        const startTime = performance.now();
 
-      const elapsed = time - cycleStart;
-      const progress = Math.min(elapsed / ANIMATION_DURATION, 1);
-
-      drawFrame(progress);
-
-      if (progress >= 1) {
-        isPaused = true;
-        pauseStart = time;
-      }
-
-      animationRef.current = requestAnimationFrame(animate);
-    };
-
-    // IntersectionObserver to pause/resume animation
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          isVisibleRef.current = entry.isIntersecting;
-          if (entry.isIntersecting && animationRef.current === null) {
-            cycleStart = 0;
+        const animate = (currentTime: number) => {
+          if (!isVisibleRef.current) {
             animationRef.current = requestAnimationFrame(animate);
+            return;
           }
-        }
-      },
+
+          const elapsed = currentTime - startTime;
+          const progress = Math.min(elapsed / ANIMATION_DURATION, 1);
+          const eased = 1 - Math.pow(1 - progress, 3);
+          const pointCount = Math.max(1, Math.floor(eased * totalPoints));
+          const currentPoints = latlngs.slice(0, pointCount);
+
+          if (polylineRef.current) polylineRef.current.setLatLngs(currentPoints);
+          if (runnerRef.current && currentPoints.length > 0) {
+            runnerRef.current.setLatLng(currentPoints[currentPoints.length - 1]);
+          }
+
+          if (progress < 1) {
+            animationRef.current = requestAnimationFrame(animate);
+          } else {
+            endMarkerRef.current = L.circleMarker(latlngs[latlngs.length - 1], {
+              radius: 5, color: '#fff', fillColor: '#dc2626', fillOpacity: 1, weight: 1.5,
+            }).addTo(map);
+            if (runnerRef.current) {
+              map.removeLayer(runnerRef.current);
+              runnerRef.current = null;
+            }
+            setTimeout(() => { if (mapRef.current) startCycle(); }, PAUSE_DURATION);
+          }
+        };
+
+        animationRef.current = requestAnimationFrame(animate);
+      };
+
+      startCycle();
+    }, 300);
+
+    const observer = new IntersectionObserver(
+      (entries) => { for (const entry of entries) isVisibleRef.current = entry.isIntersecting; },
       { threshold: 0.1 }
     );
-
     observer.observe(container);
-
-    // Start if already visible
     isVisibleRef.current = true;
-    animationRef.current = requestAnimationFrame(animate);
 
     return () => {
       observer.disconnect();
-      if (animationRef.current !== null) {
-        cancelAnimationFrame(animationRef.current);
-        animationRef.current = null;
-      }
+      if (animationRef.current) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
     };
   }, [coordinates, userColor, height]);
 
   if (coordinates.length < 2) return null;
 
   return (
-    <div
-      ref={containerRef}
-      className="w-full rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-900/80"
-      style={{ height }}
-    >
-      <canvas ref={canvasRef} className="block w-full h-full" />
+    <div ref={containerRef} className="relative w-full rounded-xl overflow-hidden" style={{ height }}>
+      <div ref={mapContainerRef} className="absolute inset-0 w-full h-full" />
+      {children}
     </div>
   );
 });

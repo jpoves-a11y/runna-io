@@ -49,6 +49,13 @@ Cuando sincronizas con servicios externos:
 - Fecha de inicio
 - Ruta GPS (summary polyline)
 
+#### Desde COROS:
+- ID de workout y tipo de actividad
+- Distancia recorrida (metros)
+- Duración (segundos)
+- Fecha y hora de inicio
+- Ruta GPS (track points)
+
 ### 2.3. Datos que recopilamos automáticamente
 
 **Cloudflare Analytics** (único servicio de analítica):
@@ -76,7 +83,7 @@ Usamos tus datos **ÚNICAMENTE** para:
 |-----------|-------------------|
 | Gestionar tu cuenta | Ejecución del contrato (Art. 6.1.b) |
 | Mostrar tus actividades y territorios | Ejecución del contrato (Art. 6.1.b) |
-| Sincronizar con Polar/Strava | Consentimiento explícito (Art. 6.1.a) |
+| Sincronizar con Polar/Strava/COROS | Consentimiento explícito (Art. 6.1.a) |
 | Enviarte emails sobre amigos/territorios | Consentimiento explícito (Art. 6.1.a) |
 | Mejorar el servicio | Interés legítimo (Art. 6.1.f) |
 | Cumplir obligaciones legales | Obligación legal (Art. 6.1.c) |
@@ -171,6 +178,17 @@ Por transparencia, mostramos esta información en nuestra política de privacida
 | **Propósito** | Importar tus actividades deportivas |
 | **Datos accedidos** | Actividades, rutas GPS, métricas |
 | **Conexión** | OAuth 2.0 (tú autorizas el acceso) |
+| **Desconexión** | Puedes desconectar en cualquier momento desde tu perfil |
+
+### 5.6. COROS (Sincronización opcional)
+
+| Campo | Información |
+|-------|-------------|
+| **Proveedor** | COROS Wearables, Inc. |
+| **Propósito** | Importar tus workouts deportivos automáticamente |
+| **Datos accedidos** | Workouts, rutas GPS, métricas de actividad |
+| **Conexión** | OAuth 2.0 (tú autorizas el acceso) |
+| **Desconexión** | Puedes desconectar en cualquier momento desde tu perfil |
 | **Desconexión** | Puedes desconectar en cualquier momento desde tu perfil |
 | **Transferencia UE-EEUU** | Bajo cláusulas contractuales tipo (CCT) |
 

@@ -94,11 +94,6 @@ export default function RankingsPage() {
           </div>
         </div>
       )}
-      <div 
-        className="p-3 sm:p-4 border-b border-border bg-card/50 backdrop-blur-sm"
-      >
-        <h2 className="text-lg font-semibold">Ranking de Amigos</h2>
-      </div>
       <div className="flex-1 overflow-hidden">
         <LeaderboardTable
           users={users}

@@ -9,10 +9,17 @@ import { useTheme } from '@/hooks/use-theme';
 import { useMapTilePrefetch } from '@/hooks/use-map-tile-prefetch';
 import type { Treasure } from '@/hooks/use-competition';
 
+export interface FortificationData {
+  userId: string;
+  layers: number;
+  records: Array<{ geometry: any; area: number }>;
+}
+
 interface MapViewProps {
   territories: TerritoryWithUser[];
   routes?: RouteWithTerritory[];
   treasures?: Treasure[];
+  fortifications?: FortificationData[];
   center?: { lat: number; lng: number };
   onLocationFound?: (coords: { lat: number; lng: number }) => void;
   onTerritoryClick?: (userId: string) => void;
@@ -38,7 +45,7 @@ const TILE_URLS = {
   light: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
 };
 
-export function MapView({ territories, routes = [], treasures = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false, visibleUserIds = null }: MapViewProps) {
+export function MapView({ territories, routes = [], treasures = [], fortifications = [], center = DEFAULT_CENTER, onLocationFound, onTerritoryClick, isLoadingTerritories = false, visibleUserIds = null }: MapViewProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -46,6 +53,7 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
   const territoryGroupRef = useRef<L.LayerGroup | null>(null);
   const routeGroupRef = useRef<L.LayerGroup | null>(null);
   const treasureGroupRef = useRef<L.LayerGroup | null>(null);
+  const fortificationGroupRef = useRef<L.LayerGroup | null>(null);
   // Track which layers correspond to which data IDs for diffing
   const territoryLayersRef = useRef<Map<number, L.Polygon>>(new Map());
   const routeLayersRef = useRef<Map<number, L.Polyline>>(new Map());
@@ -98,9 +106,11 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
     const territoryGroup = L.layerGroup().addTo(map);
     const routeGroup = L.layerGroup().addTo(map);
     const treasureGroup = L.layerGroup().addTo(map);
+    const fortificationGroup = L.layerGroup().addTo(map);
     territoryGroupRef.current = territoryGroup;
     routeGroupRef.current = routeGroup;
     treasureGroupRef.current = treasureGroup;
+    fortificationGroupRef.current = fortificationGroup;
 
     mapRef.current = map;
     setMapStyle(initialStyle);
@@ -137,6 +147,7 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
       territoryGroupRef.current = null;
       routeGroupRef.current = null;
       treasureGroupRef.current = null;
+      fortificationGroupRef.current = null;
       territoryLayersRef.current.clear();
       routeLayersRef.current.clear();
       treasureLayersRef.current.clear();
@@ -508,42 +519,50 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
       legendary: { bg: '#f59e0b', border: '#fbbf24', glow: 'rgba(245,158,11,0.6)', pulse: 'rgba(245,158,11,0.3)' },
     };
 
+    // Chest images by rarity
+    const chestImages: Record<string, string> = {
+      common: '/cofre_common.png',
+      rare: '/cofre_rare.png',
+      epic: '/cofre_epic.png',
+      legendary: '/cofre_legendary.png',
+    };
+
     // Add new treasures
     treasures.forEach((treasure) => {
       if (existingIds.has(treasure.id)) return;
 
       const colors = rarityColors[treasure.rarity] || rarityColors.common;
-      const emoji = treasure.power?.emoji || '💎';
+      const chestSrc = chestImages[treasure.rarity] || chestImages.common;
 
       const icon = L.divIcon({
         className: 'treasure-marker',
         html: `
-          <div style="position: relative; width: 40px; height: 40px;">
+          <div style="position: relative; width: 48px; height: 48px;">
             <div style="
               position: absolute;
-              inset: -4px;
+              inset: -6px;
               border-radius: 50%;
               background: ${colors.pulse};
               animation: treasure-pulse 2s ease-in-out infinite;
             "></div>
             <div style="
-              position: relative;
-              width: 40px;
-              height: 40px;
+              position: absolute;
+              inset: -3px;
               border-radius: 50%;
-              background: radial-gradient(circle at 30% 30%, ${colors.border}, ${colors.bg});
-              border: 2px solid ${colors.border};
-              box-shadow: 0 0 12px ${colors.glow}, 0 2px 8px rgba(0,0,0,0.3);
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              font-size: 18px;
+              box-shadow: 0 0 16px ${colors.glow};
+            "></div>
+            <img src="${chestSrc}" alt="Cofre" style="
+              position: relative;
+              width: 48px;
+              height: 48px;
+              object-fit: contain;
+              filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4));
               cursor: pointer;
-            ">${emoji}</div>
+            " />
           </div>
         `,
-        iconSize: [40, 40],
-        iconAnchor: [20, 20],
+        iconSize: [48, 48],
+        iconAnchor: [24, 24],
       });
 
       const marker = L.marker([treasure.lat, treasure.lng], { icon });
@@ -551,11 +570,18 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
       const isDark = document.documentElement.classList.contains('dark');
       const popupBg = isDark ? '#1e1e1e' : 'white';
       const popupText = isDark ? '#e5e5e5' : '#1a1a1a';
+      const powerEmojis: Record<string, string> = {
+        shield: '🛡️', double_area: '⚡', nickname: '🎭', steal_boost: '🏴‍☠️',
+        invisibility: '👻', time_bomb: '💀', magnet: '🧲', reveal: '🔮',
+        bulldozer: '🚜', battering_ram: '🪓', wall: '🧱', sentinel: '🔔',
+      };
+      const treasureEmoji = treasure.power?.emoji || powerEmojis[treasure.powerType] || '💎';
       
+      const popupId = `treasure-cd-${treasure.id.slice(0, 8)}`;
       marker.bindPopup(`
         <div style="padding: 12px; min-width: 180px; font-family: system-ui, sans-serif;">
           <div style="text-align: center; margin-bottom: 8px;">
-            <span style="font-size: 28px;">${emoji}</span>
+            <span style="font-size: 28px;">${treasureEmoji}</span>
           </div>
           <div style="text-align: center;">
             <div style="font-weight: 700; font-size: 14px; color: ${popupText}; margin-bottom: 4px;">
@@ -576,6 +602,10 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
             <div style="font-size: 11px; color: ${isDark ? '#999' : '#666'}; line-height: 1.4;">
               ${treasure.power?.description || ''}
             </div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 8px; font-size: 11px; color: ${isDark ? '#ccc' : '#444'};">
+              <span style="font-size: 13px;">⏳</span>
+              <span id="${popupId}" data-expires="${treasure.expiresAt}" style="font-weight: 600; font-variant-numeric: tabular-nums;"></span>
+            </div>
             <div style="font-size: 10px; color: ${isDark ? '#666' : '#999'}; margin-top: 6px;">
               ¡Corre a menos de 100m para recogerlo!
             </div>
@@ -586,10 +616,128 @@ export function MapView({ territories, routes = [], treasures = [], center = DEF
         maxWidth: 220,
       });
 
+      // Start countdown timer when popup opens
+      marker.on('popupopen', () => {
+        const updateCountdown = () => {
+          const el = document.getElementById(popupId);
+          if (!el) return;
+          const expires = new Date(el.dataset.expires || '').getTime();
+          const diff = expires - Date.now();
+          if (diff <= 0) { el.textContent = 'Expirado'; return; }
+          const h = Math.floor(diff / 3600000);
+          const m = Math.floor((diff % 3600000) / 60000);
+          const s = Math.floor((diff % 60000) / 1000);
+          el.textContent = `${h}h ${m.toString().padStart(2, '0')}m ${s.toString().padStart(2, '0')}s`;
+        };
+        updateCountdown();
+        const interval = setInterval(updateCountdown, 1000);
+        marker.once('popupclose', () => clearInterval(interval));
+      });
+
       treasureGroup.addLayer(marker);
       existingLayers.set(treasure.id, marker);
     });
   }, [treasures]);
+
+  // === FORTIFICATION OVERLAY ===
+  useEffect(() => {
+    if (!mapRef.current || !fortificationGroupRef.current) return;
+    const fortGroup = fortificationGroupRef.current;
+    fortGroup.clearLayers();
+
+    if (!fortifications || fortifications.length === 0) return;
+
+    // Build a user-color map from territories
+    const userColorMap = new Map<string, string>();
+    for (const t of territories) {
+      if (t.user) userColorMap.set(t.user.id, t.user.color);
+    }
+
+    for (const userFort of fortifications) {
+      const userColor = userColorMap.get(userFort.userId) || '#6b7280';
+      const level = userFort.layers * 0.5;
+      if (level < 0.5) continue; // Don't show until at least 0.5
+
+      // Render each fortification record as a semi-transparent overlay
+      for (const record of userFort.records) {
+        try {
+          const geom = record.geometry;
+          if (!geom?.coordinates) continue;
+
+          let leafletCoords: any;
+          if (geom.type === 'MultiPolygon') {
+            leafletCoords = geom.coordinates.map((polygon: number[][][]) =>
+              polygon.map((ring: number[][]) =>
+                ring.map((coord: number[]) => [coord[1], coord[0]] as [number, number])
+              )
+            );
+          } else {
+            leafletCoords = geom.coordinates.map((ring: number[][]) =>
+              ring.map((coord: number[]) => [coord[1], coord[0]] as [number, number])
+            );
+          }
+
+          const opacityBoost = Math.min(level * 0.08, 0.4);
+          const overlay = L.polygon(leafletCoords as any, {
+            color: userColor,
+            fillColor: userColor,
+            fillOpacity: 0.15 + opacityBoost,
+            weight: 1,
+            opacity: 0.3,
+            interactive: false,
+            renderer: canvasRendererRef.current || undefined,
+          });
+          fortGroup.addLayer(overlay);
+        } catch (_) {}
+      }
+
+      // Add a castle marker at the centroid of the first record (representative)
+      if (level >= 1.0 && userFort.records.length > 0) {
+        try {
+          const firstGeom = userFort.records[0].geometry;
+          if (firstGeom?.coordinates) {
+            // Compute rough centroid from first ring of first record
+            const coords = firstGeom.type === 'MultiPolygon'
+              ? firstGeom.coordinates[0][0]
+              : firstGeom.coordinates[0];
+            if (coords && coords.length > 0) {
+              let latSum = 0, lngSum = 0;
+              for (const c of coords) {
+                lngSum += c[0];
+                latSum += c[1];
+              }
+              const centLat = latSum / coords.length;
+              const centLng = lngSum / coords.length;
+
+              const levelDisplay = Math.floor(level);
+              const castleIcon = L.divIcon({
+                className: 'fortification-castle-icon',
+                html: `<div style="
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  width: 32px;
+                  height: 32px;
+                  background: ${userColor};
+                  border: 2px solid white;
+                  border-radius: 50%;
+                  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+                  font-size: 14px;
+                  color: white;
+                  font-weight: bold;
+                ">🏰<span style="font-size:10px;position:absolute;bottom:-2px;right:-2px;background:${userColor};border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border:1px solid white;">${levelDisplay}</span></div>`,
+                iconSize: [32, 32],
+                iconAnchor: [16, 16],
+              });
+
+              const marker = L.marker([centLat, centLng], { icon: castleIcon, interactive: false });
+              fortGroup.addLayer(marker);
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  }, [fortifications, territories]);
 
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();

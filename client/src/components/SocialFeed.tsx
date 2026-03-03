@@ -15,89 +15,43 @@ import type { FeedEventWithDetails, FeedCommentWithUser } from '@shared/schema';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+interface ActivityMetadata {
+  victims?: Array<{ userId: string; userName: string; userColor: string; stolenArea: number }>;
+  ranTogetherWith?: Array<{ id: string; name: string }>;
+  records?: Array<{ type: string; value: number }>;
+  treasures?: Array<{ treasureId?: string; treasureName: string; powerType: string; rarity: string }>;
+  fortressesDestroyed?: number;
+}
+
 interface MergedFeedEvent extends FeedEventWithDetails {
   victims?: Array<{ id: string; name: string; color: string; avatar?: string | null; areaStolen: number }>;
+  parsedMeta?: ActivityMetadata;
 }
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
-function mergeEvents(events: FeedEventWithDetails[]): MergedFeedEvent[] {
-  const result: MergedFeedEvent[] = [];
-  const activityIndex = new Map<string, number>();
-  const activityByUser = new Map<string, number[]>();
-  const merged = new Set<string>();
-
-  // Pass 1: Add all activity events
-  for (const event of events) {
-    if (event.eventType === 'activity') {
-      if (event.routeId) {
-        activityIndex.set(`${event.routeId}:${event.userId}`, result.length);
-      }
-      const existing = activityByUser.get(event.userId) || [];
-      existing.push(result.length);
-      activityByUser.set(event.userId, existing);
-      result.push({ ...event, victims: [] });
-    }
-  }
-
-  // Pass 2: Merge territory_stolen into matching activities
-  for (const event of events) {
-    if (event.eventType !== 'territory_stolen') continue;
-    let targetIdx: number | undefined;
-
-    // Try exact routeId:userId match
-    if (event.routeId) {
-      targetIdx = activityIndex.get(`${event.routeId}:${event.userId}`);
-    }
-
-    // Fallback: closest activity from same user within 5 min
-    if (targetIdx === undefined) {
-      const userActivities = activityByUser.get(event.userId) || [];
-      const eventTime = new Date(event.createdAt).getTime();
-      let bestDist = Infinity;
-      for (const idx of userActivities) {
-        const actTime = new Date(result[idx].createdAt).getTime();
-        const dist = Math.abs(eventTime - actTime);
-        if (dist < 300000 && dist < bestDist) {
-          bestDist = dist;
-          targetIdx = idx;
+/** Parse metadata from activity events — new unified format */
+function enrichEvents(events: FeedEventWithDetails[]): MergedFeedEvent[] {
+  return events.map(event => {
+    const enriched: MergedFeedEvent = { ...event };
+    if (event.eventType === 'activity' && event.metadata) {
+      try {
+        const meta: ActivityMetadata = typeof event.metadata === 'string' ? JSON.parse(event.metadata) : event.metadata;
+        enriched.parsedMeta = meta;
+        // Build victims array for backward-compatible rendering
+        if (meta.victims && meta.victims.length > 0) {
+          enriched.victims = meta.victims.map(v => ({
+            id: v.userId,
+            name: v.userName,
+            color: v.userColor,
+            avatar: null,
+            areaStolen: v.stolenArea,
+          }));
         }
-      }
+      } catch (_) {}
     }
-
-    if (targetIdx !== undefined && result[targetIdx]) {
-      const victim = event.victim;
-      if (victim) {
-        result[targetIdx].victims!.push({
-          id: victim.id,
-          name: victim.name,
-          color: victim.color,
-          avatar: victim.avatar,
-          areaStolen: event.areaStolen || 0,
-        });
-      }
-      // Don't add commentCount from territory_stolen — comments are fetched by the activity event's ID
-      merged.add(event.id);
-    }
-  }
-
-  // Pass 3: Add remaining events (ran_together, personal_record, treasure_found, unmerged territory_stolen)
-  for (const event of events) {
-    if (event.eventType === 'activity') continue;
-    if (merged.has(event.id)) continue;
-    // Only suppress territory_stolen if it was successfully merged into an activity above
-    // (unmerged territory_stolen events with no matching activity should still show)
-    if (event.eventType === 'territory_stolen') {
-      // Check if this specific event's routeId matches any activity — if so, it should have been merged
-      if (event.routeId && activityIndex.has(`${event.routeId}:${event.userId}`)) continue;
-      // If we couldn't merge it into any matching activity by routeId, and there's a close activity by time,
-      // it was already added to merged set in Pass 2. Otherwise show it standalone.
-    }
-    result.push({ ...event });
-  }
-
-  result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  return result;
+    return enriched;
+  }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 function formatDistance(meters: number): string {
@@ -193,11 +147,11 @@ const LikeButton = memo(function LikeButton({
   return (
     <button
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 py-1.5 transition-all duration-150 active:scale-90
+      className={`inline-flex items-center gap-1 py-1 transition-all duration-150 active:scale-90
         ${active ? 'text-red-500' : 'text-muted-foreground hover:text-red-400'}`}
     >
-      <Heart className={`w-[18px] h-[18px] transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
-      {count > 0 && <span className="text-xs font-medium tabular-nums">{count}</span>}
+      <Heart className={`w-4 h-4 transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
+      {count > 0 && <span className="text-[11px] font-medium tabular-nums">{count}</span>}
     </button>
   );
 });
@@ -210,11 +164,11 @@ const DislikeButton = memo(function DislikeButton({
   return (
     <button
       onClick={onClick}
-      className={`inline-flex items-center gap-1.5 py-1.5 transition-all duration-150 active:scale-90
+      className={`inline-flex items-center gap-1 py-1 transition-all duration-150 active:scale-90
         ${active ? 'text-orange-500' : 'text-muted-foreground hover:text-orange-400'}`}
     >
-      <ThumbsDown className={`w-[16px] h-[16px] transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
-      {count > 0 && <span className="text-xs font-medium tabular-nums">{count}</span>}
+      <ThumbsDown className={`w-3.5 h-3.5 transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
+      {count > 0 && <span className="text-[11px] font-medium tabular-nums">{count}</span>}
     </button>
   );
 });
@@ -257,39 +211,37 @@ const CommentRow = memo(function CommentRow({
   const user = comment.user as any;
 
   return (
-    <div className={`flex items-start gap-2.5 ${isReply ? 'ml-8 mt-2' : 'mt-3 first:mt-0'}`}>
+    <div className={`flex items-start gap-2 ${isReply ? 'ml-6 mt-1' : 'mt-2 first:mt-0'}`}>
       <UserAvatar
         user={{ name: user.name, color: user.color || '#888', avatar: user.avatar }}
         size="xs"
         onClick={() => onUserClick(user.id)}
       />
       <div className="flex-1 min-w-0">
-        {/* Comment bubble */}
-        <div className="rounded-2xl bg-white dark:bg-white/[0.05] px-3.5 py-2 shadow-[0_0.5px_2px_rgba(0,0,0,0.06)] dark:shadow-none">
-          <div className="flex items-center gap-1.5">
-            <button
-              className="text-[12px] font-bold hover:underline leading-tight"
-              style={{ color: user.color || undefined }}
-              onClick={() => onUserClick(user.id)}
-            >
-              {user.name}
-            </button>
-            <span className="text-[10px] text-muted-foreground/70">{preciseTimeAgo(comment.createdAt)}</span>
-          </div>
-          <p className="text-[13px] text-foreground/85 break-words leading-relaxed mt-0.5">{renderMentionedText(comment.content)}</p>
-        </div>
+        {/* Inline: name + content on same line */}
+        <p className="text-[12px] text-foreground/80 break-words leading-snug">
+          <button
+            className="font-bold hover:underline mr-1"
+            style={{ color: user.color || undefined }}
+            onClick={() => onUserClick(user.id)}
+          >
+            {user.name}
+          </button>
+          {renderMentionedText(comment.content)}
+          <span className="text-[9px] text-muted-foreground/50 ml-1.5">{preciseTimeAgo(comment.createdAt)}</span>
+        </p>
         {/* Meta row */}
-        <div className="flex items-center gap-3 mt-1 ml-2">
+        <div className="flex items-center gap-2 mt-0.5">
           <MiniReaction type="like" count={comment.likeCount} active={comment.userReaction === 'like'} onClick={() => onReaction(comment.id, 'like')} />
           <MiniReaction type="dislike" count={comment.dislikeCount} active={comment.userReaction === 'dislike'} onClick={() => onReaction(comment.id, 'dislike')} />
           {!isReply && (
-            <button className="text-[10px] text-muted-foreground hover:text-foreground font-semibold transition-colors" onClick={() => onReply(comment.id, user.name)}>
+            <button className="text-[9px] text-muted-foreground/60 hover:text-foreground font-semibold transition-colors" onClick={() => onReply(comment.id, user.name)}>
               Responder
             </button>
           )}
           {comment.userId === currentUserId && (
-            <button className="text-muted-foreground/60 hover:text-red-400 ml-auto transition-colors active:scale-75" onClick={() => onDelete(comment.id)}>
-              <Trash2 className="w-3 h-3" />
+            <button className="text-muted-foreground/40 hover:text-red-400 ml-auto transition-colors active:scale-75" onClick={() => onDelete(comment.id)}>
+              <Trash2 className="w-2.5 h-2.5" />
             </button>
           )}
         </div>
@@ -527,83 +479,191 @@ const EventCard = memo(function EventCard({
   const pace = event.distance && event.duration ? formatPace(event.distance, event.duration) : null;
   const displayedComments = showComments ? allComments : previewComments;
 
-  // Event type icon + bg — conquest badge when activity has stolen territory
+  // Event type icon + bg — conquest badge when activity has stolen territory or metadata
+  const hasBadges = victims.length > 0 || !!(event as MergedFeedEvent).parsedMeta?.victims?.length || !!(event as MergedFeedEvent).parsedMeta?.records?.length || !!(event as MergedFeedEvent).parsedMeta?.treasures?.length || !!(event as MergedFeedEvent).parsedMeta?.fortressesDestroyed;
   const eventTypeBadge = useMemo(() => {
-    if (event.eventType === 'activity' && victims.length > 0) {
-      return { icon: <Swords className="w-4 h-4" />, bg: 'bg-red-500/10 text-red-500' };
+    if (event.eventType === 'activity' && (victims.length > 0 || !!(event as MergedFeedEvent).parsedMeta?.victims?.length)) {
+      return { icon: <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-red-500/10' };
     }
     const map: Record<string, { icon: React.ReactNode; bg: string }> = {
-      activity: { icon: <Flame className="w-4 h-4" />, bg: 'bg-primary/10 text-primary' },
-      territory_stolen: { icon: <Swords className="w-4 h-4" />, bg: 'bg-red-500/10 text-red-500' },
-      ran_together: { icon: <Users className="w-4 h-4" />, bg: 'bg-blue-500/10 text-blue-500' },
-      personal_record: { icon: <Trophy className="w-4 h-4" />, bg: 'bg-amber-500/10 text-amber-500' },
-      treasure_found: { icon: <MapPin className="w-4 h-4" />, bg: 'bg-purple-500/10 text-purple-500' },
+      activity: { icon: <Flame className="w-3.5 h-3.5" />, bg: 'bg-primary/10 text-primary' },
+      territory_stolen: { icon: <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-red-500/10' },
+      ran_together: { icon: <img src="/emblemas/Emblema_amigos.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-blue-500/10' },
+      personal_record: { icon: <img src="/emblemas/Emblema_ritmo.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-amber-500/10' },
+      treasure_found: { icon: <img src="/emblemas/Emblema_tesoro.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-purple-500/10' },
     };
     return map[event.eventType] || { icon: null, bg: 'bg-muted text-muted-foreground' };
   }, [event.eventType, victims.length]);
 
   // ── Render content by type ──
   const renderContent = () => {
+    const meta = (event as MergedFeedEvent).parsedMeta;
     switch (event.eventType) {
       case 'activity':
         return (
           <>
-            {/* Route animation hero */}
-            {routeCoords && routeCoords.length >= 2 && (
-              <div className="mt-2 rounded-xl overflow-hidden ring-1 ring-border/10">
-                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#16a34a'} height={170} />
+            {/* Route animation hero with stats overlay */}
+            {routeCoords && routeCoords.length >= 2 ? (
+              <div className="mt-1.5 rounded-xl overflow-hidden ring-1 ring-white/[0.06]">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#16a34a'} height={150}>
+                  {/* Stats overlay on bottom of map */}
+                  {(event.distance || event.duration || pace) && (
+                    <div className="absolute bottom-0 left-0 right-0 z-[400] bg-black/50 backdrop-blur-md border-t border-white/[0.06]">
+                      <div className="flex items-center justify-around py-1.5 px-2">
+                        {event.distance ? (
+                          <div className="text-center">
+                            <p className="text-[13px] font-bold text-primary leading-none">{formatDistance(event.distance)}</p>
+                            <p className="text-[7px] text-white/50 uppercase tracking-widest mt-0.5">Dist</p>
+                          </div>
+                        ) : null}
+                        {event.duration ? (
+                          <div className="text-center">
+                            <p className="text-[13px] font-bold text-white/90 leading-none">{formatDuration(event.duration)}</p>
+                            <p className="text-[7px] text-white/50 uppercase tracking-widest mt-0.5">Duración</p>
+                          </div>
+                        ) : null}
+                        {pace ? (
+                          <div className="text-center">
+                            <p className="text-[13px] font-bold text-orange-400 leading-none">{pace}</p>
+                            <p className="text-[7px] text-white/50 uppercase tracking-widest mt-0.5">Ritmo</p>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )}
+                </FeedRouteAnimation>
               </div>
-            )}
-
-            {/* Stats grid */}
-            {(event.distance || event.duration || pace) && (
-              <div className="grid grid-cols-3 gap-1.5 mt-3">
+            ) : (event.distance || event.duration || pace) ? (
+              /* Stats without map — compact inline */
+              <div className="flex items-center gap-3 mt-1.5 py-1.5 px-3 rounded-lg bg-white/[0.03] border border-white/[0.04]">
                 {event.distance ? (
-                  <div className="text-center py-2.5 rounded-xl bg-primary/[0.06] dark:bg-primary/[0.12]">
-                    <p className="text-[16px] font-bold text-primary leading-tight">{formatDistance(event.distance)}</p>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-widest mt-0.5">Distancia</p>
+                  <div className="text-center flex-1">
+                    <p className="text-[13px] font-bold text-primary leading-none">{formatDistance(event.distance)}</p>
+                    <p className="text-[7px] text-muted-foreground uppercase tracking-widest mt-0.5">Dist</p>
                   </div>
-                ) : <div />}
+                ) : null}
                 {event.duration ? (
-                  <div className="text-center py-2.5 rounded-xl bg-slate-50 dark:bg-white/[0.04]">
-                    <p className="text-[16px] font-bold text-foreground/85 leading-tight">{formatDuration(event.duration)}</p>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-widest mt-0.5">Duración</p>
+                  <div className="text-center flex-1">
+                    <p className="text-[13px] font-bold text-foreground/85 leading-none">{formatDuration(event.duration)}</p>
+                    <p className="text-[7px] text-muted-foreground uppercase tracking-widest mt-0.5">Duración</p>
                   </div>
-                ) : <div />}
+                ) : null}
                 {pace ? (
-                  <div className="text-center py-2.5 rounded-xl bg-orange-500/[0.06] dark:bg-orange-500/[0.12]">
-                    <p className="text-[16px] font-bold text-orange-600 dark:text-orange-400 leading-tight">{pace}</p>
-                    <p className="text-[9px] text-muted-foreground uppercase tracking-widest mt-0.5">Ritmo</p>
+                  <div className="text-center flex-1">
+                    <p className="text-[13px] font-bold text-orange-400 leading-none">{pace}</p>
+                    <p className="text-[7px] text-muted-foreground uppercase tracking-widest mt-0.5">Ritmo</p>
                   </div>
-                ) : <div />}
+                ) : null}
               </div>
-            )}
+            ) : null}
 
             {/* New area conquered */}
-            {event.newArea && event.newArea > 0 && (
-              <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 text-[12px] font-semibold text-emerald-600 dark:text-emerald-400">
-                <MapPin className="w-3.5 h-3.5" />
-                +{formatArea(event.newArea)} conquistados
+            {Number(event.newArea) > 0 && (
+              <div className="mt-2 inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 text-[11px] font-semibold text-emerald-500">
+                <MapPin className="w-3 h-3" />
+                +{formatArea(event.newArea!)}
               </div>
             )}
 
             {/* Victims section */}
             {victims.length > 0 && (
-              <div className="mt-3 rounded-xl border border-red-500/15 bg-red-500/[0.03] dark:bg-red-500/[0.06] overflow-hidden">
-                <div className="flex items-center gap-1.5 px-3 pt-2.5 pb-1.5">
-                  <Swords className="w-3.5 h-3.5 text-red-500" />
-                  <span className="text-[11px] font-bold text-red-600 dark:text-red-400 uppercase tracking-wider">Territorio robado</span>
+              <div className="mt-2 rounded-lg border border-red-500/10 bg-red-500/[0.03] overflow-hidden">
+                <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
+                  <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />
+                  <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Territorio robado</span>
                 </div>
-                <div className="px-3 pb-2.5 space-y-1">
+                <div className="px-2.5 pb-2 space-y-0.5">
                   {victims.map(v => (
-                    <div key={v.id} className="flex items-center gap-2 py-1">
+                    <div key={v.id} className="flex items-center gap-1.5 py-0.5">
                       <UserAvatar user={{ name: v.name, color: v.color, avatar: v.avatar }} size="xs" onClick={() => onUserClick(v.id)} />
-                      <button className="text-[12px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
+                      <button className="text-[11px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
                         {v.id === currentUserId ? 'Ti' : v.name}
                       </button>
-                      <span className="text-[11px] font-bold text-red-500/90 tabular-nums">{formatArea(v.areaStolen)}</span>
+                      <span className="text-[10px] font-bold text-red-500/80 tabular-nums">{formatArea(v.areaStolen)}</span>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Ran together badge (from metadata) */}
+            {meta?.ranTogetherWith && meta.ranTogetherWith.length > 0 && (
+              <div className="mt-2 rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5">
+                <div className="flex items-center gap-1.5">
+                  <img src="/emblemas/Emblema_amigos.png" alt="" className="w-5 h-5 object-contain" />
+                  <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
+                </div>
+                <p className="text-[12px] text-foreground/75 leading-snug mt-1">
+                  {meta.ranTogetherWith.map((u, i) => (
+                    <span key={u.id}>
+                      {i > 0 && (i === meta.ranTogetherWith!.length - 1 ? ' y ' : ', ')}
+                      <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
+                        {u.id === currentUserId ? 'Ti' : u.name}
+                      </button>
+                    </span>
+                  ))}
+                </p>
+              </div>
+            )}
+
+            {/* Personal records badges (from metadata) */}
+            {meta?.records && meta.records.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {meta.records.map((rec, i) => {
+                  const emblemMap: Record<string, string> = {
+                    longest_run: '/emblemas/Emblema_distancia.png',
+                    fastest_pace: '/emblemas/Emblema_ritmo.png',
+                    biggest_conquest: '/emblemas/Emblema_robo.png',
+                  };
+                  const label = rec.type === 'longest_run' ? 'Carrera más larga' :
+                    rec.type === 'fastest_pace' ? 'Ritmo más rápido' :
+                    rec.type === 'biggest_conquest' ? 'Mayor conquista' : 'Récord';
+                  let detail = '';
+                  if (rec.type === 'longest_run') detail = formatDistance(rec.value);
+                  else if (rec.type === 'fastest_pace') {
+                    const mins = Math.floor(rec.value);
+                    const secs = Math.round((rec.value - mins) * 60);
+                    detail = `${mins}:${secs.toString().padStart(2, '0')} /km`;
+                  } else if (rec.type === 'biggest_conquest') {
+                    detail = formatArea(rec.value);
+                  }
+                  return (
+                    <div key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 text-[10px] font-semibold text-amber-500 border border-amber-500/10">
+                      <img src={emblemMap[rec.type] || '/emblemas/Emblema_distancia.png'} alt="" className="w-4 h-4 object-contain" />
+                      <span>{label}</span>
+                      {detail && <span className="font-bold">{detail}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Treasures found badges (from metadata) */}
+            {meta?.treasures && meta.treasures.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {meta.treasures.map((t, i) => {
+                  const rarityColors: Record<string, string> = {
+                    common: 'text-gray-400 bg-gray-500/10 border-gray-500/10',
+                    rare: 'text-blue-400 bg-blue-500/10 border-blue-500/10',
+                    epic: 'text-purple-400 bg-purple-500/10 border-purple-500/10',
+                    legendary: 'text-amber-400 bg-amber-500/10 border-amber-500/10',
+                  };
+                  return (
+                    <div key={i} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border ${rarityColors[t.rarity] || rarityColors.common}`}>
+                      <img src="/emblemas/Emblema_tesoro.png" alt="" className="w-4 h-4 object-contain" />
+                      <span>{t.treasureName || 'Tesoro'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Fortresses destroyed badge */}
+            {meta?.fortressesDestroyed && meta.fortressesDestroyed > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border text-orange-400 bg-orange-500/10 border-orange-500/10">
+                  <span>🏰</span>
+                  <span>Rompió {meta.fortressesDestroyed} fortaleza{meta.fortressesDestroyed > 1 ? 's' : ''}</span>
                 </div>
               </div>
             )}
@@ -613,22 +673,26 @@ const EventCard = memo(function EventCard({
       case 'territory_stolen':
         return (
           <>
-            <div className="mt-1 rounded-xl border border-red-500/15 bg-red-500/[0.03] dark:bg-red-500/[0.06] p-3">
-              <p className="text-[13px] text-foreground/80 leading-snug">
+            <div className="mt-1 rounded-lg border border-red-500/10 bg-red-500/[0.03] p-2.5">
+              <div className="flex items-center gap-1.5 mb-1">
+                <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />
+                <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Robo</span>
+              </div>
+              <p className="text-[12px] text-foreground/75 leading-snug">
                 Ha robado territorio a{' '}
                 <button className="font-semibold hover:underline" style={{ color: event.victim?.color }} onClick={() => event.victim && onUserClick(event.victim.id)}>
                   {event.victim?.id === currentUserId ? 'ti' : event.victim?.name || 'alguien'}
                 </button>
               </p>
               {event.areaStolen && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 mt-2 rounded-full bg-red-500/10 text-[11px] font-semibold text-red-600 dark:text-red-400">
-                  <Swords className="w-3 h-3" />{formatArea(event.areaStolen)} robados
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-red-500/10 text-[10px] font-semibold text-red-400">
+                  <Swords className="w-3 h-3" />{formatArea(event.areaStolen)}
                 </span>
               )}
             </div>
             {routeCoords && routeCoords.length >= 2 && (
-              <div className="mt-3 rounded-xl overflow-hidden ring-1 ring-border/10">
-                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#dc2626'} height={140} />
+              <div className="mt-2 rounded-xl overflow-hidden ring-1 ring-white/[0.06]">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#dc2626'} height={130} />
               </div>
             )}
           </>
@@ -639,12 +703,12 @@ const EventCard = memo(function EventCard({
         try { ranWith = event.ranTogetherWith ? JSON.parse(event.ranTogetherWith) : []; } catch { }
         return (
           <>
-            <div className="mt-1 rounded-xl border border-blue-500/15 bg-blue-500/[0.03] dark:bg-blue-500/[0.06] p-3">
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <Users className="w-3.5 h-3.5 text-blue-500" />
-                <span className="text-[11px] font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider">Corrieron juntos</span>
+            <div className="mt-1 rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5">
+              <div className="flex items-center gap-1.5 mb-1">
+                <img src="/emblemas/Emblema_amigos.png" alt="" className="w-5 h-5 object-contain" />
+                <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
               </div>
-              <p className="text-[13px] text-foreground/80 leading-snug">
+              <p className="text-[12px] text-foreground/75 leading-snug">
                 {ranWith.map((u, i) => (
                   <span key={u.id}>
                     {i > 0 && (i === ranWith.length - 1 ? ' y ' : ', ')}
@@ -655,14 +719,14 @@ const EventCard = memo(function EventCard({
                 ))}
               </p>
               {event.distance && (
-                <span className="inline-flex items-center gap-1 px-2.5 py-1 mt-2 rounded-full bg-blue-500/10 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-blue-500/10 text-[10px] font-semibold text-blue-400">
                   <MapPin className="w-3 h-3" />{formatDistance(event.distance)}
                 </span>
               )}
             </div>
             {routeCoords && routeCoords.length >= 2 && (
-              <div className="mt-3 rounded-xl overflow-hidden ring-1 ring-border/10">
-                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#3b82f6'} height={140} />
+              <div className="mt-2 rounded-xl overflow-hidden ring-1 ring-white/[0.06]">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#3b82f6'} height={130} />
               </div>
             )}
           </>
@@ -670,9 +734,14 @@ const EventCard = memo(function EventCard({
       }
 
       case 'personal_record': {
-        const recordLabel = event.recordType === 'longest_run' ? '🏃 Carrera más larga' :
-          event.recordType === 'fastest_pace' ? '⚡ Ritmo más rápido' :
-            event.recordType === 'biggest_conquest' ? '🏴 Mayor conquista' : '🏆 Récord';
+        const emblemMap: Record<string, string> = {
+          longest_run: '/emblemas/Emblema_distancia.png',
+          fastest_pace: '/emblemas/Emblema_ritmo.png',
+          biggest_conquest: '/emblemas/Emblema_robo.png',
+        };
+        const recordLabel = event.recordType === 'longest_run' ? 'Carrera más larga' :
+          event.recordType === 'fastest_pace' ? 'Ritmo más rápido' :
+            event.recordType === 'biggest_conquest' ? 'Mayor conquista' : 'Récord';
         let recordDetail = '';
         if (event.recordValue) {
           if (event.recordType === 'longest_run') {
@@ -687,19 +756,19 @@ const EventCard = memo(function EventCard({
         }
         return (
           <>
-            <div className="mt-1 rounded-xl border border-amber-500/15 bg-amber-500/[0.03] dark:bg-amber-500/[0.06] p-4 text-center">
-              <Trophy className="w-8 h-8 text-amber-500 mx-auto mb-1.5" />
-              <p className="text-[14px] font-bold text-foreground/90">¡Récord personal!</p>
-              <span className="inline-flex items-center gap-1 px-3 py-1 mt-2 rounded-full bg-amber-500/10 text-[12px] font-semibold text-amber-600 dark:text-amber-400">
+            <div className="mt-1 rounded-lg border border-amber-500/10 bg-amber-500/[0.03] p-3 text-center">
+              <img src={emblemMap[event.recordType || ''] || '/emblemas/Emblema_distancia.png'} alt="" className="w-10 h-10 object-contain mx-auto mb-1" />
+              <p className="text-[13px] font-bold text-foreground/90">¡Récord personal!</p>
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full bg-amber-500/10 text-[10px] font-semibold text-amber-400">
                 {recordLabel}
               </span>
               {recordDetail && (
-                <p className="text-[16px] font-bold text-amber-600 dark:text-amber-400 mt-2">{recordDetail}</p>
+                <p className="text-[14px] font-bold text-amber-400 mt-1">{recordDetail}</p>
               )}
             </div>
             {routeCoords && routeCoords.length >= 2 && (
-              <div className="mt-3 rounded-xl overflow-hidden ring-1 ring-border/10">
-                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#f59e0b'} height={140} />
+              <div className="mt-2 rounded-xl overflow-hidden ring-1 ring-white/[0.06]">
+                <FeedRouteAnimation coordinates={routeCoords} userColor={event.user.color || '#f59e0b'} height={130} />
               </div>
             )}
           </>
@@ -712,28 +781,22 @@ const EventCard = memo(function EventCard({
           if (event.metadata) {
             treasureInfo = JSON.parse(event.metadata as string);
           } else if (event.recordType) {
-            // Legacy: manual collect stored rarity in recordType
             treasureInfo = { rarity: event.recordType };
           }
         } catch {}
-        const powerEmojis: Record<string, string> = {
-          shield: '🛡️', double_area: '⚡', nickname: '🎭', steal_boost: '🏴‍☠️',
-          invisibility: '👻', time_bomb: '💀', magnet: '🧲', reveal: '🔮',
-        };
         const rarityColors: Record<string, string> = {
           common: 'text-gray-400 bg-gray-500/10',
           rare: 'text-blue-400 bg-blue-500/10',
           epic: 'text-purple-400 bg-purple-500/10',
           legendary: 'text-amber-400 bg-amber-500/10',
         };
-        const emoji = powerEmojis[treasureInfo.powerType] || '💎';
         const rarityClass = rarityColors[treasureInfo.rarity] || rarityColors.common;
         return (
-          <div className="mt-1 rounded-xl border border-purple-500/15 bg-purple-500/[0.03] dark:bg-purple-500/[0.06] p-4 text-center">
-            <span className="text-3xl">{emoji}</span>
-            <p className="text-[14px] font-bold text-foreground/90 mt-2">¡Tesoro encontrado!</p>
-            <p className="text-[12px] text-muted-foreground mt-1">{treasureInfo.treasureName || 'Tesoro misterioso'}</p>
-            <span className={`inline-flex items-center gap-1 px-3 py-1 mt-2 rounded-full text-[11px] font-bold uppercase tracking-wider ${rarityClass}`}>
+          <div className="mt-1 rounded-lg border border-purple-500/10 bg-purple-500/[0.03] p-3 text-center">
+            <img src="/emblemas/Emblema_tesoro.png" alt="" className="w-10 h-10 object-contain mx-auto mb-1" />
+            <p className="text-[13px] font-bold text-foreground/90">¡Tesoro encontrado!</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">{treasureInfo.treasureName || 'Tesoro misterioso'}</p>
+            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${rarityClass}`}>
               {treasureInfo.rarity || 'common'}
             </span>
           </div>
@@ -747,63 +810,60 @@ const EventCard = memo(function EventCard({
 
   // ── Main card render ──
   return (
-    <article className="bg-white dark:bg-card rounded-2xl overflow-hidden shadow-[0_1px_4px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_4px_rgba(0,0,0,0.3)] border border-border/20 dark:border-white/[0.06]">
-      {/* Accent bar */}
-      <div className="h-[3px] rounded-t-2xl" style={{ background: `linear-gradient(90deg, ${event.user.color}, ${event.user.color}50)` }} />
-
+    <article className="border-b border-white/[0.04]">
       {/* Header */}
-      <div className="flex items-center gap-3 px-4 pt-3.5 pb-2">
+      <div className="flex items-center gap-2.5 px-3.5 pt-2.5 pb-1.5">
         <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
         <div className="flex-1 min-w-0">
-          <button className="text-[14px] font-bold hover:underline truncate block text-left leading-tight" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>
+          <button className="text-[13px] font-bold hover:underline truncate block text-left leading-tight" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>
             {userName}
           </button>
-          <div className="flex items-center gap-1 text-[11px] text-muted-foreground/70 mt-0.5 leading-tight">
+          <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60 leading-tight">
             <span>{preciseTimeAgo(event.activityDate || event.createdAt)}</span>
             {event.routeName && (
-              <><span className="opacity-50">·</span><span className="truncate">{event.routeName}</span></>
+              <><span className="opacity-40">·</span><span className="truncate">{event.routeName}</span></>
             )}
           </div>
         </div>
-        <div className={`flex items-center justify-center w-8 h-8 rounded-xl ${eventTypeBadge.bg}`}>
+        <div className={`flex items-center justify-center w-7 h-7 rounded-lg ${eventTypeBadge.bg}`}>
           {eventTypeBadge.icon}
         </div>
       </div>
 
       {/* Body */}
-      <div className="px-4 pb-3">
+      <div className="px-3.5 pb-2">
         {renderContent()}
       </div>
 
       {/* Action bar */}
-      <div className="flex items-center px-4 py-2 border-t border-border/15 dark:border-border/8">
-        <div className="flex items-center gap-5">
+      <div className="flex items-center px-3.5 py-1">
+        <div className="flex items-center gap-4">
           <LikeButton count={localLikeCount} active={localUserReaction === 'like'} onClick={() => handlePostReaction('like')} />
           <DislikeButton count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} />
         </div>
         <button
           onClick={() => { const next = !showComments; setShowComments(next); if (next) setTimeout(() => inputRef.current?.focus(), 100); }}
-          className="inline-flex items-center gap-1.5 py-1.5 text-muted-foreground hover:text-foreground transition-colors ml-auto"
+          className="inline-flex items-center gap-1 py-1 text-muted-foreground hover:text-foreground transition-colors ml-auto"
         >
-          <MessageCircle className="w-[17px] h-[17px]" />
-          {event.commentCount > 0 && <span className="text-xs font-medium tabular-nums">{event.commentCount}</span>}
+          <MessageCircle className="w-4 h-4" />
+          {event.commentCount > 0 && <span className="text-[11px] font-medium tabular-nums">{event.commentCount}</span>}
         </button>
       </div>
 
       {/* Comment previews (collapsed) */}
       {!showComments && previewComments && previewComments.length > 0 && (
-        <div className="px-4 pb-3 space-y-1">
+        <div className="px-3.5 pb-2 space-y-0.5">
           {event.commentCount > 2 && (
-            <button onClick={() => setShowComments(true)} className="text-[12px] text-muted-foreground/70 hover:text-foreground font-medium transition-colors">
+            <button onClick={() => setShowComments(true)} className="text-[11px] text-muted-foreground/60 hover:text-foreground font-medium transition-colors">
               Ver los {event.commentCount} comentarios
             </button>
           )}
           {previewComments.slice(0, 2).map(c => (
-            <div key={c.id} className="flex items-baseline gap-1.5 text-[13px] leading-snug">
-              <button className="font-bold flex-shrink-0 hover:underline" style={{ color: (c.user as any).color }} onClick={() => onUserClick(c.userId)}>
+            <div key={c.id} className="text-[12px] leading-snug">
+              <button className="font-bold hover:underline mr-1" style={{ color: (c.user as any).color }} onClick={() => onUserClick(c.userId)}>
                 {(c.user as any).name}
               </button>
-              <span className="text-foreground/75 line-clamp-1">{c.content}</span>
+              <span className="text-foreground/70">{c.content}</span>
             </div>
           ))}
         </div>
@@ -811,9 +871,9 @@ const EventCard = memo(function EventCard({
 
       {/* Expanded comments */}
       {showComments && (
-        <div className="border-t border-border/15 dark:border-border/8">
+        <div>
           {displayedComments && displayedComments.length > 0 && (
-            <div className="px-4 pt-3 pb-1">
+            <div className="px-3.5 pt-1.5 pb-0.5">
               {displayedComments.map(comment => {
                 const cached = applyCommentCache(comment);
                 return (
@@ -828,7 +888,7 @@ const EventCard = memo(function EventCard({
                       renderMentionedText={renderMentionedText}
                     />
                     {comment.replies && comment.replies.length > 0 && (
-                      <div className="ml-8 mt-1 pl-2.5 border-l-2 border-border/20 dark:border-border/10">
+                      <div className="ml-6 mt-0.5 pl-2 border-l border-white/[0.06]">
                         {comment.replies.map(reply => {
                           const cachedReply = applyCommentCache(reply);
                           return (
@@ -854,54 +914,54 @@ const EventCard = memo(function EventCard({
           )}
 
           {loadingComments && (
-            <div className="flex justify-center py-4">
-              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+            <div className="flex justify-center py-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
             </div>
           )}
 
           {/* Comment input */}
-          <div className="px-4 py-3 border-t border-border/10 dark:border-border/5">
+          <div className="px-3.5 py-2">
             {replyTo && (
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-2">
-                <CornerDownRight className="w-3 h-3 flex-shrink-0" />
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground mb-1.5">
+                <CornerDownRight className="w-2.5 h-2.5 flex-shrink-0" />
                 <span>Respondiendo a <span className="font-semibold">{replyTo.name}</span></span>
-                <button onClick={() => setReplyTo(null)} className="ml-1 hover:text-foreground text-[13px] leading-none">✕</button>
+                <button onClick={() => setReplyTo(null)} className="ml-1 hover:text-foreground text-[12px] leading-none">✕</button>
               </div>
             )}
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2">
               <div className="flex-1 relative">
                 <Input
                   ref={inputRef}
-                  placeholder={replyTo ? 'Respuesta...' : 'Añade un comentario...'}
+                  placeholder={replyTo ? 'Respuesta...' : 'Comentar...'}
                   value={commentText}
                   onChange={handleCommentChange}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && commentText.trim() && !showMentions) addCommentMutation.mutate();
                     if (e.key === 'Escape' && showMentions) setShowMentions(false);
                   }}
-                  className="h-9 text-[13px] bg-slate-50 dark:bg-white/[0.04] border-border/20 dark:border-white/[0.06] rounded-full px-4 placeholder:text-muted-foreground/50"
+                  className="h-8 text-[12px] bg-white/[0.03] border-white/[0.06] rounded-full px-3.5 placeholder:text-muted-foreground/40"
                   maxLength={500}
                 />
                 {showMentions && friends && friends.length > 0 && (() => {
                   const filtered = friends.filter(f => f.name.toLowerCase().includes(mentionFilter) || f.username.toLowerCase().includes(mentionFilter)).slice(0, 5);
                   return filtered.length > 0 ? (
-                    <div className="absolute bottom-full left-0 right-0 mb-1.5 bg-white dark:bg-card border border-border/30 rounded-xl shadow-xl max-h-40 overflow-y-auto z-50">
+                    <div className="absolute bottom-full left-0 right-0 mb-1 bg-card border border-white/[0.08] rounded-lg shadow-xl max-h-36 overflow-y-auto z-50">
                       {filtered.map(f => (
-                        <button key={f.id} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-white/5 text-left text-[13px] transition-colors"
+                        <button key={f.id} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 text-left text-[12px] transition-colors"
                           onMouseDown={(e) => { e.preventDefault(); insertMention(f.name); }}>
                           <UserAvatar user={{ name: f.name, color: f.color, avatar: f.avatar }} size="xs" />
                           <span className="font-semibold">{f.name}</span>
-                          <span className="text-muted-foreground/60 text-[11px]">@{f.username}</span>
+                          <span className="text-muted-foreground/50 text-[10px]">@{f.username}</span>
                         </button>
                       ))}
                     </div>
                   ) : null;
                 })()}
               </div>
-              <Button size="sm" className="h-9 w-9 p-0 rounded-full bg-primary/10 hover:bg-primary/20 dark:bg-primary/15 dark:hover:bg-primary/25" variant="ghost"
+              <Button size="sm" className="h-8 w-8 p-0 rounded-full bg-primary/10 hover:bg-primary/20" variant="ghost"
                 disabled={!commentText.trim() || addCommentMutation.isPending}
                 onClick={() => addCommentMutation.mutate()}>
-                {addCommentMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4 text-primary" />}
+                {addCommentMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5 text-primary" />}
               </Button>
             </div>
           </div>
@@ -957,7 +1017,7 @@ export function SocialFeed() {
 
   const mergedEvents = useMemo(() => {
     if (!data?.pages) return [];
-    return mergeEvents(data.pages.flat());
+    return enrichEvents(data.pages.flat());
   }, [data]);
 
   if (!currentUser) return null;
@@ -992,7 +1052,7 @@ export function SocialFeed() {
   }
 
   return (
-    <div className="space-y-3.5 pb-4">
+    <div className="pb-4">
       {mergedEvents.map(event => (
         <EventCard key={event.id} event={event} currentUserId={currentUser.id} onUserClick={handleUserClick} />
       ))}

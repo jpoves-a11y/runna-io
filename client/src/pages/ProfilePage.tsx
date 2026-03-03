@@ -164,6 +164,7 @@ interface PolarActivity {
   summaryPolyline: string | null;
   processed: boolean;
   processedAt: string | null;
+  skipReason: string | null;
 }
 
 function ThemeToggle() {
@@ -548,12 +549,12 @@ export default function ProfilePage() {
         queryKey: [polarActivitiesKey],
       });
       
-      // Filter unprocessed activities (these need preview)
-      const unprocessed = (updatedActivities || []).filter(a => !a.processed && a.summaryPolyline);
+      // Filter unprocessed activities (these need preview) — exclude skipped ones
+      const unprocessed = (updatedActivities || []).filter(a => !a.processed && !a.skipReason && a.summaryPolyline);
       
       if (unprocessed.length === 0) {
-        // Check activities without GPS
-        const noGps = (updatedActivities || []).filter(a => !a.processed && !a.summaryPolyline);
+        // Check activities without GPS (not skipped)
+        const noGps = (updatedActivities || []).filter(a => !a.processed && !a.skipReason && !a.summaryPolyline);
         if (noGps.length > 0) {
           toast({
             title: 'Sin datos GPS',
@@ -1273,20 +1274,21 @@ export default function ProfilePage() {
                   </Badge>
                 </div>
                 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
-                    size="sm"
+                    size="icon"
+                    className="h-8 w-8"
                     onClick={() => addNewActivityMutation.mutate()}
                     disabled={addNewActivityMutation.isPending}
                     data-testid="button-add-new-activity"
+                    title="Añadir nueva actividad"
                   >
                     {addNewActivityMutation.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
-                      <Plus className="h-4 w-4 mr-2" />
+                      <Plus className="h-4 w-4" />
                     )}
-                    Añadir Nueva Actividad
                   </Button>
                   <Button
                     variant="ghost"
@@ -1295,7 +1297,7 @@ export default function ProfilePage() {
                     className="text-destructive"
                     data-testid="button-disconnect-polar"
                   >
-                    <Unlink className="h-4 w-4 mr-2" />
+                    <Unlink className="h-4 w-4 mr-1.5" />
                     Desconectar
                   </Button>
                 </div>
@@ -1327,9 +1329,18 @@ export default function ProfilePage() {
               <div className="flex items-center justify-between gap-2 mb-3">
                 <h3 className="font-semibold">Actividades de Polar</h3>
                 {polarActivities && polarActivities.length > 0 && (
-                  <Badge variant="secondary" className="text-xs">
-                    {polarActivities.filter(a => !a.processed).length} pendientes
-                  </Badge>
+                  <div className="flex items-center gap-1">
+                    {polarActivities.filter(a => !a.processed && !a.skipReason).length > 0 && (
+                      <Badge variant="secondary" className="text-xs">
+                        {polarActivities.filter(a => !a.processed && !a.skipReason).length} pendientes
+                      </Badge>
+                    )}
+                    {polarActivities.filter(a => !!a.skipReason).length > 0 && (
+                      <Badge variant="outline" className="text-xs text-amber-600 border-amber-400">
+                        {polarActivities.filter(a => !!a.skipReason).length} omitidas
+                      </Badge>
+                    )}
+                  </div>
                 )}
               </div>
               
@@ -1340,10 +1351,22 @@ export default function ProfilePage() {
                 </div>
               ) : polarActivities && polarActivities.length > 0 ? (
                 <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {polarActivities.slice(0, 10).map((activity) => (
+                  {polarActivities.slice(0, 10).map((activity) => {
+                    const skipReasonLabels: Record<string, string> = {
+                      before_competition: 'Anterior a competición',
+                      excluded_type: 'Tipo excluido',
+                      distance_too_short: 'Distancia corta',
+                      duration_too_short: 'Duración corta',
+                      no_gps: 'Sin GPS',
+                      bad_date: 'Fecha inválida',
+                    };
+                    const isSkipped = !!activity.skipReason;
+                    const skipLabel = activity.skipReason ? (skipReasonLabels[activity.skipReason] || activity.skipReason) : '';
+                    
+                    return (
                     <div 
                       key={activity.id}
-                      className="flex items-center justify-between p-2 rounded-md bg-muted/50"
+                      className={`flex items-center justify-between p-2 rounded-md ${isSkipped ? 'bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800' : 'bg-muted/50'}`}
                       data-testid={`polar-activity-${activity.id}`}
                     >
                       <div className="flex-1 min-w-0">
@@ -1353,14 +1376,43 @@ export default function ProfilePage() {
                           <span>{(activity.distance / 1000).toFixed(2)} km</span>
                           <span>{safeFormatDate(activity.startDate)}</span>
                         </div>
+                        {isSkipped && (
+                          <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Motivo: {skipLabel}</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge 
-                          variant={activity.processed ? "secondary" : "outline"}
-                          className={activity.processed ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}
-                        >
-                          {activity.processed ? "Procesado" : "Pendiente"}
-                        </Badge>
+                        {isSkipped ? (
+                          <Badge 
+                            variant="outline"
+                            className="bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900 dark:text-amber-300 dark:border-amber-700 cursor-pointer hover:bg-amber-200 dark:hover:bg-amber-800 transition-colors"
+                            onClick={async () => {
+                              try {
+                                await apiRequest('POST', `/api/polar/retry/${activity.id}`);
+                                queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+                                toast({
+                                  title: 'Actividad desbloqueada',
+                                  description: 'Puedes importarla con "Añadir nueva actividad"',
+                                });
+                              } catch (e) {
+                                toast({
+                                  title: 'Error',
+                                  description: 'No se pudo reintentar la actividad',
+                                  variant: 'destructive',
+                                });
+                              }
+                            }}
+                          >
+                            <RefreshCw className="h-3 w-3 mr-1" />
+                            Omitida
+                          </Badge>
+                        ) : (
+                          <Badge 
+                            variant={activity.processed ? "secondary" : "outline"}
+                            className={activity.processed ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}
+                          >
+                            {activity.processed ? "Procesado" : "Pendiente"}
+                          </Badge>
+                        )}
                         <Button
                           variant="ghost"
                           size="icon"
@@ -1380,7 +1432,8 @@ export default function ProfilePage() {
                         </Button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                   {polarActivities.length > 10 && (
                     <p className="text-xs text-muted-foreground text-center py-2">
                       +{polarActivities.length - 10} actividades mas

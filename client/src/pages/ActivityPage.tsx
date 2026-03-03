@@ -148,7 +148,7 @@ export default function ActivityPage() {
 
       {/* Content — CSS display toggle prevents unmount/remount so scroll & cache survive */}
       <div className="px-0">
-        <div className="p-3" style={{ display: activeTab === 'feed' ? 'block' : 'none' }}>
+        <div style={{ display: activeTab === 'feed' ? 'block' : 'none' }}>
           <SocialFeed />
         </div>
         <div style={{ display: activeTab === 'my' ? 'block' : 'none' }}>

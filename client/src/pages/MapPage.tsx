@@ -168,6 +168,18 @@ export default function MapPage() {
   const { isActive: isCompetitionActive } = useCompetition();
   const [showPowerInventory, setShowPowerInventory] = useState(false);
 
+  // Fetch territory fortification data for map overlay
+  const { data: fortificationData } = useQuery({
+    queryKey: ['/api/territories/fortifications'],
+    queryFn: async () => {
+      const res = await fetch('/api/territories/fortifications');
+      if (!res.ok) return { fortifications: [] };
+      return res.json();
+    },
+    refetchInterval: 60000, // Refresh every 60s
+    enabled: isCompetitionActive,
+  });
+
   const createRouteMutation = useMutation({
     mutationFn: async (routeData: {
       coordinates: Array<[number, number]>;
@@ -318,6 +330,7 @@ export default function MapPage() {
         territories={territories} 
         routes={userRoutes}
         treasures={activeTreasures}
+        fortifications={fortificationData?.fortifications ?? []}
         center={userLocation || DEFAULT_CENTER}
         onTerritoryClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }}
         isLoadingTerritories={territoriesLoading}

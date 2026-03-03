@@ -61,14 +61,14 @@ function WeeklySummaryDialogInner() {
   const leaderboard = leaderboardData?.leaderboard || [];
   
   const AWARD_INFO: Record<string, { emoji: string; title: string; stat: string }> = {
-    runner: { emoji: '🏃', title: 'Maratonista', stat: 'Más km recorridos' },
-    conqueror: { emoji: '⚔️', title: 'Conquistador', stat: 'Más territorio robado' },
-    collector: { emoji: '💎', title: 'Cazatesoros', stat: 'Más tesoros recogidos' },
-    social: { emoji: '🤝', title: 'Sociable', stat: 'Corrió con más gente' },
-    consistent: { emoji: '📅', title: 'Constante', stat: 'Más actividades' },
-    defender: { emoji: '🛡️', title: 'Defensor', stat: 'Menos territorio perdido' },
-    strategist: { emoji: '🧠', title: 'Estratega', stat: 'Más poderes usados' },
-    mvp: { emoji: '🏆', title: 'MVP', stat: 'Mejor jugador de la semana' },
+    territory_king: { emoji: '🏆', title: 'Rey del Territorio', stat: 'Más territorio total' },
+    conqueror: { emoji: '🗡️', title: 'El Conquistador', stat: 'Más territorio robado' },
+    marathon: { emoji: '🏃', title: 'Maratonista', stat: 'Más km recorridos' },
+    consistent: { emoji: '📊', title: 'El Constante', stat: 'Más actividades' },
+    treasure_hunter: { emoji: '💎', title: 'Cazatesoros', stat: 'Más tesoros recogidos' },
+    precise: { emoji: '🎯', title: 'El Preciso', stat: 'Más víctimas únicas' },
+    social: { emoji: '🤝', title: 'Alma Social', stat: 'Más carreras juntos' },
+    mvp: { emoji: '⚡', title: 'MVP de la Semana', stat: 'Mejor jugador combinado' },
   };
   
   const pages = [
@@ -107,7 +107,16 @@ function WeeklySummaryDialogInner() {
       <div className="space-y-2 w-full max-w-xs overflow-y-auto max-h-[50vh]">
         {Object.entries(awards).map(([category, award]: [string, any]) => {
           const info = AWARD_INFO[category] || { emoji: '🏅', title: category, stat: '' };
-          if (!award || !award.userName) return null;
+          const userName = award?.user?.name || award?.userName;
+          if (!award || !userName) return null;
+          // Format value with unit
+          let displayValue = '';
+          if (award.value != null) {
+            if (award.unit === 'm²') displayValue = `${(award.value / 1e6).toFixed(2)} km²`;
+            else if (award.unit === 'm² robados') displayValue = `${(award.value / 1e6).toFixed(2)} km²`;
+            else if (award.unit === 'm') displayValue = `${(award.value / 1000).toFixed(1)} km`;
+            else displayValue = `${award.value} ${award.unit || ''}`;
+          }
           return (
             <div key={category} className="flex items-center gap-3 bg-white/5 rounded-xl px-3 py-2.5">
               <span className="text-2xl">{info.emoji}</span>
@@ -116,8 +125,8 @@ function WeeklySummaryDialogInner() {
                 <div className="text-[10px] text-white/40">{info.stat}</div>
               </div>
               <div className="text-right">
-                <div className="text-xs font-bold text-amber-400">{award.userName}</div>
-                <div className="text-[10px] text-white/30">{award.value}</div>
+                <div className="text-xs font-bold text-amber-400">{userName}</div>
+                <div className="text-[10px] text-white/30">{displayValue}</div>
               </div>
             </div>
           );

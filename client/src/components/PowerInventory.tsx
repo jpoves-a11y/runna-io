@@ -2,6 +2,7 @@ import { useState, memo } from 'react';
 import { useUserPowers, useActivatePower, type UserPower } from '@/hooks/use-competition';
 import { useSession } from '@/hooks/use-session';
 import { useQueryClient } from '@tanstack/react-query';
+import { useToast } from '@/hooks/use-toast';
 import { Shield, Zap, Skull, Ghost, Magnet, Eye, Swords, Theater, X, Loader2 } from 'lucide-react';
 
 const POWER_CONFIG: Record<string, { emoji: string; color: string; activeLabel: string }> = {
@@ -32,6 +33,7 @@ function PowerInventoryInner({ open, onClose }: PowerInventoryProps) {
   const { data, isLoading } = useUserPowers(user?.id);
   const activateMutation = useActivatePower();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [activatingId, setActivatingId] = useState<string | null>(null);
   const [nicknameTarget, setNicknameTarget] = useState<string | null>(null);
   
@@ -45,9 +47,9 @@ function PowerInventoryInner({ open, onClose }: PowerInventoryProps) {
   const handleActivate = async (power: UserPower) => {
     if (activatingId) return;
     
-    // Nickname requires a target — for now skip the targeting UI
+    // Nickname requires a target — not available yet
     if (power.powerType === 'nickname') {
-      // TODO: open user selector for nickname target
+      toast({ title: '🎭 Próximamente', description: 'El poder de apodo se activará en futuras actualizaciones.' });
       return;
     }
     

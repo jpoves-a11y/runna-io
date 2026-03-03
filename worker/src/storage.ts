@@ -11,6 +11,8 @@ import {
   stravaActivities,
   polarAccounts,
   polarActivities,
+  corosAccounts,
+  corosActivities,
   conquestMetrics,
   emailNotifications,
   emailPreferences,
@@ -26,6 +28,7 @@ import {
   competitionStats,
   weeklySummaries,
   userNicknames,
+  territoryFortifications,
   type User,
   type InsertUser,
   type Route,
@@ -48,6 +51,10 @@ import {
   type InsertPolarAccount,
   type PolarActivity,
   type InsertPolarActivity,
+  type CorosAccount,
+  type InsertCorosAccount,
+  type CorosActivity,
+  type InsertCorosActivity,
   type ConquestMetric,
   type InsertConquestMetric,
   type EmailNotification,
@@ -621,17 +628,20 @@ export class WorkerStorage {
     userId: string,
     routeId: string,
     newGeometry: any,
-    userTerritories: Territory[]
+    userTerritories: Territory[],
+    fortificationMultiplier: number = 1
   ): Promise<{
     territory: Territory;
     totalArea: number;
     newArea: number;
     existingArea: number;
+    fortificationLayers: number;
   }> {
     // Use helper to handle both Polygon and MultiPolygon
     const newFeature = geometryToFeature(newGeometry);
     let newArea = turf.area(newGeometry);
     let existingAreaInBuffer = 0;
+    const overlapGeometries: any[] = [];
 
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
@@ -646,9 +656,36 @@ export class WorkerStorage {
         
         if (overlap) {
           existingAreaInBuffer += turf.area(overlap);
+          overlapGeometries.push(overlap.geometry);
         }
       } catch (err) {
         console.error('[TERRITORY] Error calculating overlap with existing territory:', err);
+      }
+    }
+
+    // Save fortification records for overlap zones (each record = +0.5 fortification)
+    let fortificationLayers = 0;
+    for (const overlapGeom of overlapGeometries) {
+      try {
+        const overlapArea = turf.area(overlapGeom);
+        if (overlapArea < 10) continue; // Skip tiny overlaps
+        const bbox = turf.bbox(overlapGeom);
+        const recordsToCreate = fortificationMultiplier; // 1 normally, 2 with wall power
+        for (let i = 0; i < recordsToCreate; i++) {
+          await this.createFortificationRecord({
+            userId,
+            routeId,
+            geometry: JSON.stringify(overlapGeom),
+            area: overlapArea,
+            bboxMinLng: bbox[0],
+            bboxMinLat: bbox[1],
+            bboxMaxLng: bbox[2],
+            bboxMaxLat: bbox[3],
+          });
+          fortificationLayers++;
+        }
+      } catch (err) {
+        console.error('[TERRITORY] Error saving fortification record:', err);
       }
     }
 
@@ -709,6 +746,7 @@ export class WorkerStorage {
         totalArea,
         newArea: actualNewArea,
         existingArea: existingAreaInBuffer,
+        fortificationLayers,
       };
     }
 
@@ -736,6 +774,7 @@ export class WorkerStorage {
         totalArea,
         newArea: actualNewArea,
         existingArea: existingAreaInBuffer,
+        fortificationLayers,
       };
     }
 
@@ -762,6 +801,7 @@ export class WorkerStorage {
       totalArea: finalArea,
       newArea: actualNewArea,
       existingArea: existingAreaInBuffer,
+      fortificationLayers,
     };
   }
 
@@ -1062,7 +1102,7 @@ export class WorkerStorage {
     return await this.db
       .select()
       .from(polarActivities)
-      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = 0`)
+      .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = 0 AND ${polarActivities.skipReason} IS NULL`)
       .orderBy(desc(polarActivities.startDate));
   }
 
@@ -1084,13 +1124,14 @@ export class WorkerStorage {
       .orderBy(desc(polarActivities.startDate));
   }
 
-  // Mark activity for retry by resetting processed flag
+  // Mark activity for retry by resetting processed flag and clearing skip reason
   async resetPolarActivityForRetry(id: string): Promise<PolarActivity> {
     const [activity] = await this.db
       .update(polarActivities)
       .set({
         processed: false,
         processedAt: null,
+        skipReason: null,
         routeId: null,
         territoryId: null,
       })
@@ -1392,6 +1433,112 @@ export class WorkerStorage {
       })
       .from(polarActivities)
       .where(eq(polarActivities.userId, userId));
+
+    return {
+      total: Number(aggregate?.total || 0),
+      unprocessed: Number(aggregate?.unprocessed || 0),
+      lastStartDate: aggregate?.lastStartDate || null,
+    };
+  }
+
+  // ==================== COROS ====================
+
+  async getCorosAccountByUserId(userId: string): Promise<CorosAccount | undefined> {
+    const [account] = await this.db.select().from(corosAccounts).where(eq(corosAccounts.userId,userId));
+    return account || undefined;
+  }
+
+  async getCorosAccountByOpenId(openId: string): Promise<CorosAccount | undefined> {
+    const [account] = await this.db.select().from(corosAccounts).where(eq(corosAccounts.corosOpenId, openId));
+    return account || undefined;
+  }
+
+  async createCorosAccount(data: InsertCorosAccount): Promise<CorosAccount> {
+    const [account] = await this.db.insert(corosAccounts).values(data).returning();
+    return account;
+  }
+
+  async updateCorosAccount(userId: string, data: Partial<InsertCorosAccount>): Promise<CorosAccount> {
+    const [account] = await this.db
+      .update(corosAccounts)
+      .set(data)
+      .where(eq(corosAccounts.userId, userId))
+      .returning();
+    return account;
+  }
+
+  async deleteCorosAccount(userId: string): Promise<void> {
+    await this.db.delete(corosAccounts).where(eq(corosAccounts.userId, userId));
+  }
+
+  async getCorosActivityByWorkoutId(workoutId: string): Promise<CorosActivity | undefined> {
+    const [activity] = await this.db.select().from(corosActivities).where(eq(corosActivities.corosWorkoutId, workoutId));
+    return activity || undefined;
+  }
+
+  async createCorosActivity(data: InsertCorosActivity): Promise<CorosActivity> {
+    const [activity] = await this.db.insert(corosActivities).values(data).returning();
+    return activity;
+  }
+
+  async updateCorosActivity(id: string, data: Partial<InsertCorosActivity>): Promise<CorosActivity> {
+    const [activity] = await this.db
+      .update(corosActivities)
+      .set(data)
+      .where(eq(corosActivities.id, id))
+      .returning();
+    return activity;
+  }
+
+  async getUnprocessedCorosActivities(userId: string): Promise<CorosActivity[]> {
+    return await this.db
+      .select()
+      .from(corosActivities)
+      .where(sql`${corosActivities.userId} = ${userId} AND ${corosActivities.processed} = 0 AND ${corosActivities.skipReason} IS NULL`)
+      .orderBy(desc(corosActivities.startDate));
+  }
+
+  async getCorosActivitiesByUserId(userId: string): Promise<CorosActivity[]> {
+    return await this.db
+      .select()
+      .from(corosActivities)
+      .where(eq(corosActivities.userId, userId))
+      .orderBy(desc(corosActivities.startDate));
+  }
+
+  async getCorosActivityById(id: string): Promise<CorosActivity | undefined> {
+    const [activity] = await this.db.select().from(corosActivities).where(eq(corosActivities.id, id));
+    return activity || undefined;
+  }
+
+  async deleteCorosActivity(id: string): Promise<void> {
+    await this.db.delete(corosActivities).where(eq(corosActivities.id, id));
+  }
+
+  async markCorosActivityProcessed(id: string, routeId: string | null, territoryId: string | null, skipReason: string | null): Promise<CorosActivity> {
+    const [activity] = await this.db
+      .update(corosActivities)
+      .set({
+        processed: true,
+        processedAt: new Date().toISOString(),
+        routeId,
+        territoryId,
+        skipReason,
+      })
+      .where(eq(corosActivities.id, id))
+      .returning();
+    return activity;
+  }
+
+  async getCorosActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {
+    const [aggregate] = await this.db
+      .select({
+        total: sql<number>`count(*)`,
+        unprocessed: sql<number>`sum(case when ${corosActivities.processed} = false then 1 else 0 end)` as any,
+        lastStartDate: sql<Date | null>`max(${corosActivities.startDate})`,
+      })
+      .from(corosActivities)
+      .where(eq(corosActivities.userId, userId));
 
     return {
       total: Number(aggregate?.total || 0),
@@ -1833,6 +1980,8 @@ export class WorkerStorage {
       )`);
       // Add metadata column to existing tables that don't have it yet
       try { await this.db.run(sql`ALTER TABLE feed_events ADD COLUMN metadata TEXT`); } catch (_) { /* column already exists */ }
+      // Add skip_reason column to polar_activities
+      try { await this.db.run(sql`ALTER TABLE polar_activities ADD COLUMN skip_reason TEXT`); } catch (_) { /* column already exists */ }
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_comments (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
         feed_event_id TEXT NOT NULL REFERENCES feed_events(id) ON DELETE CASCADE,
@@ -1883,21 +2032,41 @@ export class WorkerStorage {
 
   async getFeedForUser(userId: string, limit: number = 30, offset: number = 0): Promise<FeedEventWithDetails[]> {
     await this.ensureFeedTables();
-    // Get user's friend IDs
-    const friendIds = await this.getFriendIds(userId);
-    // Feed includes own events + friends' events
-    const allUserIds = [userId, ...friendIds];
+    
+    // Check if competition is active — if so, show ALL users' events (global feed)
+    let isCompetitionMode = false;
+    try {
+      const comp = await this.getActiveCompetition();
+      if (comp) {
+        const now = Date.now();
+        const start = new Date(comp.startsAt).getTime();
+        const end = new Date(comp.endsAt).getTime();
+        if (comp.status === 'active' || (now >= start && now <= end)) {
+          isCompetitionMode = true;
+        }
+      }
+    } catch (_) {}
 
-    if (allUserIds.length === 0) return [];
-
-    // Get feed events
-    const events = await this.db
-      .select()
-      .from(feedEvents)
-      .where(inArray(feedEvents.userId, allUserIds))
-      .orderBy(desc(feedEvents.createdAt))
-      .limit(limit)
-      .offset(offset);
+    // Get feed events — global during competition, friends-only otherwise
+    let events;
+    if (isCompetitionMode) {
+      events = await this.db
+        .select()
+        .from(feedEvents)
+        .orderBy(desc(feedEvents.createdAt))
+        .limit(limit)
+        .offset(offset);
+    } else {
+      const friendIds = await this.getFriendIds(userId);
+      const allUserIds = [userId, ...friendIds];
+      events = await this.db
+        .select()
+        .from(feedEvents)
+        .where(inArray(feedEvents.userId, allUserIds))
+        .orderBy(desc(feedEvents.createdAt))
+        .limit(limit)
+        .offset(offset);
+    }
 
     if (events.length === 0) return [];
 
@@ -2433,6 +2602,20 @@ export class WorkerStorage {
         expires_at TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
+      await this.db.run(sql`CREATE TABLE IF NOT EXISTS territory_fortifications (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        route_id TEXT REFERENCES routes(id) ON DELETE CASCADE,
+        geometry TEXT NOT NULL,
+        area REAL NOT NULL DEFAULT 0,
+        bbox_min_lng REAL,
+        bbox_min_lat REAL,
+        bbox_max_lng REAL,
+        bbox_max_lat REAL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+      await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_user ON territory_fortifications(user_id)`);
+      await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_bbox ON territory_fortifications(bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat)`);
     } catch (_) {}
   }
 
@@ -2648,6 +2831,23 @@ export class WorkerStorage {
     return result.length > 0;
   }
 
+  /** Generic check for any active power type */
+  async hasActivePowerOfType(userId: string, competitionId: string, powerType: string): Promise<boolean> {
+    const now = new Date().toISOString();
+    const result = await this.db
+      .select()
+      .from(userPowers)
+      .where(and(
+        eq(userPowers.userId, userId),
+        eq(userPowers.competitionId, competitionId),
+        eq(userPowers.powerType, powerType),
+        eq(userPowers.status, 'active'),
+        sql`(${userPowers.expiresAt} IS NULL OR ${userPowers.expiresAt} > ${now})`
+      ))
+      .limit(1);
+    return result.length > 0;
+  }
+
   // --- Competition Stats ---
 
   async getOrCreateCompetitionStats(competitionId: string, userId: string): Promise<CompetitionStat> {
@@ -2716,14 +2916,35 @@ export class WorkerStorage {
     await this.ensureCompetitionTables();
     await this.getOrCreateCompetitionStats(competitionId, userId);
     const now = new Date().toISOString();
-    const setClauses: string[] = [`updated_at = '${now}'`];
-    if (increments.distance) setClauses.push(`total_distance = total_distance + ${increments.distance}`);
-    if (increments.duration) setClauses.push(`total_duration = total_duration + ${increments.duration}`);
-    if (increments.activities) setClauses.push(`activities_count = activities_count + ${increments.activities}`);
-    if (increments.treasures) setClauses.push(`treasures_collected = treasures_collected + ${increments.treasures}`);
-    if (increments.areaStolen) setClauses.push(`area_stolen = area_stolen + ${increments.areaStolen}`);
-    if (increments.ranTogether) setClauses.push(`ran_together_count = ran_together_count + ${increments.ranTogether}`);
-    await this.db.run(sql.raw(`UPDATE competition_stats SET ${setClauses.join(', ')} WHERE competition_id = '${competitionId}' AND user_id = '${userId}'`));
+    // Build SET clause safely using Drizzle's sql template
+    const updates: Record<string, any> = { updatedAt: now };
+    if (increments.distance != null && increments.distance > 0) {
+      await this.db.run(sql`UPDATE competition_stats SET total_distance = total_distance + ${increments.distance}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    }
+    if (increments.duration != null && increments.duration > 0) {
+      await this.db.run(sql`UPDATE competition_stats SET total_duration = total_duration + ${increments.duration}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    }
+    if (increments.activities != null && increments.activities > 0) {
+      await this.db.run(sql`UPDATE competition_stats SET activities_count = activities_count + ${increments.activities}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    }
+    if (increments.treasures != null && increments.treasures > 0) {
+      await this.db.run(sql`UPDATE competition_stats SET treasures_collected = treasures_collected + ${increments.treasures}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    }
+    if (increments.areaStolen != null && increments.areaStolen > 0) {
+      await this.db.run(sql`UPDATE competition_stats SET area_stolen = area_stolen + ${increments.areaStolen}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    }
+    if (increments.ranTogether != null && increments.ranTogether > 0) {
+      await this.db.run(sql`UPDATE competition_stats SET ran_together_count = ran_together_count + ${increments.ranTogether}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    }
+  }
+
+  /** Count distinct victims (defenders) this user has conquered, from conquest_metrics */
+  async getDistinctVictimsCount(attackerId: string): Promise<number> {
+    const result = await this.db
+      .select({ count: sql<number>`COUNT(DISTINCT ${conquestMetrics.defenderId})` })
+      .from(conquestMetrics)
+      .where(eq(conquestMetrics.attackerId, attackerId));
+    return result[0]?.count || 0;
   }
 
   async getCompetitionLeaderboard(competitionId: string): Promise<(CompetitionStat & { user: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> })[]> {
@@ -2791,6 +3012,77 @@ export class WorkerStorage {
     return nn;
   }
 
+  // --- Territory Fortifications ---
+
+  async createFortificationRecord(data: {
+    userId: string;
+    routeId: string;
+    geometry: string;
+    area: number;
+    bboxMinLng: number;
+    bboxMinLat: number;
+    bboxMaxLng: number;
+    bboxMaxLat: number;
+  }): Promise<void> {
+    await this.ensureCompetitionTables();
+    await this.db.run(sql`INSERT INTO territory_fortifications (id, user_id, route_id, geometry, area, bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat)
+      VALUES (lower(hex(randomblob(16))), ${data.userId}, ${data.routeId}, ${data.geometry}, ${data.area}, ${data.bboxMinLng}, ${data.bboxMinLat}, ${data.bboxMaxLng}, ${data.bboxMaxLat})`);
+  }
+
+  async getFortificationsInBbox(userId: string, minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Array<{ id: string; geometry: string; area: number }>> {
+    await this.ensureCompetitionTables();
+    const results = await this.db
+      .select({
+        id: territoryFortifications.id,
+        geometry: territoryFortifications.geometry,
+        area: territoryFortifications.area,
+      })
+      .from(territoryFortifications)
+      .where(and(
+        eq(territoryFortifications.userId, userId),
+        sql`${territoryFortifications.bboxMaxLng} >= ${minLng}`,
+        sql`${territoryFortifications.bboxMinLng} <= ${maxLng}`,
+        sql`${territoryFortifications.bboxMaxLat} >= ${minLat}`,
+        sql`${territoryFortifications.bboxMinLat} <= ${maxLat}`
+      ));
+    return results;
+  }
+
+  async getFortificationsByUserId(userId: string): Promise<Array<{ id: string; geometry: string; area: number; routeId: string | null }>> {
+    await this.ensureCompetitionTables();
+    return await this.db
+      .select({
+        id: territoryFortifications.id,
+        geometry: territoryFortifications.geometry,
+        area: territoryFortifications.area,
+        routeId: territoryFortifications.routeId,
+      })
+      .from(territoryFortifications)
+      .where(eq(territoryFortifications.userId, userId));
+  }
+
+  async getAllFortifications(): Promise<Array<{ id: string; userId: string; geometry: string; area: number }>> {
+    await this.ensureCompetitionTables();
+    return await this.db
+      .select({
+        id: territoryFortifications.id,
+        userId: territoryFortifications.userId,
+        geometry: territoryFortifications.geometry,
+        area: territoryFortifications.area,
+      })
+      .from(territoryFortifications);
+  }
+
+  async deleteFortificationsByRouteId(routeId: string): Promise<void> {
+    await this.ensureCompetitionTables();
+    await this.db.run(sql`DELETE FROM territory_fortifications WHERE route_id = ${routeId}`);
+  }
+
+  async deleteFortificationRecord(id: string): Promise<void> {
+    await this.ensureCompetitionTables();
+    await this.db.run(sql`DELETE FROM territory_fortifications WHERE id = ${id}`);
+  }
+
   // --- DB Reset for competition ---
 
   async resetForCompetition(): Promise<{ deletedRoutes: number; deletedTerritories: number }> {
@@ -2803,6 +3095,13 @@ export class WorkerStorage {
     await this.db.run(sql`DELETE FROM email_notifications`);
     await this.db.run(sql`DELETE FROM inactivity_reminders`);
     try { await this.db.run(sql`DELETE FROM territory_loss_notifications`); } catch (_) {}
+    // Clean competition-specific tables
+    try { await this.db.run(sql`DELETE FROM user_nicknames`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM user_powers`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM treasures`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM competition_stats`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM weekly_summaries`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM territory_fortifications`); } catch (_) {}
     // Count before delete
     const routeCount = await this.db.select({ count: sql<number>`count(*)` }).from(routes);
     const terrCount = await this.db.select({ count: sql<number>`count(*)` }).from(territories);
