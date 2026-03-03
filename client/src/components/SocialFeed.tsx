@@ -150,8 +150,8 @@ const LikeButton = memo(function LikeButton({
       className={`inline-flex items-center gap-1 py-1 transition-all duration-150 active:scale-90
         ${active ? 'text-red-500' : 'text-muted-foreground hover:text-red-400'}`}
     >
-      <Heart className={`w-4 h-4 transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
-      {count > 0 && <span className="text-[11px] font-medium tabular-nums">{count}</span>}
+      <Heart className={`w-[22px] h-[22px] transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
+      {count > 0 && <span className="text-[12px] font-medium tabular-nums">{count}</span>}
     </button>
   );
 });
@@ -167,8 +167,8 @@ const DislikeButton = memo(function DislikeButton({
       className={`inline-flex items-center gap-1 py-1 transition-all duration-150 active:scale-90
         ${active ? 'text-orange-500' : 'text-muted-foreground hover:text-orange-400'}`}
     >
-      <ThumbsDown className={`w-3.5 h-3.5 transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
-      {count > 0 && <span className="text-[11px] font-medium tabular-nums">{count}</span>}
+      <ThumbsDown className={`w-[22px] h-[22px] transition-transform duration-200 ${active ? 'fill-current scale-110' : 'scale-100'}`} />
+      {count > 0 && <span className="text-[12px] font-medium tabular-nums">{count}</span>}
     </button>
   );
 });
@@ -265,6 +265,7 @@ const EventCard = memo(function EventCard({
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
+  const [expandedEmblems, setExpandedEmblems] = useState<Set<string>>(new Set());
   const { toast } = useToast();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -450,6 +451,14 @@ const EventCard = memo(function EventCard({
     setTimeout(() => inputRef.current?.focus(), 50);
   }, [commentText, mentionCursorPos]);
 
+  const toggleEmblem = useCallback((key: string) => {
+    setExpandedEmblems(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
   const handleCommentChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     const cursorPos = e.target.selectionStart || value.length;
@@ -567,48 +576,58 @@ const EventCard = memo(function EventCard({
 
             {/* Victims section */}
             {victims.length > 0 && (
-              <div className="mt-2 rounded-lg border border-red-500/10 bg-red-500/[0.03] overflow-hidden">
-                <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-1">
-                  <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />
-                  <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Territorio robado</span>
-                </div>
-                <div className="px-2.5 pb-2 space-y-0.5">
-                  {victims.map(v => (
-                    <div key={v.id} className="flex items-center gap-1.5 py-0.5">
-                      <UserAvatar user={{ name: v.name, color: v.color, avatar: v.avatar }} size="xs" onClick={() => onUserClick(v.id)} />
-                      <button className="text-[11px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
-                        {v.id === currentUserId ? 'Ti' : v.name}
-                      </button>
-                      <span className="text-[10px] font-bold text-red-500/80 tabular-nums">{formatArea(v.areaStolen)}</span>
+              <div className="mt-3 flex flex-col items-center">
+                <button onClick={() => toggleEmblem('victims')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                  <img src="/emblemas/Emblema_robo.png" alt="Territorio robado" className="w-20 h-20 object-contain drop-shadow-lg" />
+                </button>
+                {expandedEmblems.has('victims') && (
+                  <div className="mt-2 w-full rounded-lg border border-red-500/10 bg-red-500/[0.03] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="px-2.5 pt-2 pb-1">
+                      <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Territorio robado</span>
                     </div>
-                  ))}
-                </div>
+                    <div className="px-2.5 pb-2 space-y-0.5">
+                      {victims.map(v => (
+                        <div key={v.id} className="flex items-center gap-1.5 py-0.5">
+                          <UserAvatar user={{ name: v.name, color: v.color, avatar: v.avatar }} size="xs" onClick={() => onUserClick(v.id)} />
+                          <button className="text-[11px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
+                            {v.id === currentUserId ? 'Ti' : v.name}
+                          </button>
+                          <span className="text-[10px] font-bold text-red-500/80 tabular-nums">{formatArea(v.areaStolen)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Ran together badge (from metadata) */}
             {meta?.ranTogetherWith && meta.ranTogetherWith.length > 0 && (
-              <div className="mt-2 rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5">
-                <div className="flex items-center gap-1.5">
-                  <img src="/emblemas/Emblema_amigos.png" alt="" className="w-5 h-5 object-contain" />
-                  <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
-                </div>
-                <p className="text-[12px] text-foreground/75 leading-snug mt-1">
-                  {meta.ranTogetherWith.map((u, i) => (
-                    <span key={u.id}>
-                      {i > 0 && (i === meta.ranTogetherWith!.length - 1 ? ' y ' : ', ')}
-                      <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
-                        {u.id === currentUserId ? 'Ti' : u.name}
-                      </button>
-                    </span>
-                  ))}
-                </p>
+              <div className="mt-3 flex flex-col items-center">
+                <button onClick={() => toggleEmblem('ranTogether')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                  <img src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" className="w-20 h-20 object-contain drop-shadow-lg" />
+                </button>
+                {expandedEmblems.has('ranTogether') && (
+                  <div className="mt-2 w-full rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
+                    <p className="text-[12px] text-foreground/75 leading-snug mt-1">
+                      {meta.ranTogetherWith.map((u, i) => (
+                        <span key={u.id}>
+                          {i > 0 && (i === meta.ranTogetherWith!.length - 1 ? ' y ' : ', ')}
+                          <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
+                            {u.id === currentUserId ? 'Ti' : u.name}
+                          </button>
+                        </span>
+                      ))}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Personal records badges (from metadata) */}
             {meta?.records && meta.records.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="mt-3 flex flex-wrap gap-4 justify-center">
                 {meta.records.map((rec, i) => {
                   const emblemMap: Record<string, string> = {
                     longest_run: '/emblemas/Emblema_distancia.png',
@@ -627,11 +646,18 @@ const EventCard = memo(function EventCard({
                   } else if (rec.type === 'biggest_conquest') {
                     detail = formatArea(rec.value);
                   }
+                  const key = `record-${i}`;
                   return (
-                    <div key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 text-[10px] font-semibold text-amber-500 border border-amber-500/10">
-                      <img src={emblemMap[rec.type] || '/emblemas/Emblema_distancia.png'} alt="" className="w-4 h-4 object-contain" />
-                      <span>{label}</span>
-                      {detail && <span className="font-bold">{detail}</span>}
+                    <div key={i} className="flex flex-col items-center">
+                      <button onClick={() => toggleEmblem(key)} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                        <img src={emblemMap[rec.type] || '/emblemas/Emblema_distancia.png'} alt={label} className="w-20 h-20 object-contain drop-shadow-lg" />
+                      </button>
+                      {expandedEmblems.has(key) && (
+                        <div className="mt-1.5 text-center animate-in fade-in slide-in-from-top-2 duration-200">
+                          <span className="text-[10px] font-bold text-amber-500 uppercase tracking-wider">{label}</span>
+                          {detail && <p className="text-[13px] font-bold text-amber-400">{detail}</p>}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -640,18 +666,28 @@ const EventCard = memo(function EventCard({
 
             {/* Treasures found badges (from metadata) */}
             {meta?.treasures && meta.treasures.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="mt-3 flex flex-wrap gap-4 justify-center">
                 {meta.treasures.map((t, i) => {
                   const rarityColors: Record<string, string> = {
-                    common: 'text-gray-400 bg-gray-500/10 border-gray-500/10',
-                    rare: 'text-blue-400 bg-blue-500/10 border-blue-500/10',
-                    epic: 'text-purple-400 bg-purple-500/10 border-purple-500/10',
-                    legendary: 'text-amber-400 bg-amber-500/10 border-amber-500/10',
+                    common: 'text-gray-400',
+                    rare: 'text-blue-400',
+                    epic: 'text-purple-400',
+                    legendary: 'text-amber-400',
                   };
+                  const key = `treasure-${i}`;
                   return (
-                    <div key={i} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border ${rarityColors[t.rarity] || rarityColors.common}`}>
-                      <img src="/emblemas/Emblema_tesoro.png" alt="" className="w-4 h-4 object-contain" />
-                      <span>{t.treasureName || 'Tesoro'}</span>
+                    <div key={i} className="flex flex-col items-center">
+                      <button onClick={() => toggleEmblem(key)} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                        <img src="/emblemas/Emblema_tesoro.png" alt="Tesoro" className="w-20 h-20 object-contain drop-shadow-lg" />
+                      </button>
+                      {expandedEmblems.has(key) && (
+                        <div className="mt-1.5 text-center animate-in fade-in slide-in-from-top-2 duration-200">
+                          <p className="text-[11px] font-semibold text-foreground/80">{t.treasureName || 'Tesoro'}</p>
+                          <span className={`text-[10px] font-bold uppercase tracking-wider ${rarityColors[t.rarity] || rarityColors.common}`}>
+                            {t.rarity}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -673,21 +709,25 @@ const EventCard = memo(function EventCard({
       case 'territory_stolen':
         return (
           <>
-            <div className="mt-1 rounded-lg border border-red-500/10 bg-red-500/[0.03] p-2.5">
-              <div className="flex items-center gap-1.5 mb-1">
-                <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />
-                <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Robo</span>
-              </div>
-              <p className="text-[12px] text-foreground/75 leading-snug">
-                Ha robado territorio a{' '}
-                <button className="font-semibold hover:underline" style={{ color: event.victim?.color }} onClick={() => event.victim && onUserClick(event.victim.id)}>
-                  {event.victim?.id === currentUserId ? 'ti' : event.victim?.name || 'alguien'}
-                </button>
-              </p>
-              {event.areaStolen && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-red-500/10 text-[10px] font-semibold text-red-400">
-                  <Swords className="w-3 h-3" />{formatArea(event.areaStolen)}
-                </span>
+            <div className="mt-2 flex flex-col items-center">
+              <button onClick={() => toggleEmblem('ev-stolen')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                <img src="/emblemas/Emblema_robo.png" alt="Robo de territorio" className="w-24 h-24 object-contain drop-shadow-lg" />
+              </button>
+              {expandedEmblems.has('ev-stolen') && (
+                <div className="mt-2 w-full rounded-lg border border-red-500/10 bg-red-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Robo</span>
+                  <p className="text-[12px] text-foreground/75 leading-snug mt-0.5">
+                    Ha robado territorio a{' '}
+                    <button className="font-semibold hover:underline" style={{ color: event.victim?.color }} onClick={() => event.victim && onUserClick(event.victim.id)}>
+                      {event.victim?.id === currentUserId ? 'ti' : event.victim?.name || 'alguien'}
+                    </button>
+                  </p>
+                  {event.areaStolen && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-red-500/10 text-[10px] font-semibold text-red-400">
+                      <Swords className="w-3 h-3" />{formatArea(event.areaStolen)}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
             {routeCoords && routeCoords.length >= 2 && (
@@ -703,25 +743,29 @@ const EventCard = memo(function EventCard({
         try { ranWith = event.ranTogetherWith ? JSON.parse(event.ranTogetherWith) : []; } catch { }
         return (
           <>
-            <div className="mt-1 rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5">
-              <div className="flex items-center gap-1.5 mb-1">
-                <img src="/emblemas/Emblema_amigos.png" alt="" className="w-5 h-5 object-contain" />
-                <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
-              </div>
-              <p className="text-[12px] text-foreground/75 leading-snug">
-                {ranWith.map((u, i) => (
-                  <span key={u.id}>
-                    {i > 0 && (i === ranWith.length - 1 ? ' y ' : ', ')}
-                    <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
-                      {u.id === currentUserId ? 'Ti' : u.name}
-                    </button>
-                  </span>
-                ))}
-              </p>
-              {event.distance && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-blue-500/10 text-[10px] font-semibold text-blue-400">
-                  <MapPin className="w-3 h-3" />{formatDistance(event.distance)}
-                </span>
+            <div className="mt-2 flex flex-col items-center">
+              <button onClick={() => toggleEmblem('ev-ran')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                <img src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" className="w-24 h-24 object-contain drop-shadow-lg" />
+              </button>
+              {expandedEmblems.has('ev-ran') && (
+                <div className="mt-2 w-full rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                  <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
+                  <p className="text-[12px] text-foreground/75 leading-snug mt-0.5">
+                    {ranWith.map((u, i) => (
+                      <span key={u.id}>
+                        {i > 0 && (i === ranWith.length - 1 ? ' y ' : ', ')}
+                        <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
+                          {u.id === currentUserId ? 'Ti' : u.name}
+                        </button>
+                      </span>
+                    ))}
+                  </p>
+                  {event.distance && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 mt-1.5 rounded-full bg-blue-500/10 text-[10px] font-semibold text-blue-400">
+                      <MapPin className="w-3 h-3" />{formatDistance(event.distance)}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
             {routeCoords && routeCoords.length >= 2 && (
@@ -756,14 +800,20 @@ const EventCard = memo(function EventCard({
         }
         return (
           <>
-            <div className="mt-1 rounded-lg border border-amber-500/10 bg-amber-500/[0.03] p-3 text-center">
-              <img src={emblemMap[event.recordType || ''] || '/emblemas/Emblema_distancia.png'} alt="" className="w-10 h-10 object-contain mx-auto mb-1" />
-              <p className="text-[13px] font-bold text-foreground/90">¡Récord personal!</p>
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full bg-amber-500/10 text-[10px] font-semibold text-amber-400">
-                {recordLabel}
-              </span>
-              {recordDetail && (
-                <p className="text-[14px] font-bold text-amber-400 mt-1">{recordDetail}</p>
+            <div className="mt-2 flex flex-col items-center">
+              <button onClick={() => toggleEmblem('ev-record')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+                <img src={emblemMap[event.recordType || ''] || '/emblemas/Emblema_distancia.png'} alt="Récord" className="w-24 h-24 object-contain drop-shadow-lg" />
+              </button>
+              {expandedEmblems.has('ev-record') && (
+                <div className="mt-2 text-center animate-in fade-in slide-in-from-top-2 duration-200">
+                  <p className="text-[13px] font-bold text-foreground/90">¡Récord personal!</p>
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full bg-amber-500/10 text-[10px] font-semibold text-amber-400">
+                    {recordLabel}
+                  </span>
+                  {recordDetail && (
+                    <p className="text-[14px] font-bold text-amber-400 mt-1">{recordDetail}</p>
+                  )}
+                </div>
               )}
             </div>
             {routeCoords && routeCoords.length >= 2 && (
@@ -792,13 +842,19 @@ const EventCard = memo(function EventCard({
         };
         const rarityClass = rarityColors[treasureInfo.rarity] || rarityColors.common;
         return (
-          <div className="mt-1 rounded-lg border border-purple-500/10 bg-purple-500/[0.03] p-3 text-center">
-            <img src="/emblemas/Emblema_tesoro.png" alt="" className="w-10 h-10 object-contain mx-auto mb-1" />
-            <p className="text-[13px] font-bold text-foreground/90">¡Tesoro encontrado!</p>
-            <p className="text-[11px] text-muted-foreground mt-0.5">{treasureInfo.treasureName || 'Tesoro misterioso'}</p>
-            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${rarityClass}`}>
-              {treasureInfo.rarity || 'common'}
-            </span>
+          <div className="mt-2 flex flex-col items-center">
+            <button onClick={() => toggleEmblem('ev-treasure')} className="focus:outline-none transition-transform duration-200 hover:scale-105 active:scale-95">
+              <img src="/emblemas/Emblema_tesoro.png" alt="Tesoro" className="w-24 h-24 object-contain drop-shadow-lg" />
+            </button>
+            {expandedEmblems.has('ev-treasure') && (
+              <div className="mt-2 text-center animate-in fade-in slide-in-from-top-2 duration-200">
+                <p className="text-[13px] font-bold text-foreground/90">¡Tesoro encontrado!</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">{treasureInfo.treasureName || 'Tesoro misterioso'}</p>
+                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${rarityClass}`}>
+                  {treasureInfo.rarity || 'common'}
+                </span>
+              </div>
+            )}
           </div>
         );
       }
@@ -836,8 +892,8 @@ const EventCard = memo(function EventCard({
       </div>
 
       {/* Action bar */}
-      <div className="flex items-center px-3.5 py-1">
-        <div className="flex items-center gap-4">
+      <div className="flex items-center px-3.5 py-1.5">
+        <div className="flex items-center gap-5">
           <LikeButton count={localLikeCount} active={localUserReaction === 'like'} onClick={() => handlePostReaction('like')} />
           <DislikeButton count={localDislikeCount} active={localUserReaction === 'dislike'} onClick={() => handlePostReaction('dislike')} />
         </div>
@@ -845,8 +901,8 @@ const EventCard = memo(function EventCard({
           onClick={() => { const next = !showComments; setShowComments(next); if (next) setTimeout(() => inputRef.current?.focus(), 100); }}
           className="inline-flex items-center gap-1 py-1 text-muted-foreground hover:text-foreground transition-colors ml-auto"
         >
-          <MessageCircle className="w-4 h-4" />
-          {event.commentCount > 0 && <span className="text-[11px] font-medium tabular-nums">{event.commentCount}</span>}
+          <MessageCircle className="w-[22px] h-[22px]" />
+          {event.commentCount > 0 && <span className="text-[12px] font-medium tabular-nums">{event.commentCount}</span>}
         </button>
       </div>
 
