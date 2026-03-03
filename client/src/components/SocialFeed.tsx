@@ -173,52 +173,101 @@ const DislikeButton = memo(function DislikeButton({
   );
 });
 
-// ─── Emblem Showcase (shelf with glow + rays) ───────────────────────────────
+// ─── Emblem Showcase (premium glass shelf with glow + rays + sparkles) ──────
 
 const EmblemShowcase = memo(function EmblemShowcase({
   src, alt, size = 'lg', accentColor = '#f59e0b', onClick,
 }: { src: string; alt: string; size?: 'md' | 'lg'; accentColor?: string; onClick?: () => void }) {
   const dim = size === 'lg' ? 'w-24 h-24' : 'w-20 h-20';
-  const rays = [0, 45, 90, 135, 180, 225, 270, 315];
+  const shelfW = size === 'lg' ? 'w-32' : 'w-28';
+  const rays = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
   return (
-    <button onClick={onClick} className="relative focus:outline-none group py-2">
-      {/* Radial glow */}
+    <button onClick={onClick} className="relative focus:outline-none group flex flex-col items-center pt-4 pb-1">
+      {/* Outer glow pulse */}
       <div
-        className="absolute inset-[-12px] rounded-full blur-2xl opacity-25 group-hover:opacity-45 transition-opacity duration-500"
-        style={{ background: `radial-gradient(circle, ${accentColor}50 0%, ${accentColor}15 40%, transparent 70%)` }}
+        className="absolute top-2 left-1/2 -translate-x-1/2 w-28 h-28 rounded-full blur-3xl opacity-20 group-hover:opacity-50 transition-all duration-700 animate-pulse"
+        style={{ background: `radial-gradient(circle, ${accentColor} 0%, transparent 70%)` }}
       />
       {/* Rays emanating from center */}
-      <div className="absolute inset-[-16px] opacity-[0.15] group-hover:opacity-[0.35] transition-opacity duration-500 pointer-events-none">
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 w-28 h-28 opacity-[0.08] group-hover:opacity-[0.25] transition-opacity duration-500 pointer-events-none">
         {rays.map(deg => (
           <div
             key={deg}
-            className="absolute top-1/2 left-1/2 w-[1.5px] origin-bottom"
+            className="absolute top-1/2 left-1/2 w-[1px] origin-bottom"
             style={{
-              height: '45%',
+              height: '55%',
               transform: `translate(-50%, -100%) rotate(${deg}deg)`,
-              background: `linear-gradient(to top, ${accentColor}90, transparent)`,
-              borderRadius: '1px',
+              background: `linear-gradient(to top, ${accentColor}, transparent 80%)`,
             }}
           />
         ))}
       </div>
-      {/* Subtle ring */}
+      {/* Inner ring glow */}
       <div
-        className="absolute inset-[-4px] rounded-full opacity-10 group-hover:opacity-20 transition-opacity duration-300"
-        style={{ border: `1px solid ${accentColor}` }}
+        className="absolute top-2 left-1/2 -translate-x-1/2 w-[90px] h-[90px] rounded-full opacity-0 group-hover:opacity-30 transition-opacity duration-500"
+        style={{ boxShadow: `0 0 20px 4px ${accentColor}60, inset 0 0 15px 2px ${accentColor}30` }}
       />
       {/* Emblem image */}
       <img
         src={src}
         alt={alt}
-        className={`${dim} object-contain relative z-10 drop-shadow-[0_0_12px_${accentColor}40] transition-transform duration-200 group-hover:scale-110 group-active:scale-95`}
+        className={`${dim} object-contain relative z-10 transition-all duration-300 group-hover:scale-110 group-hover:drop-shadow-[0_0_20px_${accentColor}80] group-active:scale-95`}
+        style={{ filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.4))' }}
       />
-      {/* Shelf line */}
-      <div
-        className="absolute -bottom-0 left-1/2 -translate-x-1/2 w-[65%] h-[2px] rounded-full opacity-30 group-hover:opacity-60 transition-opacity duration-300"
-        style={{ background: `linear-gradient(90deg, transparent, ${accentColor}, transparent)` }}
-      />
+      {/* Glass shelf / pedestal */}
+      <div className={`relative ${shelfW} mt-1`}>
+        {/* Shelf surface */}
+        <div
+          className="h-[6px] rounded-full opacity-60 group-hover:opacity-90 transition-opacity duration-300"
+          style={{
+            background: `linear-gradient(180deg, ${accentColor}40 0%, ${accentColor}15 50%, transparent 100%)`,
+            boxShadow: `0 2px 8px ${accentColor}30`,
+          }}
+        />
+        {/* Reflection line */}
+        <div
+          className="absolute top-[2px] left-[10%] right-[10%] h-[1px] rounded-full opacity-40"
+          style={{ background: `linear-gradient(90deg, transparent, ${accentColor}90, transparent)` }}
+        />
+        {/* Shelf glow underneath */}
+        <div
+          className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-[80%] h-[4px] rounded-full blur-sm opacity-30 group-hover:opacity-60 transition-opacity"
+          style={{ background: accentColor }}
+        />
+      </div>
+      {/* Floating sparkles */}
+      <div className="absolute top-0 left-0 right-0 bottom-0 pointer-events-none overflow-hidden">
+        <div
+          className="absolute w-1 h-1 rounded-full opacity-0 group-hover:opacity-80 transition-opacity duration-500"
+          style={{ background: accentColor, top: '15%', left: '20%', boxShadow: `0 0 4px ${accentColor}` }}
+        />
+        <div
+          className="absolute w-0.5 h-0.5 rounded-full opacity-0 group-hover:opacity-60 transition-opacity duration-700"
+          style={{ background: accentColor, top: '25%', right: '25%', boxShadow: `0 0 3px ${accentColor}` }}
+        />
+        <div
+          className="absolute w-1 h-1 rounded-full opacity-0 group-hover:opacity-70 transition-opacity duration-600"
+          style={{ background: accentColor, bottom: '35%', left: '15%', boxShadow: `0 0 4px ${accentColor}` }}
+        />
+      </div>
     </button>
+  );
+});
+
+// ─── Emblems Section Title ──────────────────────────────────────────────────
+
+const EmblemsSection = memo(function EmblemsSection({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mt-4 pt-3 border-t border-white/[0.04]">
+      <div className="flex items-center justify-center gap-3 mb-2">
+        <div className="h-[1px] flex-1 max-w-[40px] bg-gradient-to-r from-transparent to-amber-500/30" />
+        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-amber-500/70">✦ Emblemas ✦</span>
+        <div className="h-[1px] flex-1 max-w-[40px] bg-gradient-to-l from-transparent to-amber-500/30" />
+      </div>
+      <div className="flex flex-wrap gap-4 justify-center items-start">
+        {children}
+      </div>
+    </div>
   );
 });
 
@@ -623,57 +672,58 @@ const EventCard = memo(function EventCard({
               </div>
             )}
 
-            {/* Victims section */}
-            {victims.length > 0 && (
-              <div className="mt-3 flex flex-col items-center">
-                <EmblemShowcase src="/emblemas/Emblema_robo.png" alt="Territorio robado" size="md" accentColor="#ef4444" onClick={() => toggleEmblem('victims')} />
-                {expandedEmblems.has('victims') && (
-                  <div className="mt-2 w-full rounded-lg border border-red-500/10 bg-red-500/[0.03] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
-                    <div className="px-2.5 pt-2 pb-1">
-                      <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Territorio robado</span>
-                    </div>
-                    <div className="px-2.5 pb-2 space-y-0.5">
-                      {victims.map(v => (
-                        <div key={v.id} className="flex items-center gap-1.5 py-0.5">
-                          <UserAvatar user={{ name: v.name, color: v.color, avatar: v.avatar }} size="xs" onClick={() => onUserClick(v.id)} />
-                          <button className="text-[11px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
-                            {v.id === currentUserId ? 'Ti' : v.name}
-                          </button>
-                          <span className="text-[10px] font-bold text-red-500/80 tabular-nums">{formatArea(v.areaStolen)}</span>
+            {/* Emblems Gallery */}
+            {(victims.length > 0 || (meta?.ranTogetherWith && meta.ranTogetherWith.length > 0) || (meta?.records && meta.records.length > 0) || (meta?.treasures && meta.treasures.length > 0)) && (
+              <EmblemsSection>
+                {/* Victims emblem */}
+                {victims.length > 0 && (
+                  <div className="flex flex-col items-center">
+                    <EmblemShowcase src="/emblemas/Emblema_robo.png" alt="Territorio robado" size="md" accentColor="#ef4444" onClick={() => toggleEmblem('victims')} />
+                    {expandedEmblems.has('victims') && (
+                      <div className="mt-2 w-full max-w-[200px] rounded-lg border border-red-500/10 bg-red-500/[0.03] overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                        <div className="px-2.5 pt-2 pb-1">
+                          <span className="text-[10px] font-bold text-red-500 uppercase tracking-wider">Territorio robado</span>
                         </div>
-                      ))}
-                    </div>
+                        <div className="px-2.5 pb-2 space-y-0.5">
+                          {victims.map(v => (
+                            <div key={v.id} className="flex items-center gap-1.5 py-0.5">
+                              <UserAvatar user={{ name: v.name, color: v.color, avatar: v.avatar }} size="xs" onClick={() => onUserClick(v.id)} />
+                              <button className="text-[11px] font-semibold hover:underline flex-1 text-left truncate" style={{ color: v.color }} onClick={() => onUserClick(v.id)}>
+                                {v.id === currentUserId ? 'Ti' : v.name}
+                              </button>
+                              <span className="text-[10px] font-bold text-red-500/80 tabular-nums">{formatArea(v.areaStolen)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Ran together badge (from metadata) */}
-            {meta?.ranTogetherWith && meta.ranTogetherWith.length > 0 && (
-              <div className="mt-3 flex flex-col items-center">
-                <EmblemShowcase src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" size="md" accentColor="#3b82f6" onClick={() => toggleEmblem('ranTogether')} />
-                {expandedEmblems.has('ranTogether') && (
-                  <div className="mt-2 w-full rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
-                    <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
-                    <p className="text-[12px] text-foreground/75 leading-snug mt-1">
-                      {meta.ranTogetherWith.map((u, i) => (
-                        <span key={u.id}>
-                          {i > 0 && (i === meta.ranTogetherWith!.length - 1 ? ' y ' : ', ')}
-                          <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
-                            {u.id === currentUserId ? 'Ti' : u.name}
-                          </button>
-                        </span>
-                      ))}
-                    </p>
+                {/* Ran together emblem */}
+                {meta?.ranTogetherWith && meta.ranTogetherWith.length > 0 && (
+                  <div className="flex flex-col items-center">
+                    <EmblemShowcase src="/emblemas/Emblema_amigos.png" alt="Corrieron juntos" size="md" accentColor="#3b82f6" onClick={() => toggleEmblem('ranTogether')} />
+                    {expandedEmblems.has('ranTogether') && (
+                      <div className="mt-2 w-full max-w-[200px] rounded-lg border border-blue-500/10 bg-blue-500/[0.03] p-2.5 animate-in fade-in slide-in-from-top-2 duration-200">
+                        <span className="text-[10px] font-bold text-blue-500 uppercase tracking-wider">Corrieron juntos</span>
+                        <p className="text-[12px] text-foreground/75 leading-snug mt-1">
+                          {meta.ranTogetherWith.map((u, i) => (
+                            <span key={u.id}>
+                              {i > 0 && (i === meta.ranTogetherWith!.length - 1 ? ' y ' : ', ')}
+                              <button className="font-semibold hover:underline" onClick={() => onUserClick(u.id)}>
+                                {u.id === currentUserId ? 'Ti' : u.name}
+                              </button>
+                            </span>
+                          ))}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Personal records badges (from metadata) */}
-            {meta?.records && meta.records.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-4 justify-center">
-                {meta.records.map((rec, i) => {
+                {/* Personal records emblems */}
+                {meta?.records && meta.records.length > 0 && meta.records.map((rec, i) => {
                   const emblemMap: Record<string, string> = {
                     longest_run: '/emblemas/Emblema_distancia.png',
                     fastest_pace: '/emblemas/Emblema_ritmo.png',
@@ -693,7 +743,7 @@ const EventCard = memo(function EventCard({
                   }
                   const key = `record-${i}`;
                   return (
-                    <div key={i} className="flex flex-col items-center">
+                    <div key={`rec-${i}`} className="flex flex-col items-center">
                       <EmblemShowcase src={emblemMap[rec.type] || '/emblemas/Emblema_distancia.png'} alt={label} size="md" accentColor="#f59e0b" onClick={() => toggleEmblem(key)} />
                       {expandedEmblems.has(key) && (
                         <div className="mt-1.5 text-center animate-in fade-in slide-in-from-top-2 duration-200">
@@ -704,13 +754,9 @@ const EventCard = memo(function EventCard({
                     </div>
                   );
                 })}
-              </div>
-            )}
 
-            {/* Treasures found badges (from metadata) */}
-            {meta?.treasures && meta.treasures.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-4 justify-center">
-                {meta.treasures.map((t, i) => {
+                {/* Treasures emblems */}
+                {meta?.treasures && meta.treasures.length > 0 && meta.treasures.map((t, i) => {
                   const rarityColors: Record<string, string> = {
                     common: 'text-gray-400',
                     rare: 'text-blue-400',
@@ -719,7 +765,7 @@ const EventCard = memo(function EventCard({
                   };
                   const key = `treasure-${i}`;
                   return (
-                    <div key={i} className="flex flex-col items-center">
+                    <div key={`tre-${i}`} className="flex flex-col items-center">
                       <EmblemShowcase src="/emblemas/Emblema_tesoro.png" alt="Tesoro" size="md" accentColor="#a855f7" onClick={() => toggleEmblem(key)} />
                       {expandedEmblems.has(key) && (
                         <div className="mt-1.5 text-center animate-in fade-in slide-in-from-top-2 duration-200">
@@ -732,7 +778,7 @@ const EventCard = memo(function EventCard({
                     </div>
                   );
                 })}
-              </div>
+              </EmblemsSection>
             )}
 
             {/* Fortresses destroyed badge */}
