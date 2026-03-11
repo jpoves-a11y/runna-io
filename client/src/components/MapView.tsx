@@ -68,16 +68,19 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const headingRef = useRef<number | null>(null);
   const orientationHandlerRef = useRef<((e: Event) => void) | null>(null);
   const watchIdRef = useRef<number | null>(null);
-  const orientationGrantedRef = useRef(false);
+  const orientationGrantedRef = useRef(
+    typeof sessionStorage !== 'undefined' && sessionStorage.getItem('orientation-granted') === '1'
+  );
   const [isLocating, setIsLocating] = useState(false);
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
+  const [mapReady, setMapReady] = useState(0);
 
   // Prefetch adjacent tiles for smoother panning
   useMapTilePrefetch(mapRef, true);
 
   // Two-finger map rotation (custom lightweight, no plugin)
-  const { bearing, bearingRef, resetBearing } = useMapRotation(mapRef);
+  const { bearing, bearingRef, resetBearing } = useMapRotation(mapRef, mapReady);
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
@@ -124,6 +127,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     fortificationGroupRef.current = fortificationGroup;
 
     mapRef.current = map;
+    setMapReady(r => r + 1);
     setMapStyle(initialStyle);
 
     // Ensure the map renders correctly after layout/gesture changes
@@ -842,12 +846,13 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const handleLocate = async () => {
     setIsLocating(true);
     try {
-      // 1. Request iOS orientation permission only ONCE (cached in ref)
+      // 1. Request iOS orientation permission only ONCE (cached in ref + sessionStorage)
       if (!orientationGrantedRef.current) {
         try {
           if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
             const perm = await (DeviceOrientationEvent as any).requestPermission();
             orientationGrantedRef.current = perm === 'granted';
+            if (perm === 'granted') sessionStorage.setItem('orientation-granted', '1');
           } else {
             orientationGrantedRef.current = true; // Android/desktop — no permission needed
           }

@@ -113,9 +113,10 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
   const userInteractingRef = useRef(false);
   const autoFollowRef = useRef(true);
   const treasuresForCheckRef = useRef<Treasure[]>([]);
+  const [mapReady, setMapReady] = useState(0);
 
   // Two-finger map rotation (custom lightweight hook)
-  const { bearing: mapBearing, bearingRef: mapBearingRef, resetBearing } = useMapRotation(mapRef);
+  const { bearing: mapBearing, bearingRef: mapBearingRef, resetBearing } = useMapRotation(mapRef, mapReady);
 
   const startTimeRef = useRef<number>(0);
   const pausedDurationRef = useRef<number>(0);
@@ -271,6 +272,7 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
     territoryGroupRef.current = territoryGroup;
     treasureGroupRef.current = treasureGroup;
     mapRef.current = map;
+    setMapReady(r => r + 1);
 
     // Detect user pan to disable auto-follow
     map.on('dragstart', () => { userInteractingRef.current = true; setAutoFollow(false); });

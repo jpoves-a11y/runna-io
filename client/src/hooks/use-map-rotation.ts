@@ -36,7 +36,7 @@ function rotatePoint(p: L.Point, center: L.Point, deg: number): L.Point {
 
 /* ── hook ────────────────────────────────────────────────────────────── */
 
-export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>) {
+export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, mapReady?: number) {
   const [bearing, setBearingState] = useState(0);
   const bearingRef = useRef(0);
 
@@ -254,7 +254,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>) {
 
     cleanupRef.current = cleanup;
     return cleanup;
-  }, [mapRef, setBearing, applyRotation]);
+  }, [mapRef, mapReady, setBearing, applyRotation]);
 
   return { bearing, bearingRef, setBearing, resetBearing };
 }
