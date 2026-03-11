@@ -106,7 +106,7 @@ function preciseTimeAgo(dateStr: string): string {
 
 function formatArea(sqMeters: number): string {
   const km2 = sqMeters / 1000000;
-  if (km2 >= 0.01) return `${km2.toFixed(2)} km²`;
+  if (km2 >= 0.05) return `${km2.toFixed(2)} km²`;
   return `${Math.round(sqMeters)} m²`;
 }
 
@@ -579,8 +579,18 @@ const EventCard = memo(function EventCard({
   }, [friends, onUserClick]);
 
   // ── Derived values ──
-  const isOwn = event.userId === currentUserId;
-  const userName = isOwn ? 'Tú' : event.user.name;
+  const isSystemEvent = event.eventType === 'treasure_spawned';
+  const isOwn = !isSystemEvent && event.userId === currentUserId;
+  // Show nickname if the user has one (from the enriched data)
+  const userDisplayName = (() => {
+    if (isSystemEvent) return '🏴‍☠️ Runna';
+    if (isOwn) return 'Tú';
+    const u = event.user as any;
+    if (u.nickname) return `🎭 ${u.nickname}`;
+    return event.user.name;
+  })();
+  const userName = userDisplayName;
+  const userRealName = (event.user as any).nickname ? event.user.name : null;
   const victims = (event as MergedFeedEvent).victims || [];
   const routeCoords = (event as any).routeCoordinates as [number, number][] | null | undefined;
   const pace = event.distance && event.duration ? formatPace(event.distance, event.duration) : null;
@@ -597,7 +607,9 @@ const EventCard = memo(function EventCard({
       territory_stolen: { icon: <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-red-500/10' },
       ran_together: { icon: <img src="/emblemas/Emblema_amigos.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-blue-500/10' },
       personal_record: { icon: <img src="/emblemas/Emblema_ritmo.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-amber-500/10' },
-      treasure_found: { icon: <img src="/emblemas/Emblema_tesoro.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-purple-500/10' },
+      treasure_found: { icon: <img src="/cofre_epic.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-purple-500/10' },
+      treasure_spawned: { icon: <img src="/cofre_rare.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-emerald-500/10' },
+      nickname_changed: { icon: <span className="text-base">🎭</span>, bg: 'bg-pink-500/10' },
     };
     return map[event.eventType] || { icon: null, bg: 'bg-muted text-muted-foreground' };
   }, [event.eventType, victims.length]);
@@ -878,7 +890,7 @@ const EventCard = memo(function EventCard({
             const secs = Math.round((event.recordValue - mins) * 60);
             recordDetail = `${mins}:${secs.toString().padStart(2, '0')} min/km`;
           } else if (event.recordType === 'biggest_conquest') {
-            recordDetail = `${(event.recordValue / 1000000).toFixed(3)} km²`;
+            recordDetail = formatArea(event.recordValue);
           }
         }
         return (
@@ -922,18 +934,84 @@ const EventCard = memo(function EventCard({
           legendary: 'text-amber-400 bg-amber-500/10',
         };
         const rarityClass = rarityColors[treasureInfo.rarity] || rarityColors.common;
+        const chestImage = `/cofre_${treasureInfo.rarity || 'common'}.png`;
         return (
           <div className="mt-2 flex flex-col items-center">
-            <EmblemShowcase src="/emblemas/Emblema_tesoro.png" alt="Tesoro" size="lg" accentColor="#a855f7" onClick={() => toggleEmblem('ev-treasure')} />
-            {expandedEmblems.has('ev-treasure') && (
-              <div className="mt-2 text-center animate-in fade-in slide-in-from-top-2 duration-200">
-                <p className="text-[13px] font-bold text-foreground/90">¡Tesoro encontrado!</p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">{treasureInfo.treasureName || 'Tesoro misterioso'}</p>
-                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${rarityClass}`}>
-                  {treasureInfo.rarity || 'common'}
-                </span>
+            <img src={chestImage} alt="Cofre" className="w-20 h-20 object-contain drop-shadow-lg" />
+            <div className="mt-2 text-center">
+              <p className="text-[13px] font-bold text-foreground/90">¡Tesoro encontrado!</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{treasureInfo.emoji || '📦'} {treasureInfo.treasureName || 'Tesoro misterioso'}</p>
+              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 mt-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${rarityClass}`}>
+                {treasureInfo.rarity || 'common'}
+              </span>
+              {treasureInfo.zone && (
+                <p className="text-[10px] text-muted-foreground/70 mt-1">📍 {treasureInfo.zone}</p>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      case 'treasure_spawned': {
+        let treasureInfo: any = {};
+        try {
+          if (event.metadata) {
+            treasureInfo = JSON.parse(event.metadata as string);
+          }
+        } catch {}
+        const spawnRarityColors: Record<string, string> = {
+          common: 'text-gray-400 bg-gray-500/10 border-gray-500/20',
+          rare: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+          epic: 'text-purple-400 bg-purple-500/10 border-purple-500/20',
+          legendary: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+        };
+        const spawnRarityClass = spawnRarityColors[treasureInfo.rarity] || spawnRarityColors.common;
+        const spawnChestImage = `/cofre_${treasureInfo.rarity || 'common'}.png`;
+        return (
+          <div className="mt-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+            <div className="flex items-center gap-3">
+              <img src={spawnChestImage} alt="Cofre" className="w-16 h-16 object-contain drop-shadow-lg animate-bounce" style={{ animationDuration: '2s' }} />
+              <div className="flex-1">
+                <p className="text-[14px] font-bold text-emerald-400">¡Nuevo tesoro en el mapa!</p>
+                <p className="text-[12px] text-muted-foreground mt-0.5">{treasureInfo.emoji || '📦'} {treasureInfo.treasureName || 'Tesoro misterioso'}</p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${spawnRarityClass}`}>
+                    {treasureInfo.rarity || 'common'}
+                  </span>
+                  {treasureInfo.zone && (
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground/80">
+                      📍 {treasureInfo.zone}
+                    </span>
+                  )}
+                </div>
               </div>
-            )}
+            </div>
+          </div>
+        );
+      }
+
+      case 'nickname_changed': {
+        let nicknameInfo: any = {};
+        try {
+          if (event.metadata) {
+            nicknameInfo = JSON.parse(event.metadata as string);
+          }
+        } catch {}
+        const victimName = nicknameInfo.targetName || (event.victim?.name) || 'un jugador';
+        const newNickname = nicknameInfo.nickname || '???';
+        return (
+          <div className="mt-2 flex flex-col items-center">
+            <div className="text-5xl mb-2">🎭</div>
+            <div className="text-center">
+              <p className="text-[13px] font-bold text-pink-400">¡Nuevo apodo!</p>
+              <p className="text-[12px] text-foreground/80 mt-1">
+                {isOwn ? 'Has puesto' : <span style={{ color: event.user.color }}>{event.user.name}</span>}{' '}
+                {isOwn ? '' : 'ha puesto '}el apodo{' '}
+                <span className="font-bold text-pink-400">"{newNickname}"</span>{' '}
+                a <span className="font-semibold">{victimName}</span>
+              </p>
+              <p className="text-[10px] text-muted-foreground/60 mt-1">Durará 48 horas</p>
+            </div>
           </div>
         );
       }
@@ -950,10 +1028,12 @@ const EventCard = memo(function EventCard({
       <div className="flex items-center gap-2.5 px-3.5 pt-2.5 pb-1.5">
         <UserAvatar user={event.user} size="md" onClick={() => onUserClick(event.userId)} />
         <div className="flex-1 min-w-0">
-          <button className="text-[13px] font-bold hover:underline truncate block text-left leading-tight" style={{ color: event.user.color }} onClick={() => onUserClick(event.userId)}>
+          <button className="text-[13px] font-bold hover:underline truncate block text-left leading-tight" style={{ color: (event.user as any).nickname ? '#ec4899' : event.user.color }} onClick={() => onUserClick(event.userId)}>
             {userName}
           </button>
           <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60 leading-tight">
+            {userRealName && <span className="text-pink-400/50">(antes: {userRealName})</span>}
+            {userRealName && <span className="opacity-40">·</span>}
             <span>{preciseTimeAgo(event.activityDate || event.createdAt)}</span>
             {event.routeName && (
               <><span className="opacity-40">·</span><span className="truncate">{event.routeName}</span></>

@@ -152,7 +152,10 @@ export function ActivityAnimationView({
         if (progressBarRef.current) progressBarRef.current.style.width = `${pct}%`;
         if (progressTextRef.current) progressTextRef.current.textContent = `${Math.round(pct)}%`;
         if (distanceTextRef.current) distanceTextRef.current.textContent = `${(eased * distKm).toFixed(2)} km`;
-        if (areaTextRef.current) areaTextRef.current.textContent = `${(eased * areaKm2).toFixed(2)} km²`;
+        if (areaTextRef.current) {
+          const currentArea = eased * areaKm2;
+          areaTextRef.current.textContent = currentArea >= 0.05 ? `${currentArea.toFixed(2)} km²` : `${Math.round(currentArea * 1000000)} m²`;
+        }
 
         if (rawProgress < 1) {
           animationRef.current = requestAnimationFrame(animate);
@@ -175,7 +178,7 @@ export function ActivityAnimationView({
           if (progressBarRef.current) progressBarRef.current.style.width = '100%';
           if (progressTextRef.current) progressTextRef.current.textContent = '100%';
           if (distanceTextRef.current) distanceTextRef.current.textContent = `${distKm.toFixed(2)} km`;
-          if (areaTextRef.current) areaTextRef.current.textContent = `${areaKm2.toFixed(2)} km²`;
+          if (areaTextRef.current) areaTextRef.current.textContent = areaKm2 >= 0.05 ? `${areaKm2.toFixed(2)} km²` : `${Math.round(areaKm2 * 1000000)} m²`;
           if (completeBadgeRef.current) completeBadgeRef.current.style.display = 'block';
           setTimeout(() => onCompleteRef.current(), 800);
         }

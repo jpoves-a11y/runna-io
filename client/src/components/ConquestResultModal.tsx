@@ -17,12 +17,42 @@ interface VictimInfo {
   stolenArea: number;
 }
 
+interface TreasureInfo {
+  treasureId: string;
+  treasureName: string;
+  powerType: string;
+  rarity: string;
+}
+
+const POWER_EMOJI: Record<string, string> = {
+  shield: '🛡️',
+  double_area: '⚡',
+  nickname: '🎭',
+  steal_boost: '🏴‍☠️',
+  invisibility: '👻',
+  time_bomb: '💀',
+  magnet: '🧲',
+  reveal: '🔮',
+  bulldozer: '🚜',
+  battering_ram: '🐏',
+  sentinel: '🔔',
+  wall: '🧱',
+};
+
+const RARITY_COLORS: Record<string, string> = {
+  common: 'from-gray-400 to-gray-500',
+  rare: 'from-blue-400 to-blue-600',
+  epic: 'from-purple-400 to-purple-600',
+  legendary: 'from-amber-400 to-amber-600',
+};
+
 interface ConquestResultModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   newAreaKm2: number;
   previousAreaKm2: number;
   victims: VictimInfo[];
+  treasuresCollected?: TreasureInfo[];
   senderId?: string;
   routeId?: string;
   routeName?: string;
@@ -34,6 +64,7 @@ export function ConquestResultModal({
   newAreaKm2,
   previousAreaKm2,
   victims,
+  treasuresCollected = [],
   senderId,
   routeId,
   routeName,
@@ -199,12 +230,12 @@ export function ConquestResultModal({
             </div>
             <div className="flex-1">
               <p className="text-xs text-muted-foreground">Área total conquistada</p>
-              <p className="text-xl font-bold">{displayTotalArea.toFixed(2)} km²</p>
+              <p className="text-xl font-bold">{(() => { if (displayTotalArea >= 0.05) return `${displayTotalArea.toFixed(2)} km²`; return `${Math.round(displayTotalArea * 1000000)} m²`; })()}</p>
             </div>
             {newAreaKm2 > 0 && (
               <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300 border-0">
                 <TrendingUp className="h-3 w-3 mr-1" />
-                +{newAreaKm2.toFixed(2)}
+                +{newAreaKm2 >= 0.05 ? `${newAreaKm2.toFixed(2)} km²` : `${Math.round(newAreaKm2 * 1000000)} m²`}
               </Badge>
             )}
           </div>
@@ -230,7 +261,7 @@ export function ConquestResultModal({
                       />
                       <span className="text-sm font-medium flex-1 truncate">{victim.userName}</span>
                       <span className="text-xs font-bold text-red-500 bg-red-50 dark:bg-red-950/40 px-2 py-0.5 rounded-full">
-                        -{(victim.stolenArea / 1000000).toFixed(2)} km²
+                        -{(() => { const km2 = victim.stolenArea / 1000000; if (km2 >= 0.05) return `${km2.toFixed(2)} km²`; return `${Math.round(victim.stolenArea)} m²`; })()}
                       </span>
                     </div>
                     
@@ -258,6 +289,41 @@ export function ConquestResultModal({
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Treasures Collected */}
+          {treasuresCollected.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-lg">🎁</span>
+                <p className="text-sm font-semibold">¡Tesoros encontrados!</p>
+              </div>
+              <div className="space-y-2">
+                {treasuresCollected.map((treasure) => {
+                  const emoji = POWER_EMOJI[treasure.powerType] || '❓';
+                  const rarityGradient = RARITY_COLORS[treasure.rarity] || RARITY_COLORS.common;
+                  return (
+                    <div
+                      key={treasure.treasureId}
+                      className="relative overflow-hidden rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-50/50 to-yellow-50/50 dark:from-amber-950/20 dark:to-yellow-950/20"
+                    >
+                      <div className="flex items-center gap-3 px-3 py-3">
+                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl bg-gradient-to-br ${rarityGradient} shadow-sm`}>
+                          {emoji}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm font-bold block truncate">{treasure.treasureName}</span>
+                          <span className="text-xs text-muted-foreground capitalize">{treasure.rarity}</span>
+                        </div>
+                        <span className="text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/40 px-2 py-1 rounded-full uppercase">
+                          Nuevo
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

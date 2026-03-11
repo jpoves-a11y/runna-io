@@ -286,6 +286,7 @@ export const treasures = sqliteTable("treasures", {
   spawnedAt: text("spawned_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   expiresAt: text("expires_at").notNull(), // Treasure disappears after this
   active: integer("active", { mode: 'boolean' }).notNull().default(true),
+  zone: text("zone"), // Zone name where the treasure spawned
 });
 
 export const userPowers = sqliteTable("user_powers", {
@@ -752,8 +753,8 @@ export type RouteWithTerritory = Route & {
 };
 
 export type FeedEventWithDetails = FeedEvent & {
-  user: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'>;
-  victim?: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> | null;
+  user: Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> & { nickname?: string | null; nicknameExpiresAt?: string | null };
+  victim?: (Pick<User, 'id' | 'username' | 'name' | 'color' | 'avatar'> & { nickname?: string | null; nicknameExpiresAt?: string | null }) | null;
   routeName?: string | null;
   activityDate?: string | null;
   routeCoordinates?: [number, number][] | null;

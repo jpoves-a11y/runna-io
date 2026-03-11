@@ -1,7 +1,7 @@
 # POLÍTICA DE PRIVACIDAD DE RUNNA.IO
 
-**Última actualización:** 4 de febrero de 2026  
-**Versión:** 2.0  
+**Última actualización:** 10 de marzo de 2026  
+**Versión:** 2.1  
 **Responsable:** Javier Poves Ruiz  
 **Contacto:** runna.io.service@gmail.com  
 **Ubicación:** España
@@ -18,6 +18,40 @@ De acuerdo con el Reglamento General de Protección de Datos (RGPD) y la Ley Org
 | **Email de contacto** | runna.io.service@gmail.com |
 | **País** | España |
 | **Autoridad de control** | Agencia Española de Protección de Datos (AEPD) |
+
+---
+
+## 1.1 NATURALEZA DE LA APLICACIÓN: COMUNIDAD DE ATLETAS
+
+**Runna.io es una aplicación comunitaria** diseñada para que atletas organicen, colaboren y compitan en actividades grupales. El propósito principal es:
+
+- **Gamificación social**: Los usuarios compiten por conquistar territorios geográficos mediante sus actividades deportivas
+- **Competiciones de equipo**: Organizamos competiciones periódicas donde equipos de atletas colaboran para conquistar más territorio
+- **Colaboración grupal**: Los usuarios pueden añadir amigos, formar grupos y competir juntos
+- **Rankings comunitarios**: Leaderboards que muestran el rendimiento de la comunidad
+
+### Datos Compartidos con la Comunidad
+
+Al usar Runna.io, **consientes explícitamente** que ciertos datos derivados de tus actividades sean visibles para otros usuarios:
+
+| Dato | Visible para otros | Descripción |
+|------|-------------------|-------------|
+| **Polígonos de territorio** | ✅ Sí | Áreas geográficas que has conquistado (derivadas de tus rutas) |
+| **Nombre de usuario** | ✅ Sí | Tu @username en rankings y feed |
+| **Área total conquistada** | ✅ Sí | Metros cuadrados en leaderboards |
+| **Eventos de conquista** | ✅ Sí | Cuando conquistas o pierdes territorio (feed social) |
+| **Rutas GPS exactas** | ❌ No | Tus trayectos GPS permanecen privados |
+| **Tiempos y ritmos** | ❌ No | Métricas de rendimiento son privadas |
+| **Ubicación de inicio/fin** | ❌ No | Los puntos exactos no se comparten |
+
+> **Importante**: Los territorios son **datos derivados** generados por Runna.io a partir de tus rutas, no son datos directos de Strava/Polar/COROS. Las rutas originales permanecen privadas.
+
+### Consentimiento Explícito
+
+Antes de conectar cualquier servicio externo (Strava, Polar, COROS), se te mostrará una pantalla de consentimiento explicando:
+- Qué datos se importarán
+- Cómo se usarán para generar territorios
+- Qué información será visible para la comunidad
 
 ---
 
@@ -175,10 +209,16 @@ Por transparencia, mostramos esta información en nuestra política de privacida
 | Campo | Información |
 |-------|-------------|
 | **Proveedor** | Strava, Inc. (EE.UU.) |
-| **Propósito** | Importar tus actividades deportivas |
+| **Propósito** | Importar tus actividades deportivas para gamificación comunitaria |
 | **Datos accedidos** | Actividades, rutas GPS, métricas |
-| **Conexión** | OAuth 2.0 (tú autorizas el acceso) |
+| **Uso de datos** | Generar territorios y mostrar rutas/actividades a la comunidad |
+| **Conexión** | OAuth 2.0 (tú autorizas el acceso con consentimiento explícito) |
 | **Desconexión** | Puedes desconectar en cualquier momento desde tu perfil |
+| **Transferencia UE-EEUU** | Bajo cláusulas contractuales tipo (CCT) |
+
+> **Nota sobre visibilidad comunitaria**: Runna.io es una **aplicación comunitaria** donde los atletas compiten por territorios. Al conectar Strava, tus rutas, actividades y territorios conquistados serán **visibles para otros miembros de la comunidad**. Esto es esencial para el funcionamiento del juego. Antes de conectar, se te mostrará un diálogo de consentimiento explicando exactamente qué datos serán compartidos.
+
+> **Monitoreo por Strava**: De acuerdo con el Strava API Agreement (Sección 2.12), Strava puede monitorear y recopilar datos de uso relacionados con tu conexión a través de su API. Strava puede usar estos datos para mejorar sus servicios, proporcionar soporte, y asegurar el cumplimiento de sus términos.
 
 ### 5.6. COROS (Sincronización opcional)
 
@@ -188,7 +228,6 @@ Por transparencia, mostramos esta información en nuestra política de privacida
 | **Propósito** | Importar tus workouts deportivos automáticamente |
 | **Datos accedidos** | Workouts, rutas GPS, métricas de actividad |
 | **Conexión** | OAuth 2.0 (tú autorizas el acceso) |
-| **Desconexión** | Puedes desconectar en cualquier momento desde tu perfil |
 | **Desconexión** | Puedes desconectar en cualquier momento desde tu perfil |
 | **Transferencia UE-EEUU** | Bajo cláusulas contractuales tipo (CCT) |
 

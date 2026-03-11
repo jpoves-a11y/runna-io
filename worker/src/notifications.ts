@@ -1,6 +1,22 @@
 import type { WorkerStorage } from './storage';
 import { sendPushToUser } from './pushHelper';
 
+// Helper to format area for notifications — uses m² for small areas, km² for larger ones
+function formatAreaNotification(sqMeters: number): string {
+  const abs = Math.abs(sqMeters);
+  const km2 = abs / 1_000_000;
+  const sign = sqMeters < 0 ? '-' : '';
+  if (km2 >= 0.01) return `${sign}${km2.toFixed(2)} km²`;
+  return `${sign}${Math.round(abs)} m²`;
+}
+
+function formatAreaFromKm2(km2: number): string {
+  const abs = Math.abs(km2);
+  const sign = km2 < 0 ? '-' : '';
+  if (abs >= 0.01) return `${sign}${abs.toFixed(2)} km²`;
+  return `${sign}${Math.round(abs * 1_000_000)} m²`;
+}
+
 export const TERRITORY_LOSS_MESSAGES = [
   '{user} se llevo {area} de tu reino. Dejalo pasar? Ni de chiste.',
   '{user} te recorto el mapa con {area}. Hora de la tijera inversa.',
@@ -80,9 +96,9 @@ export async function notifyTerritoryLoss(
         ? `@${conqueror.name}`
         : '@alguien';
 
-    // Include km² in notification body
+    // Include formatted area in notification body
     const areaText = stolenAreaM2
-      ? `${(stolenAreaM2 / 1000000).toFixed(2)} km²`
+      ? formatAreaNotification(stolenAreaM2)
       : 'algo de';
 
     const lastNotification = await storage.getLastTerritoryLossNotification(victimUserId);
@@ -252,11 +268,11 @@ export async function notifyFriendNewActivity(
     if (friendIds.length === 0) return;
 
     const distanceText = distanceKm.toFixed(1);
-    const areaText = newAreaKm2.toFixed(2);
+    const areaText = formatAreaFromKm2(newAreaKm2);
 
     const payload = {
       title: `🏃 ${userName} ha salido a correr`,
-      body: `${distanceText} km recorridos — ${areaText} km² de área nueva`,
+      body: `${distanceText} km recorridos — ${areaText} de área nueva`,
       tag: `friend-activity-${activityUserId}`,
       data: {
         url: '/',
@@ -311,7 +327,7 @@ export async function notifyAreaOvertake(
 
     const payload = {
       title: '📊 ¡Te han superado en área!',
-      body: `${overtakerName} ahora tiene ${overtakerAreaKm2.toFixed(2)} km² y te ha adelantado`,
+      body: `${overtakerName} ahora tiene ${formatAreaFromKm2(overtakerAreaKm2)} y te ha adelantado`,
       tag: `area-overtake-${overtakerUserId}`,
       data: {
         url: '/',

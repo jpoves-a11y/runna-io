@@ -81,6 +81,7 @@ export default function MapPage() {
                 newArea,
                 previousArea: Math.max(0, previousArea),
                 victims: parsed?.victims || [],
+                treasuresCollected: parsed?.treasuresCollected || [],
               });
               setIsResultModalOpen(true);
             }
@@ -199,7 +200,7 @@ export default function MapPage() {
       });
 
       const data = await response.json();
-      return { ...data, inputDistance: routeData.distance, inputDuration: routeData.duration };
+      return { ...data, inputDistance: routeData.distance, inputDuration: routeData.duration, inputTreasuresCollected: routeData.treasuresCollected || [] };
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
@@ -207,11 +208,23 @@ export default function MapPage() {
       queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });
       queryClient.invalidateQueries({ queryKey: ['/api/routes', currentUser?.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/leaderboard/friends'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
 
       // Stop tracking mode
       setIsTracking(false);
 
       // Store conquest data in sessionStorage and trigger animation (same as Polar flow)
+      // Merge client-side collected treasures with any server-discovered ones
+      const clientTreasures = data.inputTreasuresCollected || [];
+      const serverTreasures = data.treasuresCollected || [];
+      const allTreasureIds = new Set<string>();
+      const mergedTreasures = [...clientTreasures, ...serverTreasures].filter(t => {
+        if (allTreasureIds.has(t.treasureId)) return false;
+        allTreasureIds.add(t.treasureId);
+        return true;
+      });
+
       const conquestPayload = {
         newAreaConquered: data.metrics?.newAreaConquered || 0,
         totalArea: data.metrics?.totalArea || 0,
@@ -222,6 +235,7 @@ export default function MapPage() {
         summaryPolyline: data.summaryPolyline || null,
         distance: data.inputDistance || 0,
         victims: data.metrics?.victims || [],
+        treasuresCollected: mergedTreasures,
       };
       sessionStorage.setItem('lastConquestResult', JSON.stringify(conquestPayload));
 
@@ -234,7 +248,7 @@ export default function MapPage() {
         const newArea = conquestPayload.newAreaConquered / 1000000;
         const totalArea = conquestPayload.totalArea / 1000000;
         setConquestData(conquestPayload);
-        setConquestResult({ newArea, previousArea: Math.max(0, totalArea - newArea), victims: conquestPayload.victims });
+        setConquestResult({ newArea, previousArea: Math.max(0, totalArea - newArea), victims: conquestPayload.victims, treasuresCollected: conquestPayload.treasuresCollected || [] });
         window.history.replaceState({}, '', '/?showConquestResult=true');
         setIsResultModalOpen(true);
       }
@@ -256,6 +270,7 @@ export default function MapPage() {
     coordinates: Array<[number, number]>;
     distance: number;
     duration: number;
+    treasuresCollected?: Array<{ treasureId: string; treasureName: string; powerType: string; rarity: string }>;
   }) => {
     // Minimum coordinates validation — need at least 3 GPS points for a valid route
     if (routeData.coordinates.length < 3) {
@@ -297,7 +312,8 @@ export default function MapPage() {
             setConquestResult({
               newArea,
               previousArea: Math.max(0, previousArea),
-              victims: conquestData?.victims || []
+              victims: conquestData?.victims || [],
+              treasuresCollected: conquestData?.treasuresCollected || []
             });
             // Stop animation view so the normal map renders with ConquestResultModal
             window.history.replaceState({}, '', '/');
@@ -315,6 +331,9 @@ export default function MapPage() {
       <RouteTracker
         onComplete={handleRouteComplete}
         onCancel={handleCancelTracking}
+        territories={territories}
+        treasures={activeTreasures}
+        currentUser={currentUser}
       />
     );
   }
@@ -369,6 +388,7 @@ export default function MapPage() {
         newAreaKm2={conquestResult?.newArea || 0}
         previousAreaKm2={conquestResult?.previousArea || 0}
         victims={conquestResult?.victims || []}
+        treasuresCollected={conquestResult?.treasuresCollected || []}
         senderId={currentUser?.id}
         routeId={conquestData?.routeId}
         routeName={conquestData?.routeName}

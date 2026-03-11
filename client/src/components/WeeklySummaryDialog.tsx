@@ -2,6 +2,7 @@ import { useState, useEffect, memo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useCompetition, useLeaderboard } from '@/hooks/use-competition';
 import { Trophy, Medal, Target, Footprints, MapPin, Swords, Users, Crown, Star, X } from 'lucide-react';
+import { formatArea } from '@/lib/formatArea';
 
 const WEEKLY_SEEN_KEY = 'weekly_summary_seen';
 
@@ -12,52 +13,102 @@ interface WeeklySummaryData {
   stats?: any;
 }
 
+// Listen for global event to open weekly summary manually
+let globalOpenFn: (() => void) | null = null;
+
+export function openWeeklySummary() {
+  globalOpenFn?.();
+}
+
 function WeeklySummaryDialogInner() {
   const { isActive, competition, dayOfCompetition } = useCompetition();
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState(0);
   
-  // Calculate current week number
-  const weekNumber = competition
+  // Calculate current week number (client-side, based on competition day)
+  const currentWeekNumber = competition
     ? Math.ceil((dayOfCompetition || 1) / 7)
     : 0;
   
-  // Currently just shows after Sunday 8PM — checked by the competition status  
-  // For now, check localStorage for last seen week
+  // The summary is generated on Sunday evening, so the summary for "week N" is stored with
+  // the weekNumber that was current at generation time. When the user opens the app on 
+  // Monday-Wednesday, dayOfCompetition has already incremented to the next week.
+  // We need to fetch the PREVIOUS week's summary if we're in the first days of a new week.
+  // Strategy: try currentWeekNumber first, then currentWeekNumber - 1
+  const [summaryWeek, setSummaryWeek] = useState(currentWeekNumber);
+  
+  // Auto-open: extended window from Sunday 8PM through Wednesday midnight (3+ days of grace)
   useEffect(() => {
-    if (!isActive || !competition || weekNumber <= 0) return;
+    if (!isActive || !competition || currentWeekNumber <= 0) return;
     
-    // Check if it's Sunday evening (day 0 = Sunday, after 20:00)
     const now = new Date();
-    const isSundayEvening = now.getDay() === 0 && now.getHours() >= 20;
+    const dayOfWeek = now.getDay(); // 0=Sunday, 1=Mon, 2=Tue, 3=Wed
+    const hour = now.getHours();
     
-    const seenKey = `${WEEKLY_SEEN_KEY}_${competition.id}_${weekNumber}`;
+    // Show from Sunday 20:00 through Wednesday 23:59
+    const isInWindow = 
+      (dayOfWeek === 0 && hour >= 20) || // Sunday evening
+      dayOfWeek === 1 || // Monday all day
+      dayOfWeek === 2 || // Tuesday all day
+      dayOfWeek === 3;   // Wednesday all day
+    
+    // Use the previous week's summary number if we're already in the next week (Mon-Wed)
+    const targetWeek = dayOfWeek >= 1 && dayOfWeek <= 3 
+      ? Math.max(1, currentWeekNumber - 1) 
+      : currentWeekNumber;
+    setSummaryWeek(targetWeek);
+    
+    const seenKey = `${WEEKLY_SEEN_KEY}_${competition.id}_${targetWeek}`;
     const seen = localStorage.getItem(seenKey);
     
-    if (isSundayEvening && !seen) {
+    if (isInWindow && !seen) {
       setOpen(true);
     }
-  }, [isActive, competition, weekNumber]);
+  }, [isActive, competition, currentWeekNumber]);
   
-  // Fetch weekly summary data
-  const { data: summaryData } = useQuery<{ summary: WeeklySummaryData }>({
-    queryKey: ['/api/competition/weekly-summary', String(weekNumber)],
-    enabled: open && weekNumber > 0,
+  // Register global open function for manual trigger
+  useEffect(() => {
+    globalOpenFn = () => {
+      if (!isActive || !competition) return;
+      // For manual open, try current week first, then previous
+      const targetWeek = currentWeekNumber > 1 ? currentWeekNumber - 1 : currentWeekNumber;
+      setSummaryWeek(targetWeek);
+      setPage(0);
+      setOpen(true);
+    };
+    return () => { globalOpenFn = null; };
+  }, [isActive, competition, currentWeekNumber]);
+  
+  // Fetch weekly summary data — try summaryWeek, fallback to summaryWeek-1
+  const { data: summaryData } = useQuery<{ summary: WeeklySummaryData | null; weekNumber: number }>({
+    queryKey: ['/api/competition/weekly-summary', String(summaryWeek)],
+    enabled: open && summaryWeek > 0,
+  });
+  
+  // If primary week returns null, try the previous week
+  const { data: fallbackData } = useQuery<{ summary: WeeklySummaryData | null; weekNumber: number }>({
+    queryKey: ['/api/competition/weekly-summary', String(summaryWeek - 1)],
+    enabled: open && summaryWeek > 1 && summaryData?.summary === null,
   });
   
   const { data: leaderboardData } = useLeaderboard();
   
   const handleClose = () => {
-    if (competition && weekNumber > 0) {
-      localStorage.setItem(`${WEEKLY_SEEN_KEY}_${competition.id}_${weekNumber}`, 'true');
+    if (competition && summaryWeek > 0) {
+      localStorage.setItem(`${WEEKLY_SEEN_KEY}_${competition.id}_${summaryWeek}`, 'true');
+      // Also mark fallback week as seen
+      if (summaryWeek > 1) {
+        localStorage.setItem(`${WEEKLY_SEEN_KEY}_${competition.id}_${summaryWeek - 1}`, 'true');
+      }
     }
     setOpen(false);
   };
   
   if (!open) return null;
   
-  const summary = summaryData?.summary;
-  const awards = summary?.awards || {};
+  const activeSummary = summaryData?.summary || fallbackData?.summary;
+  const displayWeek = summaryData?.summary ? summaryWeek : (fallbackData?.summary ? summaryWeek - 1 : summaryWeek);
+  const awards = activeSummary?.awards || {};
   const leaderboard = leaderboardData?.leaderboard || [];
   
   const AWARD_INFO: Record<string, { emoji: string; title: string; stat: string }> = {
@@ -70,13 +121,24 @@ function WeeklySummaryDialogInner() {
     social: { emoji: '🤝', title: 'Alma Social', stat: 'Más carreras juntos' },
     mvp: { emoji: '⚡', title: 'MVP de la Semana', stat: 'Mejor jugador combinado' },
   };
+
+  // Format area values in awards properly (m² for small, km² for large)
+  function formatAwardValue(award: any): string {
+    if (award.value == null) return '';
+    if (award.unit === 'm²' || award.unit === 'm² robados') return formatArea(award.value);
+    if (award.unit === 'm') {
+      const km = award.value / 1000;
+      return `${km.toFixed(1)} km`;
+    }
+    return `${award.value} ${award.unit || ''}`;
+  }
   
   const pages = [
     // Page 1: Week recap title
     <div key="title" className="flex flex-col items-center text-center px-4">
       <div className="text-5xl mb-4">📊</div>
       <h2 className="text-2xl font-black text-white mb-2">
-        Semana {weekNumber}
+        Semana {displayWeek}
       </h2>
       <p className="text-white/60 text-sm">
         Resumen semanal de {competition?.name}
@@ -87,10 +149,12 @@ function WeeklySummaryDialogInner() {
           <div key={entry.userId} className="flex items-center gap-3 py-2">
             <span className="text-lg">{['🥇', '🥈', '🥉'][i]}</span>
             <div className="flex-1 text-left">
-              <span className="text-sm font-bold text-white">{entry.user.name}</span>
+              <span className={`text-sm font-bold ${(entry.user as any).nickname ? 'text-pink-400' : 'text-white'}`}>
+                {(entry.user as any).nickname ? `🎭 ${(entry.user as any).nickname}` : entry.user.name}
+              </span>
             </div>
             <span className="text-xs text-white/50 font-mono">
-              {(entry.totalArea / 1e6).toFixed(2)} km²
+              {formatArea(entry.totalArea)}
             </span>
           </div>
         ))}
@@ -109,14 +173,7 @@ function WeeklySummaryDialogInner() {
           const info = AWARD_INFO[category] || { emoji: '🏅', title: category, stat: '' };
           const userName = award?.user?.name || award?.userName;
           if (!award || !userName) return null;
-          // Format value with unit
-          let displayValue = '';
-          if (award.value != null) {
-            if (award.unit === 'm²') displayValue = `${(award.value / 1e6).toFixed(2)} km²`;
-            else if (award.unit === 'm² robados') displayValue = `${(award.value / 1e6).toFixed(2)} km²`;
-            else if (award.unit === 'm') displayValue = `${(award.value / 1000).toFixed(1)} km`;
-            else displayValue = `${award.value} ${award.unit || ''}`;
-          }
+          const displayValue = formatAwardValue(award);
           return (
             <div key={category} className="flex items-center gap-3 bg-white/5 rounded-xl px-3 py-2.5">
               <span className="text-2xl">{info.emoji}</span>

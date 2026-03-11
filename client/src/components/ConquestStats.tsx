@@ -33,7 +33,7 @@ export function ConquestStats({ userId }: ConquestStatsProps) {
 
   const formatArea = (area: number) => {
     const km2 = area / 1000000;
-    if (km2 < 0.01) return `${(area).toFixed(0)} m²`;
+    if (km2 < 0.05) return `${(area).toFixed(0)} m²`;
     return `${km2.toFixed(2)} km²`;
   };
 

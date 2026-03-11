@@ -65,6 +65,8 @@ export interface LeaderboardEntry {
     name: string;
     color: string;
     avatar: string | null;
+    nickname?: string | null;
+    nicknameExpiresAt?: string | null;
   };
 }
 
@@ -125,9 +127,10 @@ export function useActivatePower() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ powerId, targetUserId }: { powerId: string; targetUserId?: string }) => {
+    mutationFn: async ({ powerId, targetUserId, nickname }: { powerId: string; targetUserId?: string; nickname?: string }) => {
       const res = await apiRequest('POST', `/api/powers/${powerId}/activate`, {
         targetUserId,
+        nickname,
       });
       return res.json();
     },

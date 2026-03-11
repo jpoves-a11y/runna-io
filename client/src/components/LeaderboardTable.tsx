@@ -1,11 +1,13 @@
-import { Trophy, TrendingUp, Crown, Flame, MapPin } from 'lucide-react';
+import { Trophy, TrendingUp, Crown, Flame, MapPin, BarChart3 } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { formatAreaParts } from '@/lib/formatArea';
+import { openWeeklySummary } from '@/components/WeeklySummaryDialog';
 import type { UserWithStats } from '@shared/schema';
 
 interface LeaderboardTableProps {
-  users: UserWithStats[];
+  users: (UserWithStats & { nickname?: string | null; nicknameExpiresAt?: string | null })[];
   currentUserId?: string;
   onUserClick?: (userId: string) => void;
 }
@@ -35,13 +37,21 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
           <div className="p-2 rounded-xl bg-primary/10">
             <Trophy className="h-5 w-5 text-primary" />
           </div>
-          <div>
+          <div className="flex-1">
             <h1 className="text-lg font-bold tracking-tight">Rankings</h1>
             <p className="text-xs text-muted-foreground flex items-center gap-1">
               <MapPin className="h-3 w-3" />
               Territorio conquistado
             </p>
           </div>
+          <button
+            onClick={() => openWeeklySummary()}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 text-xs font-bold transition-colors"
+            title="Ver resumen semanal"
+          >
+            <BarChart3 className="h-3.5 w-3.5" />
+            Resumen
+          </button>
         </div>
       </div>
 
@@ -96,9 +106,17 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                 {/* User Info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <p className={`font-medium truncate text-sm ${isTopThree ? 'font-semibold' : ''}`} data-testid={`text-name-${user.id}`}>
-                      {user.name}
-                    </p>
+                    {user.nickname ? (
+                      <div className="flex items-center gap-1 min-w-0">
+                        <span className="text-pink-400 font-medium truncate text-sm" title={`Apodo puesto por otro jugador (expira pronto)`}>
+                          🎭 {user.nickname}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className={`font-medium truncate text-sm ${isTopThree ? 'font-semibold' : ''}`} data-testid={`text-name-${user.id}`}>
+                        {user.name}
+                      </p>
+                    )}
                     {isCurrentUser && (
                       <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 flex-shrink-0">
                         Tú
@@ -107,18 +125,23 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
                   </div>
                   <p className="text-xs text-muted-foreground truncate">
                     @{user.username}
+                    {user.nickname && <span className="text-[10px] text-pink-400/60 ml-1">(antes: {user.name})</span>}
                   </p>
                 </div>
 
                 {/* Area */}
                 <div className="text-right flex-shrink-0">
-                  <p className={`font-bold tabular-nums ${isTopThree ? 'text-base' : 'text-sm'}`} data-testid={`text-area-${user.id}`}>
-                    {(user.totalArea / 1000000).toLocaleString('es-ES', {
-                      minimumFractionDigits: 1,
-                      maximumFractionDigits: 1,
-                    })}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">km²</p>
+                  {(() => {
+                    const parts = formatAreaParts(user.totalArea);
+                    return (
+                      <>
+                        <p className={`font-bold tabular-nums ${isTopThree ? 'text-base' : 'text-sm'}`} data-testid={`text-area-${user.id}`}>
+                          {parts.value}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{parts.unit}</p>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             );

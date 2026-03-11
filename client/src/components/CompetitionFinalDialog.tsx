@@ -84,10 +84,10 @@ function CompetitionFinalDialogInner() {
                         {entry.user.name?.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()}
                       </div>
                       <span className="text-[10px] font-bold text-white/80 truncate max-w-full mb-1">
-                        {entry.user.name}
+                        {(entry.user as any).nickname ? `🎭 ${(entry.user as any).nickname}` : entry.user.name}
                       </span>
                       <span className="text-[9px] text-white/40 font-mono mb-2">
-                        {(entry.totalArea / 1e6).toFixed(2)} km²
+                        {(() => { const km2 = entry.totalArea / 1e6; if (km2 >= 0.05) return `${km2.toFixed(2)} km²`; return `${Math.round(entry.totalArea)} m²`; })()}
                       </span>
                       {/* Podium bar */}
                       <div className={`w-full ${podiumHeights[visualPos]} ${podiumColors[visualPos]} rounded-t-lg flex items-start justify-center pt-2`}>
@@ -115,11 +115,11 @@ function CompetitionFinalDialogInner() {
                     >
                       {entry.user.name?.[0]?.toUpperCase() || '?'}
                     </div>
-                    <span className="text-xs font-medium text-white flex-1 truncate">
-                      {entry.user.name}
+                    <span className={`text-xs font-medium flex-1 truncate ${(entry.user as any).nickname ? 'text-pink-400' : 'text-white'}`}>
+                      {(entry.user as any).nickname ? `🎭 ${(entry.user as any).nickname}` : entry.user.name}
                     </span>
                     <span className="text-xs text-white/40 font-mono">
-                      {(entry.totalArea / 1e6).toFixed(2)} km²
+                      {(() => { const km2 = entry.totalArea / 1e6; if (km2 >= 0.05) return `${km2.toFixed(2)} km²`; return `${Math.round(entry.totalArea)} m²`; })()}
                     </span>
                   </div>
                 ))}

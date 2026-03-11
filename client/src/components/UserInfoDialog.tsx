@@ -15,6 +15,7 @@ import UserActivitiesDialog from './UserActivitiesDialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { USER_COLOR_NAMES } from '@/lib/colors';
 import { useToast } from '@/hooks/use-toast';
+import { formatArea, formatAreaFromKm2 } from '@/lib/formatArea';
 
 interface Props {
   userId?: string | null;
@@ -139,11 +140,11 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
   }, [open, userId, refetch]);
 
   const stats: any = data || {};
-  const totalAreaKm2 = ((stats.totalArea || 0) / 1000000).toFixed(2);
-  const stolenFromViewerKm2 = ((stats.stolenFromViewer || 0) / 1000000).toFixed(2);
-  const stolenByViewerKm2 = ((stats.stolenByViewer || 0) / 1000000).toFixed(2);
-  const totalStolenKm2 = ((stats.totalStolen || 0) / 1000000).toFixed(2);
-  const totalLostKm2 = ((stats.totalLost || 0) / 1000000).toFixed(2);
+  const totalAreaDisplay = formatArea(stats.totalArea || 0);
+  const stolenFromViewerDisplay = formatArea(stats.stolenFromViewer || 0);
+  const stolenByViewerDisplay = formatArea(stats.stolenByViewer || 0);
+  const totalStolenDisplay = formatArea(stats.totalStolen || 0);
+  const totalLostDisplay = formatArea(stats.totalLost || 0);
 
   return (
     <>
@@ -207,8 +208,19 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
                 </Avatar>
               </button>
               <div className="min-w-0">
-                <div className="font-semibold text-base truncate">{stats.user?.name || 'Usuario'}</div>
-                <div className="text-sm text-white/85 truncate">@{stats.user?.username || 'unknown'}</div>
+                <div className="font-semibold text-base truncate">
+                  {(stats.user as any)?.nickname ? (
+                    <span className="text-pink-400">🎭 {(stats.user as any).nickname}</span>
+                  ) : (
+                    stats.user?.name || 'Usuario'
+                  )}
+                </div>
+                <div className="text-sm text-white/85 truncate">
+                  @{stats.user?.username || 'unknown'}
+                  {(stats.user as any)?.nickname && (
+                    <span className="text-white/50 ml-1">(antes: {stats.user?.name})</span>
+                  )}
+                </div>
               </div>
             </div>
             {currentUserId && currentUserId !== displayUserId && !isAlreadyFriend && (
@@ -267,8 +279,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
                 <MapPin className="h-4 w-4 text-primary" />
                 Area total
               </div>
-              <div className="text-2xl font-bold mt-1">{totalAreaKm2}</div>
-              <div className="text-xs text-muted-foreground">km²</div>
+              <div className="text-2xl font-bold mt-1">{totalAreaDisplay}</div>
             </div>
             <div
               className="rounded-xl border border-border/60 bg-muted/30 p-3 cursor-pointer transition-all hover:shadow-md hover:border-primary/30 hover:bg-muted/50 active:scale-[0.98] group"
@@ -313,7 +324,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
                 <div className="flex-1">
                   <span className="text-sm">Te ha robado</span>
                 </div>
-                <span className="text-sm font-bold">{stolenFromViewerKm2} km²</span>
+                <span className="text-sm font-bold">{stolenFromViewerDisplay}</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="flex items-center justify-center h-7 w-7 rounded-full bg-emerald-100 dark:bg-emerald-900/30">
@@ -322,7 +333,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
                 <div className="flex-1">
                   <span className="text-sm">Le has robado</span>
                 </div>
-                <span className="text-sm font-bold">{stolenByViewerKm2} km²</span>
+                <span className="text-sm font-bold">{stolenByViewerDisplay}</span>
               </div>
             </div>
           )}
@@ -336,7 +347,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
               <div className="flex-1">
                 <span className="text-sm">Ha robado en total</span>
               </div>
-              <span className="text-sm font-bold">{totalStolenKm2} km²</span>
+              <span className="text-sm font-bold">{totalStolenDisplay}</span>
             </div>
             <div className="flex items-center gap-2">
               <div className="flex items-center justify-center h-7 w-7 rounded-full bg-amber-100 dark:bg-amber-900/30">
@@ -345,7 +356,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
               <div className="flex-1">
                 <span className="text-sm">Le han robado en total</span>
               </div>
-              <span className="text-sm font-bold">{totalLostKm2} km²</span>
+              <span className="text-sm font-bold">{totalLostDisplay}</span>
             </div>
           </div>
 
@@ -384,7 +395,7 @@ export default function UserInfoDialog({ userId, currentUserId, open, onOpenChan
                       </div>
                       {friend.totalArea !== undefined && (
                         <div className="text-xs font-semibold text-primary flex-shrink-0">
-                          {((friend.totalArea || 0) / 1000000).toFixed(1)} km²
+                          {(() => { const km2 = (friend.totalArea || 0) / 1000000; if (km2 >= 0.05) return `${km2.toFixed(1)} km²`; return `${Math.round(friend.totalArea || 0)} m²`; })()}
                         </div>
                       )}
                       <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors flex-shrink-0" />

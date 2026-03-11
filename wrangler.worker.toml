@@ -33,6 +33,33 @@ RESEND_FROM = "onboarding@resend.dev"
 #    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
 # 3. Set the secret:
 #    wrangler secret put UPSTASH_CRON_SECRET -c wrangler.worker.toml
+#
+# ===== Upstash Treasure Spawn Setup =====
+# Create a QStash schedule (every hour) for daily treasure spawn:
+#    - URL: https://runna-io-api.runna-io-api.workers.dev/api/tasks/spawn-treasure
+#    - Method: POST
+#    - Schedule: 0 * * * *  (every hour)
+#    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
+# NOTE: Even without this cron, treasures auto-spawn when users load the map (fallback).
+
+# ===== Cloudflare Queue for Async Territory Processing =====
+# The territory queue offloads CPU-heavy work (polygon intersections, stealing,
+# feed metadata, notifications) from the HTTP request into a queue consumer
+# that gets its own 30s CPU budget per message.
+#
+# Create the queue first:
+#   npx wrangler queues create territory-processing
+#   npx wrangler queues create territory-dlq
+
+[[queues.producers]]
+  binding = "TERRITORY_QUEUE"
+  queue = "territory-processing"
+
+[[queues.consumers]]
+  queue = "territory-processing"
+  max_batch_size = 1
+  max_retries = 2
+  dead_letter_queue = "territory-dlq"
 
 # Para desplegar el Worker:
 # 1. cd worker && npm install && cd ..

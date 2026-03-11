@@ -144,10 +144,12 @@ export default function UserActivitiesDialog({ userId, userName, open, onOpenCha
             {selectedRoute.territory && (
               <div className="text-center py-1 bg-primary/10 rounded-lg">
                 <Badge className="bg-primary text-white">
-                  +{(selectedRoute.territory.area / 1000000).toLocaleString('es-ES', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })} km² conquistados
+                  +{(() => {
+                    const area = selectedRoute.territory.area;
+                    const km2 = area / 1000000;
+                    if (km2 >= 0.05) return `${km2.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km²`;
+                    return `${Math.round(area)} m²`;
+                  })()} conquistados
                 </Badge>
               </div>
             )}
@@ -224,10 +226,12 @@ export default function UserActivitiesDialog({ userId, userName, open, onOpenCha
                         >
                           <TrendingUp className="h-3 w-3 text-primary" />
                           <span className="text-primary font-medium">
-                            +{(route.territory.area / 1000000).toLocaleString('es-ES', {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })} km²
+                            +{(() => {
+                              const area = route.territory.area;
+                              const km2 = area / 1000000;
+                              if (km2 >= 0.05) return `${km2.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} km²`;
+                              return `${Math.round(area)} m²`;
+                            })()}
                           </span>
                         </Badge>
                       )}

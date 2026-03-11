@@ -4,6 +4,7 @@ export interface Coordinates {
   lat: number;
   lng: number;
   accuracy?: number;
+  speed?: number | null;
 }
 
 export function getCurrentPosition(): Promise<Coordinates> {
@@ -19,6 +20,7 @@ export function getCurrentPosition(): Promise<Coordinates> {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
           accuracy: position.coords.accuracy,
+          speed: position.coords.speed,
         });
       },
       (error) => {
@@ -47,6 +49,7 @@ export function watchPosition(
         lat: position.coords.latitude,
         lng: position.coords.longitude,
         accuracy: position.coords.accuracy,
+        speed: position.coords.speed,
       });
     },
     onError,

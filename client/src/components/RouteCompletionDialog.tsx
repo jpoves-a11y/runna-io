@@ -300,7 +300,7 @@ export function RouteCompletionDialog({ open, onOpenChange, data, onShowConquest
                         />
                         <span className="text-sm flex-1 truncate">{victim.userName}</span>
                         <span className="text-xs font-semibold text-red-500">
-                          -{(victim.stolenArea / 1000000).toFixed(2)} km²
+                          -{(() => { const km2 = victim.stolenArea / 1000000; if (km2 >= 0.05) return `${km2.toFixed(2)} km²`; return `${Math.round(victim.stolenArea)} m²`; })()}
                         </span>
                       </div>
                     ))}

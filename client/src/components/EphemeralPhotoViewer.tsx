@@ -190,7 +190,12 @@ export function EphemeralPhotoViewer({ userId }: EphemeralPhotoViewerProps) {
                 {currentPhoto.areaStolen && currentPhoto.areaStolen > 0 && (
                   <div className="flex items-center justify-center mt-2 py-2.5 bg-red-500/20 rounded-xl">
                     <span className="text-red-300 text-2xl font-bold">
-                      -{(currentPhoto.areaStolen / 1000000).toFixed(2)} km²
+                      -{(() => {
+                        const abs = Math.abs(currentPhoto.areaStolen);
+                        const km2 = abs / 1_000_000;
+                        if (km2 >= 0.05) return `${km2.toFixed(2)} km²`;
+                        return `${Math.round(abs)} m²`;
+                      })()}
                     </span>
                   </div>
                 )}

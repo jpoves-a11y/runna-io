@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2, Sun, Moon, Monitor, FileText, UserX } from 'lucide-react';
+import { User, Trophy, MapPin, Users, Settings, LogOut, Link2, Unlink, Loader2, RefreshCw, Palette, Camera, Plus, Trash2, Sun, Moon, Monitor, FileText, UserX, ExternalLink } from 'lucide-react';
 import { SiStrava } from 'react-icons/si';
 import { LoadingState } from '@/components/LoadingState';
 import { SettingsDialog } from '@/components/SettingsDialog';
@@ -202,6 +202,7 @@ export default function ProfilePage() {
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
   const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
+  const [isStravaConsentOpen, setIsStravaConsentOpen] = useState(false);
   const [isStravaDisconnectOpen, setIsStravaDisconnectOpen] = useState(false);
   const [isPolarDisconnectOpen, setIsPolarDisconnectOpen] = useState(false);
   const [isPolarDeleteOpen, setIsPolarDeleteOpen] = useState(false);
@@ -313,6 +314,9 @@ export default function ProfilePage() {
         queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
         queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
         queryClient.invalidateQueries({ queryKey: [stravaActivitiesKey] });
+        queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+        queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
+        queryClient.invalidateQueries({ queryKey: ['/api/leaderboard/friends'] });
         toast({
           title: 'Actividades procesadas',
           description: `Se procesaron ${data.processed} actividades de Strava`,
@@ -474,9 +478,13 @@ export default function ProfilePage() {
           description: `Se importaron ${data.imported} nuevas actividades de Polar`,
         });
       } else {
+        const details = [];
+        if (data.total > 0) details.push(`${data.total} encontradas en Polar`);
+        if (data.skipped > 0) details.push(`${data.skipped} ya importadas`);
+        if (data.errors > 0) details.push(`${data.errors} con error`);
         toast({
           title: 'Sin actividades nuevas',
-          description: data.message || 'Todas tus actividades ya estan sincronizadas',
+          description: details.length > 0 ? details.join(', ') : (data.message || 'Todas tus actividades ya están sincronizadas'),
         });
       }
     },
@@ -502,6 +510,9 @@ export default function ProfilePage() {
         queryClient.invalidateQueries({ queryKey: ['/api/routes', user?.id] });
         queryClient.invalidateQueries({ queryKey: ['/api/user', user?.id] });
         queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] });
+        queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+        queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] });
+        queryClient.invalidateQueries({ queryKey: ['/api/leaderboard/friends'] });
         
         if (data.remaining > 0) {
           toast({
@@ -561,9 +572,13 @@ export default function ProfilePage() {
             description: `Se encontraron ${noGps.length} actividades pero ninguna tiene datos de ruta GPS.`,
           });
         } else if (!syncData.imported || syncData.imported === 0) {
+          const details = [];
+          if (syncData.total > 0) details.push(`${syncData.total} encontradas en Polar`);
+          if (syncData.skipped > 0) details.push(`${syncData.skipped} ya importadas`);
+          if (syncData.errors > 0) details.push(`${syncData.errors} con error`);
           toast({
             title: 'Sin actividades nuevas',
-            description: 'No se encontraron actividades nuevas en Polar Flow.',
+            description: details.length > 0 ? details.join(', ') : 'No se encontraron actividades nuevas en Polar Flow.',
           });
         } else {
           toast({
@@ -659,6 +674,7 @@ export default function ProfilePage() {
           summaryPolyline: currentActivity?.summaryPolyline || null,
           distance: currentActivity?.distance || 0,
           victims: result.metrics?.victims || [],
+          treasuresCollected: result.metrics?.treasuresCollected || [],
         }));
         // If user gave a custom name during import preview, rename the route
         if (customName && result.routeId) {
@@ -691,6 +707,9 @@ export default function ProfilePage() {
         queryClient.invalidateQueries({ queryKey: ['/api/routes', user.id] }),
         queryClient.invalidateQueries({ queryKey: ['/api/user', user.id] }),
         queryClient.invalidateQueries({ queryKey: [polarActivitiesKey] }),
+        queryClient.invalidateQueries({ queryKey: ['/api/feed'] }),
+        queryClient.invalidateQueries({ queryKey: ['/api/leaderboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['/api/leaderboard/friends'] }),
       ]);
       
       setShowActivityPreview(false);
@@ -1152,6 +1171,21 @@ export default function ProfilePage() {
                     Desconectar
                   </Button>
                 </div>
+                
+                {/* Link to Strava account - Required by Section 2.14.5 */}
+                {stravaStatus?.athleteData?.id && (
+                  <div className="mt-3 pt-3 border-t border-border">
+                    <a
+                      href={`https://www.strava.com/athletes/${stravaStatus.athleteData.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-[#FC4C02] transition-colors"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      Ver mi perfil en Strava
+                    </a>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -1159,7 +1193,7 @@ export default function ProfilePage() {
                   Conecta tu cuenta de Strava para importar automaticamente tus carreras y caminatas
                 </p>
                 <Button
-                  onClick={() => connectStravaMutation.mutate()}
+                  onClick={() => setIsStravaConsentOpen(true)}
                   disabled={connectStravaMutation.isPending}
                   className="bg-[#FC4C02] text-white"
                   data-testid="button-connect-strava"
@@ -1666,6 +1700,61 @@ export default function ProfilePage() {
       </AlertDialog>
 
       <LoginDialog open={isLoginOpen} onOpenChange={setIsLoginOpen} onLogin={login} />
+
+      {/* Strava Consent Dialog - Explicit consent before connecting */}
+      <AlertDialog open={isStravaConsentOpen} onOpenChange={setIsStravaConsentOpen}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <SiStrava className="h-5 w-5 text-[#FC4C02]" />
+              Conectar con Strava
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p className="font-medium text-foreground">Runna.io es una aplicación comunitaria de gamificación para runners.</p>
+                
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">Al conectar tu cuenta de Strava, consientes que:</p>
+                  <ul className="list-disc list-inside space-y-1 ml-2">
+                    <li>Importaremos tus actividades de running y caminata</li>
+                    <li>Tus rutas se usarán para calcular <strong>territorios conquistados</strong></li>
+                    <li>Los territorios serán <strong>visibles para otros usuarios</strong> de la comunidad en el mapa y rankings</li>
+                    <li>Tu nombre de usuario aparecerá en el <strong>feed social y leaderboards</strong></li>
+                    <li>Podrás competir con amigos y participar en competiciones de equipo</li>
+                  </ul>
+                </div>
+
+                <div className="bg-amber-50 dark:bg-amber-950/30 p-3 rounded-lg border border-amber-200 dark:border-amber-800">
+                  <p className="text-xs text-amber-800 dark:text-amber-200">
+                    <strong>Importante:</strong> Como app comunitaria, tus rutas y actividades serán visibles para otros miembros de la comunidad. Esto es esencial para el funcionamiento del juego de territorios.
+                  </p>
+                </div>
+
+                <p className="text-xs">
+                  Puedes desconectar Strava en cualquier momento desde tu perfil. 
+                  Lee nuestra <a href="/privacy" className="text-primary hover:underline">Política de Privacidad</a> para más información.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => {
+                setIsStravaConsentOpen(false);
+                connectStravaMutation.mutate();
+              }}
+              className="bg-[#FC4C02] hover:bg-[#FC4C02]/90"
+              disabled={connectStravaMutation.isPending}
+            >
+              {connectStravaMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Acepto y Conectar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={isStravaDisconnectOpen} onOpenChange={setIsStravaDisconnectOpen}>
         <AlertDialogContent>

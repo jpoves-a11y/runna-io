@@ -2,9 +2,11 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { registerRoutes } from './routes';
+import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 
 export interface Env {
   DATABASE_URL: string;
+  TURSO_AUTH_TOKEN: string;
   STRAVA_CLIENT_ID: string;
   STRAVA_CLIENT_SECRET: string;
   STRAVA_WEBHOOK_VERIFY_TOKEN: string;
@@ -19,6 +21,8 @@ export interface Env {
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM?: string;
   UPSTASH_CRON_SECRET?: string;
+  // Cloudflare Queue for async territory processing
+  TERRITORY_QUEUE: Queue<TerritoryQueueMessage>;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -51,4 +55,7 @@ app.get('/', (c) => {
   return c.json({ message: 'Runna.io API - Cloudflare Workers' });
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  queue: handleQueueBatch,
+};

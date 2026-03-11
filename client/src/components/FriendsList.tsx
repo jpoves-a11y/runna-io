@@ -154,7 +154,12 @@ export function FriendsList({ friends, onAddFriend, onInviteFriend, onRemoveFrie
 
                 <div className="flex items-center justify-between gap-2">
                   <Badge className="text-xs">
-                    {(friend.totalArea / 1000000).toFixed(2)} km²
+                    {(() => {
+                      const abs = Math.abs(friend.totalArea);
+                      const km2 = abs / 1_000_000;
+                      if (km2 >= 0.05) return `${km2.toFixed(2)} km²`;
+                      return `${Math.round(abs)} m²`;
+                    })()}
                   </Badge>
                   <Button
                     size="sm"

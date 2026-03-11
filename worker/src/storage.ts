@@ -121,6 +121,8 @@ function safeUnion(geomA: any, geomB: any): any | null {
 }
 
 export class WorkerStorage {
+  private _competitionTablesEnsured = false;
+  private _feedTablesEnsured = false;
   constructor(private db: Database) {}
 
   async getUser(id: string): Promise<User | undefined> {
@@ -144,6 +146,17 @@ export class WorkerStorage {
       .values(insertUser)
       .returning();
     return user;
+  }
+
+  // Ensure a "system" user exists for system-generated feed events (treasure spawns, etc.)
+  static readonly SYSTEM_USER_ID = '__system_runna__';
+  async ensureSystemUser(): Promise<string> {
+    const existing = await this.db.select().from(users).where(eq(users.id, WorkerStorage.SYSTEM_USER_ID)).limit(1);
+    if (existing.length > 0) return WorkerStorage.SYSTEM_USER_ID;
+    try {
+      await this.db.run(sql`INSERT OR IGNORE INTO users (id, username, email, name, password, color) VALUES (${WorkerStorage.SYSTEM_USER_ID}, '_runna_system', 'system@runna.io', 'Runna', '', '#16a34a')`);
+    } catch (_) { /* already exists from race */ }
+    return WorkerStorage.SYSTEM_USER_ID;
   }
 
   async deleteUser(userId: string): Promise<void> {
@@ -1174,6 +1187,17 @@ export class WorkerStorage {
     await this.db.delete(polarActivities).where(eq(polarActivities.id, id));
   }
 
+  // Delete all polar activities that were saved as "skipped" (have a skipReason).
+  // These block reimport because getPolarActivityByPolarId finds them and treats them as "already imported".
+  // Optionally filter by userId.
+  async deleteSkippedPolarActivities(userId?: string | null): Promise<number> {
+    const condition = userId
+      ? sql`${polarActivities.skipReason} IS NOT NULL AND ${polarActivities.userId} = ${userId}`
+      : sql`${polarActivities.skipReason} IS NOT NULL`;
+    const result = await this.db.delete(polarActivities).where(condition).returning();
+    return result.length;
+  }
+
   async deleteConquestMetricsByRouteId(routeId: string): Promise<void> {
     await this.db.delete(conquestMetrics).where(eq(conquestMetrics.routeId, routeId));
   }
@@ -1961,6 +1985,7 @@ export class WorkerStorage {
   // --- Social Feed ---
 
   async ensureFeedTables(): Promise<void> {
+    if (this._feedTablesEnsured) return;
     try {
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_events (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -2000,6 +2025,7 @@ export class WorkerStorage {
       )`);
       // Create unique index for one reaction per user per target
       await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_reactions_unique ON feed_reactions(user_id, target_type, target_id)`);
+      this._feedTablesEnsured = true;
     } catch (e) {
       console.error('[FEED] ensureFeedTables error:', e);
     }
@@ -2012,6 +2038,17 @@ export class WorkerStorage {
       .values(data)
       .returning();
     return event;
+  }
+
+  async updateFeedEvent(eventId: string, data: { distance?: number; duration?: number; newArea?: number; metadata?: string | null }): Promise<void> {
+    await this.ensureFeedTables();
+    const updateData: any = {};
+    if (data.distance !== undefined) updateData.distance = data.distance;
+    if (data.duration !== undefined) updateData.duration = data.duration;
+    if (data.newArea !== undefined) updateData.newArea = data.newArea;
+    if (data.metadata !== undefined) updateData.metadata = data.metadata;
+    if (Object.keys(updateData).length === 0) return;
+    await this.db.update(feedEvents).set(updateData).where(eq(feedEvents.id, eventId));
   }
 
   async getMaxConquestArea(userId: string): Promise<number> {
@@ -2028,6 +2065,15 @@ export class WorkerStorage {
     // Delete comments first, then events (raw SQL to avoid ON DELETE SET NULL race)
     await this.db.run(sql`DELETE FROM feed_comments WHERE feed_event_id IN (SELECT id FROM feed_events WHERE route_id = ${routeId})`);
     await this.db.run(sql`DELETE FROM feed_events WHERE route_id = ${routeId}`);
+  }
+
+  async getFeedEventByRouteId(routeId: string): Promise<FeedEvent | undefined> {
+    await this.ensureFeedTables();
+    const [event] = await this.db
+      .select()
+      .from(feedEvents)
+      .where(eq(feedEvents.routeId, routeId));
+    return event || undefined;
   }
 
   async getFeedForUser(userId: string, limit: number = 30, offset: number = 0): Promise<FeedEventWithDetails[]> {
@@ -2088,9 +2134,14 @@ export class WorkerStorage {
       : [];
     const userMap = new Map(usersList.map(u => [u.id, u]));
 
-    // Batch fetch all routes in one query
+    // Batch fetch all routes in one query (only needed columns)
     const routesList = routeIdsNeeded.size > 0
-      ? await this.db.select().from(routes).where(inArray(routes.id, [...routeIdsNeeded]))
+      ? await this.db.select({
+          id: routes.id,
+          name: routes.name,
+          startedAt: routes.startedAt,
+          coordinates: routes.coordinates,
+        }).from(routes).where(inArray(routes.id, [...routeIdsNeeded]))
       : [];
     const routeMap = new Map(routesList.map(r => [r.id, r]));
 
@@ -2139,6 +2190,12 @@ export class WorkerStorage {
       : [];
     const userReactionMap = new Map(userReactions.map(r => [r.targetId, r.reactionType as 'like' | 'dislike']));
 
+    // Batch fetch active nicknames for all involved users
+    let nicknameMap = new Map<string, { nickname: string; expiresAt: string }>();
+    try {
+      nicknameMap = await this.getActiveNicknamesForUsers([...userIdsNeeded]);
+    } catch (_) {}
+
     // Build result from cached data (no more individual queries)
     const result: FeedEventWithDetails[] = [];
     for (const event of events) {
@@ -2149,7 +2206,8 @@ export class WorkerStorage {
       if (event.victimId) {
         const v = userMap.get(event.victimId);
         if (v) {
-          victim = { id: v.id, username: v.username, name: v.name, color: v.color, avatar: v.avatar };
+          const vnn = nicknameMap.get(v.id);
+          victim = { id: v.id, username: v.username, name: v.name, color: v.color, avatar: v.avatar, nickname: vnn?.nickname || null, nicknameExpiresAt: vnn?.expiresAt || null };
         }
       }
 
@@ -2189,9 +2247,10 @@ export class WorkerStorage {
       const dislikeCount = dislikeCountMap.get(event.id) || 0;
       const userReaction = userReactionMap.get(event.id) || null;
 
+      const userNn = nicknameMap.get(eventUser.id);
       result.push({
         ...event,
-        user: { id: eventUser.id, username: eventUser.username, name: eventUser.name, color: eventUser.color, avatar: eventUser.avatar },
+        user: { id: eventUser.id, username: eventUser.username, name: eventUser.name, color: eventUser.color, avatar: eventUser.avatar, nickname: userNn?.nickname || null, nicknameExpiresAt: userNn?.expiresAt || null },
         victim,
         routeName,
         activityDate,
@@ -2534,6 +2593,7 @@ export class WorkerStorage {
   // ============ COMPETITION SYSTEM ============
 
   async ensureCompetitionTables(): Promise<void> {
+    if (this._competitionTablesEnsured) return;
     try {
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS competitions (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -2616,6 +2676,9 @@ export class WorkerStorage {
       )`);
       await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_user ON territory_fortifications(user_id)`);
       await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_bbox ON territory_fortifications(bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat)`);
+      // Add zone column to treasures
+      try { await this.db.run(sql`ALTER TABLE treasures ADD COLUMN zone TEXT`); } catch (_) { /* column already exists */ }
+      this._competitionTablesEnsured = true;
     } catch (_) {}
   }
 
@@ -2848,6 +2911,28 @@ export class WorkerStorage {
     return result.length > 0;
   }
 
+  /** Batch-load all active defensive powers for multiple users in ONE query (saves N*4 subrequests) */
+  async getActiveDefensivePowersForUsers(userIds: string[], competitionId: string): Promise<Array<{ userId: string; powerType: string }>> {
+    if (userIds.length === 0) return [];
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    const defensiveTypes = ['shield', 'invisibility', 'time_bomb', 'sentinel'];
+    const result = await this.db
+      .select({
+        userId: userPowers.userId,
+        powerType: userPowers.powerType,
+      })
+      .from(userPowers)
+      .where(and(
+        inArray(userPowers.userId, userIds),
+        eq(userPowers.competitionId, competitionId),
+        inArray(userPowers.powerType, defensiveTypes),
+        eq(userPowers.status, 'active'),
+        sql`(${userPowers.expiresAt} IS NULL OR ${userPowers.expiresAt} > ${now})`
+      ));
+    return result;
+  }
+
   // --- Competition Stats ---
 
   async getOrCreateCompetitionStats(competitionId: string, userId: string): Promise<CompetitionStat> {
@@ -2916,25 +3001,28 @@ export class WorkerStorage {
     await this.ensureCompetitionTables();
     await this.getOrCreateCompetitionStats(competitionId, userId);
     const now = new Date().toISOString();
-    // Build SET clause safely using Drizzle's sql template
-    const updates: Record<string, any> = { updatedAt: now };
+    // Build a single SQL UPDATE with all increments combined (saves 5+ subrequests vs individual calls)
+    const setParts: string[] = [`updated_at = '${now}'`];
     if (increments.distance != null && increments.distance > 0) {
-      await this.db.run(sql`UPDATE competition_stats SET total_distance = total_distance + ${increments.distance}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+      setParts.push(`total_distance = total_distance + ${increments.distance}`);
     }
     if (increments.duration != null && increments.duration > 0) {
-      await this.db.run(sql`UPDATE competition_stats SET total_duration = total_duration + ${increments.duration}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+      setParts.push(`total_duration = total_duration + ${increments.duration}`);
     }
     if (increments.activities != null && increments.activities > 0) {
-      await this.db.run(sql`UPDATE competition_stats SET activities_count = activities_count + ${increments.activities}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+      setParts.push(`activities_count = activities_count + ${increments.activities}`);
     }
     if (increments.treasures != null && increments.treasures > 0) {
-      await this.db.run(sql`UPDATE competition_stats SET treasures_collected = treasures_collected + ${increments.treasures}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+      setParts.push(`treasures_collected = treasures_collected + ${increments.treasures}`);
     }
     if (increments.areaStolen != null && increments.areaStolen > 0) {
-      await this.db.run(sql`UPDATE competition_stats SET area_stolen = area_stolen + ${increments.areaStolen}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+      setParts.push(`area_stolen = area_stolen + ${increments.areaStolen}`);
     }
     if (increments.ranTogether != null && increments.ranTogether > 0) {
-      await this.db.run(sql`UPDATE competition_stats SET ran_together_count = ran_together_count + ${increments.ranTogether}, updated_at = ${now} WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+      setParts.push(`ran_together_count = ran_together_count + ${increments.ranTogether}`);
+    }
+    if (setParts.length > 1) {
+      await this.db.run(sql.raw(`UPDATE competition_stats SET ${setParts.join(', ')} WHERE competition_id = '${competitionId}' AND user_id = '${userId}'`));
     }
   }
 
@@ -3004,6 +3092,27 @@ export class WorkerStorage {
       .orderBy(desc(userNicknames.createdAt))
       .limit(1);
     return result.length > 0 ? result[0] : null;
+  }
+
+  async getActiveNicknamesForUsers(userIds: string[]): Promise<Map<string, { nickname: string; expiresAt: string }>> {
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    const result = await this.db
+      .select()
+      .from(userNicknames)
+      .where(and(
+        inArray(userNicknames.targetUserId, userIds),
+        sql`${userNicknames.expiresAt} > ${now}`
+      ));
+    // Build map: pick the most recent nickname per target user
+    const map = new Map<string, { nickname: string; expiresAt: string }>();
+    for (const nn of result) {
+      const existing = map.get(nn.targetUserId);
+      if (!existing || nn.createdAt > (existing as any).createdAt) {
+        map.set(nn.targetUserId, { nickname: nn.nickname, expiresAt: nn.expiresAt });
+      }
+    }
+    return map;
   }
 
   async createNickname(data: { targetUserId: string; setByUserId: string; nickname: string; expiresAt: string }): Promise<UserNickname> {
@@ -3081,6 +3190,46 @@ export class WorkerStorage {
   async deleteFortificationRecord(id: string): Promise<void> {
     await this.ensureCompetitionTables();
     await this.db.run(sql`DELETE FROM territory_fortifications WHERE id = ${id}`);
+  }
+
+  /** Delete multiple fortification records in a single query */
+  async deleteFortificationRecordsBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.ensureCompetitionTables();
+    const placeholders = ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    await this.db.run(sql.raw(`DELETE FROM territory_fortifications WHERE id IN (${placeholders})`));
+  }
+
+  /** Batch insert conquest metrics in a single query (saves N subrequests → 1) */
+  async recordConquestMetricsBatch(metrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string }>): Promise<void> {
+    if (metrics.length === 0) return;
+    const values = metrics.map(m => {
+      const id = crypto.randomUUID();
+      const rid = m.routeId ? `'${m.routeId.replace(/'/g, "''")}'` : 'NULL';
+      return `('${id}', '${m.attackerId.replace(/'/g, "''")}', '${m.defenderId.replace(/'/g, "''")}', ${m.areaStolen}, ${rid}, datetime('now'))`;
+    }).join(',');
+    await this.db.run(sql.raw(`INSERT INTO conquest_metrics (id, attacker_id, defender_id, area_stolen, route_id, conquered_at) VALUES ${values}`));
+  }
+
+  /** Batch insert feed events in a single query (saves N subrequests → 1) */
+  async createFeedEventsBatch(events: Array<{ userId: string; eventType: string; metadata: string }>): Promise<void> {
+    if (events.length === 0) return;
+    const values = events.map(e => {
+      const id = crypto.randomUUID();
+      return `('${id}', '${e.userId.replace(/'/g, "''")}', '${e.eventType.replace(/'/g, "''")}', '${e.metadata.replace(/'/g, "''")}', datetime('now'))`;
+    }).join(',');
+    await this.db.run(sql.raw(`INSERT INTO feed_events (id, user_id, event_type, metadata, created_at) VALUES ${values}`));
+  }
+
+  /** Batch update victim areas using subquery — single DB call for all victims */
+  async updateVictimAreasBatch(victimIds: string[]): Promise<void> {
+    if (victimIds.length === 0) return;
+    const placeholders = victimIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    await this.db.run(sql.raw(`
+      UPDATE users SET total_area = COALESCE(
+        (SELECT SUM(area) FROM territories WHERE territories.user_id = users.id), 0
+      ) WHERE id IN (${placeholders})
+    `));
   }
 
   // --- DB Reset for competition ---
