@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet-rotate';
 import { Button } from '@/components/ui/button';
 import { ZoomIn, ZoomOut, Layers, Navigation } from 'lucide-react';
 import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
@@ -98,7 +99,10 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       markerZoomAnimation: true,
       zoomSnap: 0.5, // Smoother zoom steps
       wheelDebounceTime: 40, // Responsive scroll zoom
-    });
+      rotate: true, // Enable map rotation
+      touchRotate: true, // Two-finger rotation gesture
+      rotateControl: false, // We handle reset via our own compass button
+    } as any);
 
     // Use tile layer matching current theme with aggressive caching
     const initialStyle = document.documentElement.classList.contains('dark') ? 'dark' : 'light';

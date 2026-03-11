@@ -9,6 +9,7 @@ import type { TerritoryWithUser } from '@shared/schema';
 import type { Treasure } from '@/hooks/use-competition';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet-rotate';
 
 const STORAGE_KEY = 'runna-route-tracking';
 const MIN_ACCURACY_METERS = 30;
@@ -101,6 +102,8 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
   const preTrackWatchRef = useRef<number | null>(null);
   const displayTimerRef = useRef<number | null>(null);
   const userMarkerObjRef = useRef<L.Marker | null>(null);
+  const headingRef = useRef<number | null>(null);
+  const orientationHandlerRef = useRef<((e: Event) => void) | null>(null);
   const territoryGroupRef = useRef<L.LayerGroup | null>(null);
   const treasureGroupRef = useRef<L.LayerGroup | null>(null);
   const treasureMarkersRef = useRef<Map<string, L.Marker>>(new Map());
@@ -256,7 +259,8 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
 
     const map = L.map(mapContainer.current, {
       center: [40.4168, -3.7038], zoom: 16, zoomControl: false, attributionControl: false,
-    });
+      rotate: true, touchRotate: true, rotateControl: false,
+    } as any);
     L.tileLayer(tileUrl, { maxZoom: 19, subdomains: ['a', 'b', 'c', 'd'], keepBuffer: 8 }).addTo(map);
 
     // Create layer groups for territories and treasures
@@ -270,22 +274,89 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
     map.on('dragstart', () => { userInteractingRef.current = true; setAutoFollow(false); });
     map.on('dragend', () => { userInteractingRef.current = false; });
 
+    // Heading-aware icon creator for RouteTracker
+    const createTrackerIcon = (heading: number | null) => {
+      const hasHeading = heading !== null;
+      const rotation = hasHeading ? heading : 0;
+      return L.divIcon({
+        className: 'current-location-marker',
+        html: `
+          <div style="width:48px;height:48px;position:relative;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;width:40px;height:40px;left:4px;top:4px;border-radius:50%;background:rgba(66,133,244,0.15);animation:location-pulse 2s ease-out infinite;"></div>
+            ${hasHeading ? `
+              <svg class="location-arrow" width="28" height="28" viewBox="0 0 32 32" style="transform:rotate(${rotation}deg);position:relative;z-index:2;filter:drop-shadow(0 1px 3px rgba(0,0,0,0.4));">
+                <path d="M16 2L6 28L16 20L26 28L16 2Z" fill="#4285F4" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+              </svg>
+            ` : `
+              <div style="width:16px;height:16px;border-radius:50%;background:#4285F4;border:3px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);position:relative;z-index:2;"></div>
+            `}
+          </div>
+        `,
+        iconSize: [48, 48], iconAnchor: [24, 24],
+      });
+    };
+
+    // Setup heading watch for compass arrow
+    const setupTrackerHeading = () => {
+      if (orientationHandlerRef.current) {
+        window.removeEventListener('deviceorientation', orientationHandlerRef.current, true);
+        window.removeEventListener('deviceorientationabsolute', orientationHandlerRef.current, true);
+      }
+      const handler = (event: Event) => {
+        const e = event as DeviceOrientationEvent;
+        let heading: number | null = null;
+        if ((e as any).webkitCompassHeading !== undefined) {
+          heading = (e as any).webkitCompassHeading as number;
+        } else if (e.alpha !== null && e.alpha !== undefined) {
+          heading = (360 - e.alpha) % 360;
+        }
+        if (heading !== null && userMarkerObjRef.current) {
+          headingRef.current = heading;
+          const arrowEl = userMarkerObjRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
+          if (arrowEl) {
+            arrowEl.style.transform = `rotate(${heading}deg)`;
+          } else {
+            userMarkerObjRef.current.setIcon(createTrackerIcon(heading));
+          }
+        }
+      };
+      orientationHandlerRef.current = handler;
+      if ('ondeviceorientationabsolute' in window) {
+        window.addEventListener('deviceorientationabsolute', handler, true);
+      } else {
+        window.addEventListener('deviceorientation', handler, true);
+      }
+    };
+
+    // Request orientation permission (iOS needs user gesture, but we're in useEffect after a click to start tracking)
+    const requestOrientation = async () => {
+      try {
+        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+          const perm = await (DeviceOrientationEvent as any).requestPermission();
+          if (perm === 'granted') setupTrackerHeading();
+        } else {
+          setupTrackerHeading();
+        }
+      } catch { /* permission denied */ }
+    };
+    requestOrientation();
+
     getCurrentPosition()
       .then((pos) => {
         if (pos.accuracy !== undefined) setGpsAccuracy(pos.accuracy);
         map.setView([pos.lat, pos.lng], 17);
-        const icon = L.divIcon({
-          className: 'current-location-marker',
-          html: '<div class="relative flex items-center justify-center"><div class="absolute w-8 h-8 bg-primary/30 rounded-full animate-ping"></div><div class="relative w-4 h-4 bg-primary rounded-full border-2 border-white shadow-lg"></div></div>',
-          iconSize: [32, 32], iconAnchor: [16, 16],
-        });
-        userMarkerObjRef.current = L.marker([pos.lat, pos.lng], { icon, zIndexOffset: 1000 }).addTo(map);
+        const icon = createTrackerIcon(headingRef.current);
+        userMarkerObjRef.current = L.marker([pos.lat, pos.lng], { icon, zIndexOffset: 1000, interactive: false }).addTo(map);
       })
       .catch(() => {})
       .finally(() => setIsGettingLocation(false));
     return () => {
       if (watchIdRef.current) clearWatch(watchIdRef.current);
       if (displayTimerRef.current) window.clearInterval(displayTimerRef.current);
+      if (orientationHandlerRef.current) {
+        window.removeEventListener('deviceorientation', orientationHandlerRef.current, true);
+        window.removeEventListener('deviceorientationabsolute', orientationHandlerRef.current, true);
+      }
       map.remove(); mapRef.current = null;
       territoryGroupRef.current = null; treasureGroupRef.current = null;
       treasureMarkersRef.current.clear();
@@ -769,11 +840,19 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
         </div>
       )}
 
-      {/* Treasure pulse animation CSS */}
+      {/* Treasure pulse + Location pulse animation CSS */}
       <style>{`
         @keyframes treasure-pulse {
           0%, 100% { transform: scale(1); opacity: 0.6; }
           50% { transform: scale(1.4); opacity: 0; }
+        }
+        @keyframes location-pulse {
+          0% { transform: scale(1); opacity: 0.6; }
+          100% { transform: scale(2.2); opacity: 0; }
+        }
+        .current-location-marker {
+          background: none !important;
+          border: none !important;
         }
       `}</style>
     </div>
