@@ -261,7 +261,7 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
       center: [40.4168, -3.7038], zoom: 16, zoomControl: false, attributionControl: false,
       rotate: true, touchRotate: true, rotateControl: false,
     } as any);
-    L.tileLayer(tileUrl, { maxZoom: 19, subdomains: ['a', 'b', 'c', 'd'], keepBuffer: 8 }).addTo(map);
+    L.tileLayer(tileUrl, { maxZoom: 19, subdomains: ['a', 'b', 'c', 'd'], keepBuffer: 12, updateWhenIdle: false, updateWhenZooming: true }).addTo(map);
 
     // Create layer groups for territories and treasures
     const territoryGroup = L.layerGroup().addTo(map);
@@ -853,6 +853,9 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
         .current-location-marker {
           background: none !important;
           border: none !important;
+        }
+        .leaflet-map-pane, .leaflet-tile-pane, .leaflet-overlay-pane {
+          will-change: transform;
         }
       `}</style>
     </div>

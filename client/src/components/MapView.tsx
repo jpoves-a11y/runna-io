@@ -68,6 +68,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const headingRef = useRef<number | null>(null);
   const orientationHandlerRef = useRef<((e: Event) => void) | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const orientationGrantedRef = useRef(false);
   const [isLocating, setIsLocating] = useState(false);
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
@@ -79,11 +80,11 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     if (!mapContainer.current || mapRef.current) return;
 
     // Create a shared canvas renderer for all vector layers - much faster than SVG
-    const canvasRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+    const canvasRenderer = L.canvas({ padding: 1.5, tolerance: 10 });
     canvasRendererRef.current = canvasRenderer;
 
     // SVG renderer for shared-run territories (supports pattern fills)
-    const svgRenderer = L.svg({ padding: 0.5 });
+    const svgRenderer = L.svg({ padding: 1.5 });
     svgRendererRef.current = svgRenderer;
 
     // Initialize map with optimized settings for smooth panning
@@ -838,22 +839,27 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const handleLocate = async () => {
     setIsLocating(true);
     try {
-      // 1. Request iOS orientation permission IMMEDIATELY in click handler (user gesture required)
-      let hasOrientationPermission = false;
-      try {
-        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-          const perm = await (DeviceOrientationEvent as any).requestPermission();
-          hasOrientationPermission = perm === 'granted';
-        } else {
-          hasOrientationPermission = true; // Android/desktop — no permission needed
+      // 1. Request iOS orientation permission only ONCE (cached in ref)
+      if (!orientationGrantedRef.current) {
+        try {
+          if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+            const perm = await (DeviceOrientationEvent as any).requestPermission();
+            orientationGrantedRef.current = perm === 'granted';
+          } else {
+            orientationGrantedRef.current = true; // Android/desktop — no permission needed
+          }
+        } catch {
+          orientationGrantedRef.current = false;
         }
-      } catch {
-        hasOrientationPermission = false;
       }
 
       // 2. Get current position
       const position = await getCurrentPosition();
       mapRef.current?.setView([position.lat, position.lng], Math.max(mapRef.current.getZoom(), 16));
+      // Reset rotation to north when locating
+      if (mapRef.current && (mapRef.current as any).setBearing) {
+        (mapRef.current as any).setBearing(0);
+      }
 
       const icon = createLocationIcon(headingRef.current);
 
@@ -868,8 +874,8 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         }).addTo(mapRef.current!);
       }
 
-      // 3. Start watching heading (orientation permission already granted above)
-      if (hasOrientationPermission && !orientationHandlerRef.current) {
+      // 3. Start watching heading (only once)
+      if (orientationGrantedRef.current && !orientationHandlerRef.current) {
         setupHeadingWatch();
       }
 
@@ -958,7 +964,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
           background: ${mapStyle === 'dark' ? '#000000' : '#e8e8e6'} !important;
         }
         
-        /* Smooth tile appearance */
+        /* Smooth tile appearance during rotation */
         .leaflet-tile {
           will-change: transform;
         }
@@ -967,6 +973,17 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         .leaflet-tile-container {
           will-change: transform;
           backface-visibility: hidden;
+        }
+
+        /* Smooth rotation for the entire map pane */
+        .leaflet-map-pane {
+          will-change: transform;
+        }
+        .leaflet-tile-pane {
+          will-change: transform;
+        }
+        .leaflet-overlay-pane {
+          will-change: transform;
         }
         
         /* Make tile loading invisible - tiles appear from matching background */
