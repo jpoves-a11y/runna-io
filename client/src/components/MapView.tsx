@@ -62,6 +62,10 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const canvasRendererRef = useRef<L.Canvas | null>(null);
   // SVG renderer for shared-run territories (allows SVG pattern fills)
   const svgRendererRef = useRef<L.SVG | null>(null);
+  // User location marker (single instance, updated on each locate)
+  const locationMarkerRef = useRef<L.Marker | null>(null);
+  const headingRef = useRef<number | null>(null);
+  const orientationHandlerRef = useRef<((e: DeviceOrientationEvent) => void) | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
@@ -747,28 +751,100 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     mapRef.current?.zoomOut();
   };
 
+  const createLocationIcon = (heading: number | null) => {
+    const hasHeading = heading !== null;
+    const rotation = hasHeading ? heading : 0;
+    return L.divIcon({
+      className: 'current-location-marker',
+      html: `
+        <div style="width: 40px; height: 40px; position: relative; display: flex; align-items: center; justify-content: center;">
+          <div style="position: absolute; width: 32px; height: 32px; left: 4px; top: 4px; border-radius: 50%; background: rgba(59, 130, 246, 0.3); animation: location-pulse 2s ease-out infinite;"></div>
+          ${hasHeading ? `
+            <svg class="location-arrow" width="22" height="22" viewBox="0 0 24 24" style="transform: rotate(${rotation}deg); position: relative; z-index: 1; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.4));">
+              <path d="M12 2L5 20L12 14L19 20L12 2Z" fill="#3b82f6" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+          ` : `
+            <div style="width: 14px; height: 14px; border-radius: 50%; background: #3b82f6; border: 3px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.3); position: relative; z-index: 1;"></div>
+          `}
+        </div>
+      `,
+      iconSize: [40, 40],
+      iconAnchor: [20, 20],
+    });
+  };
+
+  const startHeadingWatch = () => {
+    // Clean up any existing handler
+    if (orientationHandlerRef.current) {
+      window.removeEventListener('deviceorientation', orientationHandlerRef.current, true);
+    }
+
+    const handler = (event: DeviceOrientationEvent) => {
+      let heading: number | null = null;
+      // iOS provides webkitCompassHeading
+      if ((event as any).webkitCompassHeading !== undefined) {
+        heading = (event as any).webkitCompassHeading;
+      } else if (event.alpha !== null) {
+        // Android/others: alpha is 0-360 counterclockwise from north
+        heading = (360 - event.alpha) % 360;
+      }
+      if (heading !== null && locationMarkerRef.current) {
+        headingRef.current = heading;
+        // Update arrow rotation via DOM without recreating icon
+        const arrowEl = locationMarkerRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
+        if (arrowEl) {
+          arrowEl.style.transform = `rotate(${heading}deg)`;
+        } else {
+          // First heading received - switch from dot to arrow
+          locationMarkerRef.current.setIcon(createLocationIcon(heading));
+        }
+      }
+    };
+
+    orientationHandlerRef.current = handler;
+
+    // iOS 13+ requires permission
+    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+      (DeviceOrientationEvent as any).requestPermission().then((response: string) => {
+        if (response === 'granted') {
+          window.addEventListener('deviceorientation', handler, true);
+        }
+      }).catch(() => { /* permission denied */ });
+    } else {
+      window.addEventListener('deviceorientation', handler, true);
+    }
+  };
+
+  // Cleanup heading watch on unmount
+  useEffect(() => {
+    return () => {
+      if (orientationHandlerRef.current) {
+        window.removeEventListener('deviceorientation', orientationHandlerRef.current, true);
+      }
+    };
+  }, []);
+
   const handleLocate = async () => {
     setIsLocating(true);
     try {
       const position = await getCurrentPosition();
       mapRef.current?.setView([position.lat, position.lng], 16);
-      
-      // Add pulsing marker for current location
-      const pulsingIcon = L.divIcon({
-        className: 'current-location-marker',
-        html: `
-          <div class="relative">
-            <div class="absolute w-8 h-8 bg-primary/30 rounded-full animate-ping"></div>
-            <div class="relative w-4 h-4 bg-primary rounded-full border-2 border-white shadow-lg"></div>
-          </div>
-        `,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
-      });
 
-      L.marker([position.lat, position.lng], {
-        icon: pulsingIcon,
-      }).addTo(mapRef.current!);
+      const icon = createLocationIcon(headingRef.current);
+
+      if (locationMarkerRef.current) {
+        // Update existing marker position and icon
+        locationMarkerRef.current.setLatLng([position.lat, position.lng]);
+        locationMarkerRef.current.setIcon(icon);
+      } else {
+        // Create marker for the first time
+        locationMarkerRef.current = L.marker([position.lat, position.lng], {
+          icon,
+          zIndexOffset: 9999,
+        }).addTo(mapRef.current!);
+        // Start watching heading for direction arrow
+        startHeadingWatch();
+      }
 
       onLocationFound?.(position);
     } catch (error) {
@@ -880,6 +956,16 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         
         .animate-ping {
           animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+
+        @keyframes location-pulse {
+          0% { transform: scale(1); opacity: 0.6; }
+          100% { transform: scale(2.2); opacity: 0; }
+        }
+
+        .current-location-marker {
+          background: none !important;
+          border: none !important;
         }
         
         @keyframes treasure-pulse {
