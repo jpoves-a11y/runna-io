@@ -1,12 +1,18 @@
 /**
- * useMapRotation — lightweight custom two-finger map rotation for Leaflet.
+ * useMapRotation — lightweight two-finger map rotation for Leaflet.
  *
- * Design:
- *  - Patches ONLY the map instance (not global L prototype)
- *  - CSS transform rotate() on mapPane
- *  - During gesture: DOM-only, zero React re-renders
- *  - During zoom animation: skip rotation transform to avoid decentering
- *  - Forces canvas redraw when rotation starts so vector layers cover corners
+ * IMPORTANT: Only patches L.DomUtil.setTransform (for CSS rotation during pan)
+ * and map.mouseEventToContainerPoint (for correct click detection).
+ *
+ * We intentionally do NOT patch containerPointToLayerPoint or getPixelBounds
+ * because those methods are used internally by the Canvas renderer to calculate
+ * its own _bounds. Patching them with rotated coordinates causes the canvas to
+ * be positioned incorrectly, making polygons/areas invisible after rotation.
+ *
+ * Instead we rely on:
+ *  - Canvas renderer padding (1.5) to pre-render beyond the viewport
+ *  - CSS overflow:visible on canvas panes
+ *  - Force layer redraws after rotation settles
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -27,7 +33,6 @@ function rotatePoint(p: L.Point, center: L.Point, deg: number): L.Point {
   return L.point(dx * c - dy * s + center.x, dx * s + dy * c + center.y);
 }
 
-/** Force all canvas/vector layers in the map to redraw */
 function forceLayerRedraw(map: L.Map) {
   map.eachLayer((layer: any) => {
     if (layer._reset) layer._reset();
@@ -45,7 +50,6 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
   const startAngleRef = useRef<number | null>(null);
   const startBearingRef = useRef(0);
   const isRotatingRef = useRef(false);
-  const didRedrawRef = useRef(false); // tracks if we've redrawn at new bearing
   const isZoomingRef = useRef(false);
 
   const patchedRef = useRef(false);
@@ -72,7 +76,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     [mapRef],
   );
 
-  /* ── Fast DOM-only setter (for gesture frames) ───────────────────── */
+  /* ── Fast DOM-only setter (for gesture frames, no React state) ───── */
   const setBearingFast = useCallback(
     (deg: number) => {
       deg = ((deg % 360) + 360) % 360;
@@ -82,7 +86,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     [applyRotation],
   );
 
-  /* ── Commit to React state (called once on gesture end) ──────────── */
+  /* ── Commit to React state (called once on touchEnd) ─────────────── */
   const commitBearing = useCallback(
     (deg: number) => {
       deg = ((deg % 360) + 360) % 360;
@@ -112,12 +116,9 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
 
     const mapPane = map.getPane('mapPane')!;
 
-    // ─── 1. Intercept setTransform ───────────────────────────────────
-    // During zoom animation Leaflet calls setTransform with scale != 1.
-    // If we inject rotation during that, the transformOrigin conflicts
-    // with zoom animation's own origin, causing decentering.
-    // FIX: skip rotation when scale != 1 (zoom animation in progress).
-    // The rotation re-applies on zoomend via our event listener.
+    // ─── 1. Intercept setTransform so panning preserves rotation ─────
+    // During zoom animation (scale != 1), skip rotation to avoid
+    // decentering — the rotation reapplies on zoomend.
     const origSetTransform = L.DomUtil.setTransform;
 
     const patchedFn = function (
@@ -127,9 +128,8 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       scale?: number,
     ) {
       if (el === mapPane && bearingRef.current !== 0) {
-        // During zoom animation (scale != 1), let Leaflet do its
-        // standard transform without rotation to avoid decentering
         if (scale !== undefined && scale !== 1) {
+          // Zoom animation in progress — let Leaflet handle it normally
           origSetTransform.call(L.DomUtil, el, offset as L.Point, scale);
           return;
         }
@@ -146,62 +146,32 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     };
     L.DomUtil.setTransform = patchedFn as typeof L.DomUtil.setTransform;
 
-    // ─── 2. Coordinate transforms for correct click/tap ─────────────
-    const origC2L = map.containerPointToLayerPoint.bind(map);
-    const origL2C = map.layerPointToContainerPoint.bind(map);
-
-    (map as any).containerPointToLayerPoint = function (pt: L.PointExpression) {
-      const p = L.point(pt);
-      if (bearingRef.current === 0) return origC2L(p);
+    // ─── 2. Fix click/tap detection on rotated maps ──────────────────
+    // We patch mouseEventToContainerPoint (used by Canvas._onClick and
+    // all Leaflet event processing) to rotate the input coordinates.
+    // This does NOT affect canvas renderer bounds calculation (which
+    // uses containerPointToLayerPoint internally — left unpatched).
+    const origMouseToContainer = map.mouseEventToContainerPoint.bind(map);
+    (map as any).mouseEventToContainerPoint = function (e: MouseEvent) {
+      const pt: L.Point = origMouseToContainer(e);
+      if (bearingRef.current === 0) return pt;
       const center = map.getSize().divideBy(2);
-      return origC2L(rotatePoint(p, center, bearingRef.current));
+      return rotatePoint(pt, center, bearingRef.current);
     };
 
-    (map as any).layerPointToContainerPoint = function (pt: L.PointExpression) {
-      const p: L.Point = origL2C(L.point(pt));
-      if (bearingRef.current === 0) return p;
-      const center = map.getSize().divideBy(2);
-      return rotatePoint(p, center, -bearingRef.current);
-    };
-
-    // ─── 3. Expand pixel bounds for rotated viewport ─────────────────
-    // Always expand by a generous margin so tiles AND canvas layers
-    // are pre-rendered large enough to cover any rotation angle.
-    const origGetPixelBounds = (map.getPixelBounds as any).bind(map);
-
-    (map as any).getPixelBounds = function (c?: L.LatLng, z?: number) {
-      const bounds: L.Bounds = origGetPixelBounds(c, z);
-      if (bearingRef.current === 0) return bounds;
-
-      // Calculate rotated bounding box of the viewport
-      const size = map.getSize();
-      const rad = Math.abs(bearingRef.current) * Math.PI / 180;
-      const cosV = Math.abs(Math.cos(rad));
-      const sinV = Math.abs(Math.sin(rad));
-      const rotW = size.x * cosV + size.y * sinV;
-      const rotH = size.x * sinV + size.y * cosV;
-      // Add generous margin (128px) for tile loading boundaries
-      const expandX = Math.ceil(Math.max(0, rotW - size.x) / 2) + 128;
-      const expandY = Math.ceil(Math.max(0, rotH - size.y) / 2) + 128;
-
-      return L.bounds(
-        L.point(bounds.min!.x - expandX, bounds.min!.y - expandY),
-        L.point(bounds.max!.x + expandX, bounds.max!.y + expandY),
-      );
-    };
-
-    // ─── 4. Track zoom animation to avoid conflicts ──────────────────
-    map.on('zoomanim', () => { isZoomingRef.current = true; });
-    map.on('zoomend', () => {
+    // ─── 3. Track zoom to avoid conflicts ────────────────────────────
+    const onZoomAnim = () => { isZoomingRef.current = true; };
+    const onZoomEnd = () => {
       isZoomingRef.current = false;
-      // Reapply rotation after zoom completes
       if (bearingRef.current !== 0) {
         applyRotation(bearingRef.current);
         forceLayerRedraw(map);
       }
-    });
+    };
+    map.on('zoomanim', onZoomAnim);
+    map.on('zoomend', onZoomEnd);
 
-    // ─── 5. Re-apply rotation after view changes ────────────────────
+    // ─── 4. Re-apply rotation after pan/resize ──────────────────────
     const reapply = () => {
       if (bearingRef.current !== 0 && !isZoomingRef.current) {
         applyRotation(bearingRef.current);
@@ -209,7 +179,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     };
     map.on('moveend resize', reapply);
 
-    // ─── 6. Two-finger rotation gesture ──────────────────────────────
+    // ─── 5. Two-finger rotation gesture ──────────────────────────────
     const container = map.getContainer();
 
     function onTouchStart(e: TouchEvent) {
@@ -217,7 +187,6 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
         startAngleRef.current = touchAngle(e.touches[0], e.touches[1]);
         startBearingRef.current = bearingRef.current;
         isRotatingRef.current = false;
-        didRedrawRef.current = false;
       }
     }
 
@@ -228,23 +197,16 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       const rawDelta = angle - startAngleRef.current;
 
       if (!isRotatingRef.current) {
-        if (Math.abs(rawDelta) < 5) return;
+        if (Math.abs(rawDelta) < 5) return; // dead-zone
         isRotatingRef.current = true;
         startAngleRef.current = angle;
         startBearingRef.current = bearingRef.current;
-
-        // When rotation starts, immediately force canvas layers to
-        // redraw with expanded bounds based on current bearing.
-        // This ensures vector layers cover the corners.
-        if (!didRedrawRef.current && mapRef.current) {
-          didRedrawRef.current = true;
-          mapRef.current.fire('moveend');
-          forceLayerRedraw(mapRef.current);
-        }
         return;
       }
 
       const delta = angle - startAngleRef.current;
+      // CW fingers → positive delta → subtract → decreasing bearing →
+      // CSS rotate(-(negative)) = rotate(+) = CW visual ✓
       setBearingFast(startBearingRef.current - delta);
     }
 
@@ -252,17 +214,19 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       if (e.touches.length < 2) {
         if (isRotatingRef.current) {
           const b = bearingRef.current;
+          // Snap to north if within 10°
           if (b < 10 || b > 350) {
             commitBearing(0);
           } else {
             commitBearing(b);
           }
-          // Final redraw at settled bearing
+          // Force full redraw at final bearing
           cancelAnimationFrame(rafRef.current);
           rafRef.current = requestAnimationFrame(() => {
-            if (map) {
-              map.fire('moveend');
-              forceLayerRedraw(map);
+            const m = mapRef.current;
+            if (m) {
+              m.fire('moveend');
+              forceLayerRedraw(m);
             }
           });
         }
@@ -276,16 +240,15 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     container.addEventListener('touchend', onTouchEnd, { passive: true });
 
     // ─── Cleanup ─────────────────────────────────────────────────────
-    const cleanup = () => {
+    return () => {
       if (L.DomUtil.setTransform === (patchedFn as any)) {
         L.DomUtil.setTransform = origSetTransform;
       }
-      (map as any).containerPointToLayerPoint = origC2L;
-      (map as any).layerPointToContainerPoint = origL2C;
-      (map as any).getPixelBounds = origGetPixelBounds;
+      (map as any).mouseEventToContainerPoint = origMouseToContainer;
+
+      map.off('zoomanim', onZoomAnim);
+      map.off('zoomend', onZoomEnd);
       map.off('moveend resize', reapply);
-      map.off('zoomanim');
-      map.off('zoomend');
 
       container.removeEventListener('touchstart', onTouchStart);
       container.removeEventListener('touchmove', onTouchMove);
@@ -297,8 +260,6 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
 
       patchedRef.current = false;
     };
-
-    return cleanup;
   }, [mapRef, mapReady, setBearingFast, commitBearing, applyRotation]);
 
   return { bearing, bearingRef, setBearing: commitBearing, resetBearing };
