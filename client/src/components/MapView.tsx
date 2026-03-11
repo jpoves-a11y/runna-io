@@ -7,6 +7,7 @@ import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
 import { DEFAULT_CENTER, getCurrentPosition } from '@/lib/geolocation';
 import { useTheme } from '@/hooks/use-theme';
 import { useMapTilePrefetch } from '@/hooks/use-map-tile-prefetch';
+import { useMapRotation } from '@/hooks/use-map-rotation';
 import type { Treasure } from '@/hooks/use-competition';
 
 export interface FortificationData {
@@ -75,15 +76,19 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   // Prefetch adjacent tiles for smoother panning
   useMapTilePrefetch(mapRef, true);
 
+  // Two-finger map rotation (custom lightweight, no plugin)
+  const { bearing, bearingRef, resetBearing } = useMapRotation(mapRef);
+
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
     // Create a shared canvas renderer for all vector layers - much faster than SVG
-    const canvasRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
+    // padding 0.8 covers rotated viewports up to ~45° without excessive overdraw
+    const canvasRenderer = L.canvas({ padding: 0.8, tolerance: 10 });
     canvasRendererRef.current = canvasRenderer;
 
     // SVG renderer for shared-run territories (supports pattern fills)
-    const svgRenderer = L.svg({ padding: 0.5 });
+    const svgRenderer = L.svg({ padding: 0.8 });
     svgRendererRef.current = svgRenderer;
 
     // Initialize map with optimized settings for smooth panning
@@ -797,7 +802,9 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         // Update arrow rotation via DOM without recreating the entire icon
         const arrowEl = locationMarkerRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
         if (arrowEl) {
-          arrowEl.style.transform = `rotate(${heading}deg)`;
+          // Subtract map bearing so arrow points true heading on rotated map
+          const visualHeading = heading - bearingRef.current;
+          arrowEl.style.transform = `rotate(${visualHeading}deg)`;
         } else {
           // First heading received — switch from dot to arrow
           locationMarkerRef.current.setIcon(createLocationIcon(heading));
@@ -907,6 +914,21 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       
       {/* Map Controls - positioned above the bottom nav */}
       <div className="absolute right-3 bottom-4 flex flex-col gap-2 z-[1000]">
+        {/* Compass / Reset North — only visible when map is rotated */}
+        {bearing > 0.5 && (
+          <Button
+            size="icon"
+            variant="secondary"
+            onClick={resetBearing}
+            className="shadow-md bg-card/95 backdrop-blur-md border border-border"
+            title="Restablecer norte"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.2s ease' }}>
+              <polygon points="12,2 8,14 12,11 16,14" fill="#ef4444" />
+              <polygon points="12,22 8,14 12,17 16,14" fill="#9ca3af" />
+            </svg>
+          </Button>
+        )}
         <Button
           size="icon"
           variant="secondary"

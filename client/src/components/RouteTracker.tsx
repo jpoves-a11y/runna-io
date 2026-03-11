@@ -9,6 +9,7 @@ import type { TerritoryWithUser } from '@shared/schema';
 import type { Treasure } from '@/hooks/use-competition';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { useMapRotation } from '@/hooks/use-map-rotation';
 
 const STORAGE_KEY = 'runna-route-tracking';
 const MIN_ACCURACY_METERS = 30;
@@ -112,6 +113,9 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
   const userInteractingRef = useRef(false);
   const autoFollowRef = useRef(true);
   const treasuresForCheckRef = useRef<Treasure[]>([]);
+
+  // Two-finger map rotation (custom lightweight hook)
+  const { bearing: mapBearing, bearingRef: mapBearingRef, resetBearing } = useMapRotation(mapRef);
 
   const startTimeRef = useRef<number>(0);
   const pausedDurationRef = useRef<number>(0);
@@ -312,7 +316,8 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
           headingRef.current = heading;
           const arrowEl = userMarkerObjRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
           if (arrowEl) {
-            arrowEl.style.transform = `rotate(${heading}deg)`;
+            // Subtract map bearing so arrow displays true heading on rotated map
+            arrowEl.style.transform = `rotate(${heading - mapBearingRef.current}deg)`;
           } else {
             userMarkerObjRef.current.setIcon(createTrackerIcon(heading));
           }
