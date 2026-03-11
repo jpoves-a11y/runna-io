@@ -184,7 +184,49 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       );
     };
 
-    // ─── 4. Track zoom to avoid conflicts ────────────────────────────
+    // ─── 4. Correct drag direction on rotated map ────────────────────
+    // Leaflet's drag computes screen-space offsets but our CSS applies
+    // translate THEN rotate, so the visual movement gets rotated by -θ.
+    // Rotating the drag offset by +θ in predrag cancels this out.
+    const draggable = (map.dragging as any)?._draggable;
+    const onPreDrag = () => {
+      if (!draggable || bearingRef.current === 0) return;
+      const offset = draggable._newPos.subtract(draggable._startPos);
+      const rad = bearingRef.current * Math.PI / 180;
+      const c = Math.cos(rad);
+      const s = Math.sin(rad);
+      draggable._newPos = draggable._startPos.add(
+        L.point(offset.x * c - offset.y * s, offset.x * s + offset.y * c),
+      );
+    };
+    if (draggable) draggable.on('predrag', onPreDrag);
+
+    // ─── 5. Expand tile loading bounds for rotated viewport ──────────
+    // GridLayer._getTiledPixelBounds uses map.getSize(), not
+    // getPixelBounds(), so patch 3 doesn't help tile loading.
+    // We expand the tiled pixel bounds directly on the prototype.
+    const origGetTiledPxBounds = (L.GridLayer.prototype as any)._getTiledPixelBounds;
+    (L.GridLayer.prototype as any)._getTiledPixelBounds = function (center: L.LatLng) {
+      const b: L.Bounds = origGetTiledPxBounds.call(this, center);
+      if (!bearingRef.current) return b;
+      const m = this._map;
+      if (!m) return b;
+      const sz = m.getSize();
+      const rad = Math.abs(bearingRef.current) * Math.PI / 180;
+      const cosV = Math.abs(Math.cos(rad));
+      const sinV = Math.abs(Math.sin(rad));
+      const bSize = b.getSize();
+      const ratioX = (sz.x * cosV + sz.y * sinV) / sz.x;
+      const ratioY = (sz.x * sinV + sz.y * cosV) / sz.y;
+      const extraX = Math.ceil(bSize.x * (ratioX - 1) / 2) + 256;
+      const extraY = Math.ceil(bSize.y * (ratioY - 1) / 2) + 256;
+      return L.bounds(
+        L.point(b.min!.x - extraX, b.min!.y - extraY),
+        L.point(b.max!.x + extraX, b.max!.y + extraY),
+      );
+    };
+
+    // ─── 6. Track zoom to avoid conflicts ────────────────────────────
     const onZoomAnim = () => { isZoomingRef.current = true; };
     const onZoomEnd = () => {
       isZoomingRef.current = false;
@@ -196,7 +238,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     map.on('zoomanim', onZoomAnim);
     map.on('zoomend', onZoomEnd);
 
-    // ─── 5. Re-apply rotation after pan/resize ──────────────────────
+    // ─── 7. Re-apply rotation after pan/resize ──────────────────────
     const reapply = () => {
       if (bearingRef.current !== 0 && !isZoomingRef.current) {
         applyRotation(bearingRef.current);
@@ -204,7 +246,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     };
     map.on('move moveend resize', reapply);
 
-    // ─── 6. Two-finger rotation gesture ──────────────────────────────
+    // ─── 8. Two-finger rotation gesture ──────────────────────────────
     const container = map.getContainer();
 
     function onTouchStart(e: TouchEvent) {
@@ -271,6 +313,8 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       }
       (map as any).mouseEventToContainerPoint = origMouseToContainer;
       (map as any).getPixelBounds = origGetPixelBounds;
+      if (draggable) draggable.off('predrag', onPreDrag);
+      (L.GridLayer.prototype as any)._getTiledPixelBounds = origGetTiledPxBounds;
 
       map.off('zoomanim', onZoomAnim);
       map.off('zoomend', onZoomEnd);
