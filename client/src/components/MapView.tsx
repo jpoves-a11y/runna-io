@@ -80,11 +80,12 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     if (!mapContainer.current || mapRef.current) return;
 
     // Create a shared canvas renderer for all vector layers - much faster than SVG
-    const canvasRenderer = L.canvas({ padding: 1.5, tolerance: 10 });
+    // padding 3.0 = pre-render 3x viewport in each direction to cover rotated views
+    const canvasRenderer = L.canvas({ padding: 3.0, tolerance: 10 });
     canvasRendererRef.current = canvasRenderer;
 
     // SVG renderer for shared-run territories (supports pattern fills)
-    const svgRenderer = L.svg({ padding: 1.5 });
+    const svgRenderer = L.svg({ padding: 3.0 });
     svgRendererRef.current = svgRenderer;
 
     // Initialize map with optimized settings for smooth panning
@@ -95,13 +96,14 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       attributionControl: false,
       preferCanvas: true, // Global canvas preference
       renderer: canvasRenderer, // Shared canvas renderer
-      zoomAnimation: true,
-      fadeAnimation: true,
-      markerZoomAnimation: true,
+      zoomAnimation: false, // Disable zoom animation — prevents canvas misalignment during transition
+      fadeAnimation: false, // No fade needed without zoom animation
+      markerZoomAnimation: false,
       zoomSnap: 0.5, // Smoother zoom steps
       wheelDebounceTime: 40, // Responsive scroll zoom
       rotate: true, // Enable map rotation
       touchRotate: true, // Two-finger rotation gesture
+      shiftKeyRotate: true, // Shift+drag to rotate on desktop
       rotateControl: false, // We handle reset via our own compass button
     } as any);
 
@@ -964,31 +966,18 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
           background: ${mapStyle === 'dark' ? '#000000' : '#e8e8e6'} !important;
         }
         
-        /* Smooth tile appearance during rotation */
+        /* Tiles appear instantly, no flicker */
         .leaflet-tile {
-          will-change: transform;
+          transition: none !important;
         }
-        
-        /* Ensure tiles load without delay */
-        .leaflet-tile-container {
-          will-change: transform;
-          backface-visibility: hidden;
-        }
-
-        /* Smooth rotation for the entire map pane */
-        .leaflet-map-pane {
-          will-change: transform;
-        }
-        .leaflet-tile-pane {
-          will-change: transform;
-        }
-        .leaflet-overlay-pane {
-          will-change: transform;
-        }
-        
-        /* Make tile loading invisible - tiles appear from matching background */
         .leaflet-tile-loaded {
           opacity: 1 !important;
+        }
+        
+        /* Canvas and overlay panes need larger overflow area for rotation */
+        .leaflet-canvas-container,
+        .leaflet-overlay-pane canvas {
+          overflow: visible;
         }
         
         .leaflet-popup-content-wrapper {

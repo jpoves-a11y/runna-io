@@ -259,7 +259,8 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
 
     const map = L.map(mapContainer.current, {
       center: [40.4168, -3.7038], zoom: 16, zoomControl: false, attributionControl: false,
-      rotate: true, touchRotate: true, rotateControl: false,
+      zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false,
+      rotate: true, touchRotate: true, shiftKeyRotate: true, rotateControl: false,
     } as any);
     L.tileLayer(tileUrl, { maxZoom: 19, subdomains: ['a', 'b', 'c', 'd'], keepBuffer: 12, updateWhenIdle: false, updateWhenZooming: true }).addTo(map);
 
@@ -854,8 +855,8 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
           background: none !important;
           border: none !important;
         }
-        .leaflet-map-pane, .leaflet-tile-pane, .leaflet-overlay-pane {
-          will-change: transform;
+        .leaflet-tile {
+          transition: none !important;
         }
       `}</style>
     </div>
