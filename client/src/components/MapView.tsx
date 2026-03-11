@@ -1004,6 +1004,14 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         .leaflet-zoom-anim .leaflet-zoom-animated {
           transition: none !important;
         }
+        /* Counter-rotate marker & popup CONTENT so they stay upright.
+           We target > div (inner content) rather than the wrapper itself
+           because the wrapper carries Leaflet's translate3d positioning. */
+        .treasure-marker > div,
+        .fortification-castle-icon > div,
+        .leaflet-popup {
+          transform: rotate(${bearing}deg) !important;
+        }
         ` : ''}
         
         .leaflet-popup-content-wrapper {
