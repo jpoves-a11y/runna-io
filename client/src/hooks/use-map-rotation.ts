@@ -202,7 +202,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
         applyRotation(bearingRef.current);
       }
     };
-    map.on('moveend resize', reapply);
+    map.on('move moveend resize', reapply);
 
     // ─── 6. Two-finger rotation gesture ──────────────────────────────
     const container = map.getContainer();
@@ -274,7 +274,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
 
       map.off('zoomanim', onZoomAnim);
       map.off('zoomend', onZoomEnd);
-      map.off('moveend resize', reapply);
+      map.off('move moveend resize', reapply);
 
       container.removeEventListener('touchstart', onTouchStart);
       container.removeEventListener('touchmove', onTouchMove);
