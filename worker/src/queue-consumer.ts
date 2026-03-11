@@ -229,7 +229,7 @@ async function updateFeedEventSafe(
   routeId: string,
   distance: number,
   duration: number,
-  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[]; treasuresCollected?: any[] },
+  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[]; treasuresCollected?: any[]; fortressesDestroyed?: number; fortificationLayers?: number },
   earlyFeedEventId?: string
 ): Promise<void> {
   try {

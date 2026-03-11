@@ -21,6 +21,7 @@ interface ActivityMetadata {
   records?: Array<{ type: string; value: number }>;
   treasures?: Array<{ treasureId?: string; treasureName: string; powerType: string; rarity: string }>;
   fortressesDestroyed?: number;
+  fortificationLayers?: number;
 }
 
 interface MergedFeedEvent extends FeedEventWithDetails {
@@ -597,7 +598,7 @@ const EventCard = memo(function EventCard({
   const displayedComments = showComments ? allComments : previewComments;
 
   // Event type icon + bg — conquest badge when activity has stolen territory or metadata
-  const hasBadges = victims.length > 0 || !!(event as MergedFeedEvent).parsedMeta?.victims?.length || !!(event as MergedFeedEvent).parsedMeta?.records?.length || !!(event as MergedFeedEvent).parsedMeta?.treasures?.length || !!(event as MergedFeedEvent).parsedMeta?.fortressesDestroyed;
+  const hasBadges = victims.length > 0 || !!(event as MergedFeedEvent).parsedMeta?.victims?.length || !!(event as MergedFeedEvent).parsedMeta?.records?.length || !!(event as MergedFeedEvent).parsedMeta?.treasures?.length || !!(event as MergedFeedEvent).parsedMeta?.fortressesDestroyed || !!(event as MergedFeedEvent).parsedMeta?.fortificationLayers;
   const eventTypeBadge = useMemo(() => {
     if (event.eventType === 'activity' && (victims.length > 0 || !!(event as MergedFeedEvent).parsedMeta?.victims?.length)) {
       return { icon: <img src="/emblemas/Emblema_robo.png" alt="" className="w-5 h-5 object-contain" />, bg: 'bg-red-500/10' };
@@ -799,6 +800,16 @@ const EventCard = memo(function EventCard({
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border text-orange-400 bg-orange-500/10 border-orange-500/10">
                   <span>🏰</span>
                   <span>Rompió {meta.fortressesDestroyed} fortaleza{meta.fortressesDestroyed > 1 ? 's' : ''}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Fortification reinforced badge */}
+            {meta?.fortificationLayers && meta.fortificationLayers > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border text-sky-400 bg-sky-500/10 border-sky-500/10">
+                  <span>🧱</span>
+                  <span>Reforzó su territorio (+{meta.fortificationLayers} {meta.fortificationLayers > 1 ? 'capas' : 'capa'} de fortaleza)</span>
                 </div>
               </div>
             )}

@@ -123,7 +123,7 @@ export async function generateFeedEvents(
   routeId: string,
   distance: number,
   duration: number,
-  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[]; treasuresCollected?: any[]; fortressesDestroyed?: number },
+  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[]; treasuresCollected?: any[]; fortressesDestroyed?: number; fortificationLayers?: number },
   skipRecordsCheck: boolean = false,
   existingFeedEventId?: string
 ): Promise<void> {
@@ -165,6 +165,11 @@ export async function generateFeedEvents(
     // Fortresses destroyed
     if (conquestResult.fortressesDestroyed && conquestResult.fortressesDestroyed > 0) {
       metadata.fortressesDestroyed = conquestResult.fortressesDestroyed;
+    }
+
+    // Fortification layers added (reinforced own territory)
+    if (conquestResult.fortificationLayers && conquestResult.fortificationLayers > 0) {
+      metadata.fortificationLayers = conquestResult.fortificationLayers;
     }
 
     // Personal records check (skipped during Polar process to save subrequests)
@@ -356,6 +361,7 @@ export async function processTerritoryConquest(
   treasuresCollected: any[];
   powersUsed: string[];
   fortressesDestroyed: number;
+  fortificationLayers: number;
 }> {
   // Check if competition is active for ALL-VS-ALL mode
   const competition = await storage.getActiveCompetition();
@@ -985,6 +991,7 @@ export async function processTerritoryConquest(
     treasuresCollected,
     powersUsed,
     fortressesDestroyed,
+    fortificationLayers: result.fortificationLayers,
   };
 }
 
