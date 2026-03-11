@@ -997,6 +997,14 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         .leaflet-canvas-container {
           overflow: visible;
         }
+
+        /* When map is rotated, disable Leaflet's zoom CSS transition on the
+           mapPane to prevent visible pulse/flash during zoom+rotate. */
+        ${bearing > 0.5 ? `
+        .leaflet-zoom-anim .leaflet-zoom-animated {
+          transition: none !important;
+        }
+        ` : ''}
         
         .leaflet-popup-content-wrapper {
           border-radius: 0.5rem;

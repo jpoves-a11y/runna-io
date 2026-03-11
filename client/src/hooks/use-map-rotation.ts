@@ -120,8 +120,8 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     const mapPane = map.getPane('mapPane')!;
 
     // ─── 1. Intercept setTransform so panning preserves rotation ─────
-    // During zoom animation (scale != 1), skip rotation to avoid
-    // decentering — the rotation reapplies on zoomend.
+    // Keep rotation applied at ALL times, including during zoom animation.
+    // The transform-origin is recalculated each call for the current center.
     const origSetTransform = L.DomUtil.setTransform;
 
     const patchedFn = function (
@@ -131,18 +131,16 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       scale?: number,
     ) {
       if (el === mapPane && bearingRef.current !== 0) {
-        if (scale !== undefined && scale !== 1) {
-          // Zoom animation in progress — let Leaflet handle it normally
-          origSetTransform.call(L.DomUtil, el, offset as L.Point, scale);
-          return;
-        }
-
         const pos = offset || L.point(0, 0);
         const deg = bearingRef.current;
         const center = map.getSize().divideBy(2);
 
         el.style.transformOrigin = `${center.x - pos.x}px ${center.y - pos.y}px`;
-        el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0) rotate(${-deg}deg)`;
+        if (scale !== undefined && scale !== 1) {
+          el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0) scale(${scale}) rotate(${-deg}deg)`;
+        } else {
+          el.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0) rotate(${-deg}deg)`;
+        }
         return;
       }
       origSetTransform.call(L.DomUtil, el, offset as L.Point, scale);
@@ -228,13 +226,12 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       );
     };
 
-    // ─── 6. Track zoom to avoid conflicts ────────────────────────────
+    // ─── 6. Track zoom state ─────────────────────────────────────────
     const onZoomAnim = () => { isZoomingRef.current = true; };
     const onZoomEnd = () => {
       isZoomingRef.current = false;
       if (bearingRef.current !== 0) {
         applyRotation(bearingRef.current);
-        forceLayerRedraw(map);
       }
     };
     map.on('zoomanim', onZoomAnim);
@@ -289,13 +286,12 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
           } else {
             commitBearing(b);
           }
-          // Force full redraw at final bearing
+          // Force tile + canvas update at final bearing (no full redraw)
           cancelAnimationFrame(rafRef.current);
           rafRef.current = requestAnimationFrame(() => {
             const m = mapRef.current;
             if (m) {
               m.fire('moveend');
-              forceLayerRedraw(m);
             }
           });
         }
