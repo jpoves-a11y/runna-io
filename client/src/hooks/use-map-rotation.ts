@@ -83,9 +83,12 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
         '.treasure-marker > div, .fortification-castle-icon > div',
       ).forEach((el) => { el.style.transform = counterRot; });
 
-      // Counter-rotate popups as a UNIT (body + tip together) by appending
-      // rotate() to the existing translate3d() on .leaflet-popup itself.
+      // Counter-rotate popups as a UNIT (body + tip together).
+      // Rotate around bottom-center (where the tip points to the click location)
+      // so the popup stays anchored to the exact click point.
       pane.querySelectorAll<HTMLElement>('.leaflet-popup').forEach((el) => {
+        el.style.transition = 'none';
+        el.style.transformOrigin = 'bottom center';
         const base = el.style.transform.replace(/\s*rotate\([^)]*\)/, '');
         el.style.transform = deg === 0 ? base : `${base} rotate(${deg}deg)`;
       });

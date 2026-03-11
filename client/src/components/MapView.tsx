@@ -1011,6 +1011,10 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
           padding: 0;
           overflow: hidden;
         }
+
+        .leaflet-popup {
+          transition: none !important;
+        }
         
         .leaflet-popup-content {
           margin: 0;
