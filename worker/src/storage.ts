@@ -649,6 +649,7 @@ export class WorkerStorage {
     newArea: number;
     existingArea: number;
     fortificationLayers: number;
+    fortificationArea: number;
   }> {
     // Use helper to handle both Polygon and MultiPolygon
     const newFeature = geometryToFeature(newGeometry);
@@ -760,6 +761,7 @@ export class WorkerStorage {
         newArea: actualNewArea,
         existingArea: existingAreaInBuffer,
         fortificationLayers,
+        fortificationArea: existingAreaInBuffer,
       };
     }
 
@@ -788,6 +790,7 @@ export class WorkerStorage {
         newArea: actualNewArea,
         existingArea: existingAreaInBuffer,
         fortificationLayers,
+        fortificationArea: existingAreaInBuffer,
       };
     }
 
@@ -815,6 +818,7 @@ export class WorkerStorage {
       newArea: actualNewArea,
       existingArea: existingAreaInBuffer,
       fortificationLayers,
+      fortificationArea: existingAreaInBuffer,
     };
   }
 

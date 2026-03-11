@@ -123,7 +123,7 @@ export async function generateFeedEvents(
   routeId: string,
   distance: number,
   duration: number,
-  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[]; treasuresCollected?: any[]; fortressesDestroyed?: number; fortificationLayers?: number },
+  conquestResult: { newAreaConquered: number; victims: ConquestVictimInfo[]; ranTogetherWith: string[]; treasuresCollected?: any[]; fortressesDestroyed?: number; fortificationLayers?: number; fortificationArea?: number },
   skipRecordsCheck: boolean = false,
   existingFeedEventId?: string
 ): Promise<void> {
@@ -170,6 +170,7 @@ export async function generateFeedEvents(
     // Fortification layers added (reinforced own territory)
     if (conquestResult.fortificationLayers && conquestResult.fortificationLayers > 0) {
       metadata.fortificationLayers = conquestResult.fortificationLayers;
+      metadata.fortificationArea = conquestResult.fortificationArea || 0;
     }
 
     // Personal records check (skipped during Polar process to save subrequests)
@@ -362,6 +363,7 @@ export async function processTerritoryConquest(
   powersUsed: string[];
   fortressesDestroyed: number;
   fortificationLayers: number;
+  fortificationArea: number;
 }> {
   // Check if competition is active for ALL-VS-ALL mode
   const competition = await storage.getActiveCompetition();
@@ -601,9 +603,12 @@ export async function processTerritoryConquest(
                     }
                   } catch (_) {}
                 }
-                const fortLevel = overlappingLayers * 0.5;
-                if (fortLevel >= 1) {
-                  const layersToBreak = hasBatteringRamPower ? Math.min(overlappingLayers, 3) : 1;
+                // Base territory counts as layer 1; each fort record adds +0.5
+                // 1 run = level 1 (stealable), 2 runs = 1.5 (stealable), 3 runs = 2.0 (fortified)
+                const fortLevel = 1 + overlappingLayers * 0.5;
+                if (fortLevel >= 2) {
+                  // Break 2 records per attack (reduces level by 1.0); battering ram breaks up to 6
+                  const layersToBreak = hasBatteringRamPower ? Math.min(overlappingLayers, 6) : Math.min(overlappingLayers, 2);
                   console.log(`[COMPETITION] FORTIFICATION level ${fortLevel} — breaking ${layersToBreak} layer(s) from ${enemyTerritory.userId}`);
                   // BATCH: accumulate fortification deletes instead of individual calls
                   for (let i = 0; i < layersToBreak && i < layersToRemove.length; i++) {
@@ -992,6 +997,7 @@ export async function processTerritoryConquest(
     powersUsed,
     fortressesDestroyed,
     fortificationLayers: result.fortificationLayers,
+    fortificationArea: result.fortificationArea,
   };
 }
 

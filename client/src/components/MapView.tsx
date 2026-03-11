@@ -670,10 +670,15 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
 
     for (const userFort of fortifications) {
       const userColor = userColorMap.get(userFort.userId) || '#6b7280';
-      const level = userFort.layers * 0.5;
-      if (level < 0.5) continue; // Don't show until at least 0.5
+      // Base territory = layer 1; each fort record = +0.5
+      const level = 1 + userFort.layers * 0.5;
+      if (userFort.layers < 1) continue; // Don't show until at least 1 fort record
 
-      // Render each fortification record as a semi-transparent overlay
+      // Group overlapping records to compute per-zone level for castle icons
+      // Collect centroids for castle placement
+      const zoneCentroids: Array<{ lat: number; lng: number; count: number }> = [];
+
+      // Render each fortification record as an opaque overlay with soft border
       for (const record of userFort.records) {
         try {
           const geom = record.geometry;
@@ -692,64 +697,89 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
             );
           }
 
-          const opacityBoost = Math.min(level * 0.08, 0.4);
+          const opacityBase = Math.min(0.25 + level * 0.1, 0.55);
           const overlay = L.polygon(leafletCoords as any, {
             color: userColor,
             fillColor: userColor,
-            fillOpacity: 0.15 + opacityBoost,
-            weight: 1,
-            opacity: 0.3,
+            fillOpacity: opacityBase,
+            weight: 2.5,
+            opacity: 0.5,
+            dashArray: '6 4',
+            lineCap: 'round',
+            lineJoin: 'round',
             interactive: false,
             renderer: canvasRendererRef.current || undefined,
           });
           fortGroup.addLayer(overlay);
+
+          // Compute centroid for castle icon placement
+          const coords = geom.type === 'MultiPolygon'
+            ? geom.coordinates[0][0]
+            : geom.coordinates[0];
+          if (coords && coords.length > 0) {
+            let latSum = 0, lngSum = 0;
+            for (const c of coords) { lngSum += c[0]; latSum += c[1]; }
+            const cLat = latSum / coords.length;
+            const cLng = lngSum / coords.length;
+            // Merge nearby centroids
+            let merged = false;
+            for (const z of zoneCentroids) {
+              if (Math.abs(z.lat - cLat) < 0.0005 && Math.abs(z.lng - cLng) < 0.0005) {
+                z.lat = (z.lat * z.count + cLat) / (z.count + 1);
+                z.lng = (z.lng * z.count + cLng) / (z.count + 1);
+                z.count++;
+                merged = true;
+                break;
+              }
+            }
+            if (!merged) zoneCentroids.push({ lat: cLat, lng: cLng, count: 1 });
+          }
         } catch (_) {}
       }
 
-      // Add a castle marker at the centroid of the first record (representative)
-      if (level >= 1.0 && userFort.records.length > 0) {
-        try {
-          const firstGeom = userFort.records[0].geometry;
-          if (firstGeom?.coordinates) {
-            // Compute rough centroid from first ring of first record
-            const coords = firstGeom.type === 'MultiPolygon'
-              ? firstGeom.coordinates[0][0]
-              : firstGeom.coordinates[0];
-            if (coords && coords.length > 0) {
-              let latSum = 0, lngSum = 0;
-              for (const c of coords) {
-                lngSum += c[0];
-                latSum += c[1];
-              }
-              const centLat = latSum / coords.length;
-              const centLng = lngSum / coords.length;
+      // Add castle markers at zone centroids (show when fortified = level >= 2)
+      if (level >= 1.5) {
+        for (const zone of zoneCentroids) {
+          // Per-zone level: base 1 + zone fort records * 0.5
+          const zoneLevel = 1 + zone.count * 0.5;
+          const castleIcon = L.divIcon({
+            className: 'fortification-castle-icon',
+            html: `<div style="
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              position: relative;
+              width: 36px;
+              height: 36px;
+              background: radial-gradient(circle, ${userColor}ee, ${userColor}cc);
+              border: 2px solid rgba(255,255,255,0.85);
+              border-radius: 50%;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.35), 0 0 12px ${userColor}44;
+              font-size: 16px;
+            ">🏰<span style="
+              font-size: 11px;
+              position: absolute;
+              bottom: -4px;
+              right: -4px;
+              background: ${userColor};
+              border-radius: 50%;
+              min-width: 18px;
+              height: 18px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              border: 1.5px solid white;
+              color: white;
+              font-weight: 800;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            ">${zoneLevel % 1 === 0 ? zoneLevel.toFixed(0) : zoneLevel.toFixed(1)}</span></div>`,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+          });
 
-              const levelDisplay = Math.floor(level);
-              const castleIcon = L.divIcon({
-                className: 'fortification-castle-icon',
-                html: `<div style="
-                  display: flex;
-                  align-items: center;
-                  justify-content: center;
-                  width: 32px;
-                  height: 32px;
-                  background: ${userColor};
-                  border: 2px solid white;
-                  border-radius: 50%;
-                  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-                  font-size: 14px;
-                  color: white;
-                  font-weight: bold;
-                ">🏰<span style="font-size:10px;position:absolute;bottom:-2px;right:-2px;background:${userColor};border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;border:1px solid white;">${levelDisplay}</span></div>`,
-                iconSize: [32, 32],
-                iconAnchor: [16, 16],
-              });
-
-              const marker = L.marker([centLat, centLng], { icon: castleIcon, interactive: false });
-              fortGroup.addLayer(marker);
-            }
-          }
-        } catch (_) {}
+          const marker = L.marker([zone.lat, zone.lng], { icon: castleIcon, interactive: false });
+          fortGroup.addLayer(marker);
+        }
       }
     }
   }, [fortifications, territories]);

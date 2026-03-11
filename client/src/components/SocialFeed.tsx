@@ -22,6 +22,7 @@ interface ActivityMetadata {
   treasures?: Array<{ treasureId?: string; treasureName: string; powerType: string; rarity: string }>;
   fortressesDestroyed?: number;
   fortificationLayers?: number;
+  fortificationArea?: number;
 }
 
 interface MergedFeedEvent extends FeedEventWithDetails {
@@ -809,7 +810,7 @@ const EventCard = memo(function EventCard({
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold border text-sky-400 bg-sky-500/10 border-sky-500/10">
                   <span>🧱</span>
-                  <span>Reforzó su territorio (+{meta.fortificationLayers} {meta.fortificationLayers > 1 ? 'capas' : 'capa'} de fortaleza)</span>
+                  <span>Reforzó {meta.fortificationArea && meta.fortificationArea >= 1000000 ? `${(meta.fortificationArea / 1000000).toFixed(2)} km²` : meta.fortificationArea ? `${Math.round(meta.fortificationArea)} m²` : ''} de territorio (+{meta.fortificationLayers} {meta.fortificationLayers > 1 ? 'capas' : 'capa'})</span>
                 </div>
               </div>
             )}
