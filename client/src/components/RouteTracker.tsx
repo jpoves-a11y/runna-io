@@ -318,8 +318,9 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
           headingRef.current = heading;
           const arrowEl = userMarkerObjRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
           if (arrowEl) {
-            // Subtract map bearing so arrow displays true heading on rotated map
-            arrowEl.style.transform = `rotate(${heading - mapBearingRef.current}deg)`;
+            // The arrow is inside mapPane which is CSS-rotated by -bearing,
+            // so just use the raw heading — parent rotation handles compensation.
+            arrowEl.style.transform = `rotate(${heading}deg)`;
           } else {
             userMarkerObjRef.current.setIcon(createTrackerIcon(heading));
           }

@@ -38,7 +38,9 @@ function forceLayerRedraw(map: L.Map) {
   map.eachLayer((layer: any) => {
     if (layer._reset) layer._reset();
     if (layer._update) layer._update();
-    if (layer.redraw) layer.redraw();
+    // Only call redraw() on non-tile layers (canvas/SVG overlays).
+    // TileLayer.redraw() removes ALL tiles then re-fetches → visible flash.
+    if (layer.redraw && !(layer instanceof L.TileLayer)) layer.redraw();
   });
 }
 

@@ -806,9 +806,9 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         // Update arrow rotation via DOM without recreating the entire icon
         const arrowEl = locationMarkerRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
         if (arrowEl) {
-          // Subtract map bearing so arrow points true heading on rotated map
-          const visualHeading = heading - bearingRef.current;
-          arrowEl.style.transform = `rotate(${visualHeading}deg)`;
+          // The arrow is inside mapPane which is CSS-rotated by -bearing,
+          // so just use the raw heading — parent rotation handles compensation.
+          arrowEl.style.transform = `rotate(${heading}deg)`;
         } else {
           // First heading received — switch from dot to arrow
           locationMarkerRef.current.setIcon(createLocationIcon(heading));
