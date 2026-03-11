@@ -86,12 +86,12 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     if (!mapContainer.current || mapRef.current) return;
 
     // Create a shared canvas renderer for all vector layers - much faster than SVG
-    // padding 1.2 covers rotated viewports up to ~60° without excessive overdraw
-    const canvasRenderer = L.canvas({ padding: 1.2, tolerance: 10 });
+    // padding 1.5 pre-renders 1.5× viewport beyond each edge — covers all rotation angles
+    const canvasRenderer = L.canvas({ padding: 1.5, tolerance: 10 });
     canvasRendererRef.current = canvasRenderer;
 
     // SVG renderer for shared-run territories (supports pattern fills)
-    const svgRenderer = L.svg({ padding: 1.2 });
+    const svgRenderer = L.svg({ padding: 1.5 });
     svgRendererRef.current = svgRenderer;
 
     // Initialize map with optimized settings for smooth panning
