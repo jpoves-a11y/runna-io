@@ -65,7 +65,8 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   // User location marker (single instance, updated on each locate)
   const locationMarkerRef = useRef<L.Marker | null>(null);
   const headingRef = useRef<number | null>(null);
-  const orientationHandlerRef = useRef<((e: DeviceOrientationEvent) => void) | null>(null);
+  const orientationHandlerRef = useRef<((e: Event) => void) | null>(null);
+  const watchIdRef = useRef<number | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const { resolvedTheme } = useTheme();
   const [mapStyle, setMapStyle] = useState<'light' | 'dark'>(resolvedTheme === 'dark' ? 'dark' : 'light');
@@ -757,45 +758,47 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     return L.divIcon({
       className: 'current-location-marker',
       html: `
-        <div style="width: 40px; height: 40px; position: relative; display: flex; align-items: center; justify-content: center;">
-          <div style="position: absolute; width: 32px; height: 32px; left: 4px; top: 4px; border-radius: 50%; background: rgba(59, 130, 246, 0.3); animation: location-pulse 2s ease-out infinite;"></div>
+        <div style="width:48px;height:48px;position:relative;display:flex;align-items:center;justify-content:center;">
+          <div style="position:absolute;width:40px;height:40px;left:4px;top:4px;border-radius:50%;background:rgba(66,133,244,0.15);animation:location-pulse 2s ease-out infinite;"></div>
           ${hasHeading ? `
-            <svg class="location-arrow" width="22" height="22" viewBox="0 0 24 24" style="transform: rotate(${rotation}deg); position: relative; z-index: 1; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.4));">
-              <path d="M12 2L5 20L12 14L19 20L12 2Z" fill="#3b82f6" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+            <svg class="location-arrow" width="28" height="28" viewBox="0 0 32 32" style="transform:rotate(${rotation}deg);position:relative;z-index:2;filter:drop-shadow(0 1px 3px rgba(0,0,0,0.4));">
+              <path d="M16 2L6 28L16 20L26 28L16 2Z" fill="#4285F4" stroke="white" stroke-width="2" stroke-linejoin="round"/>
             </svg>
           ` : `
-            <div style="width: 14px; height: 14px; border-radius: 50%; background: #3b82f6; border: 3px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.3); position: relative; z-index: 1;"></div>
+            <div style="width:16px;height:16px;border-radius:50%;background:#4285F4;border:3px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);position:relative;z-index:2;"></div>
           `}
         </div>
       `,
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
+      iconSize: [48, 48],
+      iconAnchor: [24, 24],
     });
   };
 
-  const startHeadingWatch = () => {
+  const setupHeadingWatch = () => {
     // Clean up any existing handler
     if (orientationHandlerRef.current) {
       window.removeEventListener('deviceorientation', orientationHandlerRef.current, true);
+      window.removeEventListener('deviceorientationabsolute', orientationHandlerRef.current, true);
     }
 
-    const handler = (event: DeviceOrientationEvent) => {
+    const handler = (event: Event) => {
+      const e = event as DeviceOrientationEvent;
       let heading: number | null = null;
-      // iOS provides webkitCompassHeading
-      if ((event as any).webkitCompassHeading !== undefined) {
-        heading = (event as any).webkitCompassHeading;
-      } else if (event.alpha !== null) {
-        // Android/others: alpha is 0-360 counterclockwise from north
-        heading = (360 - event.alpha) % 360;
+      // iOS Safari provides webkitCompassHeading
+      if ((e as any).webkitCompassHeading !== undefined) {
+        heading = (e as any).webkitCompassHeading as number;
+      } else if (e.alpha !== null && e.alpha !== undefined) {
+        // Android/standard: alpha is counterclockwise from north
+        heading = (360 - e.alpha) % 360;
       }
       if (heading !== null && locationMarkerRef.current) {
         headingRef.current = heading;
-        // Update arrow rotation via DOM without recreating icon
+        // Update arrow rotation via DOM without recreating the entire icon
         const arrowEl = locationMarkerRef.current.getElement()?.querySelector('.location-arrow') as HTMLElement;
         if (arrowEl) {
           arrowEl.style.transform = `rotate(${heading}deg)`;
         } else {
-          // First heading received - switch from dot to arrow
+          // First heading received — switch from dot to arrow
           locationMarkerRef.current.setIcon(createLocationIcon(heading));
         }
       }
@@ -803,23 +806,27 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
 
     orientationHandlerRef.current = handler;
 
-    // iOS 13+ requires permission
-    if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
-      (DeviceOrientationEvent as any).requestPermission().then((response: string) => {
-        if (response === 'granted') {
-          window.addEventListener('deviceorientation', handler, true);
-        }
-      }).catch(() => { /* permission denied */ });
+    // Prefer deviceorientationabsolute (Android Chrome) for true compass heading
+    if ('ondeviceorientationabsolute' in window) {
+      window.addEventListener('deviceorientationabsolute', handler, true);
     } else {
       window.addEventListener('deviceorientation', handler, true);
     }
   };
 
-  // Cleanup heading watch on unmount
+  // Cleanup heading watch + position watch on unmount
   useEffect(() => {
     return () => {
       if (orientationHandlerRef.current) {
         window.removeEventListener('deviceorientation', orientationHandlerRef.current, true);
+        window.removeEventListener('deviceorientationabsolute', orientationHandlerRef.current, true);
+      }
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+      if (locationMarkerRef.current) {
+        locationMarkerRef.current.remove();
+        locationMarkerRef.current = null;
       }
     };
   }, []);
@@ -827,23 +834,53 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const handleLocate = async () => {
     setIsLocating(true);
     try {
+      // 1. Request iOS orientation permission IMMEDIATELY in click handler (user gesture required)
+      let hasOrientationPermission = false;
+      try {
+        if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
+          const perm = await (DeviceOrientationEvent as any).requestPermission();
+          hasOrientationPermission = perm === 'granted';
+        } else {
+          hasOrientationPermission = true; // Android/desktop — no permission needed
+        }
+      } catch {
+        hasOrientationPermission = false;
+      }
+
+      // 2. Get current position
       const position = await getCurrentPosition();
-      mapRef.current?.setView([position.lat, position.lng], 16);
+      mapRef.current?.setView([position.lat, position.lng], Math.max(mapRef.current.getZoom(), 16));
 
       const icon = createLocationIcon(headingRef.current);
 
       if (locationMarkerRef.current) {
-        // Update existing marker position and icon
         locationMarkerRef.current.setLatLng([position.lat, position.lng]);
         locationMarkerRef.current.setIcon(icon);
       } else {
-        // Create marker for the first time
         locationMarkerRef.current = L.marker([position.lat, position.lng], {
           icon,
           zIndexOffset: 9999,
+          interactive: false,
         }).addTo(mapRef.current!);
-        // Start watching heading for direction arrow
-        startHeadingWatch();
+      }
+
+      // 3. Start watching heading (orientation permission already granted above)
+      if (hasOrientationPermission && !orientationHandlerRef.current) {
+        setupHeadingWatch();
+      }
+
+      // 4. Start continuous position watch if not already watching
+      if (watchIdRef.current === null && navigator.geolocation) {
+        watchIdRef.current = navigator.geolocation.watchPosition(
+          (pos) => {
+            const latlng: L.LatLngExpression = [pos.coords.latitude, pos.coords.longitude];
+            if (locationMarkerRef.current) {
+              locationMarkerRef.current.setLatLng(latlng);
+            }
+          },
+          () => {},
+          { enableHighAccuracy: true }
+        );
       }
 
       onLocationFound?.(position);
