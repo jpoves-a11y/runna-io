@@ -1,15 +1,16 @@
 /**
  * useMapRotation — lightweight two-finger map rotation for Leaflet.
  *
- * IMPORTANT: Only patches L.DomUtil.setTransform (for CSS rotation during pan)
- * and map.mouseEventToContainerPoint (for correct click detection).
+ * Patches:
+ *  1. L.DomUtil.setTransform — CSS rotation during pan
+ *  2. map.mouseEventToContainerPoint — correct click detection on rotated map
+ *  3. map.getPixelBounds — expand tile/canvas loading to cover rotated viewport
  *
- * We intentionally do NOT patch containerPointToLayerPoint or getPixelBounds
- * because those methods are used internally by the Canvas renderer to calculate
- * its own _bounds. Patching them with rotated coordinates causes the canvas to
- * be positioned incorrectly, making polygons/areas invisible after rotation.
+ * We intentionally do NOT patch containerPointToLayerPoint because it's used
+ * by the Canvas renderer to calculate internal _bounds. Patching it causes the
+ * canvas to be positioned incorrectly, making polygons/areas invisible.
  *
- * Instead we rely on:
+ * Also relies on:
  *  - Canvas renderer padding (1.5) to pre-render beyond the viewport
  *  - CSS overflow:visible on canvas panes
  *  - Force layer redraws after rotation settles
@@ -159,7 +160,31 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       return rotatePoint(pt, center, bearingRef.current);
     };
 
-    // ─── 3. Track zoom to avoid conflicts ────────────────────────────
+    // ─── 3. Expand pixel bounds so tiles + canvas cover rotated viewport
+    // This tells Leaflet's TileLayer and Canvas renderer to load/render
+    // a larger area that covers the corners exposed by CSS rotation.
+    const origGetPixelBounds = (map.getPixelBounds as any).bind(map);
+
+    (map as any).getPixelBounds = function (c?: L.LatLng, z?: number) {
+      const bounds: L.Bounds = origGetPixelBounds(c, z);
+      if (bearingRef.current === 0) return bounds;
+
+      const size = map.getSize();
+      const rad = Math.abs(bearingRef.current) * Math.PI / 180;
+      const cosV = Math.abs(Math.cos(rad));
+      const sinV = Math.abs(Math.sin(rad));
+      const rotW = size.x * cosV + size.y * sinV;
+      const rotH = size.x * sinV + size.y * cosV;
+      const expandX = Math.ceil(Math.max(0, rotW - size.x) / 2) + 128;
+      const expandY = Math.ceil(Math.max(0, rotH - size.y) / 2) + 128;
+
+      return L.bounds(
+        L.point(bounds.min!.x - expandX, bounds.min!.y - expandY),
+        L.point(bounds.max!.x + expandX, bounds.max!.y + expandY),
+      );
+    };
+
+    // ─── 4. Track zoom to avoid conflicts ────────────────────────────
     const onZoomAnim = () => { isZoomingRef.current = true; };
     const onZoomEnd = () => {
       isZoomingRef.current = false;
@@ -171,7 +196,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     map.on('zoomanim', onZoomAnim);
     map.on('zoomend', onZoomEnd);
 
-    // ─── 4. Re-apply rotation after pan/resize ──────────────────────
+    // ─── 5. Re-apply rotation after pan/resize ──────────────────────
     const reapply = () => {
       if (bearingRef.current !== 0 && !isZoomingRef.current) {
         applyRotation(bearingRef.current);
@@ -179,7 +204,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     };
     map.on('moveend resize', reapply);
 
-    // ─── 5. Two-finger rotation gesture ──────────────────────────────
+    // ─── 6. Two-finger rotation gesture ──────────────────────────────
     const container = map.getContainer();
 
     function onTouchStart(e: TouchEvent) {
@@ -245,6 +270,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
         L.DomUtil.setTransform = origSetTransform;
       }
       (map as any).mouseEventToContainerPoint = origMouseToContainer;
+      (map as any).getPixelBounds = origGetPixelBounds;
 
       map.off('zoomanim', onZoomAnim);
       map.off('zoomend', onZoomEnd);
