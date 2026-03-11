@@ -76,15 +76,19 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
         pane.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0) rotate(${-deg}deg)`;
       }
 
-      // Counter-rotate marker inner content and popup wrappers so they stay upright.
+      // Counter-rotate marker inner content so they stay upright.
       // Done here (not in CSS) so it updates every animation frame without lag.
       const counterRot = deg === 0 ? '' : `rotate(${deg}deg)`;
       pane.querySelectorAll<HTMLElement>(
         '.treasure-marker > div, .fortification-castle-icon > div',
       ).forEach((el) => { el.style.transform = counterRot; });
-      pane.querySelectorAll<HTMLElement>(
-        '.leaflet-popup-content-wrapper, .leaflet-popup-tip-container',
-      ).forEach((el) => { el.style.transform = counterRot; });
+
+      // Counter-rotate popups as a UNIT (body + tip together) by appending
+      // rotate() to the existing translate3d() on .leaflet-popup itself.
+      pane.querySelectorAll<HTMLElement>('.leaflet-popup').forEach((el) => {
+        const base = el.style.transform.replace(/\s*rotate\([^)]*\)/, '');
+        el.style.transform = deg === 0 ? base : `${base} rotate(${deg}deg)`;
+      });
     },
     [mapRef],
   );
