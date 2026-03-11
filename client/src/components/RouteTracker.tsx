@@ -9,7 +9,6 @@ import type { TerritoryWithUser } from '@shared/schema';
 import type { Treasure } from '@/hooks/use-competition';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import 'leaflet-rotate';
 
 const STORAGE_KEY = 'runna-route-tracking';
 const MIN_ACCURACY_METERS = 30;
@@ -259,9 +258,7 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
 
     const map = L.map(mapContainer.current, {
       center: [40.4168, -3.7038], zoom: 16, zoomControl: false, attributionControl: false,
-      zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false,
-      rotate: true, touchRotate: true, shiftKeyRotate: true, rotateControl: false,
-    } as any);
+    });
     L.tileLayer(tileUrl, { maxZoom: 19, subdomains: ['a', 'b', 'c', 'd'], keepBuffer: 12, updateWhenIdle: false, updateWhenZooming: true }).addTo(map);
 
     // Create layer groups for territories and treasures

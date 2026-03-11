@@ -30,8 +30,6 @@ export default defineConfig({
       "@": path.resolve(__dirname, "client", "src"),
       "@shared": path.resolve(__dirname, "shared"),
       "@assets": path.resolve(__dirname, "attached_assets"),
-      // Force leaflet-rotate to use pre-built UMD (patches global L)
-      "leaflet-rotate": path.resolve(__dirname, "node_modules/leaflet-rotate/dist/leaflet-rotate-src.js"),
     },
   },
   root: path.resolve(__dirname, "client"),

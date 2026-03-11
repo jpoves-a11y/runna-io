@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import 'leaflet-rotate';
 import { Button } from '@/components/ui/button';
 import { ZoomIn, ZoomOut, Layers, Navigation } from 'lucide-react';
 import type { TerritoryWithUser, RouteWithTerritory } from '@shared/schema';
@@ -80,12 +79,11 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     if (!mapContainer.current || mapRef.current) return;
 
     // Create a shared canvas renderer for all vector layers - much faster than SVG
-    // padding 3.0 = pre-render 3x viewport in each direction to cover rotated views
-    const canvasRenderer = L.canvas({ padding: 3.0, tolerance: 10 });
+    const canvasRenderer = L.canvas({ padding: 0.5, tolerance: 10 });
     canvasRendererRef.current = canvasRenderer;
 
     // SVG renderer for shared-run territories (supports pattern fills)
-    const svgRenderer = L.svg({ padding: 3.0 });
+    const svgRenderer = L.svg({ padding: 0.5 });
     svgRendererRef.current = svgRenderer;
 
     // Initialize map with optimized settings for smooth panning
@@ -94,18 +92,14 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       zoom: 14,
       zoomControl: false,
       attributionControl: false,
-      preferCanvas: true, // Global canvas preference
-      renderer: canvasRenderer, // Shared canvas renderer
-      zoomAnimation: false, // Disable zoom animation — prevents canvas misalignment during transition
-      fadeAnimation: false, // No fade needed without zoom animation
-      markerZoomAnimation: false,
-      zoomSnap: 0.5, // Smoother zoom steps
-      wheelDebounceTime: 40, // Responsive scroll zoom
-      rotate: true, // Enable map rotation
-      touchRotate: true, // Two-finger rotation gesture
-      shiftKeyRotate: true, // Shift+drag to rotate on desktop
-      rotateControl: false, // We handle reset via our own compass button
-    } as any);
+      preferCanvas: true,
+      renderer: canvasRenderer,
+      zoomAnimation: true,
+      fadeAnimation: true,
+      markerZoomAnimation: true,
+      zoomSnap: 0.5,
+      wheelDebounceTime: 40,
+    });
 
     // Use tile layer matching current theme with aggressive caching
     const initialStyle = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
@@ -858,10 +852,6 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       // 2. Get current position
       const position = await getCurrentPosition();
       mapRef.current?.setView([position.lat, position.lng], Math.max(mapRef.current.getZoom(), 16));
-      // Reset rotation to north when locating
-      if (mapRef.current && (mapRef.current as any).setBearing) {
-        (mapRef.current as any).setBearing(0);
-      }
 
       const icon = createLocationIcon(headingRef.current);
 
@@ -961,23 +951,19 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
           border-radius: 0;
         }
         
-        /* Match map background to tile theme - eliminates white zones */
         .leaflet-container {
           background: ${mapStyle === 'dark' ? '#000000' : '#e8e8e6'} !important;
         }
         
-        /* Tiles appear instantly, no flicker */
         .leaflet-tile {
-          transition: none !important;
+          will-change: transform;
+        }
+        .leaflet-tile-container {
+          will-change: transform;
+          backface-visibility: hidden;
         }
         .leaflet-tile-loaded {
           opacity: 1 !important;
-        }
-        
-        /* Canvas and overlay panes need larger overflow area for rotation */
-        .leaflet-canvas-container,
-        .leaflet-overlay-pane canvas {
-          overflow: visible;
         }
         
         .leaflet-popup-content-wrapper {
