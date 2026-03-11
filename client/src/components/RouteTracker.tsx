@@ -863,12 +863,6 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
         .leaflet-tile {
           transition: none !important;
         }
-        ${mapBearing > 0.5 ? `
-        .treasure-marker > div,
-        .leaflet-popup {
-          transform: rotate(${mapBearing}deg) !important;
-        }
-        ` : ''}
       `}</style>
     </div>
   );
