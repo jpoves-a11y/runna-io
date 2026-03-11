@@ -262,7 +262,15 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
     };
     map.on('move moveend resize', reapply);
 
-    // ─── 8. Two-finger rotation gesture ──────────────────────────────
+    // ─── 8. Counter-rotate popups immediately when they open ─────────
+    const onPopupOpen = () => {
+      if (bearingRef.current !== 0) {
+        applyRotation(bearingRef.current);
+      }
+    };
+    map.on('popupopen', onPopupOpen);
+
+    // ─── 9. Two-finger rotation gesture ──────────────────────────────
     const container = map.getContainer();
 
     function onTouchStart(e: TouchEvent) {
@@ -334,6 +342,7 @@ export function useMapRotation(mapRef: React.MutableRefObject<L.Map | null>, map
       map.off('zoomanim', onZoomAnim);
       map.off('zoomend', onZoomEnd);
       map.off('move moveend resize', reapply);
+      map.off('popupopen', onPopupOpen);
 
       container.removeEventListener('touchstart', onTouchStart);
       container.removeEventListener('touchmove', onTouchMove);
