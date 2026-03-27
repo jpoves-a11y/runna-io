@@ -6689,6 +6689,231 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // POST /api/tasks/polar-auto-sync — Cron: runs every 5 minutes, auto-syncs Polar activities
+  // Checks all connected Polar accounts for new exercises, processes them, and notifies users
+  app.post('/api/tasks/polar-auto-sync', async (c) => {
+    try {
+      if (!isUpstashAuthorized(c)) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+
+      const cronStart = Date.now();
+      const MAX_CRON_TIME = 25000; // 25s safety limit
+      const MAX_USERS_PER_INVOCATION = 5; // Process at most 5 users per cron run
+      const SYNC_STALE_MINUTES = 4; // Only sync users not synced in last 4 minutes
+
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      const allAccounts = await storage.getAllPolarAccounts();
+      if (allAccounts.length === 0) {
+        return c.json({ success: true, message: 'No Polar accounts connected', synced: 0 });
+      }
+
+      // Sort by lastSyncAt ASC (oldest first = most stale), null = never synced = highest priority
+      const sortedAccounts = allAccounts.sort((a, b) => {
+        if (!a.lastSyncAt) return -1;
+        if (!b.lastSyncAt) return 1;
+        return new Date(a.lastSyncAt).getTime() - new Date(b.lastSyncAt).getTime();
+      });
+
+      // Filter to only stale accounts (not synced recently)
+      const staleThreshold = new Date(Date.now() - SYNC_STALE_MINUTES * 60 * 1000).toISOString();
+      const staleAccounts = sortedAccounts.filter(a => !a.lastSyncAt || a.lastSyncAt < staleThreshold);
+
+      const toSync = staleAccounts.slice(0, MAX_USERS_PER_INVOCATION);
+      console.log(`[POLAR AUTO-SYNC] ${allAccounts.length} total accounts, ${staleAccounts.length} stale, syncing ${toSync.length}`);
+
+      let syncedUsers = 0;
+      let newActivitiesFound = 0;
+      let activitiesProcessed = 0;
+
+      for (const account of toSync) {
+        if (Date.now() - cronStart > MAX_CRON_TIME) {
+          console.warn('[POLAR AUTO-SYNC] Time limit reached, stopping');
+          break;
+        }
+
+        const userId = account.userId;
+        try {
+          // 1. Sync new exercises from Polar API
+          const beforeCount = (await storage.getUnprocessedPolarActivities(userId)).length;
+          const syncResult = await syncPolarExercisesDirect(account, userId, storage);
+          await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+          const afterUnprocessed = await storage.getUnprocessedPolarActivities(userId);
+          const newCount = afterUnprocessed.length;
+
+          console.log(`[POLAR AUTO-SYNC] User ${userId}: sync=${syncResult.imported} imported, ${newCount} unprocessed`);
+          syncedUsers++;
+
+          if (newCount === 0) continue;
+
+          // 2. Auto-process unprocessed activities (same logic as POST /api/polar/process)
+          const newActivities = afterUnprocessed.slice(0, 3); // Max 3 per user per cron
+          newActivitiesFound += newActivities.length;
+
+          for (const activity of newActivities) {
+            if (Date.now() - cronStart > MAX_CRON_TIME) break;
+
+            if (!activity.summaryPolyline) {
+              await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'no_gps' });
+              continue;
+            }
+
+            const startDate = coerceDate(activity.startDate);
+            if (!startDate) {
+              await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'bad_date' });
+              continue;
+            }
+
+            const COMP_PROCESS_MIN_DATE = new Date('2026-03-02T00:00:00Z');
+            if (startDate < COMP_PROCESS_MIN_DATE) {
+              await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'before_competition' });
+              continue;
+            }
+
+            const decoded = decodePolyline(activity.summaryPolyline);
+            const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+
+            if (coordinates.length < 10) {
+              // Short activity - create route + basic feed event
+              try {
+                const startedAt = startDate.toISOString();
+                const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+                let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
+                if (!shortRoute) {
+                  shortRoute = await storage.createRoute({
+                    userId,
+                    name: activity.name,
+                    coordinates,
+                    distance: activity.distance,
+                    duration: activity.duration,
+                    startedAt,
+                    completedAt,
+                  });
+                }
+                await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+                await storage.updatePolarActivity(activity.id, { routeId: shortRoute.id, processed: 1 as any, processedAt: new Date().toISOString() });
+              } catch (_) {
+                await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString() });
+              }
+              continue;
+            }
+
+            // Full route with territory processing
+            try {
+              const startedAt = startDate.toISOString();
+              const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+
+              let route = activity.routeId ? await storage.getRouteById(activity.routeId) : null;
+              if (!route) {
+                route = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
+              }
+              if (!route) {
+                route = await storage.createRoute({
+                  userId,
+                  name: activity.name,
+                  coordinates,
+                  distance: activity.distance,
+                  duration: activity.duration,
+                  startedAt,
+                  completedAt,
+                });
+              }
+
+              await storage.updatePolarActivity(activity.id, { routeId: route.id });
+
+              // Create early feed event
+              let earlyFeedEventId: string | undefined;
+              try {
+                const existingFeed = await storage.getFeedEventByRouteId(route.id);
+                if (existingFeed) {
+                  earlyFeedEventId = existingFeed.id;
+                } else {
+                  const earlyFeedEvent = await storage.createFeedEvent({
+                    userId,
+                    eventType: 'activity',
+                    routeId: route.id,
+                    distance: activity.distance,
+                    duration: activity.duration,
+                    newArea: 0,
+                    metadata: null,
+                  });
+                  earlyFeedEventId = earlyFeedEvent.id;
+                }
+              } catch (_) {}
+
+              // Enqueue territory processing
+              await c.env.TERRITORY_QUEUE.send({
+                type: 'process_route_territory',
+                userId,
+                routeId: route.id,
+                startedAt,
+                completedAt,
+                distance: activity.distance,
+                duration: activity.duration,
+                earlyFeedEventId,
+              });
+
+              await storage.updatePolarActivity(activity.id, {
+                routeId: route.id,
+                processed: 1 as any,
+                processedAt: new Date().toISOString(),
+              });
+
+              activitiesProcessed++;
+              console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
+
+              // 3. Send push notification to user about the new activity
+              try {
+                const { sendPushToUser } = await import('./pushHelper');
+                const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
+                if (subscriptions.length > 0) {
+                  const distKm = (activity.distance / 1000).toFixed(1);
+                  const pushSubs = subscriptions.map((sub: any) => ({
+                    endpoint: sub.endpoint,
+                    keys: { p256dh: sub.p256dh, auth: sub.auth },
+                  }));
+                  await sendPushToUser(
+                    pushSubs,
+                    {
+                      title: '🏃 Actividad importada',
+                      body: `${activity.name} (${distKm} km) se ha procesado. ¡Abre la app para ver tu conquista!`,
+                      tag: `polar-auto-${activity.id}`,
+                      data: { type: 'polar_auto_import', routeId: route.id, url: '/' },
+                    },
+                    (c.env as any).VAPID_PUBLIC_KEY || '',
+                    (c.env as any).VAPID_PRIVATE_KEY || '',
+                    (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                  );
+                }
+              } catch (pushErr) {
+                console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
+              }
+            } catch (procErr) {
+              console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
+            }
+          }
+        } catch (userErr) {
+          console.error(`[POLAR AUTO-SYNC] ❌ Error syncing user ${userId}:`, userErr);
+        }
+      }
+
+      const elapsed = Date.now() - cronStart;
+      console.log(`[POLAR AUTO-SYNC] Done in ${elapsed}ms: ${syncedUsers} users synced, ${newActivitiesFound} new activities, ${activitiesProcessed} processed`);
+      return c.json({
+        success: true,
+        syncedUsers,
+        newActivitiesFound,
+        activitiesProcessed,
+        elapsed,
+      });
+    } catch (error: any) {
+      console.error('[POLAR AUTO-SYNC] Critical error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   // POST /api/tasks/spawn-treasure — Cron: runs every hour, spawns at a random hour each day
   app.post('/api/tasks/spawn-treasure', async (c) => {
     try {

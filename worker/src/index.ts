@@ -58,4 +58,21 @@ app.get('/', (c) => {
 export default {
   fetch: app.fetch,
   queue: handleQueueBatch,
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    // Cloudflare Cron Trigger: auto-sync Polar activities every 5 minutes
+    const workerUrl = (env as any).WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
+    ctx.waitUntil(
+      fetch(`${workerUrl}/api/tasks/polar-auto-sync`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${(env as any).UPSTASH_CRON_SECRET || ''}`,
+          'Content-Type': 'application/json',
+        },
+      }).then(r => r.json()).then(result => {
+        console.log('[CRON] Polar auto-sync result:', JSON.stringify(result));
+      }).catch(err => {
+        console.error('[CRON] Polar auto-sync failed:', err);
+      })
+    );
+  },
 };

@@ -42,6 +42,19 @@ RESEND_FROM = "onboarding@resend.dev"
 #    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
 # NOTE: Even without this cron, treasures auto-spawn when users load the map (fallback).
 
+# ===== Polar Auto-Sync =====
+# Automatically syncs Polar activities every 5 minutes via Cloudflare Cron Trigger.
+# Also available as Upstash QStash endpoint:
+#    - URL: https://runna-io-api.runna-io-api.workers.dev/api/tasks/polar-auto-sync
+#    - Method: POST
+#    - Schedule: */5 * * * *  (every 5 minutes)
+#    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
+
+# ===== Cloudflare Cron Triggers =====
+# Auto-sync Polar activities every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]
+
 # ===== Cloudflare Queue for Async Territory Processing =====
 # The territory queue offloads CPU-heavy work (polygon intersections, stealing,
 # feed metadata, notifications) from the HTTP request into a queue consumer

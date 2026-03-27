@@ -1117,6 +1117,10 @@ export class WorkerStorage {
     await this.db.delete(polarAccounts).where(eq(polarAccounts.userId, userId));
   }
 
+  async getAllPolarAccounts(): Promise<PolarAccount[]> {
+    return await this.db.select().from(polarAccounts);
+  }
+
   async getPolarActivityByPolarId(polarExerciseId: string): Promise<PolarActivity | undefined> {
     const [activity] = await this.db.select().from(polarActivities).where(eq(polarActivities.polarExerciseId, polarExerciseId));
     return activity || undefined;
