@@ -74,15 +74,56 @@ export default function MapPage() {
             const parsed = JSON.parse(stored);
             setConquestData(parsed);
             if (!animating) {
-              const newArea = (parsed?.newAreaConquered || 0) / 1000000;
-              const totalArea = (parsed?.totalArea || 0) / 1000000;
-              const previousArea = totalArea - newArea;
-              setConquestResult({
-                newArea,
-                previousArea: Math.max(0, previousArea),
-                victims: parsed?.victims || [],
-                treasuresCollected: parsed?.treasuresCollected || [],
-              });
+              // If we have real metrics, show immediately
+              if (parsed?.newAreaConquered > 0) {
+                const newArea = (parsed.newAreaConquered) / 1000000;
+                const totalArea = (parsed?.totalArea || 0) / 1000000;
+                const previousArea = totalArea - newArea;
+                setConquestResult({
+                  newArea,
+                  previousArea: Math.max(0, previousArea),
+                  victims: parsed?.victims || [],
+                  treasuresCollected: parsed?.treasuresCollected || [],
+                  isLoading: false,
+                });
+              } else {
+                // Queued - show loading modal and start polling
+                setConquestResult({
+                  newArea: 0,
+                  previousArea: 0,
+                  victims: [],
+                  treasuresCollected: [],
+                  isLoading: true,
+                });
+                // Poll in background
+                const routeId = parsed?.routeId;
+                if (routeId) {
+                  (async () => {
+                    for (let i = 0; i < 15; i++) {
+                      await new Promise(r => setTimeout(r, 2000));
+                      try {
+                        const res = await fetch(`/api/conquest-result/${routeId}`);
+                        const data = await res.json();
+                        if (data.ready) {
+                          const newArea = (data.newAreaConquered || 0) / 1000000;
+                          setConquestResult({
+                            newArea,
+                            previousArea: Math.max(0, (data.newAreaConquered || 0) / 1000000),
+                            victims: data.victims || [],
+                            treasuresCollected: data.treasuresCollected || [],
+                            isLoading: false,
+                          });
+                          queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+                          queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+                          queryClient.invalidateQueries({ queryKey: ['/api/user'] });
+                          return;
+                        }
+                      } catch (_) {}
+                    }
+                    setConquestResult((prev: any) => ({ ...prev, isLoading: false }));
+                  })();
+                }
+              }
               setIsResultModalOpen(true);
             }
             sessionStorage.removeItem('lastConquestResult');
@@ -303,22 +344,65 @@ export default function MapPage() {
             setIsAnimating(false);
             setConquestData(null);
           }}
-          onComplete={() => {
-            // Use real conquest data from the process API
-            const newArea = (conquestData?.newAreaConquered || 0) / 1000000;
-            const totalArea = (conquestData?.totalArea || currentUser?.totalArea || 0) / 1000000;
-            const previousArea = totalArea - newArea;
-            
-            setConquestResult({
-              newArea,
-              previousArea: Math.max(0, previousArea),
-              victims: conquestData?.victims || [],
-              treasuresCollected: conquestData?.treasuresCollected || []
-            });
-            // Stop animation view so the normal map renders with ConquestResultModal
+          onComplete={async () => {
+            // Check if we already have real conquest data (live route creation)
+            if (conquestData?.newAreaConquered > 0) {
+              const newArea = conquestData.newAreaConquered / 1000000;
+              const totalArea = (conquestData?.totalArea || currentUser?.totalArea || 0) / 1000000;
+              const previousArea = totalArea - newArea;
+              setConquestResult({
+                newArea,
+                previousArea: Math.max(0, previousArea),
+                victims: conquestData?.victims || [],
+                treasuresCollected: conquestData?.treasuresCollected || [],
+                isLoading: false,
+              });
+              window.history.replaceState({}, '', '/');
+              setIsAnimating(false);
+              setIsResultModalOpen(true);
+              return;
+            }
+
+            // Queued processing (Polar/Strava import) - poll for results
             window.history.replaceState({}, '', '/');
             setIsAnimating(false);
+            setConquestResult({
+              newArea: 0,
+              previousArea: (currentUser?.totalArea || 0) / 1000000,
+              victims: [],
+              treasuresCollected: [],
+              isLoading: true,
+            });
             setIsResultModalOpen(true);
+
+            const routeId = conquestData?.routeId;
+            if (!routeId) return;
+
+            // Poll for conquest results (every 2s, up to 30s)
+            for (let i = 0; i < 15; i++) {
+              await new Promise(r => setTimeout(r, 2000));
+              try {
+                const res = await fetch(`/api/conquest-result/${routeId}`);
+                const data = await res.json();
+                if (data.ready) {
+                  const newArea = (data.newAreaConquered || 0) / 1000000;
+                  const prevArea = (currentUser?.totalArea || 0) / 1000000;
+                  setConquestResult({
+                    newArea,
+                    previousArea: Math.max(0, prevArea),
+                    victims: data.victims || [],
+                    treasuresCollected: data.treasuresCollected || [],
+                    isLoading: false,
+                  });
+                  queryClient.invalidateQueries({ queryKey: ['/api/feed'] });
+                  queryClient.invalidateQueries({ queryKey: ['/api/territories'] });
+                  queryClient.invalidateQueries({ queryKey: ['/api/user'] });
+                  return;
+                }
+              } catch (_) {}
+            }
+            // Timeout - stop loading spinner
+            setConquestResult((prev: any) => ({ ...prev, isLoading: false }));
           }}
           animationDuration={7000}
         />
@@ -392,6 +476,7 @@ export default function MapPage() {
         senderId={currentUser?.id}
         routeId={conquestData?.routeId}
         routeName={conquestData?.routeName}
+        isLoading={conquestResult?.isLoading || false}
       />
       {/* Powers button during competition */}
       {isCompetitionActive && currentUser && (

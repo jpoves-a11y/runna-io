@@ -56,6 +56,7 @@ interface ConquestResultModalProps {
   senderId?: string;
   routeId?: string;
   routeName?: string;
+  isLoading?: boolean;
 }
 
 export function ConquestResultModal({
@@ -68,6 +69,7 @@ export function ConquestResultModal({
   senderId,
   routeId,
   routeName,
+  isLoading = false,
 }: ConquestResultModalProps) {
   const [displayNewArea, setDisplayNewArea] = useState(0);
   const [displayTotalArea, setDisplayTotalArea] = useState(previousAreaKm2);
@@ -173,7 +175,7 @@ export function ConquestResultModal({
             <div className="inline-flex items-center justify-center bg-white/20 backdrop-blur-sm rounded-full p-3 mb-3">
               <Trophy className="h-8 w-8 text-yellow-200" />
             </div>
-            <h2 className="text-xl font-bold mb-1">¡Conquista Completada!</h2>
+            <h2 className="text-xl font-bold mb-1">{isLoading ? 'Procesando...' : '¡Conquista Completada!'}</h2>
             {routeId ? (
               <div className="mt-2">
                 {isRenaming ? (
@@ -213,15 +215,25 @@ export function ConquestResultModal({
         {/* New area card - overlapping header */}
         <div className={`px-4 -mt-5 transition-all duration-500 ${showContent ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
           <div className="bg-background rounded-xl shadow-lg border border-border/50 p-5 text-center">
-            <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Has conquistado</p>
-            <div className="text-4xl font-black text-primary mb-0.5">
-              {displayNewArea.toFixed(2)}
-            </div>
-            <p className="text-sm font-medium text-muted-foreground">km² nuevos</p>
+            {isLoading ? (
+              <>
+                <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mx-auto mb-2" />
+                <p className="text-sm text-muted-foreground">Calculando tu conquista...</p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Has conquistado</p>
+                <div className="text-4xl font-black text-primary mb-0.5">
+                  {displayNewArea.toFixed(2)}
+                </div>
+                <p className="text-sm font-medium text-muted-foreground">km² nuevos</p>
+              </>
+            )}
           </div>
         </div>
 
         {/* Stats and action */}
+        {!isLoading && (
         <div className={`px-4 pt-3 pb-4 space-y-3 transition-all duration-500 delay-200 ${showContent ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`} style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}>
           {/* Total area + change */}
           <div className="flex items-center gap-3 p-3 bg-muted/40 rounded-xl">
@@ -336,6 +348,7 @@ export function ConquestResultModal({
             Ver en el mapa
           </Button>
         </div>
+        )}
       </DialogContent>
     </Dialog>
 

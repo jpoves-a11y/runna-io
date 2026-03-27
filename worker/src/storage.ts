@@ -130,6 +130,15 @@ export class WorkerStorage {
     return user || undefined;
   }
 
+  /** Batch-load multiple users by IDs in a single query (saves N subrequests → 1) */
+  async getUsersByIds(ids: string[]): Promise<User[]> {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    return await this.db.all<User>(
+      sql.raw(`SELECT * FROM users WHERE id IN (${placeholders})`)
+    );
+  }
+
   async getUserByUsername(username: string): Promise<User | undefined> {
     const [user] = await this.db.select().from(users).where(eq(users.username, username));
     return user || undefined;
@@ -306,6 +315,18 @@ export class WorkerStorage {
       .select()
       .from(routes)
       .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} >= ${minTime} AND ${routes.startedAt} <= ${maxTime}`);
+  }
+
+  // Get routes from specific users that started after a given timestamp
+  // Used to detect "future routes" — enemy routes that were run after the current route
+  async getRoutesStartedAfter(userIds: string[], afterTime: string): Promise<Route[]> {
+    if (userIds.length === 0) return [];
+    const minTime = new Date(afterTime).toISOString();
+    const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    return await this.db
+      .select()
+      .from(routes)
+      .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} > ${minTime}`);
   }
 
   async getRoutesByUserId(userId: string): Promise<RouteWithTerritory[]> {
@@ -677,29 +698,33 @@ export class WorkerStorage {
       }
     }
 
-    // Save fortification records for overlap zones (each record = +0.5 fortification)
+    // Save fortification records for overlap zones (batch insert)
     let fortificationLayers = 0;
+    const fortRecords: Array<{userId: string; routeId: string; geometry: string; area: number; bboxMinLng: number; bboxMinLat: number; bboxMaxLng: number; bboxMaxLat: number}> = [];
     for (const overlapGeom of overlapGeometries) {
+      const overlapArea = turf.area(overlapGeom);
+      if (overlapArea < 10) continue; // Skip tiny overlaps
+      const bbox = turf.bbox(overlapGeom);
+      const recordsToCreate = fortificationMultiplier; // 1 normally, 2 with wall power
+      for (let i = 0; i < recordsToCreate; i++) {
+        fortRecords.push({
+          userId, routeId,
+          geometry: JSON.stringify(overlapGeom),
+          area: overlapArea,
+          bboxMinLng: bbox[0], bboxMinLat: bbox[1],
+          bboxMaxLng: bbox[2], bboxMaxLat: bbox[3],
+        });
+        fortificationLayers++;
+      }
+    }
+    if (fortRecords.length > 0) {
       try {
-        const overlapArea = turf.area(overlapGeom);
-        if (overlapArea < 10) continue; // Skip tiny overlaps
-        const bbox = turf.bbox(overlapGeom);
-        const recordsToCreate = fortificationMultiplier; // 1 normally, 2 with wall power
-        for (let i = 0; i < recordsToCreate; i++) {
-          await this.createFortificationRecord({
-            userId,
-            routeId,
-            geometry: JSON.stringify(overlapGeom),
-            area: overlapArea,
-            bboxMinLng: bbox[0],
-            bboxMinLat: bbox[1],
-            bboxMaxLng: bbox[2],
-            bboxMaxLat: bbox[3],
-          });
-          fortificationLayers++;
-        }
+        await this.createFortificationRecordsBatch(fortRecords);
       } catch (err) {
-        console.error('[TERRITORY] Error saving fortification record:', err);
+        console.error('[TERRITORY] Batch fortification insert failed, falling back:', err);
+        for (const rec of fortRecords) {
+          try { await this.createFortificationRecord(rec); } catch (_) {}
+        }
       }
     }
 
@@ -2811,6 +2836,25 @@ export class WorkerStorage {
     return p;
   }
 
+  /** Batch create multiple user powers in a single query (saves N subrequests → 1) */
+  async createUserPowersBatch(powers: Array<{ id: string; userId: string; competitionId: string; powerType: string; treasureId: string; status: string }>): Promise<void> {
+    if (powers.length === 0) return;
+    await this.ensureCompetitionTables();
+    const values = powers.map(p =>
+      `('${p.id.replace(/'/g, "''")}', '${p.userId.replace(/'/g, "''")}', '${p.competitionId.replace(/'/g, "''")}', '${p.powerType.replace(/'/g, "''")}', '${p.treasureId.replace(/'/g, "''")}', '${p.status.replace(/'/g, "''")}', datetime('now'))`
+    ).join(',');
+    await this.db.run(sql.raw(`INSERT INTO user_powers (id, user_id, competition_id, power_type, treasure_id, status, created_at) VALUES ${values}`));
+  }
+
+  /** Batch consume multiple powers in a single query (saves N subrequests → 1) */
+  async usePowersBatch(powerIds: string[]): Promise<void> {
+    if (powerIds.length === 0) return;
+    await this.ensureCompetitionTables();
+    const now = new Date().toISOString();
+    const placeholders = powerIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    await this.db.run(sql.raw(`UPDATE user_powers SET status = 'used', used_at = '${now}' WHERE id IN (${placeholders}) AND status IN ('available', 'active')`));
+  }
+
   async activatePower(powerId: string): Promise<void> {
     await this.ensureCompetitionTables();
     const now = new Date().toISOString();
@@ -3142,6 +3186,25 @@ export class WorkerStorage {
       VALUES (lower(hex(randomblob(16))), ${data.userId}, ${data.routeId}, ${data.geometry}, ${data.area}, ${data.bboxMinLng}, ${data.bboxMinLat}, ${data.bboxMaxLng}, ${data.bboxMaxLat})`);
   }
 
+  /** Batch insert multiple fortification records in a single query (saves N subrequests → 1) */
+  async createFortificationRecordsBatch(records: Array<{
+    userId: string;
+    routeId: string;
+    geometry: string;
+    area: number;
+    bboxMinLng: number;
+    bboxMinLat: number;
+    bboxMaxLng: number;
+    bboxMaxLat: number;
+  }>): Promise<void> {
+    if (records.length === 0) return;
+    await this.ensureCompetitionTables();
+    const values = records.map(r =>
+      `(lower(hex(randomblob(16))), '${r.userId.replace(/'/g, "''")}', '${r.routeId.replace(/'/g, "''")}', '${r.geometry.replace(/'/g, "''")}', ${r.area}, ${r.bboxMinLng}, ${r.bboxMinLat}, ${r.bboxMaxLng}, ${r.bboxMaxLat})`
+    ).join(',');
+    await this.db.run(sql.raw(`INSERT INTO territory_fortifications (id, user_id, route_id, geometry, area, bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat) VALUES ${values}`));
+  }
+
   async getFortificationsInBbox(userId: string, minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Array<{ id: string; geometry: string; area: number }>> {
     await this.ensureCompetitionTables();
     const results = await this.db
@@ -3159,6 +3222,27 @@ export class WorkerStorage {
         sql`${territoryFortifications.bboxMinLat} <= ${maxLat}`
       ));
     return results;
+  }
+
+  /** Batch-load fortifications for ALL enemy users in a bbox — single DB call instead of N.
+   *  Returns a Map from userId to their fortification records. */
+  async getAllFortificationsInBbox(userIds: string[], minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Map<string, Array<{ id: string; geometry: string; area: number }>>> {
+    const result = new Map<string, Array<{ id: string; geometry: string; area: number }>>();
+    if (userIds.length === 0) return result;
+    await this.ensureCompetitionTables();
+    const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number }>(
+      sql.raw(`SELECT id, user_id, geometry, area FROM territory_fortifications
+        WHERE user_id IN (${placeholders})
+        AND bbox_max_lng >= ${minLng} AND bbox_min_lng <= ${maxLng}
+        AND bbox_max_lat >= ${minLat} AND bbox_min_lat <= ${maxLat}`)
+    );
+    for (const row of rows) {
+      const uid = row.user_id;
+      if (!result.has(uid)) result.set(uid, []);
+      result.get(uid)!.push({ id: row.id, geometry: row.geometry, area: row.area });
+    }
+    return result;
   }
 
   async getFortificationsByUserId(userId: string): Promise<Array<{ id: string; geometry: string; area: number; routeId: string | null }>> {

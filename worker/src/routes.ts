@@ -224,6 +224,7 @@ export async function generateFeedEvents(
 
     // If we have an existing feed event (created early), UPDATE it with conquest data
     if (existingFeedEventId) {
+      console.log(`[FEED] Updating feed event ${existingFeedEventId}: newArea=${conquestResult.newAreaConquered}, metadataKeys=${Object.keys(metadata).join(',')}`);
       await storage.updateFeedEvent(existingFeedEventId, {
         distance,
         duration,
@@ -287,7 +288,7 @@ export async function autoCollectTreasuresAlongRoute(
           turf.point([treasure.lng, treasure.lat]),
           { units: 'meters' }
         );
-        if (dist <= 100) {
+        if (dist <= 250) {
           const result = await storage.collectTreasure(treasure.id, userId);
           if (result && result.collectedBy === userId) {
             // Create power for user
@@ -505,6 +506,17 @@ export async function processTerritoryConquest(
     }
   }
 
+  // Late-import guard: only applies when the route being processed is genuinely old
+  // (completed >2 hours ago). In that case, skip stealing from territories that were
+  // created/merged AFTER this route's completion time (they didn't exist when the route ran).
+  const LATE_IMPORT_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
+  const isLateImport = activityCompletedAt
+    ? (Date.now() - new Date(activityCompletedAt).getTime()) > LATE_IMPORT_THRESHOLD_MS
+    : false;
+  if (isLateImport) {
+    console.log(`[TERRITORY] Late import detected (completed ${activityCompletedAt}) — will skip territories created after route time`);
+  }
+
   // Step 1: Handle enemy territory conquest
   console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
   
@@ -555,12 +567,40 @@ export async function processTerritoryConquest(
   let attackBbox: number[] | null = null;
   try { attackBbox = turf.bbox(attackGeometry); } catch (_) {}
 
+  // PRE-LOAD: Batch-fetch ALL fortifications for ALL enemy users in the attack bbox (1 query instead of 25)
+  let preloadedFortifications = new Map<string, Array<{ id: string; geometry: string; area: number }>>();
+  if (isCompMode && competition && !hasBulldozerPower && attackBbox) {
+    try {
+      const enemyUserIdsForForts = [...new Set(territoriesToProcess.map(t => t.userId))];
+      preloadedFortifications = await storage.getAllFortificationsInBbox(
+        enemyUserIdsForForts,
+        attackBbox[0], attackBbox[1], attackBbox[2], attackBbox[3]
+      );
+      if (preloadedFortifications.size > 0) {
+        console.log(`[COMPETITION] Pre-loaded fortifications for ${preloadedFortifications.size} enemy users in 1 query`);
+      }
+    } catch (err) {
+      console.error('[COMPETITION] Error pre-loading fortifications:', err);
+    }
+  }
+
   for (const enemyTerritory of territoriesToProcess) {
     try {
       // Skip if this user was identified as "ran together" (checked above against specific routes)
       if (ranTogetherUserIds.has(enemyTerritory.userId)) {
         console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together`);
         continue;
+      }
+
+      // Late-import guard: skip territories created AFTER this route's completion time
+      // (they didn't exist when the route was actually run)
+      if (isLateImport && activityCompletedAt && enemyTerritory.conqueredAt) {
+        const territoryTime = new Date(enemyTerritory.conqueredAt).getTime();
+        const routeTime = new Date(activityCompletedAt).getTime();
+        if (territoryTime > routeTime) {
+          console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - territory created after route time (late import protection)`);
+          continue;
+        }
       }
       
       // --- Competition defensive power checks (using pre-loaded data, NO extra DB calls) ---
@@ -584,10 +624,8 @@ export async function processTerritoryConquest(
               ? JSON.parse(enemyTerritory.geometry)
               : enemyTerritory.geometry;
             if (defenderGeomRaw) {
-              const fortRecords = await storage.getFortificationsInBbox(
-                enemyTerritory.userId,
-                attackBbox[0], attackBbox[1], attackBbox[2], attackBbox[3]
-              );
+              // Use pre-loaded fortifications (0 DB calls — already fetched in bulk)
+              const fortRecords = preloadedFortifications.get(enemyTerritory.userId) || [];
               if (fortRecords.length > 0) {
                 const attackFeature = turf.feature(attackGeometry);
                 let overlappingLayers = 0;
@@ -872,44 +910,73 @@ export async function processTerritoryConquest(
   const powersUsed: string[] = [];
   
   if (isCompMode && competition) {
-    // 1. Auto-collect treasures along the route (within 100m)
+    // 1. Auto-collect treasures along the route (within 250m)
     if (routeCoordinates && routeCoordinates.length > 0) {
       try {
         const activeTreasures = await storage.getActiveTreasures(competition.id);
         // Sample every 5th coordinate to reduce computation
         const sampledCoords = routeCoordinates.filter((_, i) => i % 5 === 0);
         
+        // First pass: identify treasures within range (pure computation, 0 DB calls)
+        const treasuresToCollect: typeof activeTreasures = [];
         for (const treasure of activeTreasures) {
-          let collected = false;
           for (const coord of sampledCoords) {
             const dist = turf.distance(
-              turf.point([coord[1], coord[0]]), // [lng, lat]
+              turf.point([coord[1], coord[0]]),
               turf.point([treasure.lng, treasure.lat]),
               { units: 'meters' }
             );
-            if (dist <= 100) {
-              const result = await storage.collectTreasure(treasure.id, userId);
-              if (result && result.collectedBy === userId) {
-                // Create power for user (verified this user won the race)
+            if (dist <= 250) {
+              treasuresToCollect.push(treasure);
+              break;
+            }
+          }
+        }
+        
+        // Second pass: collect each treasure atomically (must be sequential for atomicity)
+        // but batch the power creation and feed events after
+        const collectedTreasureData: Array<{ treasure: typeof activeTreasures[0]; powerId: string }> = [];
+        for (const treasure of treasuresToCollect) {
+          const result = await storage.collectTreasure(treasure.id, userId);
+          if (result && result.collectedBy === userId) {
+            const powerId = crypto.randomUUID();
+            collectedTreasureData.push({ treasure, powerId });
+            treasuresCollected.push({
+              treasureId: treasure.id,
+              treasureName: treasure.name,
+              powerType: treasure.powerType,
+              rarity: treasure.rarity,
+              zone: (treasure as any).zone || null,
+            });
+            console.log(`[COMPETITION] Treasure auto-collected: ${treasure.name} (${treasure.powerType}) by ${userId}`);
+          }
+        }
+        
+        // Batch create user powers (1 query instead of N)
+        if (collectedTreasureData.length > 0) {
+          try {
+            await storage.createUserPowersBatch(collectedTreasureData.map(({ treasure, powerId }) => ({
+              id: powerId,
+              userId,
+              competitionId: competition.id,
+              powerType: treasure.powerType,
+              treasureId: treasure.id,
+              status: 'available',
+            })));
+          } catch (batchPowerErr) {
+            console.error('[COMPETITION] Batch power creation failed, falling back:', batchPowerErr);
+            // Fallback: create individually
+            for (const { treasure, powerId } of collectedTreasureData) {
+              try {
                 await storage.createUserPower({
-                  id: crypto.randomUUID(),
+                  id: powerId,
                   userId,
                   competitionId: competition.id,
                   powerType: treasure.powerType,
                   treasureId: treasure.id,
                   status: 'available',
                 });
-                treasuresCollected.push({
-                  treasureId: treasure.id,
-                  treasureName: treasure.name,
-                  powerType: treasure.powerType,
-                  rarity: treasure.rarity,
-                  zone: (treasure as any).zone || null,
-                });
-                console.log(`[COMPETITION] Treasure auto-collected: ${treasure.name} (${treasure.powerType}) by ${userId}`);
-              }
-              collected = true;
-              break;
+              } catch (_) {}
             }
           }
         }
@@ -918,32 +985,21 @@ export async function processTerritoryConquest(
       }
     }
     
-    // 2. Consume "next-run" powers (these are single-use per run)
+    // 2. Consume "next-run" powers in batch (1 query instead of up to 5)
     try {
-      if (doubleAreaPowerId) {
-        await storage.usePower(doubleAreaPowerId);
-        powersUsed.push('double_area');
-        console.log(`[COMPETITION] Power consumed: double_area (${doubleAreaPowerId})`);
-      }
-      if (stealBoostPowerId) {
-        await storage.usePower(stealBoostPowerId);
-        powersUsed.push('steal_boost');
-        console.log(`[COMPETITION] Power consumed: steal_boost (${stealBoostPowerId})`);
-      }
-      if (magnetPowerId) {
-        await storage.usePower(magnetPowerId);
-        powersUsed.push('magnet');
-        console.log(`[COMPETITION] Power consumed: magnet (${magnetPowerId})`);
-      }
-      if (bulldozerPowerId) {
-        await storage.usePower(bulldozerPowerId);
-        powersUsed.push('bulldozer');
-        console.log(`[COMPETITION] Power consumed: bulldozer (${bulldozerPowerId})`);
-      }
-      if (batteringRamPowerId) {
-        await storage.usePower(batteringRamPowerId);
-        powersUsed.push('battering_ram');
-        console.log(`[COMPETITION] Power consumed: battering_ram (${batteringRamPowerId})`);
+      const powerIdsToConsume: Array<{id: string; name: string}> = [];
+      if (doubleAreaPowerId) powerIdsToConsume.push({id: doubleAreaPowerId, name: 'double_area'});
+      if (stealBoostPowerId) powerIdsToConsume.push({id: stealBoostPowerId, name: 'steal_boost'});
+      if (magnetPowerId) powerIdsToConsume.push({id: magnetPowerId, name: 'magnet'});
+      if (bulldozerPowerId) powerIdsToConsume.push({id: bulldozerPowerId, name: 'bulldozer'});
+      if (batteringRamPowerId) powerIdsToConsume.push({id: batteringRamPowerId, name: 'battering_ram'});
+      
+      if (powerIdsToConsume.length > 0) {
+        await storage.usePowersBatch(powerIdsToConsume.map(p => p.id));
+        for (const p of powerIdsToConsume) {
+          powersUsed.push(p.name);
+          console.log(`[COMPETITION] Power consumed: ${p.name} (${p.id})`);
+        }
       }
     } catch (err) {
       console.error('[COMPETITION] Error consuming powers:', err);
@@ -1789,17 +1845,24 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       // Cloudflare Worker subrequests and fails. We'll UPDATE it with conquest data later.
       let earlyFeedEventId: string | undefined;
       try {
-        const earlyFeedEvent = await storage.createFeedEvent({
-          userId: routeData.userId,
-          eventType: 'activity',
-          routeId: route.id,
-          distance: routeData.distance,
-          duration: routeData.duration,
-          newArea: 0,
-          metadata: null,
-        });
-        earlyFeedEventId = earlyFeedEvent.id;
-        console.log(`[FEED] ✅ Early feed event created: ${earlyFeedEventId} for route ${route.id}`);
+        // Check for existing feed event first (prevents duplicates on retries)
+        const existingFeed = await storage.getFeedEventByRouteId(route.id);
+        if (existingFeed) {
+          earlyFeedEventId = existingFeed.id;
+          console.log(`[FEED] ♻️ Reusing existing feed event ${earlyFeedEventId} for route ${route.id}`);
+        } else {
+          const earlyFeedEvent = await storage.createFeedEvent({
+            userId: routeData.userId,
+            eventType: 'activity',
+            routeId: route.id,
+            distance: routeData.distance,
+            duration: routeData.duration,
+            newArea: 0,
+            metadata: null,
+          });
+          earlyFeedEventId = earlyFeedEvent.id;
+          console.log(`[FEED] ✅ Early feed event created: ${earlyFeedEventId} for route ${route.id}`);
+        }
       } catch (earlyFeedErr) {
         console.error('[FEED] ❌ Early feed event creation failed:', earlyFeedErr);
       }
@@ -1820,9 +1883,6 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           type: 'process_route_territory',
           userId: routeData.userId,
           routeId: route.id,
-          coordinates: typeof routeData.coordinates === 'string'
-            ? routeData.coordinates
-            : JSON.stringify(routeData.coordinates),
           startedAt: routeData.startedAt,
           completedAt: routeData.completedAt,
           distance: routeData.distance,
@@ -2787,6 +2847,40 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const userId = c.req.param('userId');
       const routes = await storage.getRoutesByUserId(userId);
       return c.json(routes);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Conquest result polling endpoint (used by client after async queue processing)
+  app.get('/api/conquest-result/:routeId', async (c) => {
+    try {
+      const routeId = c.req.param('routeId');
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const feedEvent = await storage.getFeedEventByRouteId(routeId);
+      if (!feedEvent) {
+        return c.json({ ready: false });
+      }
+      // Parse metadata for victims and treasures
+      let victims: any[] = [];
+      let treasuresCollected: any[] = [];
+      if (feedEvent.metadata) {
+        try {
+          const meta = JSON.parse(feedEvent.metadata);
+          victims = meta.victims || [];
+          treasuresCollected = meta.treasures || [];
+        } catch (_) {}
+      }
+      return c.json({
+        ready: true,
+        newAreaConquered: feedEvent.newArea || 0,
+        areaStolen: feedEvent.areaStolen || 0,
+        distance: feedEvent.distance || 0,
+        duration: feedEvent.duration || 0,
+        victims,
+        treasuresCollected,
+      });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -4054,6 +4148,31 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             // Save routeId immediately
             await storage.updateStravaActivity(activity.id, { routeId: route.id });
 
+            // CRITICAL: Create early feed event IMMEDIATELY so it exists even if territory processing
+            // exhausts subrequests. We'll UPDATE it with conquest data later.
+            let earlyFeedEventId: string | undefined;
+            try {
+              const existingFeed = await storage.getFeedEventByRouteId(route.id);
+              if (existingFeed) {
+                earlyFeedEventId = existingFeed.id;
+                console.log(`[STRAVA] ♻️ Reusing existing feed event ${earlyFeedEventId} for route ${route.id}`);
+              } else {
+                const earlyFeedEvent = await storage.createFeedEvent({
+                  userId,
+                  eventType: 'activity',
+                  routeId: route.id,
+                  distance: activity.distance,
+                  duration: activity.duration,
+                  newArea: 0,
+                  metadata: null,
+                });
+                earlyFeedEventId = earlyFeedEvent.id;
+                console.log(`[STRAVA] ✅ Early feed event created: ${earlyFeedEventId} for route ${route.id}`);
+              }
+            } catch (earlyFeedErr) {
+              console.error('[STRAVA] ❌ Early feed event creation failed:', earlyFeedErr);
+            }
+
             const enclosedPoly = routeToEnclosedPolygon(coordinates, 150);
 
             if (enclosedPoly) {
@@ -4096,18 +4215,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                 }
               });
 
-              // Generate feed events (non-critical)
+              // Update early feed event with full conquest data
               try {
-                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult);
+                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult, false, earlyFeedEventId);
               } catch (feedErr) {
-                console.warn(`[STRAVA PROCESS] Feed events failed (non-critical):`, feedErr);
+                console.warn(`[STRAVA PROCESS] Feed events update failed (early event already exists):`, feedErr);
               }
             } else {
-              // No valid polygon — still create activity feed event
+              // No valid polygon — update early feed event with basic data
               try {
-                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] }, false, earlyFeedEventId);
               } catch (feedErr) {
-                console.warn('[STRAVA] Feed event failed for route without polygon:', feedErr);
+                console.warn('[STRAVA] Feed event update failed (early event already exists):', feedErr);
               }
               await storage.updateStravaActivity(activity.id, { 
                 routeId: route.id, 
@@ -4923,8 +5042,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
             duration: duration,
             startDate: startDateISO,
             summaryPolyline,
-            processed: summaryPolyline ? false : true, // Auto-mark no-GPS activities as processed (can't be displayed anyway)
-            processedAt: summaryPolyline ? null : new Date().toISOString(),
+            processed: false,
+            processedAt: null,
           });
 
           console.log(`[DIRECT SYNC]    ✅ IMPORTED!${!summaryPolyline ? ' (no GPS, auto-processed)' : ''}`);
@@ -5145,6 +5264,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           continue;
         }
 
+        let route: Route | null = null;
         try {
           console.log(`[PROCESS] Processing activity ${activity.id}: ${activity.name}`);
           const startDate = coerceDate(activity.startDate);
@@ -5196,7 +5316,6 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
 
           // Check if the activity already has a route (from a previous partial processing)
-          let route: Route | null = null;
           if (activity.routeId) {
             route = await storage.getRouteById(activity.routeId);
             if (route) {
@@ -5226,86 +5345,71 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
           // Save routeId immediately so it's linked even if territory processing fails
           await storage.updatePolarActivity(activity.id, { routeId: route.id });
 
-          // Skip hasNewerOverlappingRoutes during inline processing to save subrequests
-          // (handled separately via admin endpoint if needed)
-          const needsChronologicalReprocess = false;
-
-          console.log(`[PROCESS] Calculating enclosed territory (${coordinates.length} coords)...`);
-          const enclosedPoly = routeToEnclosedPolygon(coordinates, 150);
-          console.log(`[PROCESS] Enclosed polygon calculated`);
-
-          if (enclosedPoly) {
-            console.log(`[PROCESS] Processing territory conquest...`);
-            
-            // Pass env=undefined to skip email/push notifications during inline processing
-            // (saves 3+ subrequests per victim, avoids "Too many subrequests" error)
-            const conquestResult = await processTerritoryConquest(
-              storage,
-              userId,
-              route.id,
-              enclosedPoly.geometry,
-              undefined, // skip notifications to reduce subrequests
-              startedAtStr,
-              completedAtStr,
-              coordinates
-            );
-
-            // Save ran together info to the route
-            if (conquestResult.ranTogetherWith.length > 0) {
-              await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
+          // CRITICAL: Create early feed event IMMEDIATELY so it exists even if territory processing
+          // exhausts subrequests. We'll UPDATE it with conquest data later.
+          let earlyFeedEventId: string | undefined;
+          try {
+            const existingFeed = await storage.getFeedEventByRouteId(route.id);
+            if (existingFeed) {
+              earlyFeedEventId = existingFeed.id;
+              console.log(`[PROCESS] ♻️ Reusing existing feed event ${earlyFeedEventId} for route ${route.id}`);
+            } else {
+              const earlyFeedEvent = await storage.createFeedEvent({
+                userId,
+                eventType: 'activity',
+                routeId: route.id,
+                distance: activity.distance,
+                duration: activity.duration,
+                newArea: 0,
+                metadata: null,
+              });
+              earlyFeedEventId = earlyFeedEvent.id;
+              console.log(`[PROCESS] ✅ Early feed event created: ${earlyFeedEventId} for route ${route.id}`);
             }
-
-            console.log(`[PROCESS] Territory updated: ${conquestResult.territory.id}, area: ${conquestResult.territory.area}`);
-
-            // Mark as processed BEFORE feed events to ensure it's saved even if subrequest limit is hit
-            await storage.updatePolarActivity(activity.id, { 
-              routeId: route.id, 
-              processed: true, 
-              processedAt: new Date() 
-            });
-
-            results.push({
-              activityId: activity.id,
-              routeId: route.id,
-              territoryId: conquestResult.territory.id,
-              area: conquestResult.territory.area,
-              needsChronologicalReprocess,
-              metrics: {
-                totalArea: conquestResult.totalArea,
-                newAreaConquered: conquestResult.newAreaConquered,
-                areaStolen: conquestResult.areaStolen,
-                ranTogetherWith: conquestResult.ranTogetherWith,
-                victimsNotified: conquestResult.victimsNotified,
-                victims: conquestResult.victims,
-                treasuresCollected: conquestResult.treasuresCollected || [],
-                powersUsed: conquestResult.powersUsed || [],
-              }
-            });
-
-            // Generate feed events (non-critical, wrapped in try/catch to avoid failing the import)
-            // skipRecordsCheck=true to save 2+ subrequests during Polar import
-            try {
-              await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult, true);
-            } catch (feedErr) {
-              console.warn(`[PROCESS] Feed events failed (non-critical):`, feedErr);
-            }
-          } else {
-            // No valid polygon — still create activity feed event
-            try {
-              await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] }, true);
-            } catch (feedErr) {
-              console.warn('[POLAR] Feed event failed for route without polygon:', feedErr);
-            }
-            await storage.updatePolarActivity(activity.id, { 
-              routeId: route.id, 
-              processed: true, 
-              processedAt: new Date() 
-            });
+          } catch (earlyFeedErr) {
+            console.error('[PROCESS] ❌ Early feed event creation failed:', earlyFeedErr);
           }
-          console.log(`[PROCESS] ✅ Activity ${activity.id} processed successfully`);
+
+          // Enqueue territory processing via Cloudflare Queue (same as native POST /api/routes)
+          // The queue consumer has its own 30s CPU budget, avoiding subrequest limits
+          let queued = false;
+          try {
+            await c.env.TERRITORY_QUEUE.send({
+              type: 'process_route_territory',
+              userId,
+              routeId: route.id,
+              startedAt: startedAtStr,
+              completedAt: completedAtStr,
+              distance: activity.distance,
+              duration: activity.duration,
+              earlyFeedEventId,
+            });
+            queued = true;
+            console.log(`[PROCESS] ✅ Enqueued territory processing for route ${route.id}`);
+          } catch (queueErr) {
+            console.error(`[PROCESS] ❌ Queue enqueue failed:`, queueErr);
+          }
+
+          // Mark as processed — territory will be handled by queue consumer
+          await storage.updatePolarActivity(activity.id, { 
+            routeId: route.id, 
+            processed: true, 
+            processedAt: new Date() 
+          });
+
+          results.push({
+            activityId: activity.id,
+            routeId: route.id,
+            queued,
+          });
+
+          console.log(`[PROCESS] ✅ Activity ${activity.id} processed and queued for territory`);
         } catch (e) {
           console.error(`[PROCESS] ❌ Error processing activity ${activity.id}:`, e);
-          await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+          // Only mark as processed if route was created — otherwise allow retry
+          if (route?.id) {
+            await storage.updatePolarActivity(activity.id, { routeId: route.id, processed: true, processedAt: new Date() });
+          }
         }
       }
 

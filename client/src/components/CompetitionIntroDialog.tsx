@@ -81,7 +81,7 @@ function CompetitionIntroDialogInner() {
       <div className="text-4xl mb-3">💎</div>
       <h3 className="text-xl font-bold text-white mb-3">Tesoros</h3>
       <p className="text-white/70 text-xs mb-4 max-w-xs">
-        Cada día aparecen nuevos tesoros en el mapa de Zaragoza. ¡Pasa corriendo a menos de 100m para recogerlos!
+        Cada día aparecen nuevos tesoros en el mapa de Zaragoza. ¡Pasa corriendo a menos de 250m para recogerlos!
       </p>
       <div className="grid grid-cols-2 gap-2 w-full max-w-xs">
         {[

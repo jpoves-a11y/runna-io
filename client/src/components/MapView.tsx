@@ -622,7 +622,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
               <span id="${popupId}" data-expires="${treasure.expiresAt}" style="font-weight: 600; font-variant-numeric: tabular-nums;"></span>
             </div>
             <div style="font-size: 10px; color: ${isDark ? '#666' : '#999'}; margin-top: 6px;">
-              ¡Corre a menos de 100m para recogerlo!
+              ¡Corre a menos de 250m para recogerlo!
             </div>
           </div>
         </div>
@@ -673,6 +673,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       // Base territory = layer 1; each fort record = +0.5
       const level = 1 + userFort.layers * 0.5;
       if (userFort.layers < 1) continue; // Don't show until at least 1 fort record
+      const isReinforced = userFort.layers >= 2; // Only show icon if reinforced beyond initial layer
 
       // Group overlapping records to compute per-zone level for castle icons
       // Collect centroids for castle placement
@@ -697,14 +698,24 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
             );
           }
 
-          const opacityBase = Math.min(0.25 + level * 0.1, 0.55);
+          // Darker fill for fortified areas, soft solid border
+          const opacityBase = Math.min(0.30 + level * 0.12, 0.65);
+          // Darken the user color for fortification overlay
+          const darkenColor = (hex: string, amount: number) => {
+            const num = parseInt(hex.replace('#', ''), 16);
+            const r = Math.max(0, (num >> 16) - amount);
+            const g = Math.max(0, ((num >> 8) & 0xff) - amount);
+            const b = Math.max(0, (num & 0xff) - amount);
+            return `#${(r << 16 | g << 8 | b).toString(16).padStart(6, '0')}`;
+          };
+          const darkColor = darkenColor(userColor, 40);
           const overlay = L.polygon(leafletCoords as any, {
-            color: userColor,
-            fillColor: userColor,
+            color: darkColor,
+            fillColor: darkColor,
             fillOpacity: opacityBase,
-            weight: 2.5,
-            opacity: 0.5,
-            dashArray: '6 4',
+            weight: 3,
+            opacity: 0.6,
+            dashArray: undefined,
             lineCap: 'round',
             lineJoin: 'round',
             interactive: false,
@@ -737,8 +748,8 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         } catch (_) {}
       }
 
-      // Add castle markers at zone centroids (show when fortified = level >= 2)
-      if (level >= 1.5) {
+      // Add castle markers at zone centroids only when reinforced beyond initial layer
+      if (isReinforced) {
         for (const zone of zoneCentroids) {
           // Per-zone level: base 1 + zone fort records * 0.5
           const zoneLevel = 1 + zone.count * 0.5;

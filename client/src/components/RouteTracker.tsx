@@ -17,7 +17,7 @@ const MIN_MOVEMENT_METERS = 5; // Increased from 3 for phone GPS noise
 const MAX_JUMP_METERS = 200; // Reject jumps > 200m (cell tower switches)
 const MAX_JUMP_TIME_MS = 5000; // ... if time delta < 5s
 const MIN_SPEED_MS = 0.3; // Skip when speed < 0.3 m/s (stationary drift)
-const TREASURE_COLLECT_RADIUS = 100; // meters
+const TREASURE_COLLECT_RADIUS = 250; // meters
 const TREASURE_POLL_INTERVAL = 60000; // 60s poll for new treasures
 
 interface TrackingState {
