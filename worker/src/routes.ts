@@ -2852,6 +2852,49 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
+  // Pending animation: returns the latest auto-imported activity ready for animation
+  app.get('/api/polar/pending-animation/:userId', async (c) => {
+    try {
+      const userId = c.req.param('userId');
+      const afterRouteId = c.req.query('after'); // client sends the last animated routeId
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+
+      // Get recent processed Polar activities with routeId (newest first)
+      const activities = await storage.getPolarActivitiesByUserId(userId);
+      const processed = activities.filter(a => a.processed && a.routeId && a.summaryPolyline);
+
+      if (processed.length === 0) {
+        return c.json({ pending: false });
+      }
+
+      // Find the latest activity whose routeId is newer than what the client has seen
+      for (const activity of processed) {
+        if (activity.routeId === afterRouteId) {
+          // Client already saw this one — nothing newer
+          return c.json({ pending: false });
+        }
+
+        // Check if territory processing is done (feed event has metadata)
+        const feedEvent = await storage.getFeedEventByRouteId(activity.routeId!);
+        if (feedEvent && feedEvent.metadata) {
+          return c.json({
+            pending: true,
+            routeId: activity.routeId,
+            routeName: activity.name,
+            summaryPolyline: activity.summaryPolyline,
+            distance: activity.distance,
+            duration: activity.duration,
+          });
+        }
+      }
+
+      return c.json({ pending: false });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   // Conquest result polling endpoint (used by client after async queue processing)
   app.get('/api/conquest-result/:routeId', async (c) => {
     try {

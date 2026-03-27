@@ -139,6 +139,41 @@ export default function MapPage() {
     return () => window.removeEventListener('popstate', checkAnimation);
   }, []);
 
+  // Check for auto-imported Polar activities that need animation
+  useEffect(() => {
+    if (!currentUser?.id || isAnimating || isTracking || isResultModalOpen) return;
+    // Don't check if we're already showing animation from sessionStorage
+    if (window.location.search.includes('animateLatestActivity') || window.location.search.includes('showConquestResult')) return;
+
+    const checkPendingAnimation = async () => {
+      try {
+        const lastAnimated = localStorage.getItem('runna-lastAnimatedRouteId');
+        const res = await fetch(`/api/polar/pending-animation/${currentUser.id}${lastAnimated ? `?after=${lastAnimated}` : ''}`);
+        const data = await res.json();
+        if (data.pending && data.routeId && data.summaryPolyline) {
+          // Set up conquest data and trigger animation (same as manual import)
+          setConquestData({
+            newAreaConquered: 0, // will be polled
+            totalArea: 0,
+            routeId: data.routeId,
+            routeName: data.routeName || 'Actividad',
+            summaryPolyline: data.summaryPolyline,
+            distance: data.distance || 0,
+            victims: [],
+            treasuresCollected: [],
+          });
+          setIsAnimating(true);
+          // Mark as seen so we don't show it again
+          localStorage.setItem('runna-lastAnimatedRouteId', data.routeId);
+        }
+      } catch (_) {}
+    };
+
+    // Small delay to let the page settle
+    const timeout = setTimeout(checkPendingAnimation, 1500);
+    return () => clearTimeout(timeout);
+  }, [currentUser?.id, isAnimating, isTracking, isResultModalOpen]);
+
   // Get user location in parallel, don't block rendering
   useEffect(() => {
     // Use Promise.allSettled to not fail if geolocation is denied
@@ -345,6 +380,11 @@ export default function MapPage() {
             setConquestData(null);
           }}
           onComplete={async () => {
+            // Mark this route as animated so we don't re-trigger for auto-imports
+            if (conquestData?.routeId) {
+              localStorage.setItem('runna-lastAnimatedRouteId', conquestData.routeId);
+            }
+
             // Check if we already have real conquest data (live route creation)
             if (conquestData?.newAreaConquered > 0) {
               const newArea = conquestData.newAreaConquered / 1000000;
