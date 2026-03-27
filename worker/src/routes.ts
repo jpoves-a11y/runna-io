@@ -229,7 +229,7 @@ export async function generateFeedEvents(
         distance,
         duration,
         newArea: conquestResult.newAreaConquered,
-        metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+        metadata: JSON.stringify(metadata),
       });
       console.log(`[FEED] ✅ Updated existing feed event ${existingFeedEventId} with conquest data`);
     } else {
@@ -240,7 +240,7 @@ export async function generateFeedEvents(
           distance,
           duration,
           newArea: conquestResult.newAreaConquered,
-          metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+          metadata: JSON.stringify(metadata),
         });
         console.log(`[FEED] ✅ Updated feed event ${existing.id} (found by routeId) with conquest data`);
       } else {
@@ -252,7 +252,7 @@ export async function generateFeedEvents(
           distance,
           duration,
           newArea: conquestResult.newAreaConquered,
-          metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+          metadata: JSON.stringify(metadata),
         });
         console.log(`[FEED] ✅ Created new feed event for route ${routeId}`);
       }
@@ -2859,7 +2859,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const feedEvent = await storage.getFeedEventByRouteId(routeId);
-      if (!feedEvent) {
+      if (!feedEvent || !feedEvent.metadata) {
+        // Feed event either doesn't exist yet, or exists as an early placeholder
+        // (created with metadata=null before territory processing completes)
         return c.json({ ready: false });
       }
       // Parse metadata for victims and treasures
