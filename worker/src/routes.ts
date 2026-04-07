@@ -2860,19 +2860,32 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
 
-      // Get recent processed Polar activities with routeId (newest first)
-      const activities = await storage.getPolarActivitiesByUserId(userId);
-      const processed = activities.filter(a => a.processed && a.routeId && a.summaryPolyline);
+      // Get processed activities from ALL sources (Polar + Strava) with routeId & polyline
+      const polarActivities = await storage.getPolarActivitiesByUserId(userId);
+      const stravaActivities = await storage.getStravaActivitiesByUserId(userId);
 
-      if (processed.length === 0) {
+      const allProcessed = [
+        ...polarActivities.filter(a => a.processed && a.routeId && a.summaryPolyline),
+        ...stravaActivities.filter(a => a.processed && a.routeId && a.summaryPolyline),
+      ].sort((a, b) => {
+        // Sort chronologically (oldest first) so animations play in order
+        const dateA = new Date(a.startDate).getTime();
+        const dateB = new Date(b.startDate).getTime();
+        return dateA - dateB;
+      });
+
+      if (allProcessed.length === 0) {
         return c.json({ pending: false });
       }
 
-      // Find the latest activity whose routeId is newer than what the client has seen
-      for (const activity of processed) {
-        if (activity.routeId === afterRouteId) {
-          // Client already saw this one — nothing newer
-          return c.json({ pending: false });
+      // Skip past the last animated route, then return the next ready activity
+      let foundAfter = !afterRouteId; // If no afterRouteId, start from the beginning
+      for (const activity of allProcessed) {
+        if (!foundAfter) {
+          if (activity.routeId === afterRouteId) {
+            foundAfter = true;
+          }
+          continue;
         }
 
         // Check if territory processing is done (feed event has metadata)
@@ -4112,6 +4125,141 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   processed: false,
                   processedAt: null,
                 });
+
+                // Auto-process: create route + enqueue territory processing + send notification
+                const polyline = activity.map?.summary_polyline;
+                if (polyline && activity.distance >= 100 && activity.moving_time >= 60) {
+                  try {
+                    const startDate = new Date(activity.start_date);
+                    const COMP_PROCESS_MIN_DATE = new Date('2026-03-02T00:00:00Z');
+
+                    if (startDate >= COMP_PROCESS_MIN_DATE) {
+                      const decoded = decodePolyline(polyline);
+                      const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+                      const userId = stravaAccount.userId;
+
+                      if (coordinates.length >= 10) {
+                        const startedAt = startDate.toISOString();
+                        const completedAt = new Date(startDate.getTime() + activity.moving_time * 1000).toISOString();
+
+                        let route = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
+                        if (!route) {
+                          route = await storage.createRoute({
+                            userId,
+                            name: activity.name,
+                            coordinates,
+                            distance: activity.distance,
+                            duration: activity.moving_time,
+                            startedAt,
+                            completedAt,
+                          });
+                        }
+
+                        // Link strava activity to route
+                        const savedActivity = await storage.getStravaActivityByStravaId(activity.id);
+                        if (savedActivity) {
+                          await storage.updateStravaActivity(savedActivity.id, { routeId: route.id });
+                        }
+
+                        // Create early feed event
+                        let earlyFeedEventId: string | undefined;
+                        try {
+                          const existingFeed = await storage.getFeedEventByRouteId(route.id);
+                          if (existingFeed) {
+                            earlyFeedEventId = existingFeed.id;
+                          } else {
+                            const earlyFeedEvent = await storage.createFeedEvent({
+                              userId,
+                              eventType: 'activity',
+                              routeId: route.id,
+                              distance: activity.distance,
+                              duration: activity.moving_time,
+                              newArea: 0,
+                              metadata: null,
+                            });
+                            earlyFeedEventId = earlyFeedEvent.id;
+                          }
+                        } catch (_) {}
+
+                        // Enqueue territory processing via Cloudflare Queue
+                        await c.env.TERRITORY_QUEUE.send({
+                          type: 'process_route_territory',
+                          userId,
+                          routeId: route.id,
+                          startedAt,
+                          completedAt,
+                          distance: activity.distance,
+                          duration: activity.moving_time,
+                          earlyFeedEventId,
+                        });
+
+                        // Mark as processed
+                        if (savedActivity) {
+                          await storage.updateStravaActivity(savedActivity.id, {
+                            routeId: route.id,
+                            processed: true,
+                            processedAt: new Date(),
+                          });
+                        }
+
+                        console.log(`[STRAVA WEBHOOK] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
+
+                        // Send push notification
+                        try {
+                          const { sendPushToUser } = await import('./pushHelper');
+                          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
+                          if (subscriptions.length > 0) {
+                            const distKm = (activity.distance / 1000).toFixed(1);
+                            const pushSubs = subscriptions.map((sub: any) => ({
+                              endpoint: sub.endpoint,
+                              keys: { p256dh: sub.p256dh, auth: sub.auth },
+                            }));
+                            await sendPushToUser(
+                              pushSubs,
+                              {
+                                title: '🏃 ¡Carrera registrada!',
+                                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
+                                tag: `strava-auto-${activity.id}`,
+                                data: { type: 'strava_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
+                              },
+                              (c.env as any).VAPID_PUBLIC_KEY || '',
+                              (c.env as any).VAPID_PRIVATE_KEY || '',
+                              (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                            );
+                          }
+                        } catch (pushErr) {
+                          console.warn(`[STRAVA WEBHOOK] Push notification failed:`, pushErr);
+                        }
+                      } else {
+                        // Short route (<10 coords) — create route + feed event without territory
+                        try {
+                          const startedAt = startDate.toISOString();
+                          const completedAt = new Date(startDate.getTime() + activity.moving_time * 1000).toISOString();
+                          let shortRoute = await storage.findRouteByDateAndDistance(stravaAccount.userId, startedAt, activity.distance);
+                          if (!shortRoute) {
+                            shortRoute = await storage.createRoute({
+                              userId: stravaAccount.userId,
+                              name: activity.name,
+                              coordinates,
+                              distance: activity.distance,
+                              duration: activity.moving_time,
+                              startedAt,
+                              completedAt,
+                            });
+                          }
+                          await generateFeedEvents(storage, stravaAccount.userId, shortRoute.id, activity.distance, activity.moving_time, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+                          const savedActivity = await storage.getStravaActivityByStravaId(activity.id);
+                          if (savedActivity) {
+                            await storage.updateStravaActivity(savedActivity.id, { routeId: shortRoute.id, processed: true, processedAt: new Date() });
+                          }
+                        } catch (_) {}
+                      }
+                    }
+                  } catch (autoErr) {
+                    console.warn(`[STRAVA WEBHOOK] Auto-process failed for activity ${activity.id}:`, autoErr);
+                    // Non-fatal: activity saved as unprocessed, can be processed manually later
+                  }
+                }
               }
             } else {
               console.error('Failed to fetch Strava activity:', object_id, await activityResponse.text());
@@ -6920,10 +7068,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
                   await sendPushToUser(
                     pushSubs,
                     {
-                      title: '🏃 Actividad importada',
-                      body: `${activity.name} (${distKm} km) se ha procesado. ¡Abre la app para ver tu conquista!`,
+                      title: '🏃 ¡Carrera registrada!',
+                      body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
                       tag: `polar-auto-${activity.id}`,
-                      data: { type: 'polar_auto_import', routeId: route.id, url: '/' },
+                      data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
                     },
                     (c.env as any).VAPID_PUBLIC_KEY || '',
                     (c.env as any).VAPID_PRIVATE_KEY || '',

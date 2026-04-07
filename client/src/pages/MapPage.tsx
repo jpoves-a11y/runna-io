@@ -34,6 +34,7 @@ export default function MapPage() {
   const { user: currentUser, isLoading: userLoading, login } = useSession();
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [pendingCheckTrigger, setPendingCheckTrigger] = useState(0);
 
 
   // Restore tracking state from localStorage if app was backgrounded/refreshed
@@ -59,6 +60,22 @@ export default function MapPage() {
     };
     window.addEventListener('popstate', checkTracking);
     return () => window.removeEventListener('popstate', checkTracking);
+  }, []);
+
+  // Listen for service worker messages (notification tap) and URL param to trigger immediate animation check
+  useEffect(() => {
+    const handleSwMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'check-pending-animation') {
+        setPendingCheckTrigger(prev => prev + 1);
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+    // Check URL param on mount (from notification opening new window)
+    if (window.location.search.includes('showPendingAnimation')) {
+      window.history.replaceState({}, '', '/');
+      setPendingCheckTrigger(prev => prev + 1);
+    }
+    return () => navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
   }, []);
 
   useEffect(() => {
@@ -139,7 +156,7 @@ export default function MapPage() {
     return () => window.removeEventListener('popstate', checkAnimation);
   }, []);
 
-  // Check for auto-imported Polar activities that need animation
+  // Check for auto-imported activities (Polar/Strava) that need animation
   useEffect(() => {
     if (!currentUser?.id || isAnimating || isTracking || isResultModalOpen) return;
     // Don't check if we're already showing animation from sessionStorage
@@ -169,10 +186,11 @@ export default function MapPage() {
       } catch (_) {}
     };
 
-    // Small delay to let the page settle
-    const timeout = setTimeout(checkPendingAnimation, 1500);
+    // Immediate check if triggered by notification tap, otherwise small delay to let page settle
+    const delay = pendingCheckTrigger > 0 ? 100 : 1500;
+    const timeout = setTimeout(checkPendingAnimation, delay);
     return () => clearTimeout(timeout);
-  }, [currentUser?.id, isAnimating, isTracking, isResultModalOpen]);
+  }, [currentUser?.id, isAnimating, isTracking, isResultModalOpen, pendingCheckTrigger]);
 
   // Get user location in parallel, don't block rendering
   useEffect(() => {
@@ -506,6 +524,8 @@ export default function MapPage() {
             setIsAnimating(false);
             setConquestResult(null);
             setConquestData(null);
+            // Trigger immediate re-check for more pending animations (chaining)
+            setPendingCheckTrigger(prev => prev + 1);
           }
           setIsResultModalOpen(open);
         }}

@@ -1,9 +1,9 @@
 // Runna.io Service Worker - Optimized caching for performance
-const CACHE_NAME = 'runna-io-v20';
-const STATIC_CACHE = 'runna-static-v20';
-const TILE_CACHE = 'runna-tiles-v20';
-const API_CACHE = 'runna-api-v20';
-const IMAGE_CACHE = 'runna-images-v20';
+const CACHE_NAME = 'runna-io-v21';
+const STATIC_CACHE = 'runna-static-v21';
+const TILE_CACHE = 'runna-tiles-v21';
+const API_CACHE = 'runna-api-v21';
+const IMAGE_CACHE = 'runna-images-v21';
 
 // Critical assets to pre-cache for offline support
 const STATIC_ASSETS = [
@@ -240,16 +240,22 @@ self.addEventListener('notificationclick', (event) => {
 
   const urlToOpen = event.notification.data?.url || '/';
   const isTracking = event.notification.data?.type === 'tracking';
+  const isAutoImport = event.notification.data?.type === 'polar_auto_import' ||
+                       event.notification.data?.type === 'strava_auto_import';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true })
       .then((clientList) => {
-        // For tracking notifications, try to focus existing window
+        // For existing windows, try to focus and signal
         for (const client of clientList) {
           if (client.url.includes(self.registration.scope) && 'focus' in client) {
             return client.focus().then(() => {
-              // For tracking, stay on the current tracking view
-              if (!isTracking) client.navigate(urlToOpen);
+              if (isAutoImport) {
+                // Signal app to check for pending animations without full navigation
+                client.postMessage({ type: 'check-pending-animation' });
+              } else if (!isTracking) {
+                client.navigate(urlToOpen);
+              }
               return client;
             });
           }
