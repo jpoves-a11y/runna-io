@@ -235,7 +235,7 @@ function AppContent() {
   };
 
   return (
-    <div className="fixed inset-0 flex flex-col bg-background">
+    <div className="fixed inset-0 flex flex-col bg-background" style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}>
       <CompetitionBanner />
       <main
         ref={(el) => (mainRef.current = el)}
