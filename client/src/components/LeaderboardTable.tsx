@@ -32,7 +32,7 @@ export function LeaderboardTable({ users, currentUserId, onUserClick }: Leaderbo
   return (
     <div className="flex flex-col h-full animate-fade-in">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-border/40 animate-slide-down">
+      <div className="px-5 py-4 border-b border-border/40 animate-slide-down" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }}>
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-xl bg-primary/10">
             <Trophy className="h-5 w-5 text-primary" />

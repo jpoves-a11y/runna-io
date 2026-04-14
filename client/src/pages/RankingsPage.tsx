@@ -68,7 +68,7 @@ export default function RankingsPage() {
   if (isLoading) {
     return (
       <div className="h-full overflow-hidden">
-        <div className="p-6 border-b border-border">
+        <div className="p-6 border-b border-border" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1.5rem)' }}>
           <div className="h-10 w-48 bg-muted animate-pulse rounded-md mb-2" />
           <div className="h-4 w-64 bg-muted animate-pulse rounded-md" />
         </div>

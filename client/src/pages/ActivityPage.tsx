@@ -123,6 +123,7 @@ export default function ActivityPage() {
       {/* Subtabs */}
       <div
         className="flex border-b border-border/50 sticky top-0 bg-background z-10"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)' }}
       >
         <button
           className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
