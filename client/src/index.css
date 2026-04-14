@@ -199,6 +199,11 @@
   background: hsl(var(--background));
 }
 
+/* StatsOverlay positioned below notch */
+.stats-overlay-top {
+  top: calc(env(safe-area-inset-top, 0px) + 0.75rem);
+}
+
 /**
  * Using the elevate system.
  * Automatic contrast adjustment.

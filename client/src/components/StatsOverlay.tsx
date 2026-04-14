@@ -52,8 +52,7 @@ export function StatsOverlay({ user }: StatsOverlayProps) {
 
   return (
     <div
-      className="absolute left-3 right-3 p-3 bg-card/95 backdrop-blur-xl rounded-xl border border-border shadow-lg z-[1000]"
-      style={{ top: '0.75rem' }}
+      className="absolute left-3 right-3 p-3 bg-card/95 backdrop-blur-xl rounded-xl border border-border shadow-lg z-[1000] stats-overlay-top"
       data-testid="stats-overlay"
     >
       <div className="flex items-center justify-between gap-3">
