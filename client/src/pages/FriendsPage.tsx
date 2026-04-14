@@ -98,7 +98,7 @@ export default function FriendsPage() {
           className="flex-1 overflow-y-auto"
         >
           {currentUser && (
-            <div className="p-3 md:p-4 space-y-3 bg-muted/30" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}>
+            <div className="p-3 md:p-4 space-y-3 bg-muted/30">
               <PendingRequests userId={currentUser.id} />
               <SentRequests userId={currentUser.id} onUserClick={(id) => { setSelectedUserId(id); setIsDialogOpen(true); }} />
             </div>

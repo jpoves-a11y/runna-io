@@ -62,7 +62,7 @@ function CompetitionBannerInner() {
     });
   };
   
-  if (isLoading || status === 'no_competition') return <div className="bg-background" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }} />;
+  if (isLoading || status === 'no_competition') return <div style={{ height: 'max(2.5rem, calc(env(safe-area-inset-top, 0px) + 1rem))', minHeight: '2.5rem' }} />;
   
   // UPCOMING: Collapsible countdown
   if (status === 'upcoming' && competition) {
@@ -75,7 +75,7 @@ function CompetitionBannerInner() {
         <div
           className="relative z-10 flex flex-col items-center px-4 transition-all duration-300 ease-in-out overflow-hidden"
           style={{
-            paddingTop: collapsed ? '0px' : 'calc(env(safe-area-inset-top, 0px) + 0.75rem)',
+            paddingTop: collapsed ? '0px' : 'max(2.5rem, calc(env(safe-area-inset-top, 0px) + 0.75rem))',
             paddingBottom: collapsed ? '0px' : '0.5rem',
             maxHeight: collapsed ? '0px' : '120px',
             opacity: collapsed ? 0 : 1,
@@ -103,7 +103,7 @@ function CompetitionBannerInner() {
         <div
           className="relative z-10 flex items-center justify-center gap-2 px-4 transition-all duration-300 ease-in-out overflow-hidden"
           style={{
-            paddingTop: collapsed ? 'calc(env(safe-area-inset-top, 0px) + 0.35rem)' : '0px',
+            paddingTop: collapsed ? 'max(2.5rem, calc(env(safe-area-inset-top, 0px) + 0.35rem))' : '0px',
             paddingBottom: collapsed ? '0.35rem' : '0px',
             maxHeight: collapsed ? '60px' : '0px',
             opacity: collapsed ? 1 : 0,
@@ -135,7 +135,7 @@ function CompetitionBannerInner() {
       <div className="competition-banner relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-r from-emerald-600 via-green-500 to-teal-600 opacity-95" />
         <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMSIgZmlsbD0icmdiYSgyNTUsMjU1LDI1NSwwLjEpIi8+PC9zdmc+')] opacity-30" />
-        <div className="relative z-10 flex items-center justify-between py-2.5 px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.625rem)' }}>
+        <div className="relative z-10 flex items-center justify-between py-2.5 px-4" style={{ paddingTop: 'max(2.5rem, calc(env(safe-area-inset-top, 0px) + 0.625rem))' }}>
           <div className="flex items-center gap-2">
             <Trophy className="h-4 w-4 text-yellow-300" />
             <span className="text-sm font-bold text-white">
@@ -159,7 +159,7 @@ function CompetitionBannerInner() {
         window.dispatchEvent(new CustomEvent('show-competition-final'));
       }}>
         <div className="absolute inset-0 bg-gradient-to-r from-purple-600 via-indigo-500 to-blue-600 opacity-95" />
-        <div className="relative z-10 flex items-center justify-center gap-2 py-2.5 px-4" style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 0.625rem)' }}>
+        <div className="relative z-10 flex items-center justify-center gap-2 py-2.5 px-4" style={{ paddingTop: 'max(2.5rem, calc(env(safe-area-inset-top, 0px) + 0.625rem))' }}>
           <Crown className="h-4 w-4 text-yellow-300" />
           <span className="text-sm font-bold text-white">
             ¡{competition.name} ha terminado! Toca para ver resultados
