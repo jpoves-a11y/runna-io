@@ -255,7 +255,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       routeGroup.addLayer(polyline);
       existingLayers.set(route.id, polyline);
     });
-  }, [routes, visibleUserIds]);
+  }, [routes, visibleUserIds, mapReady]);
 
   // === TERRITORY LAYER DIFFING ===
   // Only add/remove changed territories instead of clearing everything
@@ -506,7 +506,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         popupContainer.removeEventListener('click', handlePopupButtonClick);
       }
     };
-  }, [territories, visibleUserIds]);
+  }, [territories, visibleUserIds, mapReady]);
 
   // === TREASURE MARKER DIFFING ===
   useEffect(() => {
@@ -652,7 +652,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       treasureGroup.addLayer(marker);
       existingLayers.set(treasure.id, marker);
     });
-  }, [treasures]);
+  }, [treasures, mapReady]);
 
   // === FORTIFICATION OVERLAY ===
   useEffect(() => {
@@ -793,7 +793,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
         }
       }
     }
-  }, [fortifications, territories]);
+  }, [fortifications, territories, mapReady]);
 
   const handleZoomIn = () => {
     mapRef.current?.zoomIn();
