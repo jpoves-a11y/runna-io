@@ -62,7 +62,7 @@ function CompetitionBannerInner() {
     });
   };
   
-  if (isLoading || status === 'no_competition') return null;
+  if (isLoading || status === 'no_competition') return <div style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }} />;
   
   // UPCOMING: Collapsible countdown
   if (status === 'upcoming' && competition) {

@@ -1990,18 +1990,22 @@ export class WorkerStorage {
 
   async viewAndDeleteEphemeralPhoto(photoId: string, userId: string): Promise<EphemeralPhoto | null> {
     await this.ensureEphemeralPhotosTable();
+    // Atomic: UPDATE viewed=true WHERE viewed=false RETURNING * prevents race conditions
+    // (two concurrent requests can't both claim the same photo)
     const [photo] = await this.db
-      .select()
-      .from(ephemeralPhotos)
+      .update(ephemeralPhotos)
+      .set({ viewed: true })
       .where(
         and(
           eq(ephemeralPhotos.id, photoId),
-          eq(ephemeralPhotos.recipientId, userId)
+          eq(ephemeralPhotos.recipientId, userId),
+          eq(ephemeralPhotos.viewed, false)
         )
-      );
+      )
+      .returning();
     if (!photo) return null;
     
-    // Delete immediately after retrieval
+    // Delete after successful atomic claim
     await this.db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.id, photoId));
     return photo;
   }

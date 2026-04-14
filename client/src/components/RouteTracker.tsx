@@ -4,7 +4,7 @@ import { Play, Pause, Square, MapPin, Zap, Activity, X, Smartphone, Loader2, Nav
 import { watchPosition, clearWatch, getCurrentPosition, type Coordinates } from '@/lib/geolocation';
 import { acquireWakeLock, releaseWakeLock, setupVisibilityReacquire } from '@/lib/wakeLock';
 import { useToast } from '@/hooks/use-toast';
-import { apiRequest } from '@/lib/queryClient';
+import { apiRequest, API_BASE } from '@/lib/queryClient';
 import type { TerritoryWithUser } from '@shared/schema';
 import type { Treasure } from '@/hooks/use-competition';
 import L from 'leaflet';
@@ -430,7 +430,7 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
     if (!isTracking || isPaused) return;
     const poll = async () => {
       try {
-        const res = await fetch('/api/treasures/active');
+        const res = await fetch(`${API_BASE}/api/treasures/active`);
         if (res.ok) {
           const data = await res.json();
           if (data?.treasures) setLiveTreasures(data.treasures);

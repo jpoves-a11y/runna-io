@@ -15,7 +15,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useSession } from '@/hooks/use-session';
 import { useTreasures, useCompetition } from '@/hooks/use-competition';
 import { PowerInventory } from '@/components/PowerInventory';
-import { apiRequest, queryClient } from '@/lib/queryClient';
+import { apiRequest, queryClient, API_BASE } from '@/lib/queryClient';
 import { getCurrentPosition, DEFAULT_CENTER } from '@/lib/geolocation';
 import type { TerritoryWithUser, RouteWithTerritory, UserWithStats } from '@shared/schema';
 
@@ -119,7 +119,7 @@ export default function MapPage() {
                     for (let i = 0; i < 15; i++) {
                       await new Promise(r => setTimeout(r, 2000));
                       try {
-                        const res = await fetch(`/api/conquest-result/${routeId}`);
+                        const res = await fetch(`${API_BASE}/api/conquest-result/${routeId}`);
                         const data = await res.json();
                         if (data.ready) {
                           const newArea = (data.newAreaConquered || 0) / 1000000;
@@ -165,7 +165,7 @@ export default function MapPage() {
     const checkPendingAnimation = async () => {
       try {
         const lastAnimated = localStorage.getItem('runna-lastAnimatedRouteId');
-        const res = await fetch(`/api/polar/pending-animation/${currentUser.id}${lastAnimated ? `?after=${lastAnimated}` : ''}`);
+        const res = await fetch(`${API_BASE}/api/polar/pending-animation/${currentUser.id}${lastAnimated ? `?after=${lastAnimated}` : ''}`);
         const data = await res.json();
         if (data.pending && data.routeId && data.summaryPolyline) {
           // Set up conquest data and trigger animation (same as manual import)
@@ -267,7 +267,7 @@ export default function MapPage() {
   const { data: fortificationData } = useQuery({
     queryKey: ['/api/territories/fortifications'],
     queryFn: async () => {
-      const res = await fetch('/api/territories/fortifications');
+      const res = await fetch(`${API_BASE}/api/territories/fortifications`);
       if (!res.ok) return { fortifications: [] };
       return res.json();
     },
@@ -440,7 +440,7 @@ export default function MapPage() {
             for (let i = 0; i < 15; i++) {
               await new Promise(r => setTimeout(r, 2000));
               try {
-                const res = await fetch(`/api/conquest-result/${routeId}`);
+                const res = await fetch(`${API_BASE}/api/conquest-result/${routeId}`);
                 const data = await res.json();
                 if (data.ready) {
                   const newArea = (data.newAreaConquered || 0) / 1000000;
