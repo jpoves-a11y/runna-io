@@ -237,7 +237,7 @@ function AppContent() {
   return (
     <div className="fixed inset-0 flex flex-col bg-background">
       {/* Safe-area spacer: pushes everything below iPhone notch/Dynamic Island */}
-      <div className="w-full flex-shrink-0 bg-background" style={{ minHeight: '100px' }} />
+      <div className="w-full flex-shrink-0 safe-area-top-spacer" />
       <CompetitionBanner />
       <main
         ref={(el) => (mainRef.current = el)}

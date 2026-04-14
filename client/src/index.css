@@ -192,7 +192,12 @@
   }
 }
 
-/* Safe area top spacing is handled by a spacer div in App.tsx */
+/* Spacer that matches the iPhone notch/Dynamic Island height */
+.safe-area-top-spacer {
+  height: env(safe-area-inset-top, 0px);
+  min-height: env(safe-area-inset-top, 0px);
+  background: hsl(var(--background));
+}
 
 /**
  * Using the elevate system.
