@@ -192,6 +192,11 @@
   }
 }
 
+/* Global top safety margin for all modes */
+.main-content-pwa {
+  padding-top: 6vh !important;
+}
+
 /**
  * Using the elevate system.
  * Automatic contrast adjustment.
@@ -564,6 +569,7 @@
     height: 3rem !important;
   }
   .main-content-pwa {
+    padding-top: 6vh !important;
     padding-bottom: 3rem !important;
   }
   .play-button-pwa {
