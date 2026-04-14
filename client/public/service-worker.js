@@ -1,9 +1,9 @@
 // Runna.io Service Worker - Optimized caching for performance
-const CACHE_NAME = 'runna-io-v23';
-const STATIC_CACHE = 'runna-static-v23';
-const TILE_CACHE = 'runna-tiles-v23';
-const API_CACHE = 'runna-api-v23';
-const IMAGE_CACHE = 'runna-images-v23';
+const CACHE_NAME = 'runna-io-v24';
+const STATIC_CACHE = 'runna-static-v24';
+const TILE_CACHE = 'runna-tiles-v24';
+const API_CACHE = 'runna-api-v24';
+const IMAGE_CACHE = 'runna-images-v24';
 
 // Critical assets to pre-cache for offline support
 const STATIC_ASSETS = [
