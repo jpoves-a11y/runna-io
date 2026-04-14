@@ -204,6 +204,11 @@
   top: calc(env(safe-area-inset-top, 0px) + 0.75rem);
 }
 
+/* FriendFilterBar positioned below StatsOverlay */
+.friend-filter-top {
+  top: calc(env(safe-area-inset-top, 0px) + 5rem);
+}
+
 /**
  * Using the elevate system.
  * Automatic contrast adjustment.

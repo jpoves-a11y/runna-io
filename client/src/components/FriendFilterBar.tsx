@@ -29,8 +29,7 @@ export function FriendFilterBar({
 
   return (
     <div
-      className="absolute left-3 right-3 z-[1000]"
-      style={{ top: '5.5rem' }}
+      className="absolute left-3 right-3 z-[1000] friend-filter-top"
     >
       {/* Collapsed: compact bar */}
       <div className={cn(
