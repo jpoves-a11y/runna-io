@@ -44,6 +44,8 @@ function Router() {
   
   return (
     <div className="w-full h-full">
+      {/* Non-map pages need a spacer to clear the iPhone notch */}
+      {!isMapPage && <div className="w-full flex-shrink-0 safe-area-top-spacer" />}
       <Suspense fallback={isMapPage ? <MapSkeleton /> : <LoadingState />}>
         <Switch>
           <Route path="/" component={MapPage} />
@@ -236,8 +238,6 @@ function AppContent() {
 
   return (
     <div className="fixed inset-0 flex flex-col bg-background">
-      {/* Safe-area spacer: pushes everything below iPhone notch/Dynamic Island */}
-      <div className="w-full flex-shrink-0 safe-area-top-spacer" />
       <CompetitionBanner />
       <main
         ref={(el) => (mainRef.current = el)}
