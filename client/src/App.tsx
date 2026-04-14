@@ -235,12 +235,14 @@ function AppContent() {
   };
 
   return (
-    <div className="fixed inset-0 flex flex-col bg-background app-root-safe-area">
+    <div className="fixed inset-0 flex flex-col bg-background">
+      {/* Safe-area spacer: pushes everything below iPhone notch/Dynamic Island */}
+      <div className="w-full flex-shrink-0 bg-background" style={{ minHeight: '100px' }} />
       <CompetitionBanner />
       <main
         ref={(el) => (mainRef.current = el)}
-        className={`main-content-pwa flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
-        style={{ paddingTop: '2.75rem', paddingBottom: (window.location.search.includes('tracking=true') || localStorage.getItem('runna-route-tracking')) ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
+        className={`flex-1 relative overflow-hidden ${isAnimating ? (animDirection === 'left' ? 'page-exit-left' : 'page-exit-right') : 'page-enter'}`}
+        style={{ paddingBottom: (window.location.search.includes('tracking=true') || localStorage.getItem('runna-route-tracking')) ? '0px' : 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

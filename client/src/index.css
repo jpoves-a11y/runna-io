@@ -192,15 +192,7 @@
   }
 }
 
-/* Push entire app below iPhone notch/Dynamic Island */
-.app-root-safe-area {
-  padding-top: env(safe-area-inset-top, 0px) !important;
-}
-
-/* Global top safety margin for all modes */
-.main-content-pwa {
-  padding-top: 15vh !important;
-}
+/* Safe area top spacing is handled by a spacer div in App.tsx */
 
 /**
  * Using the elevate system.
@@ -574,7 +566,6 @@
     height: 3rem !important;
   }
   .main-content-pwa {
-    padding-top: 15vh !important;
     padding-bottom: 3rem !important;
   }
   .play-button-pwa {
