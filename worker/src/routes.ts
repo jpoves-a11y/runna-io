@@ -4613,7 +4613,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Get valid access token
       const validToken = await getValidStravaToken(stravaAccount, storage, c.env);
       if (!validToken) {
-        return c.json({ error: 'Failed to get valid Strava token' }, 401);
+        // Not 401: clients treat that as an expired Runna.io session and log out
+        return c.json({ error: 'La conexión con Strava ha caducado. Vuelve a conectar Strava.' }, 409);
       }
 
       // Fetch recent activities from Strava (last 30 days) with pagination
