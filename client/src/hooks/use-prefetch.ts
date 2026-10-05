@@ -34,11 +34,11 @@ export function usePrefetch() {
       return () => clearTimeout(timer);
     }
 
-    // Prefetch user activities when on friends page
+    // Prefetch the user's activities (same key as the Activity page) when on friends page
     if (location === '/friends') {
       const timer = setTimeout(() => {
         queryClient.prefetchQuery({
-          queryKey: ['/api/activities', user.id],
+          queryKey: ['/api/routes', user.id],
         });
       }, 2000);
       return () => clearTimeout(timer);

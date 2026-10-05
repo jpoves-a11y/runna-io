@@ -5,7 +5,7 @@ import { MapView } from '@/components/MapView';
 import UserInfoDialog from '@/components/UserInfoDialog';
 import { StatsOverlay } from '@/components/StatsOverlay';
 import { FriendFilterBar } from '@/components/FriendFilterBar';
-import { RouteTracker } from '@/components/RouteTracker';
+import { RouteTracker, type CollectedTreasure } from '@/components/RouteTracker';
 import { LoginDialog } from '@/components/LoginDialog';
 import { MapSkeleton } from '@/components/LoadingState';
 import { ActivityAnimationView } from '@/components/ActivityAnimationView';
@@ -280,6 +280,7 @@ export default function MapPage() {
       coordinates: Array<[number, number]>;
       distance: number;
       duration: number;
+      treasuresCollected?: CollectedTreasure[];
     }) => {
       if (!currentUser) throw new Error('No current user');
 

@@ -184,7 +184,7 @@ export function AvatarDialog({
   }, [previewUrl]);
 
   // Helper: distance between two touch points
-  const touchDistance = (a: Touch, b: Touch) => {
+  const touchDistance = (a: { clientX: number; clientY: number }, b: { clientX: number; clientY: number }) => {
     const dx = a.clientX - b.clientX;
     const dy = a.clientY - b.clientY;
     return Math.hypot(dx, dy);

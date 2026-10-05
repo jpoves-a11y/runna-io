@@ -56,8 +56,8 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
   const treasureGroupRef = useRef<L.LayerGroup | null>(null);
   const fortificationGroupRef = useRef<L.LayerGroup | null>(null);
   // Track which layers correspond to which data IDs for diffing
-  const territoryLayersRef = useRef<Map<number, L.Polygon>>(new Map());
-  const routeLayersRef = useRef<Map<number, L.Polyline>>(new Map());
+  const territoryLayersRef = useRef<Map<string, L.Polygon>>(new Map());
+  const routeLayersRef = useRef<Map<string, L.Polyline>>(new Map());
   const treasureLayersRef = useRef<Map<string, L.Marker>>(new Map());
   // Canvas renderer for better polygon/polyline performance
   const canvasRendererRef = useRef<L.Canvas | null>(null);
@@ -212,11 +212,11 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
 
     // Filter routes by visible users
     const visibleRoutes = visibleUserIds
-      ? routes.filter(r => {
-          const routeUserId = (r as any).userId || r.territory?.user?.id;
-          return routeUserId && visibleUserIds.has(routeUserId);
-        })
+      ? routes.filter(r => r.userId && visibleUserIds.has(r.userId))
       : routes;
+
+    // Route lines use their owner's colour (route territories don't carry user info)
+    const userColorById = new Map(territories.map(t => [t.userId, t.user?.color]));
 
     const newRouteIds = new Set(visibleRoutes.map(r => r.id));
     const existingIds = new Set(existingLayers.keys());
@@ -233,7 +233,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     visibleRoutes.forEach((route) => {
       if (!route.coordinates || existingIds.has(route.id)) return;
 
-      const routeColor = route.territory?.user?.color || '#D4213D';
+      const routeColor = userColorById.get(route.userId) || '#D4213D';
 
       const routeCoordinates = (route.coordinates as any).map((coord: any) => {
         if (Array.isArray(coord)) {
@@ -255,7 +255,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
       routeGroup.addLayer(polyline);
       existingLayers.set(route.id, polyline);
     });
-  }, [routes, visibleUserIds, mapReady]);
+  }, [routes, territories, visibleUserIds, mapReady]);
 
   // === TERRITORY LAYER DIFFING ===
   // Only add/remove changed territories instead of clearing everything
@@ -496,7 +496,7 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     };
 
     // Attach event listener to document for popup interactions
-    const popupContainer = document.querySelector('.leaflet-popup-pane');
+    const popupContainer = document.querySelector<HTMLElement>('.leaflet-popup-pane');
     if (popupContainer) {
       popupContainer.addEventListener('click', handlePopupButtonClick);
     }
@@ -860,11 +860,8 @@ export function MapView({ territories, routes = [], treasures = [], fortificatio
     orientationHandlerRef.current = handler;
 
     // Prefer deviceorientationabsolute (Android Chrome) for true compass heading
-    if ('ondeviceorientationabsolute' in window) {
-      window.addEventListener('deviceorientationabsolute', handler, true);
-    } else {
-      window.addEventListener('deviceorientation', handler, true);
-    }
+    const orientationEvent = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation';
+    window.addEventListener(orientationEvent, handler, true);
   };
 
   // Cleanup heading watch + position watch on unmount

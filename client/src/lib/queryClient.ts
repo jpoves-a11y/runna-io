@@ -6,10 +6,25 @@ import { getAuthToken, clearSession } from "./authSession";
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ||
   (import.meta.env.PROD ? 'https://runna-io-api.runna-io-api.workers.dev' : '');
 
+/** Error from the API; `message` is the server's error text when it sent one. */
+export class ApiError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let message = text;
+    try {
+      const body = JSON.parse(text);
+      message = body?.error || body?.message || text;
+    } catch {
+      // not JSON: keep the raw text
+    }
+    throw new ApiError(message, res.status);
   }
 }
 
