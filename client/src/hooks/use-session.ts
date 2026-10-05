@@ -31,7 +31,7 @@ export function useSession() {
     }
   }, [error]);
 
-  const login = useCallback((newUserId: string, token: string) => {
+  const login = useCallback((newUserId: string, token: string | null) => {
     saveSession(newUserId, token);
     setUserId(newUserId);
     queryClient.invalidateQueries({ queryKey: ['/api/current-user'] });

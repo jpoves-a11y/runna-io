@@ -1,5 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-import { getAuthToken, clearSession } from "./authSession";
+import { getAuthToken, getStoredSession, clearSession } from "./authSession";
 
 // URL de la API - usar variable de entorno VITE_API_BASE_URL para Cloudflare Pages
 // En desarrollo local (Replit), usar '' para llamadas relativas al mismo servidor
@@ -30,7 +30,7 @@ async function throwIfResNotOk(res: Response) {
 
 /**
  * fetch() that sends the session token (or `token`, when given) as a Bearer token.
- * If the stored session's token is rejected (401), the session is cleared so the app asks to log in.
+ * If the stored session is rejected (401), it is cleared so the app asks to log in.
  */
 export async function authFetch(url: string, init: RequestInit = {}, token?: string): Promise<Response> {
   // Never send the token to anything other than our API
@@ -40,8 +40,11 @@ export async function authFetch(url: string, init: RequestInit = {}, token?: str
   if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
 
   const res = await fetch(url, { credentials: "omit", ...init, headers });
-  if (res.status === 401 && authToken && authToken === getAuthToken()) {
-    clearSession();
+  if (res.status === 401 && isApiUrl) {
+    const session = getStoredSession();
+    // Only the session that made this request (an old one without a token, or the same token)
+    const sameSession = authToken ? authToken === session?.token : !!session && !session.token;
+    if (sameSession) clearSession();
   }
   return res;
 }

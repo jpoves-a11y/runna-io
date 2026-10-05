@@ -31,7 +31,7 @@ import { getRandomUserColor } from '@/lib/colors';
 interface LoginDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onLogin: (userId: string, token: string) => void;
+  onLogin: (userId: string, token: string | null) => void;
 }
 
 export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
@@ -68,9 +68,9 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
           const tenMinutes = 10 * 60 * 1000;
           const timeElapsed = Date.now() - timestamp;
           console.log('[LoginDialog] Time elapsed:', timeElapsed, 'ms, valid:', timeElapsed < tenMinutes);
-          if (timeElapsed < tenMinutes && token) {
+          if (timeElapsed < tenMinutes) {
             setPendingUserId(userId);
-            setPendingToken(token);
+            setPendingToken(token ?? null);
             setPendingEmail(email);
             setShowVerification(true);
             console.log('[LoginDialog] Restored verification state for', email);
@@ -114,12 +114,10 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const loginMutation = useMutation({
     mutationFn: async (data: { username: string; password: string }) => {
       const response = await apiRequest('POST', '/api/auth/login', data);
-      const user = await response.json();
-      if (!user?.token) throw new Error('El servidor no ha devuelto una sesión. Inténtalo de nuevo en unos minutos.');
-      return user;
+      return response.json();
     },
     onSuccess: (user) => {
-      onLogin(user.id, user.token);
+      onLogin(user.id, user.token ?? null);
       toast({
         title: 'Sesion iniciada',
         description: 'Bienvenido de nuevo!',
@@ -153,7 +151,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       if (user.requiresVerification) {
         // Guardar estado de verificación pendiente
         setPendingUserId(user.id);
-        setPendingToken(user.token);
+        setPendingToken(user.token ?? null);
         setPendingEmail(registerEmail);
         setShowVerification(true);
         const verificationData = {
@@ -170,7 +168,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
         });
       } else {
         // Usuario verificado directamente (usuarios antiguos)
-        onLogin(user.id, user.token);
+        onLogin(user.id, user.token ?? null);
         toast({
           title: 'Cuenta creada',
           description: 'Bienvenido a Runna.io!',
@@ -194,7 +192,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       return response.json();
     },
     onSuccess: () => {
-      if (pendingUserId && pendingToken) {
+      if (pendingUserId) {
         // Limpiar localStorage al verificar
         localStorage.removeItem(PENDING_VERIFICATION_KEY);
         localStorage.removeItem(RESEND_COOLDOWN_KEY);

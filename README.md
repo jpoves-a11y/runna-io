@@ -89,6 +89,7 @@ node scripts/e2e/seed.mjs        # en otra terminal
 - Los endpoints con datos privados usan el usuario del token, no el ID que llegue en la URL o en el body.
 - Las contraseñas se guardan con PBKDF2 (las antiguas se actualizan solas en el siguiente inicio de sesión).
 - Los endpoints `/api/admin/*` exigen el secreto de administración.
+- Las sesiones de antes de este cambio no tienen token: la web las sigue aceptando mientras el Worker antiguo esté desplegado, y cuando se despliega el nuevo, cada usuario tiene que iniciar sesión una vez más.
 
 ## Licencia
 
