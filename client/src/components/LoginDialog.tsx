@@ -31,7 +31,7 @@ import { getRandomUserColor } from '@/lib/colors';
 interface LoginDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onLogin: (userId: string) => void;
+  onLogin: (userId: string, token: string) => void;
 }
 
 export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
@@ -50,6 +50,8 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const [showVerification, setShowVerification] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  // Session token returned at registration; used to verify the email before logging in
+  const [pendingToken, setPendingToken] = useState<string | null>(null);
   const [pendingEmail, setPendingEmail] = useState<string>('');
   const [resendCooldown, setResendCooldown] = useState(0);
   const { toast } = useToast();
@@ -61,13 +63,14 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       console.log('[LoginDialog] Dialog opened, saved verification:', saved);
       if (saved) {
         try {
-          const { userId, email, timestamp } = JSON.parse(saved);
+          const { userId, email, token, timestamp } = JSON.parse(saved);
           // Solo restaurar si es de las últimas 10 minutos (código válido)
           const tenMinutes = 10 * 60 * 1000;
           const timeElapsed = Date.now() - timestamp;
           console.log('[LoginDialog] Time elapsed:', timeElapsed, 'ms, valid:', timeElapsed < tenMinutes);
-          if (timeElapsed < tenMinutes) {
+          if (timeElapsed < tenMinutes && token) {
             setPendingUserId(userId);
+            setPendingToken(token);
             setPendingEmail(email);
             setShowVerification(true);
             console.log('[LoginDialog] Restored verification state for', email);
@@ -114,7 +117,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       return response.json();
     },
     onSuccess: (user) => {
-      onLogin(user.id);
+      onLogin(user.id, user.token);
       toast({
         title: 'Sesion iniciada',
         description: 'Bienvenido de nuevo!',
@@ -148,11 +151,13 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
       if (user.requiresVerification) {
         // Guardar estado de verificación pendiente
         setPendingUserId(user.id);
+        setPendingToken(user.token);
         setPendingEmail(registerEmail);
         setShowVerification(true);
         const verificationData = {
           userId: user.id,
           email: registerEmail,
+          token: user.token,
           timestamp: Date.now(),
         };
         localStorage.setItem(PENDING_VERIFICATION_KEY, JSON.stringify(verificationData));
@@ -163,7 +168,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
         });
       } else {
         // Usuario verificado directamente (usuarios antiguos)
-        onLogin(user.id);
+        onLogin(user.id, user.token);
         toast({
           title: 'Cuenta creada',
           description: 'Bienvenido a Runna.io!',
@@ -183,15 +188,15 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
 
   const verifyMutation = useMutation({
     mutationFn: async (data: { userId: string; code: string }) => {
-      const response = await apiRequest('POST', '/api/auth/verify-email', data);
+      const response = await apiRequest('POST', '/api/auth/verify-email', data, pendingToken ?? undefined);
       return response.json();
     },
     onSuccess: () => {
-      if (pendingUserId) {
+      if (pendingUserId && pendingToken) {
         // Limpiar localStorage al verificar
         localStorage.removeItem(PENDING_VERIFICATION_KEY);
         localStorage.removeItem(RESEND_COOLDOWN_KEY);
-        onLogin(pendingUserId);
+        onLogin(pendingUserId, pendingToken);
         toast({
           title: '¡Email verificado!',
           description: 'Bienvenido a Runna.io!',
@@ -211,7 +216,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
 
   const resendMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const response = await apiRequest('POST', '/api/auth/resend-verification', { userId });
+      const response = await apiRequest('POST', '/api/auth/resend-verification', { userId }, pendingToken ?? undefined);
       return response.json();
     },
     onSuccess: () => {
@@ -242,6 +247,7 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
     setShowVerification(false);
     setVerificationCode('');
     setPendingUserId(null);
+    setPendingToken(null);
     setPendingEmail('');
     if (clearStorage) {
       localStorage.removeItem(PENDING_VERIFICATION_KEY);

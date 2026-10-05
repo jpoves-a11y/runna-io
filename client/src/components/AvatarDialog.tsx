@@ -12,7 +12,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Camera, Loader2, X } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useMutation } from '@tanstack/react-query';
-import { apiRequest, queryClient, API_BASE } from '@/lib/queryClient';
+import { apiRequest, queryClient, API_BASE, authFetch } from '@/lib/queryClient';
 
 interface AvatarDialogProps {
   open: boolean;
@@ -60,10 +60,9 @@ export function AvatarDialog({
       while (attempts < 2) {
         attempts += 1;
         try {
-          const response = await fetch(fullUrl, {
+          const response = await authFetch(fullUrl, {
             method: 'POST',
             body: formData,
-            credentials: 'include',
           });
 
           const bodyText = await response.text().catch(() => '');

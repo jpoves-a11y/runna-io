@@ -30,7 +30,7 @@ import { ColorPickerDialog } from '@/components/ColorPickerDialog';
 import { useSession } from '@/hooks/use-session';
 import { useToast } from '@/hooks/use-toast';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { apiRequest, queryClient, API_BASE } from '@/lib/queryClient';
+import { apiRequest, queryClient, API_BASE, authFetch } from '@/lib/queryClient';
 import { USER_COLOR_NAMES } from '@/lib/colors';
 
 // Parse date string safely (handles ISO, Polar format, and legacy format)
@@ -1573,7 +1573,7 @@ export default function ProfilePage() {
                 while (attempts < 2) {
                   attempts += 1;
                   try {
-                    const res = await fetch(fullUrl, { method: 'POST', body: formData, credentials: 'include' });
+                    const res = await authFetch(fullUrl, { method: 'POST', body: formData });
                     const bodyText = await res.text().catch(() => '');
                     const contentType = res.headers.get('content-type') || '';
                     if (!res.ok) {
@@ -1611,7 +1611,7 @@ export default function ProfilePage() {
                   let found = false;
                   for (let i = 0; i < maxChecks; i++) {
                     try {
-                      const res2 = await fetch(`${API_BASE}/api/user/${user.id}`, { credentials: 'include' });
+                      const res2 = await authFetch(`${API_BASE}/api/user/${user.id}`);
                       if (res2.ok) {
                         const body = await res2.json();
                         if (body?.avatar && body.avatar !== user.avatar) {

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { registerRoutes } from './routes';
+import type { AppEnv } from './auth';
 import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 
 export interface Env {
@@ -13,6 +14,8 @@ export interface Env {
   STRAVA_REDIRECT_URI?: string;
   POLAR_CLIENT_ID?: string;
   POLAR_CLIENT_SECRET?: string;
+  COROS_CLIENT_ID?: string;
+  COROS_CLIENT_SECRET?: string;
   WORKER_URL?: string;
   FRONTEND_URL?: string;
   RESEND_API_KEY?: string;
@@ -21,11 +24,12 @@ export interface Env {
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM?: string;
   UPSTASH_CRON_SECRET?: string;
+  ENVIRONMENT?: string;
   // Cloudflare Queue for async territory processing
   TERRITORY_QUEUE: Queue<TerritoryQueueMessage>;
 }
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<AppEnv>();
 
 app.use('*', logger());
 app.use('*', cors({
@@ -47,6 +51,8 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
   credentials: false,
+  // Requests now carry an Authorization header, so browsers preflight them; let them cache it
+  maxAge: 86400,
 }));
 
 registerRoutes(app);

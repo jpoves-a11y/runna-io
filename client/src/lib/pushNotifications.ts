@@ -1,5 +1,5 @@
 // Push Notifications Helper
-import { API_BASE } from './queryClient';
+import { API_BASE, authFetch } from './queryClient';
 
 // VAPID keys
 const VAPID_PUBLIC_KEY = 'BOGRkr2uEzhJfiGZ90GHqrfXfgJX1WjfSCB7pOxaDbA81aSkBNuRLnsjsq-9Jf7ryPq1TMvYDLisOurpJNptkHw';
@@ -75,7 +75,7 @@ async function sendSubscriptionToBackend(
 ): Promise<void> {
   const subscriptionJSON = subscription.toJSON();
   
-  const response = await fetch(`${API_BASE}/api/push/subscribe`, {
+  const response = await authFetch(`${API_BASE}/api/push/subscribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -102,7 +102,7 @@ export async function unsubscribeFromPushNotifications(userId: string): Promise<
     await subscription.unsubscribe();
 
     // Remove from backend
-    await fetch(`${API_BASE}/api/push/unsubscribe`, {
+    await authFetch(`${API_BASE}/api/push/unsubscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId }),
