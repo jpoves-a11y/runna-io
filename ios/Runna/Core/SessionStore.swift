@@ -46,7 +46,17 @@ final class SessionStore {
 
     /// Restores the saved session, if any.
     func bootstrap() async {
-        guard let token = KeychainStore.get(tokenKey), let userId = KeychainStore.get(userIdKey) else {
+        var savedToken = KeychainStore.get(tokenKey)
+        var savedUserId = KeychainStore.get(userIdKey)
+        #if DEBUG
+        // e2e tests start the app with a session for a seeded test user
+        let environment = ProcessInfo.processInfo.environment
+        if let token = environment["RUNNA_TEST_TOKEN"], let userId = environment["RUNNA_TEST_USER_ID"] {
+            savedToken = token
+            savedUserId = userId
+        }
+        #endif
+        guard let token = savedToken, let userId = savedUserId else {
             state = .loggedOut
             return
         }

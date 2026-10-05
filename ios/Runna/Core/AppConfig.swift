@@ -2,7 +2,15 @@ import Foundation
 
 enum AppConfig {
     /// Cloudflare Worker that serves the Runna.io API.
-    static let apiBaseURL = URL(string: "https://runna-io-api.runna-io-api.workers.dev")!
+    /// Debug builds can point elsewhere with the RUNNA_API_BASE_URL environment variable (used by the e2e tests).
+    static let apiBaseURL: URL = {
+        #if DEBUG
+        if let override = ProcessInfo.processInfo.environment["RUNNA_API_BASE_URL"], let url = URL(string: override) {
+            return url
+        }
+        #endif
+        return URL(string: "https://runna-io-api.runna-io-api.workers.dev")!
+    }()
 
     /// Web app (privacy policy, terms, support pages).
     static let webBaseURL = URL(string: "https://runna-io.pages.dev")!

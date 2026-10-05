@@ -3399,7 +3399,7 @@ export class WorkerStorage {
       const rid = m.routeId ? `'${m.routeId.replace(/'/g, "''")}'` : 'NULL';
       return `('${id}', '${m.attackerId.replace(/'/g, "''")}', '${m.defenderId.replace(/'/g, "''")}', ${m.areaStolen}, ${rid}, datetime('now'))`;
     }).join(',');
-    await this.db.run(sql.raw(`INSERT INTO conquest_metrics (id, attacker_id, defender_id, area_stolen, route_id, conquered_at) VALUES ${values}`));
+    await this.db.run(sql.raw(`INSERT INTO conquest_metrics (id, attacker_id, defender_id, area_stolen, route_id, created_at) VALUES ${values}`));
   }
 
   /** Batch insert feed events in a single query (saves N subrequests → 1) */

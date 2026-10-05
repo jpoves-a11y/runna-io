@@ -34,6 +34,18 @@ final class AppRouter {
                 pendingInviteToken = parts[1]
                 selectedTab = .friends
             }
+        case "tab":
+            // runnaio://tab/<map|rankings|activity|friends|profile>
+            switch parts.first {
+            case "rankings": selectedTab = .rankings
+            case "activity": selectedTab = .activity
+            case "friends": selectedTab = .friends
+            case "profile": selectedTab = .profile
+            default: selectedTab = .map
+            }
+            if parts.count >= 2 {
+                activitySection = parts[1] == "mine" ? .mine : .feed
+            }
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)
             selectedTab = .profile
