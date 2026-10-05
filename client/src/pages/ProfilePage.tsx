@@ -124,6 +124,7 @@ function getColorName(hex: string): string {
 interface StravaStatus {
   connected: boolean;
   athleteData?: {
+    id?: number;
     firstname?: string;
     lastname?: string;
     profile_medium?: string;

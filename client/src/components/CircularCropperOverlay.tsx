@@ -103,7 +103,7 @@ export function CircularCropperOverlay({ imageUrl, exportSize = 512, onSave, onC
   };
   const pointerUp = () => { dragging.current = false; };
 
-  const touchDistance = (a: Touch, b: Touch) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const touchDistance = (a: { clientX: number; clientY: number }, b: { clientX: number; clientY: number }) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
   const onTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 1) {
       dragging.current = true;

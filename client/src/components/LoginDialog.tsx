@@ -114,7 +114,9 @@ export function LoginDialog({ open, onOpenChange, onLogin }: LoginDialogProps) {
   const loginMutation = useMutation({
     mutationFn: async (data: { username: string; password: string }) => {
       const response = await apiRequest('POST', '/api/auth/login', data);
-      return response.json();
+      const user = await response.json();
+      if (!user?.token) throw new Error('El servidor no ha devuelto una sesión. Inténtalo de nuevo en unos minutos.');
+      return user;
     },
     onSuccess: (user) => {
       onLogin(user.id, user.token);

@@ -29,7 +29,7 @@ interface TrackingState {
   collectedTreasureIds?: string[];
 }
 
-interface CollectedTreasure {
+export interface CollectedTreasure {
   treasureId: string;
   treasureName: string;
   powerType: string;
@@ -327,11 +327,8 @@ export function RouteTracker({ onComplete, onCancel, territories = [], treasures
         }
       };
       orientationHandlerRef.current = handler;
-      if ('ondeviceorientationabsolute' in window) {
-        window.addEventListener('deviceorientationabsolute', handler, true);
-      } else {
-        window.addEventListener('deviceorientation', handler, true);
-      }
+      const orientationEvent = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation';
+      window.addEventListener(orientationEvent, handler, true);
     };
 
     // Request orientation permission (iOS needs user gesture, but we're in useEffect after a click to start tracking)

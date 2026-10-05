@@ -8,11 +8,15 @@ import { Users, CheckCircle, XCircle, Loader2, AlertTriangle, Palette } from 'lu
 import { useSession } from '@/hooks/use-session';
 import { apiRequest, queryClient } from '@/lib/queryClient';
 import { useToast } from '@/hooks/use-toast';
+import { LoginDialog } from '@/components/LoginDialog';
+
+const isIOSDevice = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 export default function AcceptFriendInvitePage() {
   const [, params] = useRoute('/friends/accept/:token');
   const [, setLocation] = useLocation();
-  const { user: currentUser, isLoading: userLoading } = useSession();
+  const { user: currentUser, isLoading: userLoading, login } = useSession();
+  const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [status, setStatus] = useState<'loading' | 'success' | 'error' | 'same_color' | 'pending'>('pending');
   const { toast } = useToast();
 
@@ -98,20 +102,21 @@ export default function AcceptFriendInvitePage() {
 
           <div className="space-y-2">
             <Button
-              onClick={() => setLocation('/login')}
+              onClick={() => setIsLoginOpen(true)}
               className="w-full gradient-primary"
             >
-              Iniciar sesión
+              Iniciar sesión o registrarse
             </Button>
-            <Button
-              onClick={() => setLocation('/register')}
-              variant="outline"
-              className="w-full"
-            >
-              Registrarse
-            </Button>
+            {isIOSDevice && params?.token && (
+              <Button asChild variant="outline" className="w-full">
+                <a href={`runnaio://friends/accept/${encodeURIComponent(params.token)}`}>
+                  Abrir en la app de iPhone
+                </a>
+              </Button>
+            )}
           </div>
         </Card>
+        <LoginDialog open={isLoginOpen} onOpenChange={setIsLoginOpen} onLogin={login} />
       </div>
     );
   }
