@@ -133,6 +133,22 @@ jobs:
           fi
           echo "API requests made by the app: $(grep -c -- '<-- GET /api' ../scripts/e2e/.build/server.log || true)"
 
+      - name: Print thumbnails and API errors
+        if: always()
+        working-directory: ios
+        run: |
+          echo "--- API responses that weren't 200 ---"
+          grep -- '-->' ../scripts/e2e/.build/server.log | sed 's/\x1b\[[0-9;]*m//g' | grep -vE ' 200 ' | head -40 || true
+          echo "--- API errors ---"
+          grep -iE 'error|failed' ../scripts/e2e/.build/server.log | grep -viE 'email|resend|network disabled' | head -20 || true
+          for f in screenshot-*.png; do
+            [ -f "$f" ] || continue
+            sips -s format jpeg -s formatOptions 45 --resampleWidth 300 "$f" --out "${f%.png}.jpg" > /dev/null
+            echo "=== THUMB ${f%.png} ==="
+            base64 -i "${f%.png}.jpg" | tr -d '\n'
+            echo
+          done
+
       - name: Upload screenshots and API log
         if: always()
         uses: actions/upload-artifact@v4
