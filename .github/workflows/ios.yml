@@ -7,6 +7,7 @@ on:
       - 'worker/**'
       - 'shared/**'
       - 'scripts/e2e/**'
+      - '.github/scripts/**'
       - '.github/workflows/ios.yml'
   pull_request:
     paths:
@@ -133,7 +134,7 @@ jobs:
           fi
           echo "API requests made by the app: $(grep -c -- '<-- GET /api' ../scripts/e2e/.build/server.log || true)"
 
-      - name: Print thumbnails and API errors
+      - name: Inspect screenshots and API log
         if: always()
         working-directory: ios
         run: |
@@ -143,10 +144,8 @@ jobs:
           grep -iE 'error|failed' ../scripts/e2e/.build/server.log | grep -viE 'email|resend|network disabled' | head -20 || true
           for f in screenshot-*.png; do
             [ -f "$f" ] || continue
-            sips -s format jpeg -s formatOptions 45 --resampleWidth 300 "$f" --out "${f%.png}.jpg" > /dev/null
-            echo "=== THUMB ${f%.png} ==="
-            base64 -i "${f%.png}.jpg" | tr -d '\n'
-            echo
+            echo "=== $f ==="
+            swift ../.github/scripts/inspect-screenshot.swift "$f" || true
           done
 
       - name: Upload screenshots and API log
