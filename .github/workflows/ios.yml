@@ -45,6 +45,48 @@ jobs:
           echo "--- app bundle ---"
           ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
 
+      - name: Check Info.plist
+        working-directory: ios
+        run: |
+          PLIST=build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app/Info.plist
+          plutil -p "$PLIST"
+          for key in NSLocationWhenInUseUsageDescription NSHealthShareUsageDescription NSCameraUsageDescription UIBackgroundModes CFBundleURLTypes CFBundleDisplayName; do
+            plutil -extract "$key" raw "$PLIST" > /dev/null 2>&1 || plutil -extract "$key" xml1 -o - "$PLIST" > /dev/null || { echo "Missing $key"; exit 1; }
+          done
+
+      - name: Launch in simulator (smoke test)
+        working-directory: ios
+        run: |
+          set -e
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          print(next(d['udid'] for runtime, items in sorted(devices.items(), reverse=True) if 'iOS' in runtime for d in items if d['name'].startswith('iPhone')))
+          ")
+          echo "Simulator: $DEVICE"
+          xcrun simctl boot "$DEVICE"
+          xcrun simctl bootstatus "$DEVICE" -b
+          xcrun simctl install "$DEVICE" build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
+          BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app/Info.plist)
+          xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+          sleep 20
+          xcrun simctl io "$DEVICE" screenshot screenshot-launch.png
+          if xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
+            echo "App is still running after 20 s"
+          else
+            echo "App is not running (crashed?)"
+            ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i runna || true
+            exit 1
+          fi
+
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshot
+          path: ios/screenshot-*.png
+          if-no-files-found: ignore
+
       - name: Build for device (Release, unsigned)
         working-directory: ios
         run: |
