@@ -51,9 +51,21 @@ export default defineConfig({
     chunkSizeWarningLimit: 600,
   },
   server: {
+    port: 5000,
+    // In development the app calls /api on the same origin; forward it to the Worker
+    // (production by default, or e.g. API_PROXY_TARGET=http://localhost:8787 with `npm run worker:dev`)
+    proxy: {
+      "/api": {
+        target: process.env.API_PROXY_TARGET || "https://runna-io-api.runna-io-api.workers.dev",
+        changeOrigin: true,
+      },
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],
     },
+  },
+  preview: {
+    port: 5000,
   },
 });
