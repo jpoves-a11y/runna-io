@@ -18,7 +18,11 @@ import {
   rejectIfNotSelf,
   createOAuthState,
   verifyOAuthState,
+  oauthFinish,
+  isCronRequest,
 } from './auth';
+import { hashPassword, verifyPassword, needsRehash } from './passwords';
+import { toPublicUser, toSelfUser } from './users';
 import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
@@ -111,20 +115,6 @@ async function resolveColorConflictOnFriendship(
   }
 
   return { changed: false };
-}
-
-async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + 'runna_salt_2024');
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const computedHash = await hashPassword(password);
-  return computedHash === hash;
 }
 
 // Helper: generate a SINGLE merged feed event per activity
@@ -1476,11 +1466,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         // Fallback to global stats if somehow not in friends list
         const allUsers = await storage.getAllUsersWithStats();
         const globalUser = allUsers.find(u => u.id === userId);
-        const { password: _, ...userWithoutPassword } = globalUser || user;
-        return c.json(userWithoutPassword);
+        return c.json(toSelfUser(globalUser || user));
       }
-      const { password: _, ...userWithoutPassword } = userWithStats;
-      return c.json(userWithoutPassword);
+      return c.json(toSelfUser(userWithStats));
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -1511,9 +1499,16 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Contraseña incorrecta" }, 401);
       }
 
+      if (needsRehash(user.password)) {
+        try {
+          await storage.updateUserPassword(user.id, await hashPassword(password));
+        } catch (e) {
+          console.error('[AUTH] Failed to upgrade password hash:', e);
+        }
+      }
+
       const token = await createSession(storage, user.id);
-      const { password: _, verificationCode: __, verificationCodeExpiresAt: ___, ...userWithoutPassword } = user;
-      return c.json({ ...userWithoutPassword, token });
+      return c.json({ ...toSelfUser(user), token });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -1576,8 +1571,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
       
       const token = await createSession(storage, user.id);
-      const { password: _, verificationCode: __, verificationCodeExpiresAt: ___, ...userWithoutSensitive } = user as any;
-      return c.json({ ...userWithoutSensitive, token, requiresVerification: true });
+      return c.json({ ...toSelfUser(user), token, requiresVerification: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
     }
@@ -1703,10 +1697,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "User not found" }, 404);
       }
 
-      const allUsers = await storage.getAllUsersWithStats();
-      const userWithStats = allUsers.find(u => u.id === id);
+      const [rank, friendIds] = await Promise.all([
+        storage.getGlobalRank(user.totalArea),
+        storage.getFriendIds(id),
+      ]);
 
-      return c.json(userWithStats || user);
+      return c.json({ ...toPublicUser(user), rank, friendCount: friendIds.length });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -1721,8 +1717,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const { name, color, avatar } = body;
       
       const updateData: Partial<{ name: string; color: string; avatar: string }> = {};
-      if (name !== undefined) updateData.name = name;
+      if (name !== undefined) {
+        const trimmed = typeof name === 'string' ? name.trim() : '';
+        if (!trimmed || trimmed.length > 50) {
+          return c.json({ error: 'El nombre debe tener entre 1 y 50 caracteres' }, 400);
+        }
+        updateData.name = trimmed;
+      }
       if (color !== undefined) {
+        if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+          return c.json({ error: 'Color no válido' }, 400);
+        }
         // Check if the new color conflicts with any friend's color
         const friendColors = await getFriendGroupColors(storage, id);
         if (friendColors.has(color.toUpperCase())) {
@@ -1733,7 +1738,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (avatar !== undefined) updateData.avatar = avatar;
 
       const updatedUser = await storage.updateUser(id, updateData);
-      return c.json(updatedUser);
+      return c.json(toSelfUser(updatedUser));
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
     }
@@ -1862,6 +1867,16 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const notSelf = rejectIfNotSelf(c, body.userId);
       if (notSelf) return notSelf;
       body.userId = c.get('authUserId');
+
+      // Imports (e.g. Apple Health workouts from the iOS app) may already have arrived through
+      // Strava/Polar: don't create the same run twice.
+      if (body.source === 'healthkit' && body.startedAt && typeof body.distance === 'number') {
+        const existing = await storage.findSimilarRoute(body.userId, body.startedAt, body.distance);
+        if (existing) {
+          return c.json({ error: 'duplicate', route: existing }, 409);
+        }
+      }
+      delete body.source;
 
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
@@ -3338,7 +3353,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
       const friends = await storage.getFriendsByUserId(userId);
-      return c.json(friends);
+      return c.json(friends.map(toPublicUser));
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -3578,7 +3593,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       const users = await storage.searchUsers(query, userId);
-      return c.json(users);
+      return c.json(users.map(toPublicUser));
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -3695,7 +3710,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const nicknameMap = await storage.getActiveNicknamesForUsers(friends.map(f => f.id));
       const enriched = friends.map(f => {
         const nn = nicknameMap.get(f.id);
-        return { ...f, nickname: nn?.nickname || null, nicknameExpiresAt: nn?.expiresAt || null };
+        return { ...toPublicUser(f), nickname: nn?.nickname || null, nicknameExpiresAt: nn?.expiresAt || null };
       });
       return c.json(enriched);
     } catch (error: any) {
@@ -3825,7 +3840,53 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
 
-      await storage.deletePushSubscriptionsByUserId(userId);
+      // Turning off notifications in the browser must not silence the user's iPhone
+      await storage.deleteWebPushSubscriptionsByUserId(userId);
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // iOS app: register this device's APNs token for the logged-in user
+  app.post('/api/push/apns/register', requireAuth, async (c) => {
+    try {
+      const { deviceToken, environment } = await c.req.json().catch(() => ({}));
+      if (typeof deviceToken !== 'string' || !/^[0-9a-fA-F]{32,200}$/.test(deviceToken)) {
+        return c.json({ error: 'Invalid deviceToken' }, 400);
+      }
+      if (environment !== 'sandbox' && environment !== 'production') {
+        return c.json({ error: 'environment must be "sandbox" or "production"' }, 400);
+      }
+      const { apnsEndpoint } = await import('./pushHelper');
+      const storage = new WorkerStorage(getDb(c.env));
+      // Re-registering moves the device to the current user (e.g. after switching accounts)
+      await storage.createPushSubscription({
+        userId: c.get('authUserId'),
+        endpoint: apnsEndpoint(environment, deviceToken.toLowerCase()),
+        p256dh: 'apns',
+        auth: 'apns',
+      });
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // iOS app: stop sending notifications to this device (logout / notifications turned off)
+  app.post('/api/push/apns/unregister', requireAuth, async (c) => {
+    try {
+      const { deviceToken } = await c.req.json().catch(() => ({}));
+      if (typeof deviceToken !== 'string' || !deviceToken) {
+        return c.json({ error: 'deviceToken required' }, 400);
+      }
+      const { apnsEndpoint } = await import('./pushHelper');
+      const storage = new WorkerStorage(getDb(c.env));
+      const token = deviceToken.toLowerCase();
+      await storage.deleteUserPushSubscriptionsByEndpoints(c.get('authUserId'), [
+        apnsEndpoint('sandbox', token),
+        apnsEndpoint('production', token),
+      ]);
       return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -3992,7 +4053,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Strava not configured" }, 400);
       }
 
-      const state = await createOAuthState(userId, c.env.STRAVA_CLIENT_SECRET);
+      const state = await createOAuthState(userId, c.env.STRAVA_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
       const scopes = 'read,activity:read_all';
       
       const authUrl = `https://www.strava.com/oauth/authorize?client_id=${STRAVA_CLIENT_ID}&redirect_uri=${encodeURIComponent(STRAVA_REDIRECT_URI)}&response_type=code&scope=${scopes}&state=${state}`;
@@ -4005,6 +4066,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   app.get('/api/strava/callback', async (c) => {
     const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
+    // Flows started in the iOS app go back to it instead of the website
+    let appFlow = false;
+    const finish = (webUrl: string) => oauthFinish(c, appFlow, 'strava', webUrl);
     
     try {
       const code = c.req.query('code');
@@ -4012,18 +4076,20 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const authError = c.req.query('error');
       const STRAVA_CLIENT_ID = c.env.STRAVA_CLIENT_ID;
       const STRAVA_CLIENT_SECRET = c.env.STRAVA_CLIENT_SECRET;
+      const verifiedState = state && STRAVA_CLIENT_SECRET ? await verifyOAuthState(state, STRAVA_CLIENT_SECRET) : null;
+      appFlow = verifiedState?.app === true;
       
       if (authError) {
-        return c.redirect(`${FRONTEND_URL}/?strava_error=denied`);
+        return finish(`${FRONTEND_URL}/?strava_error=denied`);
       }
       
       if (!code || !state || !STRAVA_CLIENT_ID || !STRAVA_CLIENT_SECRET) {
-        return c.redirect(`${FRONTEND_URL}/?strava_error=invalid`);
+        return finish(`${FRONTEND_URL}/?strava_error=invalid`);
       }
 
-      const userId = await verifyOAuthState(state, STRAVA_CLIENT_SECRET);
+      const userId = verifiedState?.userId;
       if (!userId) {
-        return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
+        return finish(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
       const params = new URLSearchParams({
@@ -4041,7 +4107,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       if (!tokenResponse.ok) {
         console.error('Strava token exchange failed:', await tokenResponse.text());
-        return c.redirect(`${FRONTEND_URL}/?strava_error=token_exchange`);
+        return finish(`${FRONTEND_URL}/?strava_error=token_exchange`);
       }
 
       const tokenData: any = await tokenResponse.json();
@@ -4052,7 +4118,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       const existingAccount = await storage.getStravaAccountByAthleteId(athlete.id);
       if (existingAccount && existingAccount.userId !== userId) {
-        return c.redirect(`${FRONTEND_URL}/?strava_error=already_linked`);
+        return finish(`${FRONTEND_URL}/?strava_error=already_linked`);
       }
 
       const expiresAtDate = new Date(expires_at * 1000);
@@ -4073,10 +4139,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
         await storage.createStravaAccount(stravaAccountData);
       }
 
-      return c.redirect(`${FRONTEND_URL}/?strava_connected=true`);
+      return finish(`${FRONTEND_URL}/?strava_connected=true`);
     } catch (error: any) {
       console.error('Strava callback error:', error);
-      return c.redirect(`${FRONTEND_URL}/?strava_error=server`);
+      return finish(`${FRONTEND_URL}/?strava_error=server`);
     }
   });
 
@@ -4833,7 +4899,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Polar not configured" }, 400);
       }
 
-      const state = await createOAuthState(userId, c.env.POLAR_CLIENT_SECRET);
+      const state = await createOAuthState(userId, c.env.POLAR_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
       const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
       
@@ -4846,6 +4912,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   app.get('/api/polar/callback', async (c) => {
+    // Flows started in the iOS app go back to it instead of the website
+    let appFlow = false;
+    const finish = (webUrl: string) => oauthFinish(c, appFlow, 'polar', webUrl);
     try {
       const code = c.req.query('code');
       const state = c.req.query('state');
@@ -4853,23 +4922,25 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
       const POLAR_CLIENT_SECRET = c.env.POLAR_CLIENT_SECRET;
       const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
+      const verifiedState = state && POLAR_CLIENT_SECRET ? await verifyOAuthState(state, POLAR_CLIENT_SECRET) : null;
+      appFlow = verifiedState?.app === true;
       
       console.log('Polar callback started - code:', code ? 'present' : 'missing', 'state:', state ? 'present' : 'missing', 'error:', authError);
       
       if (authError) {
         console.log('Auth error detected:', authError);
-        return c.redirect(`${FRONTEND_URL}/profile?polar_error=denied`);
+        return finish(`${FRONTEND_URL}/profile?polar_error=denied`);
       }
       
       if (!code || !state || !POLAR_CLIENT_ID || !POLAR_CLIENT_SECRET) {
         console.error('Missing required params - code:', !!code, 'state:', !!state, 'CLIENT_ID:', !!POLAR_CLIENT_ID, 'CLIENT_SECRET:', !!POLAR_CLIENT_SECRET);
-        return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid`);
+        return finish(`${FRONTEND_URL}/profile?polar_error=invalid`);
       }
 
-      const userId = await verifyOAuthState(state, POLAR_CLIENT_SECRET);
+      const userId = verifiedState?.userId;
       if (!userId) {
         console.error('Invalid or expired OAuth state');
-        return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
+        return finish(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
       }
       console.log('State verified - userId:', userId);
 
@@ -4890,7 +4961,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (!tokenResponse.ok) {
         const errorText = await tokenResponse.text();
         console.error('Polar token exchange failed:', errorText);
-        return c.redirect(`${FRONTEND_URL}/profile?polar_error=token_exchange`);
+        return finish(`${FRONTEND_URL}/profile?polar_error=token_exchange`);
       }
 
       const tokenData: any = await tokenResponse.json();
@@ -4900,7 +4971,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       if (!Number.isFinite(normalizedPolarUserId)) {
         console.error('Invalid x_user_id received:', x_user_id);
-        return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_user`);
+        return finish(`${FRONTEND_URL}/profile?polar_error=invalid_user`);
       }
 
       const db = getDb(c.env);
@@ -4910,7 +4981,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const existingAccount = await storage.getPolarAccountByPolarUserId(normalizedPolarUserId);
       if (existingAccount && existingAccount.userId !== userId) {
         console.log('Account already linked to different user');
-        return c.redirect(`${FRONTEND_URL}/profile?polar_error=already_linked`);
+        return finish(`${FRONTEND_URL}/profile?polar_error=already_linked`);
       }
 
       try {
@@ -4928,7 +4999,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         if (!registerResponse.ok && registerResponse.status !== 409) {
           const errorText = await registerResponse.text();
           console.error('Polar user registration failed:', errorText);
-          return c.redirect(`${FRONTEND_URL}/profile?polar_error=registration`);
+          return finish(`${FRONTEND_URL}/profile?polar_error=registration`);
         }
         console.log('User registered or already exists');
       } catch (e) {
@@ -4969,10 +5040,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
       );
 
       console.log('Polar callback success - redirecting to:', `${FRONTEND_URL}/profile?polar_connected=true`);
-      return c.redirect(`${FRONTEND_URL}/profile?polar_connected=true`);
+      return finish(`${FRONTEND_URL}/profile?polar_connected=true`);
     } catch (error: any) {
       console.error('Polar callback error:', error);
-      return c.redirect(`${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/profile?polar_error=server`);
+      return finish(`${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/profile?polar_error=server`);
     }
   });
 
@@ -5854,7 +5925,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "COROS not configured" }, 400);
       }
 
-      const state = await createOAuthState(userId, c.env.COROS_CLIENT_SECRET);
+      const state = await createOAuthState(userId, c.env.COROS_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
       
       // TODO: Update with actual COROS OAuth URL from API documentation
       const authUrl = `https://open.coros.com/oauth2/authorize?client_id=${COROS_CLIENT_ID}&redirect_uri=${encodeURIComponent(COROS_REDIRECT_URI)}&response_type=code&state=${state}`;
@@ -5867,6 +5938,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   app.get('/api/coros/callback', async (c) => {
     const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
+    // Flows started in the iOS app go back to it instead of the website
+    let appFlow = false;
+    const finish = (webUrl: string) => oauthFinish(c, appFlow, 'coros', webUrl);
     
     try {
       const code = c.req.query('code');
@@ -5874,18 +5948,20 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const authError = c.req.query('error');
       const COROS_CLIENT_ID = c.env.COROS_CLIENT_ID;
       const COROS_CLIENT_SECRET = c.env.COROS_CLIENT_SECRET;
+      const verifiedState = state && COROS_CLIENT_SECRET ? await verifyOAuthState(state, COROS_CLIENT_SECRET) : null;
+      appFlow = verifiedState?.app === true;
       
       if (authError) {
-        return c.redirect(`${FRONTEND_URL}/?coros_error=denied`);
+        return finish(`${FRONTEND_URL}/?coros_error=denied`);
       }
       
       if (!code || !state || !COROS_CLIENT_ID || !COROS_CLIENT_SECRET) {
-        return c.redirect(`${FRONTEND_URL}/?coros_error=invalid`);
+        return finish(`${FRONTEND_URL}/?coros_error=invalid`);
       }
 
-      const userId = await verifyOAuthState(state, COROS_CLIENT_SECRET);
+      const userId = verifiedState?.userId;
       if (!userId) {
-        return c.redirect(`${FRONTEND_URL}/?coros_error=invalid_state`);
+        return finish(`${FRONTEND_URL}/?coros_error=invalid_state`);
       }
 
       // TODO: Update with actual COROS token exchange endpoint from API documentation
@@ -5902,7 +5978,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       if (!tokenResponse.ok) {
         console.error('COROS token exchange failed:', await tokenResponse.text());
-        return c.redirect(`${FRONTEND_URL}/?coros_error=token_exchange`);
+        return finish(`${FRONTEND_URL}/?coros_error=token_exchange`);
       }
 
       const tokenData: any = await tokenResponse.json();
@@ -5914,7 +5990,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       const existingAccount = await storage.getCorosAccountByOpenId(openId);
       if (existingAccount && existingAccount.userId !== userId) {
-        return c.redirect(`${FRONTEND_URL}/?coros_error=already_linked`);
+        return finish(`${FRONTEND_URL}/?coros_error=already_linked`);
       }
 
       const expiresAt = expires_in ? new Date(Date.now() + expires_in * 1000) : null;
@@ -5933,10 +6009,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
         await storage.createCorosAccount(corosAccountData);
       }
 
-      return c.redirect(`${FRONTEND_URL}/?coros_connected=true`);
+      return finish(`${FRONTEND_URL}/?coros_connected=true`);
     } catch (error: any) {
       console.error('COROS callback error:', error);
-      return c.redirect(`${FRONTEND_URL}/?coros_error=server`);
+      return finish(`${FRONTEND_URL}/?coros_error=server`);
     }
   });
 
@@ -6488,13 +6564,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
     return treasure;
   }
 
-  // Helper: flexible auth check for Upstash cron endpoints
-  function isUpstashAuthorized(c: any): boolean {
-    const authHeader = c.req.header('Authorization');
-    const upstashSignature = c.req.header('Upstash-Signature');
-    const cronSecret = (c.env as any).UPSTASH_CRON_SECRET;
-    // Allow if: no secret configured, or Authorization matches, or Upstash-Signature present
-    return !cronSecret || authHeader === `Bearer ${cronSecret}` || !!upstashSignature;
+  // Cron endpoints accept the cron secret (Bearer) or a verified QStash signature
+  function isUpstashAuthorized(c: any): Promise<boolean> {
+    return isCronRequest(c);
   }
 
   // GET /api/treasures/active — Active treasures for map (only during competition)
@@ -6937,7 +7009,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // Checks all connected Polar accounts for new exercises, processes them, and notifies users
   app.post('/api/tasks/polar-auto-sync', async (c) => {
     try {
-      if (!isUpstashAuthorized(c)) {
+      if (!(await isUpstashAuthorized(c))) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
@@ -7161,7 +7233,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // POST /api/tasks/spawn-treasure — Cron: runs every hour, spawns at a random hour each day
   app.post('/api/tasks/spawn-treasure', async (c) => {
     try {
-      if (!isUpstashAuthorized(c)) {
+      if (!(await isUpstashAuthorized(c))) {
         console.log('[TREASURE CRON] Auth failed. Headers:', JSON.stringify(Object.fromEntries([...new Map(c.req.raw.headers)])).slice(0, 200));
         return c.json({ error: 'Unauthorized' }, 401);
       }
@@ -7197,7 +7269,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // POST /api/tasks/weekly-summary — Cron: generate weekly summary (Sundays 8PM)
   app.post('/api/tasks/weekly-summary', async (c) => {
     try {
-      if (!isUpstashAuthorized(c)) {
+      if (!(await isUpstashAuthorized(c))) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const db = getDb(c.env);

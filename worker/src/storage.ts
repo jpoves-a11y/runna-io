@@ -275,6 +275,19 @@ export class WorkerStorage {
     return usersWithStats;
   }
 
+  async updateUserPassword(userId: string, passwordHash: string): Promise<void> {
+    await this.db.update(users).set({ password: passwordHash }).where(eq(users.id, userId));
+  }
+
+  /** 1-based position of a user with `totalArea` in the global ranking. */
+  async getGlobalRank(totalArea: number): Promise<number> {
+    const [{ count }] = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(users)
+      .where(sql`${users.totalArea} > ${totalArea}`);
+    return Number(count || 0) + 1;
+  }
+
   async updateUser(userId: string, data: Partial<Pick<User, 'name' | 'color' | 'avatar'>>): Promise<User> {
     const [updatedUser] = await this.db
       .update(users)
@@ -1044,6 +1057,20 @@ export class WorkerStorage {
     await this.db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
   }
 
+  /** Browser subscriptions only; iOS devices (endpoint "apns:...") are kept. */
+  async deleteWebPushSubscriptionsByUserId(userId: string): Promise<void> {
+    await this.db.delete(pushSubscriptions).where(
+      and(eq(pushSubscriptions.userId, userId), sql`${pushSubscriptions.endpoint} NOT LIKE 'apns:%'`)
+    );
+  }
+
+  async deleteUserPushSubscriptionsByEndpoints(userId: string, endpoints: string[]): Promise<void> {
+    if (endpoints.length === 0) return;
+    await this.db.delete(pushSubscriptions).where(
+      and(eq(pushSubscriptions.userId, userId), inArray(pushSubscriptions.endpoint, endpoints))
+    );
+  }
+
   // ==================== STRAVA ====================
 
   async getStravaAccountByUserId(userId: string): Promise<StravaAccount | undefined> {
@@ -1510,6 +1537,20 @@ export class WorkerStorage {
     
     // Routes not linked to any activity are orphans
     return userRoutes.filter(r => !linkedRouteIds.has(r.id));
+  }
+
+  /** A route of this user that started within `toleranceMs` of `startedAt` with a similar distance (±5%). */
+  async findSimilarRoute(userId: string, startedAt: string, distance: number, toleranceMs = 5 * 60 * 1000): Promise<Route | null> {
+    const start = new Date(startedAt).getTime();
+    if (!Number.isFinite(start)) return null;
+    const candidates = await this.db
+      .select()
+      .from(routes)
+      .where(and(
+        eq(routes.userId, userId),
+        sql`${routes.startedAt} BETWEEN ${new Date(start - toleranceMs).toISOString()} AND ${new Date(start + toleranceMs).toISOString()}`
+      ));
+    return candidates.find((route) => Math.abs(route.distance - distance) <= Math.max(distance * 0.05, 50)) ?? null;
   }
 
   async findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null> {
