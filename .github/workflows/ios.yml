@@ -17,18 +17,16 @@ concurrency:
 
 jobs:
   build:
-    name: Build iOS app (simulator, unsigned)
+    name: Build iOS app (unsigned)
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
       - name: Show Xcode version
-        run: |
-          ls -d /Applications/Xcode*.app
-          xcodebuild -version
+        run: xcodebuild -version
 
-      - name: Build
+      - name: Build for simulator (Debug)
         working-directory: ios
         run: |
           set -o pipefail
@@ -40,11 +38,25 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
-            -quiet \
-            build 2>&1 | tee build.log
-          echo "BUILD SUCCEEDED"
+            build > build-debug.log 2>&1 || { grep -E "error:" build-debug.log | sort -u; tail -50 build-debug.log; exit 1; }
+          echo "Swift files compiled: $(grep -cE '^SwiftCompile .*\.swift' build-debug.log || true)"
+          echo "--- warnings ---"
+          grep -E "warning:" build-debug.log | grep -v "^ld: warning" | sort -u | head -100 || true
+          echo "--- app bundle ---"
+          ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
 
-      - name: Show compiler errors
-        if: failure()
+      - name: Build for device (Release, unsigned)
         working-directory: ios
-        run: grep -E "error:" build.log | sort -u | head -200 || true
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Runna.xcodeproj \
+            -scheme Runna \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build > build-release.log 2>&1 || { grep -E "error:" build-release.log | sort -u; tail -50 build-release.log; exit 1; }
+          echo "Release build succeeded"
+          grep -E "warning:" build-release.log | grep -v "^ld: warning" | sort -u | head -50 || true
