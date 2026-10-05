@@ -118,9 +118,11 @@ jobs:
           xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
           sleep 20
           xcrun simctl io "$DEVICE" screenshot screenshot-1-map.png
+          # Relaunch on each screen (simctl openurl would show an "Open in app?" prompt)
           shoot() {
-            xcrun simctl openurl "$DEVICE" "runnaio://$1"
-            sleep 8
+            xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" || true
+            SIMCTL_CHILD_RUNNA_TEST_DEEP_LINK="runnaio://$1" xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+            sleep 12
             xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
           }
           shoot tab/rankings 2-rankings

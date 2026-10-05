@@ -21,22 +21,18 @@ runna-io/
 ├── shared/schema.ts      Esquema de la base de datos (Drizzle), compartido
 ├── migrations/           SQL de migraciones
 ├── ios/                  App nativa de iPhone (Xcode)
-├── scripts/maintenance/  Scripts puntuales contra la base de datos
-└── server/               Servidor Express antiguo (no se usa en producción)
+├── scripts/e2e/          API local con datos de prueba (tests de la app de iPhone)
+└── scripts/maintenance/  Scripts puntuales contra la base de datos
 ```
 
 ## Desarrollo de la web
 
 ```bash
-npm install
-VITE_API_BASE_URL=https://runna-io-api.runna-io-api.workers.dev npx vite --port 5000
+npm install --legacy-peer-deps
+npm run dev          # http://localhost:5000
 ```
 
-En PowerShell:
-
-```powershell
-$env:VITE_API_BASE_URL = "https://runna-io-api.runna-io-api.workers.dev"; npx vite --port 5000
-```
+En desarrollo, las llamadas a `/api` se reenvían al Worker de producción. Para usar un Worker local (`npm run worker:dev`), arranca la web con `API_PROXY_TARGET=http://localhost:8787` (en PowerShell: `$env:API_PROXY_TARGET = "http://localhost:8787"; npm run dev`).
 
 `npm run check` comprueba los tipos de TypeScript.
 
