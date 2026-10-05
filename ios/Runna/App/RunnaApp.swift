@@ -7,6 +7,15 @@ struct RunnaApp: App {
     @State private var router = AppRouter.shared
     @State private var runTracker = RunTracker()
 
+    init() {
+        #if DEBUG
+        // e2e tests open a screen at launch (simctl openurl shows a confirmation prompt instead)
+        if let link = ProcessInfo.processInfo.environment["RUNNA_TEST_DEEP_LINK"], let url = URL(string: link) {
+            AppRouter.shared.handle(url: url)
+        }
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

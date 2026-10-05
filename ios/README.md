@@ -68,4 +68,4 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 
 ## Compilación automática
 
-`.github/workflows/ios.yml` compila la app en un Mac de GitHub Actions (simulador, sin firmar) cada vez que cambia algo en `ios/`, para detectar errores antes de abrir Xcode.
+`.github/workflows/ios.yml` se ejecuta en un Mac de GitHub Actions cada vez que cambia algo en `ios/` o en la API: compila la app (simulador y dispositivo, sin firmar), la abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`) y hace una captura de cada pestaña. Las capturas se descargan desde la ejecución, en "Artifacts".
