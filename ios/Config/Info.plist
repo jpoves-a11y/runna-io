@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>runnaio</string>
+			</array>
+		</dict>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Runna.io usa la cámara para que hagas una foto y se la envíes a quien le has robado territorio.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Runna.io lee tus entrenamientos de carrera y sus rutas GPS (por ejemplo, del Apple Watch) para convertirlos en territorio conquistado.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Runna.io usa tu ubicación para mostrarte en el mapa y registrar la ruta de tus carreras, también con la pantalla bloqueada mientras corres.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+</dict>
+</plist>
