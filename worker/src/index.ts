@@ -4,6 +4,7 @@ import { logger } from 'hono/logger';
 import { registerRoutes } from './routes';
 import type { AppEnv } from './auth';
 import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
+import { configurePush } from './pushHelper';
 
 export interface Env {
   DATABASE_URL: string;
@@ -24,7 +25,19 @@ export interface Env {
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM?: string;
   UPSTASH_CRON_SECRET?: string;
+  // QStash request signing keys (verify the Upstash-Signature header on cron calls)
+  QSTASH_CURRENT_SIGNING_KEY?: string;
+  QSTASH_NEXT_SIGNING_KEY?: string;
   ENVIRONMENT?: string;
+  // Web push (VAPID)
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
+  // Apple Push Notification service for the iOS app (.p8 key from developer.apple.com)
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_BUNDLE_ID?: string;
   // Cloudflare Queue for async territory processing
   TERRITORY_QUEUE: Queue<TerritoryQueueMessage>;
 }
@@ -62,8 +75,14 @@ app.get('/', (c) => {
 });
 
 export default {
-  fetch: app.fetch,
-  queue: handleQueueBatch,
+  fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    configurePush(env);
+    return app.fetch(request, env, ctx);
+  },
+  queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
+    configurePush(env);
+    return handleQueueBatch(batch, env);
+  },
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     // Cloudflare Cron Trigger: auto-sync Polar activities every 5 minutes
     const workerUrl = (env as any).WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';

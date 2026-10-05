@@ -178,26 +178,113 @@ async function hmacSign(key: string, data: string): Promise<string> {
   return base64UrlEncode(new Uint8Array(signature));
 }
 
+/** What a verified OAuth `state` says about the connect flow. */
+export interface OAuthStateInfo {
+  userId: string;
+  /** The flow was started from the iOS app, so the callback must send the browser back to it. */
+  app: boolean;
+}
+
 /**
  * Builds the OAuth `state` for a connect flow, signed with a server-side secret so that the
  * callback can trust the user ID inside it.
  */
-export async function createOAuthState(userId: string, signingKey: string): Promise<string> {
-  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ userId, ts: Date.now() })));
+export async function createOAuthState(userId: string, signingKey: string, options: { app?: boolean } = {}): Promise<string> {
+  const data = { userId, ts: Date.now(), ...(options.app ? { app: true } : {}) };
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify(data)));
   return `${payload}.${await hmacSign(signingKey, payload)}`;
 }
 
-/** Returns the user ID from a state built by createOAuthState, or null if it's forged or expired. */
-export async function verifyOAuthState(state: string, signingKey: string): Promise<string | null> {
+/** Returns the contents of a state built by createOAuthState, or null if it's forged or expired. */
+export async function verifyOAuthState(state: string, signingKey: string): Promise<OAuthStateInfo | null> {
   const [payload, signature] = state.split('.');
   if (!payload || !signature) return null;
   if (!timingSafeEqual(signature, await hmacSign(signingKey, payload))) return null;
   try {
-    const { userId, ts } = JSON.parse(base64UrlDecodeToString(payload));
+    const { userId, ts, app } = JSON.parse(base64UrlDecodeToString(payload));
     if (typeof userId !== 'string' || typeof ts !== 'number') return null;
     if (Date.now() - ts > OAUTH_STATE_MAX_AGE_MS) return null;
-    return userId;
+    return { userId, app: app === true };
   } catch {
     return null;
   }
+}
+
+/** URL scheme the iOS app registers to receive the end of OAuth flows. */
+export const IOS_APP_URL_SCHEME = 'runnaio';
+
+/**
+ * Ends an OAuth callback: redirects to `webUrl`, or for flows started in the iOS app,
+ * to runnaio://oauth/<provider> with the same query string (e.g. ?strava_connected=true).
+ */
+export function oauthFinish(c: AppContext, appFlow: boolean, provider: string, webUrl: string) {
+  if (!appFlow) return c.redirect(webUrl);
+  const query = new URL(webUrl).search;
+  return c.redirect(`${IOS_APP_URL_SCHEME}://oauth/${provider}${query}`);
+}
+
+function base64UrlToBytes(value: string): Uint8Array {
+  return Uint8Array.from(base64UrlDecodeToBinary(value), (ch) => ch.charCodeAt(0));
+}
+
+function base64UrlDecodeToBinary(value: string): string {
+  const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+  return atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
+}
+
+function sameUrl(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    return ua.host === ub.host && ua.pathname.replace(/\/+$/, '') === ub.pathname.replace(/\/+$/, '') && ua.search === ub.search;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verifies an Upstash QStash `Upstash-Signature` header: an HS256 JWT signed with one of the
+ * QStash signing keys, issued for this URL and carrying the SHA-256 of the request body.
+ */
+async function verifyQstashSignature(c: AppContext, signature: string): Promise<boolean> {
+  const keys = [c.env.QSTASH_CURRENT_SIGNING_KEY, c.env.QSTASH_NEXT_SIGNING_KEY].filter((k): k is string => !!k);
+  if (keys.length === 0) return false;
+
+  const [headerPart, claimsPart, signaturePart] = signature.split('.');
+  if (!headerPart || !claimsPart || !signaturePart) return false;
+
+  let signedByKnownKey = false;
+  for (const key of keys) {
+    if (timingSafeEqual(await hmacSign(key, `${headerPart}.${claimsPart}`), signaturePart)) {
+      signedByKnownKey = true;
+      break;
+    }
+  }
+  if (!signedByKnownKey) return false;
+
+  try {
+    const header = JSON.parse(base64UrlDecodeToString(headerPart));
+    const claims = JSON.parse(base64UrlDecodeToString(claimsPart));
+    if (header.alg !== 'HS256' || claims.iss !== 'Upstash') return false;
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof claims.exp === 'number' && claims.exp < now - 60) return false;
+    if (typeof claims.nbf === 'number' && claims.nbf > now + 60) return false;
+    if (typeof claims.sub === 'string' && !sameUrl(claims.sub, c.req.url)) return false;
+
+    const body = await c.req.raw.clone().arrayBuffer();
+    const bodyHash = base64UrlEncode(new Uint8Array(await crypto.subtle.digest('SHA-256', body)));
+    const claimedHash = typeof claims.body === 'string' ? claims.body.replace(/=+$/, '') : '';
+    // QStash may send the hash in base64url or base64
+    const normalizedClaim = base64UrlEncode(base64UrlToBytes(claimedHash));
+    return timingSafeEqual(normalizedClaim, bodyHash);
+  } catch {
+    return false;
+  }
+}
+
+/** Cron endpoints: the admin/cron secret as a Bearer token, or a valid QStash signature. */
+export async function isCronRequest(c: AppContext): Promise<boolean> {
+  if (isAdminRequest(c)) return true;
+  const signature = c.req.header('Upstash-Signature');
+  return signature ? verifyQstashSignature(c, signature) : false;
 }

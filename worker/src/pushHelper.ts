@@ -263,6 +263,120 @@ async function createVapidJwt(
   return `${unsignedToken}.${signatureB64}`;
 }
 
+// ===== Apple Push Notification service (native iOS app) =====
+// iOS devices are stored as push subscriptions whose endpoint is "apns:<environment>:<device token>",
+// so every place that notifies a user's subscriptions also reaches their iPhone.
+
+export const APNS_ENDPOINT_PREFIX = 'apns:';
+export type ApnsEnvironment = 'sandbox' | 'production';
+
+interface ApnsConfig {
+  keyId: string;
+  teamId: string;
+  privateKey: string; // contents of the .p8 key file
+  bundleId: string;
+}
+
+interface PushEnv {
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_BUNDLE_ID?: string;
+}
+
+let apnsConfig: ApnsConfig | null = null;
+let apnsJwtCache: { token: string; issuedAt: number; keyId: string } | null = null;
+
+/** Reads the APNs credentials from the Worker environment. Called at the start of each request. */
+export function configurePush(env: PushEnv): void {
+  if (env.APNS_KEY_ID && env.APNS_TEAM_ID && env.APNS_PRIVATE_KEY && env.APNS_BUNDLE_ID) {
+    apnsConfig = {
+      keyId: env.APNS_KEY_ID,
+      teamId: env.APNS_TEAM_ID,
+      privateKey: env.APNS_PRIVATE_KEY,
+      bundleId: env.APNS_BUNDLE_ID,
+    };
+  } else {
+    apnsConfig = null;
+  }
+}
+
+export function apnsEndpoint(environment: ApnsEnvironment, deviceToken: string): string {
+  return `${APNS_ENDPOINT_PREFIX}${environment}:${deviceToken}`;
+}
+
+async function importApnsKey(pem: string): Promise<CryptoKey> {
+  const base64 = pem
+    .replace(/-----BEGIN PRIVATE KEY-----/, '')
+    .replace(/-----END PRIVATE KEY-----/, '')
+    .replace(/\\n/g, '')
+    .replace(/\s+/g, '');
+  const der = Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0));
+  return crypto.subtle.importKey('pkcs8', der, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+}
+
+// APNs provider tokens are valid for an hour and must not be refreshed more than every 20 minutes
+async function getApnsJwt(config: ApnsConfig): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (apnsJwtCache && apnsJwtCache.keyId === config.keyId && now - apnsJwtCache.issuedAt < 50 * 60) {
+    return apnsJwtCache.token;
+  }
+  const header = { alg: 'ES256', kid: config.keyId };
+  const claims = { iss: config.teamId, iat: now };
+  const unsignedToken = `${uint8ArrayToBase64Url(new TextEncoder().encode(JSON.stringify(header)))}.${uint8ArrayToBase64Url(new TextEncoder().encode(JSON.stringify(claims)))}`;
+  const key = await importApnsKey(config.privateKey);
+  const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(unsignedToken));
+  const token = `${unsignedToken}.${uint8ArrayToBase64Url(derToRaw(new Uint8Array(signature)))}`;
+  apnsJwtCache = { token, issuedAt: now, keyId: config.keyId };
+  return token;
+}
+
+async function sendApnsNotification(endpoint: string, payload: PushNotificationPayload): Promise<boolean> {
+  if (!apnsConfig) {
+    console.warn('[APNS] Not configured (APNS_KEY_ID / APNS_TEAM_ID / APNS_PRIVATE_KEY / APNS_BUNDLE_ID); skipping');
+    return false;
+  }
+  const [environment, deviceToken] = endpoint.slice(APNS_ENDPOINT_PREFIX.length).split(':');
+  if (!deviceToken) return false;
+  const host = environment === 'sandbox' ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+
+  try {
+    const jwt = await getApnsJwt(apnsConfig);
+    const body = {
+      aps: {
+        alert: { title: payload.title, body: payload.body },
+        sound: 'default',
+        ...(payload.tag ? { 'thread-id': payload.tag } : {}),
+      },
+      type: payload.data?.type ?? null,
+      data: payload.data ?? null,
+    };
+    const headers: Record<string, string> = {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': apnsConfig.bundleId,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'apns-expiration': String(Math.floor(Date.now() / 1000) + 24 * 60 * 60),
+      'content-type': 'application/json',
+    };
+    if (payload.tag && new TextEncoder().encode(payload.tag).length <= 64) {
+      headers['apns-collapse-id'] = payload.tag;
+    }
+
+    const response = await fetch(`https://${host}/3/device/${deviceToken}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (response.status === 200) return true;
+    console.error(`[APNS] ❌ ${response.status} ${await response.text()} (${environment})`);
+    return false;
+  } catch (error) {
+    console.error('[APNS] Error sending notification:', error);
+    return false;
+  }
+}
+
 // ===== Main send function =====
 
 export async function sendPushNotification(
@@ -272,6 +386,9 @@ export async function sendPushNotification(
   vapidPrivateKey: string,
   vapidSubject: string
 ): Promise<boolean> {
+  if (subscription.endpoint.startsWith(APNS_ENDPOINT_PREFIX)) {
+    return sendApnsNotification(subscription.endpoint, payload);
+  }
   try {
     console.log(`[PUSH] Sending to endpoint: ${subscription.endpoint.substring(0, 80)}...`);
 
