@@ -20,3 +20,6 @@ ios/build/
 ios/DerivedData/
 xcuserdata/
 *.xcuserstate
+
+# e2e test build output
+scripts/e2e/.build/

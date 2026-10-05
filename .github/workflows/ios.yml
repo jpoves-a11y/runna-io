@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'ios/**'
+      - 'worker/**'
+      - 'shared/**'
+      - 'scripts/e2e/**'
       - '.github/workflows/ios.yml'
   pull_request:
     paths:
@@ -79,12 +82,65 @@ jobs:
             exit 1
           fi
 
-      - name: Upload screenshot
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Start local API with seeded test data
+        run: |
+          npm ci --legacy-peer-deps --no-audit --no-fund
+          (cd worker && npm ci --no-audit --no-fund)
+          mkdir -p scripts/e2e/.build
+          npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
+            --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --external:@libsql/client --log-level=warning
+          DATABASE_URL=file:scripts/e2e/.build/e2e.db npx drizzle-kit push --force
+          nohup node scripts/e2e/server.mjs > scripts/e2e/.build/server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/api/health > /dev/null && break; sleep 1; done
+          node scripts/e2e/seed.mjs > scripts/e2e/.build/session.json
+
+      - name: Screens with test data
+        working-directory: ios
+        run: |
+          set -e
+          APP=build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
+          BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw "$APP/Info.plist")
+          DEVICE=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; print(next(d['udid'] for v in json.load(sys.stdin)['devices'].values() for d in v))")
+          # The test API is plain http on localhost (test copy of the app only)
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$APP/Info.plist"
+          xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" || true
+          xcrun simctl install "$DEVICE" "$APP"
+          xcrun simctl privacy "$DEVICE" grant location "$BUNDLE_ID" || true
+          xcrun simctl location "$DEVICE" set 41.6488,-0.8891 || true
+          export SIMCTL_CHILD_RUNNA_API_BASE_URL=http://127.0.0.1:8787
+          export SIMCTL_CHILD_RUNNA_TEST_TOKEN=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['token'])")
+          export SIMCTL_CHILD_RUNNA_TEST_USER_ID=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['userId'])")
+          xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+          sleep 20
+          xcrun simctl io "$DEVICE" screenshot screenshot-1-map.png
+          shoot() {
+            xcrun simctl openurl "$DEVICE" "runnaio://$1"
+            sleep 8
+            xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
+          }
+          shoot tab/rankings 2-rankings
+          shoot tab/activity/feed 3-feed
+          shoot tab/activity/mine 4-my-runs
+          shoot tab/friends 5-friends
+          shoot tab/profile 6-profile
+          if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
+            echo "App crashed while showing the screens"
+            exit 1
+          fi
+          echo "API requests made by the app: $(grep -c -- '<-- GET /api' ../scripts/e2e/.build/server.log || true)"
+
+      - name: Upload screenshots and API log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulator-screenshot
-          path: ios/screenshot-*.png
+          name: simulator-screenshots
+          path: |
+            ios/screenshot-*.png
+            scripts/e2e/.build/server.log
           if-no-files-found: ignore
 
       - name: Build for device (Release, unsigned)

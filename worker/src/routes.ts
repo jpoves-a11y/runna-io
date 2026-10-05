@@ -783,7 +783,7 @@ export async function processTerritoryConquest(
       console.log(`[TERRITORY] Batch inserted ${pendingConquestMetrics.length} conquest metrics`);
     }
   } catch (err) {
-    console.error('[TERRITORY] Batch conquest metrics failed, falling back:', err);
+    console.error('[TERRITORY] Batch conquest metrics failed:', err);
   }
 
   // 3. Batch insert sentinel alerts (1 query instead of N)
