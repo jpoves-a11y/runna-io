@@ -7,6 +7,19 @@ import { EmailService } from './email';
 import { USER_COLORS } from '../../shared/colors';
 import type { Env } from './index';
 import {
+  type AppEnv,
+  createSession,
+  revokeRequestSession,
+  requireAuth,
+  requireSelf,
+  requireSelfOrAdmin,
+  requireAdmin,
+  isAdminRequest,
+  rejectIfNotSelf,
+  createOAuthState,
+  verifyOAuthState,
+} from './auth';
+import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
   activitiesOverlapInTime,
@@ -1409,9 +1422,11 @@ async function getValidStravaToken(
   }
 }
 
-export function registerRoutes(app: Hono<{ Bindings: Env }>) {
-  
-  app.post('/api/seed', async (c) => {
+export function registerRoutes(app: Hono<AppEnv>) {
+  // Maintenance endpoints: require the admin/cron secret (Authorization: Bearer <UPSTASH_CRON_SECRET>)
+  app.use('/api/admin/*', requireAdmin);
+
+  app.post('/api/seed', requireAdmin, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -1445,7 +1460,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     });
   });
 
-  app.get('/api/current-user/:userId', async (c) => {
+  app.get('/api/current-user/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -1496,8 +1511,19 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.json({ error: "Contraseña incorrecta" }, 401);
       }
 
-      const { password: _, ...userWithoutPassword } = user;
-      return c.json(userWithoutPassword);
+      const token = await createSession(storage, user.id);
+      const { password: _, verificationCode: __, verificationCodeExpiresAt: ___, ...userWithoutPassword } = user;
+      return c.json({ ...userWithoutPassword, token });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Revoke the session token sent in the Authorization header
+  app.post('/api/auth/logout', async (c) => {
+    try {
+      await revokeRequestSession(c);
+      return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -1549,22 +1575,26 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         console.error('[EMAIL] Failed to send verification code:', err);
       }
       
-      const { password: _, verificationCode: __, ...userWithoutSensitive } = user as any;
-      return c.json({ ...userWithoutSensitive, requiresVerification: true });
+      const token = await createSession(storage, user.id);
+      const { password: _, verificationCode: __, verificationCodeExpiresAt: ___, ...userWithoutSensitive } = user as any;
+      return c.json({ ...userWithoutSensitive, token, requiresVerification: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 400);
     }
   });
 
   // Endpoint para verificar código de email
-  app.post('/api/auth/verify-email', async (c) => {
+  app.post('/api/auth/verify-email', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const { userId, code } = await c.req.json();
+      const { userId: bodyUserId, code } = await c.req.json();
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
-      if (!userId || !code) {
-        return c.json({ error: "userId y code son requeridos" }, 400);
+      if (!code) {
+        return c.json({ error: "code es requerido" }, 400);
       }
 
       const user = await storage.getUser(userId);
@@ -1616,15 +1646,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Endpoint para reenviar código de verificación
-  app.post('/api/auth/resend-verification', async (c) => {
+  app.post('/api/auth/resend-verification', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const { userId } = await c.req.json();
-
-      if (!userId) {
-        return c.json({ error: "userId es requerido" }, 400);
-      }
+      const { userId: bodyUserId } = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const user = await storage.getUser(userId);
       if (!user) {
@@ -1663,7 +1692,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/user/:id', async (c) => {
+  app.get('/api/user/:id', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -1683,7 +1712,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.patch('/api/users/:id', async (c) => {
+  app.patch('/api/users/:id', requireSelf('id'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -1711,7 +1740,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Delete user account and all associated data
-  app.delete('/api/users/:id', async (c) => {
+  app.delete('/api/users/:id', requireSelf('id'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -1728,16 +1757,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Upload avatar image
-  app.post('/api/user/avatar', async (c) => {
+  app.post('/api/user/avatar', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const formData = await c.req.formData();
-      const userId = formData.get('userId') as string;
+      const notSelf = rejectIfNotSelf(c, formData.get('userId'));
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
       const file = formData.get('avatar') as File;
 
-      if (!file || !userId) {
-        return c.json({ error: 'Missing file or userId' }, 400);
+      if (!file) {
+        return c.json({ error: 'Missing file' }, 400);
       }
 
       // Validate file size (max 5MB)
@@ -1796,16 +1827,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Delete avatar
-  app.delete('/api/user/avatar', async (c) => {
+  app.delete('/api/user/avatar', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const body = await c.req.json();
-      const { userId } = body;
-
-      if (!userId) {
-        return c.json({ error: 'Missing userId' }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const updatedUser = await storage.updateUser(userId, { avatar: null });
       return c.json({ success: true });
@@ -1825,11 +1854,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/routes', async (c) => {
+  app.post('/api/routes', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      body.userId = c.get('authUserId');
 
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
@@ -1929,14 +1961,17 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Rename a route
-  app.patch('/api/routes/:routeId/name', async (c) => {
+  app.patch('/api/routes/:routeId/name', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const routeId = c.req.param('routeId');
-      const { userId, name } = await c.req.json();
-      if (!userId || !name || !name.trim()) {
-        return c.json({ error: 'userId and name are required' }, 400);
+      const { userId: bodyUserId, name } = await c.req.json();
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
+      if (!name || !name.trim()) {
+        return c.json({ error: 'name is required' }, 400);
       }
       const route = await storage.getRouteById(routeId);
       if (!route) {
@@ -1953,7 +1988,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Delete a route and its associated territory/metrics
-  app.delete('/api/routes/:userId/:routeId', async (c) => {
+  app.delete('/api/routes/:userId/:routeId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -2840,7 +2875,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     return c.json({ error: `Fase desconocida: ${phase}. Usa: diagnose, cleanup, process, reprocess, reset` }, 400);
   });
 
-  app.get('/api/routes/:userId', async (c) => {
+  app.get('/api/routes/:userId', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -2853,7 +2888,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Pending animation: returns the latest auto-imported activity ready for animation
-  app.get('/api/polar/pending-animation/:userId', async (c) => {
+  app.get('/api/polar/pending-animation/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const afterRouteId = c.req.query('after'); // client sends the last animated routeId
@@ -2909,7 +2944,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Conquest result polling endpoint (used by client after async queue processing)
-  app.get('/api/conquest-result/:routeId', async (c) => {
+  app.get('/api/conquest-result/:routeId', requireAuth, async (c) => {
     try {
       const routeId = c.req.param('routeId');
       const db = getDb(c.env);
@@ -2947,7 +2982,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // --- Social Feed Endpoints ---
 
   // Get feed for a user (own + friends' events)
-  app.get('/api/feed/:userId', async (c) => {
+  app.get('/api/feed/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const limit = parseInt(c.req.query('limit') || '30');
@@ -2962,10 +2997,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get comments for a feed event
-  app.get('/api/feed/events/:eventId/comments', async (c) => {
+  app.get('/api/feed/events/:eventId/comments', requireAuth, async (c) => {
     try {
       const eventId = c.req.param('eventId');
-      const viewerUserId = c.req.query('userId') || undefined;
+      const viewerUserId = c.get('authUserId');
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const comments = await storage.getFeedEventComments(eventId, viewerUserId);
@@ -2976,13 +3011,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Add a comment to a feed event
-  app.post('/api/feed/events/:eventId/comments', async (c) => {
+  app.post('/api/feed/events/:eventId/comments', requireAuth, async (c) => {
     try {
       const eventId = c.req.param('eventId');
-      const { userId, content, parentId } = await c.req.json();
+      const { userId: bodyUserId, content, parentId } = await c.req.json();
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
-      if (!userId || !content || !content.trim()) {
-        return c.json({ error: 'userId and content are required' }, 400);
+      if (!content || !content.trim()) {
+        return c.json({ error: 'content is required' }, 400);
       }
       if (content.length > 500) {
         return c.json({ error: 'Comment too long (max 500 chars)' }, 400);
@@ -3096,13 +3134,13 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Delete a comment (only own comments)
-  app.delete('/api/feed/comments/:commentId', async (c) => {
+  app.delete('/api/feed/comments/:commentId', requireAuth, async (c) => {
     try {
       const commentId = c.req.param('commentId');
-      const { userId } = await c.req.json();
-      if (!userId) {
-        return c.json({ error: 'userId is required' }, 400);
-      }
+      const { userId: bodyUserId } = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const deleted = await storage.deleteFeedComment(commentId, userId);
@@ -3116,11 +3154,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Toggle reaction (like/dislike) on a feed event or comment
-  app.post('/api/feed/reactions', async (c) => {
+  app.post('/api/feed/reactions', requireAuth, async (c) => {
     try {
-      const { userId, targetType, targetId, reactionType } = await c.req.json();
-      if (!userId || !targetType || !targetId || !reactionType) {
-        return c.json({ error: 'userId, targetType, targetId, and reactionType are required' }, 400);
+      const { userId: bodyUserId, targetType, targetId, reactionType } = await c.req.json();
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
+      if (!targetType || !targetId || !reactionType) {
+        return c.json({ error: 'targetType, targetId, and reactionType are required' }, 400);
       }
       if (!['event', 'comment'].includes(targetType)) {
         return c.json({ error: 'targetType must be "event" or "comment"' }, 400);
@@ -3171,10 +3212,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/feed/events/:eventId/preview-comments', async (c) => {
+  app.get('/api/feed/events/:eventId/preview-comments', requireAuth, async (c) => {
     try {
       const eventId = c.req.param('eventId');
-      const viewerUserId = c.req.query('userId') || '';
+      const viewerUserId = c.get('authUserId');
       const limit = parseInt(c.req.query('limit') || '3');
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3197,7 +3238,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get user conquest stats (km stolen/lost)
-  app.get('/api/conquest-stats/:userId', async (c) => {
+  app.get('/api/conquest-stats/:userId', requireAuth, async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -3211,15 +3252,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // ==================== FRIENDS SYSTEM ====================
 
-  app.post('/api/friends', async (c) => {
+  app.post('/api/friends', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
-      const { userId, friendId } = body;
+      const { userId: bodyUserId, friendId } = body;
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
       
-      if (!userId || !friendId) {
-        return c.json({ error: "userId and friendId required" }, 400);
+      if (!friendId) {
+        return c.json({ error: "friendId required" }, 400);
       }
 
       if (userId === friendId) {
@@ -3288,7 +3332,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/friends/:userId', async (c) => {
+  app.get('/api/friends/:userId', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3300,17 +3344,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.delete('/api/friends/:friendId', async (c) => {
+  app.delete('/api/friends/:friendId', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const friendId = c.req.param('friendId');
-      const body = await c.req.json();
-      const { userId } = body;
-
-      if (!userId) {
-        return c.json({ error: "userId required in body" }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       await storage.deleteBidirectionalFriendship(userId, friendId);
       return c.json({ success: true });
@@ -3320,7 +3362,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Friend requests endpoints
-  app.get('/api/friends/requests/:userId', async (c) => {
+  app.get('/api/friends/requests/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3351,7 +3393,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get friend requests sent by a user
-  app.get('/api/friends/requests/sent/:userId', async (c) => {
+  app.get('/api/friends/requests/sent/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3382,13 +3424,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/friends/requests/:requestId/accept', async (c) => {
+  app.post('/api/friends/requests/:requestId/accept', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const requestId = c.req.param('requestId');
-      const body = await c.req.json();
-      const { userId } = body;
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const request = await storage.getFriendRequestById(requestId);
       if (!request) {
@@ -3468,13 +3512,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/friends/requests/:requestId/reject', async (c) => {
+  app.post('/api/friends/requests/:requestId/reject', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const requestId = c.req.param('requestId');
-      const body = await c.req.json();
-      const { userId } = body;
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const request = await storage.getFriendRequestById(requestId);
       if (!request) {
@@ -3495,7 +3541,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Cancel (delete) a friend request sent by the user
-  app.delete('/api/friends/requests/:requestId', async (c) => {
+  app.delete('/api/friends/requests/:requestId', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3507,13 +3553,9 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       // Only the sender can cancel their own request
-      // We don't check userId from body here since the request itself identifies the sender
-      // If you want additional auth, uncomment the lines below
-      // const body = await c.req.json();
-      // const { userId } = body;
-      // if (request.senderId !== userId) {
-      //   return c.json({ error: "Unauthorized" }, 403);
-      // }
+      if (request.senderId !== c.get('authUserId')) {
+        return c.json({ error: "Unauthorized" }, 403);
+      }
 
       // Delete the request
       await storage.deleteFriendRequest(requestId);
@@ -3524,15 +3566,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/users/search', async (c) => {
+  app.get('/api/users/search', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const query = c.req.query('query');
-      const userId = c.req.query('userId');
+      const userId = c.get('authUserId');
 
-      if (!query || !userId) {
-        return c.json({ error: "query and userId required" }, 400);
+      if (!query) {
+        return c.json({ error: "query required" }, 400);
       }
 
       const users = await storage.searchUsers(query, userId);
@@ -3543,7 +3585,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get aggregated stats for a user
-  app.get('/api/users/:id/stats', async (c) => {
+  app.get('/api/users/:id/stats', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3598,8 +3640,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       }
 
       // If a viewerId is provided, compute stolen area between the two users
-      const viewerId = c.req.query('viewerId');
-      if (viewerId && viewerId !== userId) {
+      const viewerId = c.get('authUserId');
+      if (viewerId !== userId) {
         try {
           const between = await storage.getConquestMetricsBetweenUsers(userId, viewerId);
           // totalFromFirstToSecond = area userId stole from viewerId
@@ -3643,7 +3685,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/leaderboard/friends/:userId', async (c) => {
+  app.get('/api/leaderboard/friends/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3661,7 +3703,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/territories/friends/:userId', async (c) => {
+  app.get('/api/territories/friends/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3673,16 +3715,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/friends/invite', async (c) => {
+  app.post('/api/friends/invite', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const body = await c.req.json();
-      const { userId } = body;
-
-      if (!userId) {
-        return c.json({ error: "userId required" }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const invite = await storage.createFriendInvite(userId);
       const inviteUrl = `${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/friends/accept/${invite.token}`;
@@ -3693,17 +3733,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/friends/accept/:token', async (c) => {
+  app.post('/api/friends/accept/:token', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const token = c.req.param('token');
-      const body = await c.req.json();
-      const { userId } = body;
-
-      if (!userId) {
-        return c.json({ error: "userId required" }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const invite = await storage.getFriendInviteByToken(token);
 
@@ -3750,14 +3788,17 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // ==================== PUSH NOTIFICATIONS ====================
 
-  app.post('/api/push/subscribe', async (c) => {
+  app.post('/api/push/subscribe', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
-      const { userId, endpoint, keys } = body;
+      const { userId: bodyUserId, endpoint, keys } = body;
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
-      if (!userId || !endpoint || !keys?.p256dh || !keys?.auth) {
+      if (!endpoint || !keys?.p256dh || !keys?.auth) {
         return c.json({ error: 'Missing required fields' }, 400);
       }
 
@@ -3775,16 +3816,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/push/unsubscribe', async (c) => {
+  app.post('/api/push/unsubscribe', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const body = await c.req.json();
-      const { userId } = body;
-
-      if (!userId) {
-        return c.json({ error: 'userId required' }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       await storage.deletePushSubscriptionsByUserId(userId);
       return c.json({ success: true });
@@ -3794,14 +3833,14 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Test push notification endpoint
-  app.post('/api/push/test', async (c) => {
+  app.post('/api/push/test', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const body = await c.req.json();
-      const { userId } = body;
-
-      if (!userId) return c.json({ error: 'userId required' }, 400);
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
       if (subscriptions.length === 0) {
@@ -3847,7 +3886,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // ==================== STRAVA INTEGRATION ====================
 
-  app.get('/api/strava/status/:userId', async (c) => {
+  app.get('/api/strava/status/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3871,7 +3910,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get failed activities for a user
-  app.get('/api/strava/failed/:userId', async (c) => {
+  app.get('/api/strava/failed/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -3884,11 +3923,19 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Retry processing a failed activity
-  app.post('/api/strava/retry/:activityId', async (c) => {
+  app.post('/api/strava/retry/:activityId', requireAuth, async (c) => {
     try {
       const activityId = c.req.param('activityId');
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
+
+      const existing = await storage.getStravaActivityById(activityId);
+      if (!existing) {
+        return c.json({ error: 'Activity not found' }, 404);
+      }
+      if (existing.userId !== c.get('authUserId')) {
+        return c.json({ error: 'No autorizado' }, 403);
+      }
       
       // Reset the activity for retry
       const activity = await storage.resetStravaActivityForRetry(activityId);
@@ -3901,7 +3948,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Retry processing all failed activities for a user
-  app.post('/api/strava/retry-all/:userId', async (c) => {
+  app.post('/api/strava/retry-all/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -3932,18 +3979,20 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/strava/connect', async (c) => {
+  app.get('/api/strava/connect', requireAuth, async (c) => {
     try {
-      const userId = c.req.query('userId');
+      const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
       const STRAVA_CLIENT_ID = c.env.STRAVA_CLIENT_ID;
       const STRAVA_REDIRECT_URI = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/strava/callback`;
 
       
-      if (!userId || !STRAVA_CLIENT_ID) {
-        return c.json({ error: "userId required and Strava not configured" }, 400);
+      if (!STRAVA_CLIENT_ID || !c.env.STRAVA_CLIENT_SECRET) {
+        return c.json({ error: "Strava not configured" }, 400);
       }
 
-      const state = btoa(JSON.stringify({ userId, ts: Date.now() }));
+      const state = await createOAuthState(userId, c.env.STRAVA_CLIENT_SECRET);
       const scopes = 'read,activity:read_all';
       
       const authUrl = `https://www.strava.com/oauth/authorize?client_id=${STRAVA_CLIENT_ID}&redirect_uri=${encodeURIComponent(STRAVA_REDIRECT_URI)}&response_type=code&scope=${scopes}&state=${state}`;
@@ -3972,11 +4021,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/?strava_error=invalid`);
       }
 
-      let userId: string;
-      try {
-        const decoded = JSON.parse(atob(state));
-        userId = decoded.userId;
-      } catch {
+      const userId = await verifyOAuthState(state, STRAVA_CLIENT_SECRET);
+      if (!userId) {
         return c.redirect(`${FRONTEND_URL}/?strava_error=invalid_state`);
       }
 
@@ -4034,13 +4080,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/strava/disconnect', async (c) => {
+  app.post('/api/strava/disconnect', requireAuth, async (c) => {
     try {
-      const body = await c.req.json();
-      const { userId } = body;
-      if (!userId) {
-        return c.json({ error: "userId required" }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -4275,7 +4320,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/strava/process/:userId', async (c) => {
+  app.post('/api/strava/process/:userId', requireSelf('userId'), async (c) => {
     const stravaProcessStart = Date.now();
     const STRAVA_MAX_PROCESSING_TIME = 25000; // 25s safety limit
     const STRAVA_BATCH_SIZE = 1; // Process 1 at a time like Polar
@@ -4475,7 +4520,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get all Strava activities for a user
-  app.get('/api/strava/activities/:userId', async (c) => {
+  app.get('/api/strava/activities/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -4488,7 +4533,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Sync recent Strava activities (pull from Strava API)
-  app.post('/api/strava/sync/:userId', async (c) => {
+  app.post('/api/strava/sync/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -4622,7 +4667,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // ==================== POLAR ====================
 
-  app.get('/api/polar/status/:userId', async (c) => {
+  app.get('/api/polar/status/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -4650,7 +4695,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get failed activities for a user
-  app.get('/api/polar/failed/:userId', async (c) => {
+  app.get('/api/polar/failed/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -4663,7 +4708,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Retry processing all failed activities for a user
-  app.post('/api/polar/retry-all/:userId', async (c) => {
+  app.post('/api/polar/retry-all/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -4695,11 +4740,18 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Reset a single skipped/failed activity for retry
-  app.post('/api/polar/retry/:activityId', async (c) => {
+  app.post('/api/polar/retry/:activityId', requireAuth, async (c) => {
     try {
       const activityId = c.req.param('activityId');
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
+      const existing = await storage.getPolarActivityById(activityId);
+      if (!existing) {
+        return c.json({ error: 'Actividad no encontrada' }, 404);
+      }
+      if (existing.userId !== c.get('authUserId')) {
+        return c.json({ error: 'No autorizado' }, 403);
+      }
       const activity = await storage.resetPolarActivityForRetry(activityId);
       console.log(`[POLAR] Activity ${activityId} reset for retry (was skipReason: ${activity.skipReason})`);
       return c.json({ success: true, activity });
@@ -4709,7 +4761,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // DIAGNOSTIC: Get ALL failed activities across ALL users (route_id IS NULL)
-  app.get('/api/polar/failed-all', async (c) => {
+  app.get('/api/polar/failed-all', requireAdmin, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -4739,7 +4791,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // GLOBAL: Retry ALL failed activities for ALL users
-  app.post('/api/polar/retry-all-global', async (c) => {
+  app.post('/api/polar/retry-all-global', requireAdmin, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -4767,19 +4819,21 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/polar/connect', async (c) => {
+  app.get('/api/polar/connect', requireAuth, async (c) => {
     try {
-      const userId = c.req.query('userId');
+      const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
       const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
       
       console.log('Polar connect request - userId:', userId, 'POLAR_CLIENT_ID:', POLAR_CLIENT_ID ? 'configured' : 'NOT configured');
       
-      if (!userId || !POLAR_CLIENT_ID) {
-        console.error('Missing userId or POLAR_CLIENT_ID');
-        return c.json({ error: "userId required and Polar not configured" }, 400);
+      if (!POLAR_CLIENT_ID || !c.env.POLAR_CLIENT_SECRET) {
+        console.error('Missing POLAR_CLIENT_ID or POLAR_CLIENT_SECRET');
+        return c.json({ error: "Polar not configured" }, 400);
       }
 
-      const state = btoa(JSON.stringify({ userId, ts: Date.now() }));
+      const state = await createOAuthState(userId, c.env.POLAR_CLIENT_SECRET);
       const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
       
@@ -4812,15 +4866,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid`);
       }
 
-      let userId: string;
-      try {
-        const decoded = JSON.parse(atob(state as string));
-        userId = decoded.userId;
-        console.log('State decoded - userId:', userId);
-      } catch (e) {
-        console.error('State decode error:', e);
+      const userId = await verifyOAuthState(state, POLAR_CLIENT_SECRET);
+      if (!userId) {
+        console.error('Invalid or expired OAuth state');
         return c.redirect(`${FRONTEND_URL}/profile?polar_error=invalid_state`);
       }
+      console.log('State verified - userId:', userId);
 
       const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
@@ -4908,7 +4959,10 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
       const baseUrl = c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
       c.executionCtx.waitUntil(
         new Promise<void>(resolve => setTimeout(resolve, 2000)).then(() =>
-          fetch(`${baseUrl}/api/polar/sync/${userId}`, { method: 'POST' })
+          fetch(`${baseUrl}/api/polar/sync/${userId}`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${c.env.UPSTASH_CRON_SECRET || ''}` },
+          })
             .then(res => console.log(`[BACKFILL] Initial sync triggered: ${res.status}`))
             .catch(err => console.error('[BACKFILL] Initial sync failed:', err))
         )
@@ -4922,13 +4976,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/polar/disconnect', async (c) => {
+  app.post('/api/polar/disconnect', requireAuth, async (c) => {
     try {
-      const body = await c.req.json();
-      const { userId } = body;
-      if (!userId) {
-        return c.json({ error: "userId required" }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -4955,7 +5008,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Manual reset of Polar exercise transactions (support/debug)
-  app.post('/api/polar/transactions/reset/:userId', async (c) => {
+  app.post('/api/polar/transactions/reset/:userId', requireSelfOrAdmin('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -5263,7 +5316,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   };
 
-  app.post('/api/polar/sync/:userId', async (c) => {
+  app.post('/api/polar/sync/:userId', requireSelfOrAdmin('userId'), async (c) => {
     const userId = c.req.param('userId');
     const db = getDb(c.env);
     const storage = new WorkerStorage(db);
@@ -5290,7 +5343,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/polar/activities/:userId', async (c) => {
+  app.get('/api/polar/activities/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -5303,7 +5356,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Delete a Polar activity and revert its territory contribution
-  app.delete('/api/polar/activities/:userId/:activityId', async (c) => {
+  app.delete('/api/polar/activities/:userId/:activityId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const activityId = c.req.param('activityId');
@@ -5381,7 +5434,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Full sync - get all exercises from Polar history (last 365 days)
-  app.post('/api/polar/sync-full/:userId', async (c) => {
+  app.post('/api/polar/sync-full/:userId', requireSelfOrAdmin('userId'), async (c) => {
     const userId = c.req.param('userId');
     const db = getDb(c.env);
     const storage = new WorkerStorage(db);
@@ -5406,7 +5459,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/polar/process/:userId', async (c) => {
+  app.post('/api/polar/process/:userId', requireSelf('userId'), async (c) => {
     const startTime = Date.now();
     const MAX_PROCESSING_TIME = 25000; // 25 seconds limit to avoid timeout
     
@@ -5630,7 +5683,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/polar/debug/:userId', async (c) => {
+  app.get('/api/polar/debug/:userId', requireSelfOrAdmin('userId'), async (c) => {
   try {
     const userId = c.req.param('userId');
     console.log('🔍 [DEBUG] Starting Polar data check for user:', userId);
@@ -5764,7 +5817,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // Apply for API access at: https://coros.com/api
   // Once approved, update env vars: COROS_CLIENT_ID, COROS_CLIENT_SECRET
 
-  app.get('/api/coros/status/:userId', async (c) => {
+  app.get('/api/coros/status/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -5789,17 +5842,19 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/coros/connect', async (c) => {
+  app.get('/api/coros/connect', requireAuth, async (c) => {
     try {
-      const userId = c.req.query('userId');
+      const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
       const COROS_CLIENT_ID = c.env.COROS_CLIENT_ID;
       const COROS_REDIRECT_URI = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/coros/callback`;
 
-      if (!userId || !COROS_CLIENT_ID) {
-        return c.json({ error: "userId required and COROS not configured" }, 400);
+      if (!COROS_CLIENT_ID || !c.env.COROS_CLIENT_SECRET) {
+        return c.json({ error: "COROS not configured" }, 400);
       }
 
-      const state = btoa(JSON.stringify({ userId, ts: Date.now() }));
+      const state = await createOAuthState(userId, c.env.COROS_CLIENT_SECRET);
       
       // TODO: Update with actual COROS OAuth URL from API documentation
       const authUrl = `https://open.coros.com/oauth2/authorize?client_id=${COROS_CLIENT_ID}&redirect_uri=${encodeURIComponent(COROS_REDIRECT_URI)}&response_type=code&state=${state}`;
@@ -5828,11 +5883,8 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
         return c.redirect(`${FRONTEND_URL}/?coros_error=invalid`);
       }
 
-      let userId: string;
-      try {
-        const decoded = JSON.parse(atob(state));
-        userId = decoded.userId;
-      } catch {
+      const userId = await verifyOAuthState(state, COROS_CLIENT_SECRET);
+      if (!userId) {
         return c.redirect(`${FRONTEND_URL}/?coros_error=invalid_state`);
       }
 
@@ -5888,13 +5940,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/coros/disconnect', async (c) => {
+  app.post('/api/coros/disconnect', requireAuth, async (c) => {
     try {
-      const body = await c.req.json();
-      const { userId } = body;
-      if (!userId) {
-        return c.json({ error: "userId required" }, 400);
-      }
+      const body = await c.req.json().catch(() => ({}));
+      const notSelf = rejectIfNotSelf(c, body.userId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -5931,7 +5982,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.get('/api/coros/activities/:userId', async (c) => {
+  app.get('/api/coros/activities/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -5944,7 +5995,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.delete('/api/coros/activities/:userId/:activityId', async (c) => {
+  app.delete('/api/coros/activities/:userId/:activityId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const activityId = c.req.param('activityId');
@@ -5971,7 +6022,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
     }
   });
 
-  app.post('/api/coros/process/:userId', async (c) => {
+  app.post('/api/coros/process/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -6041,12 +6092,15 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   // ==========================================
 
   // Send a taunt photo to a victim
-  app.post('/api/ephemeral-photos', async (c) => {
+  app.post('/api/ephemeral-photos', requireAuth, async (c) => {
     try {
-      const { senderId, recipientId, photoData, message, areaStolen } = await c.req.json();
+      const { senderId: bodySenderId, recipientId, photoData, message, areaStolen } = await c.req.json();
+      const notSelf = rejectIfNotSelf(c, bodySenderId);
+      if (notSelf) return notSelf;
+      const senderId = c.get('authUserId');
 
-      if (!senderId || !recipientId || !photoData) {
-        return c.json({ error: 'senderId, recipientId, and photoData are required' }, 400);
+      if (!recipientId || !photoData) {
+        return c.json({ error: 'recipientId and photoData are required' }, 400);
       }
 
       // Validate photo size (max ~500KB base64)
@@ -6102,7 +6156,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // Get pending photos for a user
-  app.get('/api/ephemeral-photos/pending/:userId', async (c) => {
+  app.get('/api/ephemeral-photos/pending/:userId', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -6132,14 +6186,12 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // View a photo (returns data and deletes it)
-  app.get('/api/ephemeral-photos/:photoId/view', async (c) => {
+  app.get('/api/ephemeral-photos/:photoId/view', requireAuth, async (c) => {
     try {
       const photoId = c.req.param('photoId');
-      const userId = c.req.query('userId');
-
-      if (!userId) {
-        return c.json({ error: 'userId query param required' }, 400);
-      }
+      const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -6312,10 +6364,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
   // Admin auth helper
   function requireAdminAuth(c: any): boolean {
-    const secret = c.env.UPSTASH_CRON_SECRET;
-    if (!secret) return true; // No secret configured = allow (dev mode)
-    const authHeader = c.req.header('Authorization');
-    return authHeader === `Bearer ${secret}`;
+    return isAdminRequest(c);
   }
 
   // POST /api/admin/competition — Create competition (admin)
@@ -6462,7 +6511,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       // Auto-spawn fallback: only if past today's random spawn hour AND no treasure spawned today
       // Use ?force=true to bypass hour check (admin use)
-      const forceSpawn = c.req.query('force') === 'true';
+      const forceSpawn = c.req.query('force') === 'true' && isAdminRequest(c, { allowWithoutSecret: false });
       const spawnHour = getTodaySpawnHour(comp.id);
       const currentHour = new Date().getUTCHours();
       if (forceSpawn || currentHour >= spawnHour) {
@@ -6496,7 +6545,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // POST /api/treasures/renotify — Re-send push notifications about active treasures
-  app.post('/api/treasures/renotify', async (c) => {
+  app.post('/api/treasures/renotify', requireAdmin, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -6538,7 +6587,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // GET /api/push/debug/:username — Check push subscriptions for a user  
-  app.get('/api/push/debug/:username', async (c) => {
+  app.get('/api/push/debug/:username', requireAdmin, async (c) => {
     try {
       const username = c.req.param('username');
       const db = getDb(c.env);
@@ -6566,13 +6615,16 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // POST /api/treasures/collect — Collect a treasure  
-  app.post('/api/treasures/collect', async (c) => {
+  app.post('/api/treasures/collect', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const body = await c.req.json();
-      const { userId, treasureId, lat, lng } = body;
-      if (!userId || !treasureId) return c.json({ error: 'Missing userId or treasureId' }, 400);
+      const { userId: bodyUserId, treasureId, lat, lng } = body;
+      const notSelf = rejectIfNotSelf(c, bodyUserId);
+      if (notSelf) return notSelf;
+      const userId = c.get('authUserId');
+      if (!treasureId) return c.json({ error: 'Missing treasureId' }, 400);
 
       const comp = await storage.getActiveCompetition();
       if (!comp || !isCompetitionActive(comp)) {
@@ -6647,7 +6699,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // GET /api/users/:userId/powers — User's powers (only during competition)
-  app.get('/api/users/:userId/powers', async (c) => {
+  app.get('/api/users/:userId/powers', requireSelf('userId'), async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);
@@ -6669,7 +6721,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // POST /api/powers/:powerId/activate — Activate a power (auto-use for instant ones)
-  app.post('/api/powers/:powerId/activate', async (c) => {
+  app.post('/api/powers/:powerId/activate', requireAuth, async (c) => {
     try {
       const powerId = c.req.param('powerId');
       const body = await c.req.json().catch(() => ({}));
@@ -6678,6 +6730,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
 
       const power = await storage.getPowerById(powerId);
       if (!power) return c.json({ error: 'Power not found' }, 404);
+      if (power.userId !== c.get('authUserId')) return c.json({ error: 'No autorizado' }, 403);
       if (power.status !== 'available') return c.json({ error: 'Power already used or expired' }, 400);
 
       const now = new Date().toISOString();
@@ -7440,7 +7493,7 @@ export function registerRoutes(app: Hono<{ Bindings: Env }>) {
   });
 
   // GET /api/users/:userId/nickname — Get active nickname for user
-  app.get('/api/users/:userId/nickname', async (c) => {
+  app.get('/api/users/:userId/nickname', requireAuth, async (c) => {
     try {
       const userId = c.req.param('userId');
       const db = getDb(c.env);

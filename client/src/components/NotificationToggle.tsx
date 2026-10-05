@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Bell, BellOff, BellRing, Loader2, Send } from 'lucide-react';
 import { useSession } from '@/hooks/use-session';
-import { API_BASE } from '@/lib/queryClient';
+import { API_BASE, authFetch } from '@/lib/queryClient';
 import {
   registerServiceWorker,
   requestNotificationPermission,
@@ -148,7 +148,7 @@ export function NotificationToggle() {
       <button
         onClick={async () => {
           try {
-            const res = await fetch(`${API_BASE}/api/push/test`, {
+            const res = await authFetch(`${API_BASE}/api/push/test`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ userId: user.id }),

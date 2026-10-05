@@ -7,6 +7,7 @@ import {
   friendInvites,
   friendRequests,
   pushSubscriptions,
+  authSessions,
   stravaAccounts,
   stravaActivities,
   polarAccounts,
@@ -43,6 +44,7 @@ import {
   type InsertFriendRequest,
   type PushSubscription,
   type InsertPushSubscription,
+  type AuthSession,
   type StravaAccount,
   type InsertStravaAccount,
   type StravaActivity,
@@ -88,7 +90,7 @@ import {
   RARITY_CONFIG,
   ZARAGOZA_BOUNDS,
 } from '../../shared/schema';
-import { eq, desc, sql, and, inArray } from 'drizzle-orm';
+import { eq, desc, sql, and, inArray, lt } from 'drizzle-orm';
 import { type Database } from './db';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
@@ -170,6 +172,7 @@ export class WorkerStorage {
 
   async deleteUser(userId: string): Promise<void> {
     // Delete from all child tables first to avoid FK constraint issues
+    await this.deleteAuthSessionsByUserId(userId);
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
     await this.db.delete(feedEvents).where(eq(feedEvents.userId, userId));
     await this.db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.senderId, userId));
@@ -192,6 +195,52 @@ export class WorkerStorage {
     await this.db.delete(territories).where(eq(territories.userId, userId));
     await this.db.delete(routes).where(eq(routes.userId, userId));
     await this.db.delete(users).where(eq(users.id, userId));
+  }
+
+  // ===== Auth Sessions =====
+
+  private static authSessionsTableReady = false;
+
+  async ensureAuthSessionsTable(): Promise<void> {
+    if (WorkerStorage.authSessionsTableReady) return;
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS auth_sessions (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id)`);
+    WorkerStorage.authSessionsTableReady = true;
+  }
+
+  async createAuthSession(userId: string, tokenHash: string, expiresAt: string): Promise<void> {
+    await this.ensureAuthSessionsTable();
+    // Drop this user's expired sessions so the table doesn't grow forever
+    await this.db.delete(authSessions).where(
+      and(eq(authSessions.userId, userId), lt(authSessions.expiresAt, new Date().toISOString()))
+    );
+    await this.db.insert(authSessions).values({ userId, tokenHash, expiresAt });
+  }
+
+  async getAuthSessionByTokenHash(tokenHash: string): Promise<AuthSession | undefined> {
+    await this.ensureAuthSessionsTable();
+    const [session] = await this.db.select().from(authSessions).where(eq(authSessions.tokenHash, tokenHash)).limit(1);
+    return session;
+  }
+
+  async extendAuthSession(sessionId: string, expiresAt: string): Promise<void> {
+    await this.db.update(authSessions).set({ expiresAt }).where(eq(authSessions.id, sessionId));
+  }
+
+  async deleteAuthSessionByTokenHash(tokenHash: string): Promise<void> {
+    await this.ensureAuthSessionsTable();
+    await this.db.delete(authSessions).where(eq(authSessions.tokenHash, tokenHash));
+  }
+
+  async deleteAuthSessionsByUserId(userId: string): Promise<void> {
+    await this.ensureAuthSessionsTable();
+    await this.db.delete(authSessions).where(eq(authSessions.userId, userId));
   }
 
   async getAllUsersWithStats(): Promise<UserWithStats[]> {
@@ -1058,6 +1107,11 @@ export class WorkerStorage {
       .from(stravaActivities)
       .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.routeId} IS NULL`)
       .orderBy(desc(stravaActivities.startDate));
+  }
+
+  async getStravaActivityById(id: string): Promise<StravaActivity | undefined> {
+    const [activity] = await this.db.select().from(stravaActivities).where(eq(stravaActivities.id, id));
+    return activity;
   }
 
   // Mark activity for retry by resetting processed flag

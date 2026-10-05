@@ -80,6 +80,16 @@ export const pushSubscriptions = sqliteTable("push_subscriptions", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Login sessions: the client sends the token as "Authorization: Bearer <token>".
+// Only a SHA-256 hash of the token is stored.
+export const authSessions = sqliteTable("auth_sessions", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: text("token_hash").notNull().unique(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(), // ISO timestamp, extended while the session is used
+});
+
 // Polar Integration Tables
 export const polarAccounts = sqliteTable("polar_accounts", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
@@ -685,6 +695,8 @@ export type InsertCorosActivity = z.infer<typeof insertCorosActivitySchema>;
 
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
+
+export type AuthSession = typeof authSessions.$inferSelect;
 
 export type ConquestMetric = typeof conquestMetrics.$inferSelect;
 export type InsertConquestMetric = z.infer<typeof insertConquestMetricSchema>;
