@@ -1,0 +1,50 @@
+name: iOS build
+
+on:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build iOS app (simulator, unsigned)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcodebuild -version
+
+      - name: Build
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Runna.xcodeproj \
+            -scheme Runna \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet \
+            build 2>&1 | tee build.log
+          echo "BUILD SUCCEEDED"
+
+      - name: Show compiler errors
+        if: failure()
+        working-directory: ios
+        run: grep -E "error:" build.log | sort -u | head -200 || true
