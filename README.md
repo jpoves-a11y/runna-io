@@ -75,6 +75,18 @@ Se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.worker.toml`.
 
 Nunca subas credenciales al repositorio: `.env*` y `.dev.vars` están en `.gitignore` (hay una plantilla en `.env.example`).
 
+## Pruebas end-to-end
+
+`scripts/e2e/` ejecuta el Worker en local con una base de datos SQLite de prueba y la llena con datos de ejemplo: usuarios, amigos, carreras que crean y roban territorio, y comentarios. El workflow de iOS lo usa para abrir la app en el simulador con esos datos y hacer capturas de cada pestaña (se descargan desde la ejecución en GitHub Actions, en "Artifacts").
+
+```bash
+npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
+  --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --external:@libsql/client
+DATABASE_URL=file:scripts/e2e/.build/e2e.db npx drizzle-kit push --force
+node scripts/e2e/server.mjs      # API de prueba en http://127.0.0.1:8787
+node scripts/e2e/seed.mjs        # en otra terminal
+```
+
 ## Seguridad de la API
 
 - Al iniciar sesión, registrarse o verificar el email, el servidor da un token de sesión. Los clientes lo envían como `Authorization: Bearer <token>`. En la base de datos solo se guarda su hash.
