@@ -115,9 +115,9 @@ jobs:
           export SIMCTL_CHILD_RUNNA_API_BASE_URL=http://127.0.0.1:8787
           export SIMCTL_CHILD_RUNNA_TEST_TOKEN=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['token'])")
           export SIMCTL_CHILD_RUNNA_TEST_USER_ID=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['userId'])")
+          # First launch after installing is slow; let it settle before taking screenshots
           xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
           sleep 20
-          xcrun simctl io "$DEVICE" screenshot screenshot-1-map.png
           # Relaunch on each screen (simctl openurl would show an "Open in app?" prompt)
           shoot() {
             xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" || true
@@ -125,6 +125,7 @@ jobs:
             sleep 12
             xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
           }
+          shoot tab/map 1-map
           shoot tab/rankings 2-rankings
           shoot tab/activity/feed 3-feed
           shoot tab/activity/mine 4-my-runs
