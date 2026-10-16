@@ -1,21 +1,7 @@
 name: iOS build
 
+# Run by hand (Actions -> iOS build -> Run workflow): macOS minutes count 10x on private repos
 on:
-  push:
-    paths:
-      - 'ios/**'
-      - 'worker/**'
-      - 'shared/**'
-      - 'scripts/e2e/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'drizzle.config.ts'
-      - '.github/scripts/**'
-      - '.github/workflows/ios.yml'
-  pull_request:
-    paths:
-      - 'ios/**'
-      - '.github/workflows/ios.yml'
   workflow_dispatch:
 
 concurrency:

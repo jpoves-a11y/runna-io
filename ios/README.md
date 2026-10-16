@@ -31,10 +31,25 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 
 ## Subir a TestFlight
 
-1. En Xcode: **Product → Archive** (con "Any iOS Device" como destino).
+### Desde GitHub, sin Mac (recomendado)
+
+`.github/workflows/testflight.yml` compila, firma y sube la app en un Mac de GitHub Actions. Todo lo de abajo se hace desde el navegador (también en el móvil).
+
+Una sola vez:
+
+1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit** y **Push Notifications**.
+2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Runna" ya existe).
+3. App Store Connect → Usuarios y acceso → Integraciones → **App Store Connect API** → nueva clave con rol **Admin**. Descarga el `.p8` (solo se puede una vez) y apunta **Key ID** e **Issuer ID**.
+4. Tu **Team ID**: developer.apple.com → Membership.
+5. GitHub → el repositorio → Settings → Secrets and variables → Actions → crea `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` (el contenido completo del `.p8`) y `APPLE_TEAM_ID`.
+
+Cada build: GitHub → **Actions → TestFlight → Run workflow**. Tarda unos 15 minutos y la build aparece en TestFlight cuando Apple termina de procesarla (10–30 minutos). El número de build sube solo (1000 + número de ejecución).
+
+### Desde Xcode (en el Mac)
+
+1. **Product → Archive** (con "Any iOS Device" como destino).
 2. En el Organizer: **Distribute App → App Store Connect → Upload**.
-3. En [App Store Connect](https://appstoreconnect.apple.com), cuando termine de procesarse, añade la build a TestFlight.
-4. Antes de cada nueva subida, incrementa **Build** (`CURRENT_PROJECT_VERSION`) en el target.
+3. Antes de cada subida, incrementa **Build** (`CURRENT_PROJECT_VERSION`). Usa números por debajo de 1000 o por encima de los del workflow para no repetir.
 
 La app ya declara `ITSAppUsesNonExemptEncryption = NO`, así que TestFlight no te preguntará por cifrado.
 
@@ -76,4 +91,4 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 
 ## Compilación automática
 
-`.github/workflows/ios.yml` se ejecuta en un Mac de GitHub Actions cada vez que cambia algo en `ios/` o en la API: compila la app (simulador y dispositivo, sin firmar), la abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`) y hace una captura de cada pestaña. Las capturas se descargan desde la ejecución, en "Artifacts".
+`.github/workflows/ios.yml` se lanza a mano (Actions → iOS build → Run workflow), porque en repositorios privados los minutos de Mac cuentan 10 veces: compila la app (simulador y dispositivo, sin firmar), la abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`) y hace una captura de cada pestaña. Las capturas se descargan desde la ejecución, en "Artifacts".
