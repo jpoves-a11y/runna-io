@@ -4,6 +4,9 @@ name: iOS build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
@@ -161,6 +164,21 @@ jobs:
             ios/screenshot-*.png
             scripts/e2e/.build/server.log
           if-no-files-found: ignore
+
+      - name: Publish screenshots to the ci-screenshots branch
+        if: always()
+        run: |
+          ls ios/screenshot-*.png > /dev/null 2>&1 || exit 0
+          SHOTS=$(mktemp -d)
+          cp ios/screenshot-*.png "$SHOTS"/
+          cd "$SHOTS"
+          git init -q
+          git config user.name "ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add .
+          git commit -q -m "Simulator screenshots for ${{ github.sha }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:ci-screenshots
+          echo "Screenshots pushed to branch ci-screenshots"
 
       - name: Build for device (Release, unsigned)
         working-directory: ios
