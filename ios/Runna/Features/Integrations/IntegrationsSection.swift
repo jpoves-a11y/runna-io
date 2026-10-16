@@ -18,6 +18,8 @@ struct IntegrationsSection: View {
     @State private var healthAutoImport = HealthImporter.shared.autoImport
 
     private static let stravaOrange = Color(hex: "#FC4C02")
+    private static let polarRed = Color(hex: "#D10027")
+    private static let healthPink = Color(hex: "#FF2D55")
 
     var body: some View {
         Section {
@@ -31,8 +33,8 @@ struct IntegrationsSection: View {
             }
             providerRow(
                 name: "Polar",
-                systemImage: "heart.circle.fill",
-                tint: Color(hex: "#D10027"),
+                systemImage: "heart.fill",
+                tint: Self.polarRed,
                 connected: polar?.connected == true,
                 detail: polarDetail,
                 provider: "polar"
@@ -48,7 +50,7 @@ struct IntegrationsSection: View {
                 healthRow
             }
         } header: {
-            Text("Conectar dispositivos")
+            SocialSectionHeader(title: "Dispositivos conectados", systemImage: "applewatch.radiowaves.left.and.right", tint: .sky)
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Las carreras que registres en Strava, Polar o en el Apple Watch (Apple Salud) se convierten en territorio.")
@@ -64,6 +66,7 @@ struct IntegrationsSection: View {
                 }
             }
         }
+        .listRowBackground(Color.surface)
         .task(id: router.reloadSignal) { await loadStatus() }
         .alert("Integraciones", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK", role: .cancel) {}
@@ -106,50 +109,81 @@ struct IntegrationsSection: View {
     private var stravaRow: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                if let avatar = strava?.athlete?.profileMedium, let url = URL(string: avatar), strava?.connected == true {
-                    AsyncImage(url: url) { phase in
-                        if let image = phase.image {
-                            image.resizable().scaledToFill()
-                        } else {
-                            Image(systemName: "bolt.horizontal.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(Self.stravaOrange)
-                        }
-                    }
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
-                    .accessibilityHidden(true)
-                } else {
-                    Image(systemName: "bolt.horizontal.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(Self.stravaOrange)
-                }
+                stravaIcon
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Strava").font(.body.weight(.medium))
-                    Text(stravaDetail ?? "No conectado")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Strava")
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                    statusLine(connected: strava?.connected == true, detail: stravaDetail)
                     if let place = strava?.athlete?.place, strava?.connected == true {
                         Text(place)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                Spacer()
-                providerActions(name: "Strava", connected: strava?.connected == true, provider: "strava")
+                Spacer(minLength: 8)
+                providerActions(name: "Strava", connected: strava?.connected == true, provider: "strava", tint: Self.stravaOrange)
             }
             if strava?.connected == true, let athleteId = strava?.athlete?.id,
                let url = URL(string: "https://www.strava.com/athletes/\(athleteId)") {
                 Link(destination: url) {
-                    Label("Ver mi perfil en Strava", systemImage: "arrow.up.right.square")
-                        .font(.caption.weight(.semibold))
+                    Label("Ver mi perfil en Strava", systemImage: "arrow.up.right")
+                        .font(.system(.caption, design: .rounded, weight: .bold))
                         .foregroundStyle(Self.stravaOrange)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Self.stravaOrange.opacity(0.12), in: Capsule())
                 }
                 .buttonStyle(.borderless)
+                .padding(.leading, 52)
             }
-            if busyProvider == "strava", let progressText {
-                Text(progressText).font(.caption).foregroundStyle(.secondary)
+            progressLine(for: "strava")
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var stravaIcon: some View {
+        if let avatar = strava?.athlete?.profileMedium, let url = URL(string: avatar), strava?.connected == true {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    SocialIconTile(systemImage: "figure.run", tint: Self.stravaOrange, size: 40)
+                }
             }
+            .frame(width: 40, height: 40)
+            .clipShape(Circle())
+            .overlay(Circle().strokeBorder(Self.stravaOrange, lineWidth: 2))
+            .accessibilityHidden(true)
+        } else {
+            SocialIconTile(systemImage: "figure.run", tint: Self.stravaOrange, size: 40)
+        }
+    }
+
+    /// Green dot + detail when connected, grey dot + "No conectado" otherwise.
+    private func statusLine(connected: Bool, detail: String?) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(connected ? Color.brand : Color.secondary.opacity(0.5))
+                .frame(width: 7, height: 7)
+            Text(detail ?? "No conectado")
+                .font(.caption)
+                .foregroundStyle(connected ? Color.primary.opacity(0.75) : Color.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private func progressLine(for provider: String) -> some View {
+        if busyProvider == provider, let progressText {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text(progressText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 52)
         }
     }
 
@@ -168,14 +202,22 @@ struct IntegrationsSection: View {
     }
 
     private func activitiesLinkLabel(failed: Int) -> some View {
-        HStack {
-            Label("Actividades importadas", systemImage: "list.bullet.rectangle")
-                .font(.subheadline)
-            Spacer()
+        HStack(spacing: 12) {
+            Image(systemName: "list.bullet.rectangle.portrait.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 40)
+            Text("Actividades importadas")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.primary)
+            Spacer(minLength: 8)
             if failed > 0 {
                 Text("\(failed) sin territorio")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .foregroundStyle(Color.steal)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.steal.opacity(0.14), in: Capsule())
             }
         }
     }
@@ -183,26 +225,22 @@ struct IntegrationsSection: View {
     private func providerRow(name: String, systemImage: String, tint: Color, connected: Bool, detail: String?, provider: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
-                Image(systemName: systemImage)
-                    .font(.title2)
-                    .foregroundStyle(tint)
+                SocialIconTile(systemImage: systemImage, tint: tint, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.body.weight(.medium))
-                    Text(detail ?? "No conectado")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(name)
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                    statusLine(connected: connected, detail: detail)
                 }
-                Spacer()
-                providerActions(name: name, connected: connected, provider: provider)
+                Spacer(minLength: 8)
+                providerActions(name: name, connected: connected, provider: provider, tint: tint)
             }
-            if busyProvider == provider, let progressText {
-                Text(progressText).font(.caption).foregroundStyle(.secondary)
-            }
+            progressLine(for: provider)
         }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
-    private func providerActions(name: String, connected: Bool, provider: String) -> some View {
+    private func providerActions(name: String, connected: Bool, provider: String, tint: Color) -> some View {
         if busyProvider == provider {
             ProgressView()
         } else if connected {
@@ -214,47 +252,55 @@ struct IntegrationsSection: View {
                     providerToDisconnect = provider
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3)
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.primary)
+                    .frame(width: 36, height: 36)
+                    .background(Color.surfaceRaised, in: Circle())
             }
             .accessibilityLabel("Opciones de \(name)")
         } else {
-            Button("Conectar") {
+            Button {
                 if provider == "strava" {
                     showStravaConsent = true
                 } else {
                     Task { await connect(provider) }
                 }
+            } label: {
+                SocialPillLabel(title: "Conectar", systemImage: "link", tint: tint, kind: .filled, compact: true)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderless)
             .disabled(busyProvider != nil)
+            .accessibilityLabel("Conectar \(name)")
         }
     }
 
     private var healthRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                Image(systemName: "heart.text.square.fill")
-                    .font(.title2)
-                    .foregroundStyle(.pink)
+                SocialIconTile(systemImage: "heart.fill", tint: Self.healthPink, size: 40, inverted: true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Apple Salud").font(.body.weight(.medium))
+                    Text("Apple Salud")
+                        .font(.system(.body, design: .rounded, weight: .semibold))
                     Text("Carreras del Apple Watch y otras apps")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 if health.isImporting {
                     ProgressView()
                 } else {
-                    Button("Importar") {
+                    Button {
                         Task { await importFromHealth() }
+                    } label: {
+                        SocialPillLabel(title: "Importar", systemImage: "arrow.down", tint: Self.healthPink, kind: .soft, compact: true)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderless)
                 }
             }
             Toggle("Importar automáticamente", isOn: $healthAutoImport)
                 .font(.subheadline)
+                .tint(Color.brand)
                 .onChange(of: healthAutoImport) { _, enabled in
                     health.autoImport = enabled
                     if enabled { Task { await importFromHealth() } }
@@ -264,6 +310,7 @@ struct IntegrationsSection: View {
             // The setting is reset on logout
             healthAutoImport = health.autoImport
         }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Actions
@@ -642,6 +689,7 @@ struct ImportedActivitiesView: View {
                 Section {
                     ForEach(activities) { activity in
                         row(activity)
+                            .listRowBackground(Color.surface)
                     }
                 } footer: {
                     if provider == "strava" {
@@ -657,12 +705,14 @@ struct ImportedActivitiesView: View {
                 ErrorView(message: loadError) { Task { await load() } }
             } else if activities.isEmpty {
                 EmptyStateView(
-                    systemImage: "tray",
-                    title: "Sin actividades",
+                    systemImage: "tray.fill",
+                    title: "Nada por aquí todavía",
                     message: "Todavía no hay actividades importadas de \(providerName). Usa \"Sincronizar ahora\" en tu perfil."
                 )
             }
         }
+        .listStyle(.insetGrouped)
+        .listBackground()
         .navigationTitle("Actividades de \(providerName)")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
@@ -692,11 +742,12 @@ struct ImportedActivitiesView: View {
         let skipped = activities.filter { $0.status == .skipped }.count
         return Section {
             HStack {
-                StatTile(value: "\(imported)", label: "Importadas", tint: .green)
-                StatTile(value: "\(pending)", label: "Pendientes", tint: .blue)
-                StatTile(value: "\(skipped)", label: "Omitidas", tint: .orange)
+                StatTile(value: "\(imported)", label: "Importadas", tint: .brand)
+                StatTile(value: "\(pending)", label: "Pendientes", tint: .sky)
+                StatTile(value: "\(skipped)", label: "Omitidas", tint: .steal)
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 8)
+            .listRowBackground(Color.surface)
         }
     }
 
@@ -704,7 +755,7 @@ struct ImportedActivitiesView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(activity.name)
-                    .font(.body.weight(.medium))
+                    .font(.system(.body, design: .rounded, weight: .semibold))
                     .lineLimit(2)
                 Spacer()
                 if busyIds.contains(activity.id) {
@@ -717,9 +768,9 @@ struct ImportedActivitiesView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if activity.status == .skipped, let reason = activity.skipReasonText {
-                Text("Motivo: \(reason)")
+                Label("Motivo: \(reason)", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.steal)
             }
             if provider == "strava", let externalId = activity.externalId,
                let url = URL(string: "https://www.strava.com/activities/\(externalId)") {
@@ -742,7 +793,7 @@ struct ImportedActivitiesView: View {
                 Button("Reintentar", systemImage: "arrow.clockwise") {
                     retry(activity)
                 }
-                .tint(.blue)
+                .tint(Color.sky)
             }
         }
         .contextMenu {
@@ -766,17 +817,17 @@ struct ImportedActivitiesView: View {
     @ViewBuilder
     private func statusBadge(_ status: ProviderActivity.Status) -> some View {
         switch status {
-        case .imported: badge("Importada", color: .green)
-        case .pending: badge("Pendiente", color: .blue)
-        case .skipped: badge("Omitida", color: .orange)
+        case .imported: badge("Importada", color: .brand)
+        case .pending: badge("Pendiente", color: .sky)
+        case .skipped: badge("Omitida", color: .steal)
         }
     }
 
     private func badge(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+            .font(.system(.caption2, design: .rounded, weight: .bold))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
             .background(color.opacity(0.15), in: Capsule())
             .foregroundStyle(color)
     }

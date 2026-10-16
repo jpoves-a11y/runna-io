@@ -25,6 +25,23 @@ enum Rarity {
         }
     }
 
+    /// Collectible-card gradient for a rarity (lighter top-left → rarity colour → deeper bottom-right).
+    static func gradient(_ rarity: String) -> LinearGradient {
+        let base = color(rarity)
+        let colors: [Color]
+        switch rarity {
+        case "legendary":
+            colors = [Color(red: 1.0, green: 0.84, blue: 0.30), base, Color(red: 0.93, green: 0.36, blue: 0.10)]
+        case "epic":
+            colors = [Color(red: 0.84, green: 0.55, blue: 1.0), base, Color(red: 0.43, green: 0.20, blue: 0.85)]
+        case "rare":
+            colors = [Color(red: 0.45, green: 0.75, blue: 1.0), base, Color(red: 0.15, green: 0.35, blue: 0.85)]
+        default:
+            colors = [Color(red: 0.62, green: 0.66, blue: 0.72), base, Color(red: 0.32, green: 0.36, blue: 0.42)]
+        }
+        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
     /// Asset catalogue image (chest_common, chest_rare, chest_epic, chest_legendary).
     static func chestImage(_ rarity: String) -> String {
         switch rarity {
@@ -40,7 +57,9 @@ struct RarityPill: View {
 
     var body: some View {
         Text(Rarity.label(rarity))
-            .font(.caption2.weight(.bold))
+            .font(.system(.caption2, design: .rounded, weight: .heavy))
+            .textCase(.uppercase)
+            .tracking(0.5)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(Rarity.color(rarity).opacity(0.18), in: Capsule())
