@@ -65,6 +65,33 @@ export class EmailService {
     });
   }
 
+  /** Tells the app owner that someone reported a user or their content (App Store guideline 1.2). */
+  async sendReportNotification(
+    to: string,
+    report: { reporter: string; reported: string; targetType: string; targetId: string; reason: string },
+  ): Promise<void> {
+    const esc = (value: string) =>
+      value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
+    await this.send(
+      to,
+      `🚩 Nueva denuncia en Runna.io (${report.targetType})`,
+      `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="margin-top: 0;">🚩 Nueva denuncia</h2>
+          <p>Revísala en menos de 24 horas (lo prometen los términos de la app).</p>
+          <table style="border-collapse: collapse; width: 100%;">
+            <tr><td style="padding: 6px; font-weight: bold;">Denunciante</td><td style="padding: 6px;">${esc(report.reporter)}</td></tr>
+            <tr><td style="padding: 6px; font-weight: bold;">Denunciado</td><td style="padding: 6px;">${esc(report.reported)}</td></tr>
+            <tr><td style="padding: 6px; font-weight: bold;">Tipo</td><td style="padding: 6px;">${esc(report.targetType)}</td></tr>
+            <tr><td style="padding: 6px; font-weight: bold;">ID del contenido</td><td style="padding: 6px;">${esc(report.targetId)}</td></tr>
+            <tr><td style="padding: 6px; font-weight: bold;">Motivo</td><td style="padding: 6px;">${esc(report.reason)}</td></tr>
+          </table>
+          <p style="color: #666; font-size: 13px;">Las denuncias se guardan en la tabla <code>reports</code> de la base de datos.</p>
+        </div>
+      `,
+    );
+  }
+
   async sendFriendRequestEmail(
     recipientEmail: string,
     senderName: string,
