@@ -269,8 +269,10 @@ struct ConquestResult: Decodable {
     let newAreaConquered: Double
     let areaStolen: Double
     let victims: [Victim]
+    /// Treasures the server collected along the route (and the ones collected live, once processed).
+    let treasuresCollected: [CollectedTreasure]
 
-    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims }
+    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims, treasuresCollected }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -278,6 +280,43 @@ struct ConquestResult: Decodable {
         newAreaConquered = c.double(.newAreaConquered) ?? 0
         areaStolen = c.double(.areaStolen) ?? 0
         victims = (try? c.decodeIfPresent([Victim].self, forKey: .victims)) ?? []
+        treasuresCollected = (try? c.decodeIfPresent([CollectedTreasure].self, forKey: .treasuresCollected)) ?? []
+    }
+
+    /// Victims that actually lost territory.
+    var stolenVictims: [Victim] { victims.filter { $0.stolenArea > 0 } }
+
+    /// Total area taken from other runners (sum of the victims; falls back to the server total).
+    var totalStolen: Double {
+        let sum = stolenVictims.reduce(0) { $0 + $1.stolenArea }
+        return sum > 0 ? sum : areaStolen
+    }
+}
+
+/// A treasure listed in a conquest result.
+struct CollectedTreasure: Decodable, Identifiable, Hashable {
+    let treasureId: String
+    let treasureName: String
+    let powerType: String?
+    let rarity: String
+
+    var id: String { treasureId }
+
+    enum CodingKeys: String, CodingKey { case treasureId, treasureName, powerType, rarity }
+
+    init(treasureId: String, treasureName: String, powerType: String?, rarity: String) {
+        self.treasureId = treasureId
+        self.treasureName = treasureName
+        self.powerType = powerType
+        self.rarity = rarity
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        treasureId = c.string(.treasureId) ?? UUID().uuidString
+        treasureName = c.string(.treasureName) ?? "Tesoro"
+        powerType = c.string(.powerType)
+        rarity = c.string(.rarity) ?? "common"
     }
 }
 

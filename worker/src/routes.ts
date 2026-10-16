@@ -23,6 +23,7 @@ import {
 } from './auth';
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
+import { publicBaseUrl } from './pages';
 import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
@@ -864,7 +865,7 @@ export async function processTerritoryConquest(
           const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
           const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
           const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
-          const emailService = new EmailService(apiKey!, fromEmail, provider as any);
+          const emailService = new EmailService(apiKey!, fromEmail, provider as any, env.WORKER_URL);
           
           await emailService.sendTerritoryConqueredEmail(
             notif.victimEmail,
@@ -1412,6 +1413,33 @@ async function getValidStravaToken(
   }
 }
 
+/** Friend invites store expires_at as an ISO string (older rows may hold epoch milliseconds). */
+function isInviteExpired(expiresAt: unknown): boolean {
+  let time = NaN;
+  if (expiresAt instanceof Date) time = expiresAt.getTime();
+  else if (typeof expiresAt === 'number') time = expiresAt;
+  else if (typeof expiresAt === 'string') time = /^\d+$/.test(expiresAt) ? Number(expiresAt) : Date.parse(expiresAt);
+  return Number.isFinite(time) && time < Date.now();
+}
+
+/** Response of POST /api/routes (also for an idempotent repeat of the same clientRunId). */
+function createRouteResponse(route: Route, coords?: [number, number][]) {
+  let points: [number, number][] = coords ?? [];
+  if (!coords) {
+    try {
+      const raw = typeof route.coordinates === 'string' ? JSON.parse(route.coordinates) : route.coordinates;
+      if (Array.isArray(raw)) points = raw as [number, number][];
+    } catch { /* keep empty */ }
+  }
+  return {
+    route,
+    summaryPolyline: encodePolyline(points),
+    // Territory data will be processed asynchronously via queue.
+    // Client fetches fresh territory data from GET /api/territories/friends/:userId
+    territoryProcessing: 'queued',
+  };
+}
+
 export function registerRoutes(app: Hono<AppEnv>) {
   // Maintenance endpoints: require the admin/cron secret (Authorization: Bearer <UPSTASH_CRON_SECRET>)
   app.use('/api/admin/*', requireAdmin);
@@ -1564,7 +1592,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
         const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
         const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any);
+        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
       } catch (err) {
         console.error('[EMAIL] Failed to send verification code:', err);
@@ -1627,7 +1655,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
         const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
         const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any);
+        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
         await emailService.sendWelcomeEmail(user.email, user.name);
       } catch (err) {
         console.error('[EMAIL] Failed to send welcome email:', err);
@@ -1673,7 +1701,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
         const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
         const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any);
+        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
       } catch (err) {
         console.error('[EMAIL] Failed to resend verification code:', err);
@@ -1860,13 +1888,34 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   app.post('/api/routes', requireAuth, async (c) => {
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'JSON no válido' }, 400);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'JSON no válido' }, 400);
+    }
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const body = await c.req.json();
       const notSelf = rejectIfNotSelf(c, body.userId);
       if (notSelf) return notSelf;
       body.userId = c.get('authUserId');
+
+      // Idempotency: the iOS app sends a UUID per recorded run ("clientRunId") and retries the
+      // upload when the response is lost. A repeat returns the route created the first time,
+      // with the same response shape, without creating a new route, feed event or queue message.
+      if (body.clientRunId === undefined || body.clientRunId === null || body.clientRunId === '') {
+        delete body.clientRunId;
+      } else if (typeof body.clientRunId !== 'string' || body.clientRunId.length > 100) {
+        return c.json({ error: 'clientRunId no válido' }, 400);
+      } else {
+        await storage.ensureSchemaUpgrades();
+        const existingRun = await storage.getRouteByClientRunId(body.userId, body.clientRunId);
+        if (existingRun) return c.json(createRouteResponse(existingRun));
+      }
 
       // Imports (e.g. Apple Health workouts from the iOS app) may already have arrived through
       // Strava/Polar: don't create the same run twice.
@@ -1883,9 +1932,30 @@ export function registerRoutes(app: Hono<AppEnv>) {
         body.coordinates = JSON.stringify(body.coordinates);
       }
 
-      const routeData = insertRouteSchema.parse(body);
-      
-      const route = await storage.createRoute(routeData);
+      const parsed = insertRouteSchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json({ error: 'Datos de la carrera no válidos', details: parsed.error.flatten() }, 400);
+      }
+      const routeData = parsed.data;
+      try {
+        const points = JSON.parse(routeData.coordinates);
+        if (!Array.isArray(points)) throw new Error('not an array');
+      } catch {
+        return c.json({ error: 'Coordenadas no válidas' }, 400);
+      }
+
+      let route: Route;
+      try {
+        route = await storage.createRoute(routeData);
+      } catch (createError) {
+        // Two concurrent uploads of the same run: the unique (user_id, client_run_id) index
+        // rejects the second insert, so answer with the route the first one created.
+        if (routeData.clientRunId) {
+          const existingRun = await storage.getRouteByClientRunId(routeData.userId, routeData.clientRunId);
+          if (existingRun) return c.json(createRouteResponse(existingRun));
+        }
+        throw createError;
+      }
 
       // CRITICAL FIX: Create a basic feed event IMMEDIATELY after route creation.
       // This guarantees the feed event exists even if territory processing exhausts
@@ -1961,17 +2031,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
         })());
       }
 
-      const summaryPolyline = encodePolyline(coords);
-
-      return c.json({
-        route,
-        summaryPolyline,
-        // Territory data will be processed asynchronously via queue.
-        // Client fetches fresh territory data from GET /api/territories/friends/:userId
-        territoryProcessing: 'queued',
-      });
+      return c.json(createRouteResponse(route, coords));
     } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+      console.error('[ROUTES] POST /api/routes failed:', error);
+      // Not a validation problem (those return 400 above): the client must keep the run and retry
+      return c.json({ error: error?.message || 'Error interno' }, 500);
     }
   });
 
@@ -2506,44 +2570,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // ===== CRON: Inactivity Reminders (called by Upstash every 12h) =====
+  // ===== CRON: Inactivity Reminders (scheduled() runs it at 10:00 and 19:00 Europe/Madrid) =====
   app.post('/api/tasks/inactivity-check', async (c) => {
     try {
-      // Verify Upstash cron secret (or allow manual trigger with admin key)
-      const authHeader = c.req.header('Authorization');
-      const cronSecret = (c.env as any).UPSTASH_CRON_SECRET;
-      
-      // Allow if: Upstash signature matches, or Authorization Bearer matches cron secret
-      if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-
-      const { checkAndSendInactivityReminders } = await import('./inactivityReminders');
-      const result = await checkAndSendInactivityReminders(storage, c.env);
-
-      return c.json({
-        success: true,
-        message: 'Inactivity check completed',
-        ...result,
-      });
-    } catch (error: any) {
-      console.error('[CRON INACTIVITY] Error:', error);
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  // ===== CRON: Inactivity Reminders (called by Upstash every 12h) =====
-  app.post('/api/tasks/inactivity-check', async (c) => {
-    try {
-      // Verify Upstash cron secret (or allow manual trigger with admin key)
-      const authHeader = c.req.header('Authorization');
-      const cronSecret = (c.env as any).UPSTASH_CRON_SECRET;
-      
-      // Allow if: Upstash signature matches, or Authorization Bearer matches cron secret
-      if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+      if (!(await isCronRequest(c))) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
 
@@ -2980,10 +3010,16 @@ export function registerRoutes(app: Hono<AppEnv>) {
           treasuresCollected = meta.treasures || [];
         } catch (_) {}
       }
+      // The activity event's own area_stolen column is never filled: the stolen total is the
+      // sum over the victims in its metadata.
+      const victimsStolen = victims.reduce((sum: number, v: any) => {
+        const area = Number(v?.stolenArea);
+        return sum + (Number.isFinite(area) && area > 0 ? area : 0);
+      }, 0);
       return c.json({
         ready: true,
         newAreaConquered: feedEvent.newArea || 0,
-        areaStolen: feedEvent.areaStolen || 0,
+        areaStolen: victimsStolen,
         distance: feedEvent.distance || 0,
         duration: feedEvent.duration || 0,
         victims,
@@ -3285,6 +3321,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Cannot add yourself as friend" }, 400);
       }
 
+      // No friend requests to or from a blocked user
+      if (await storage.isBlockedEitherWay(userId, friendId)) {
+        return c.json({ error: 'No puedes enviar una solicitud de amistad a este usuario' }, 403);
+      }
+
       // Check if already friends
       const alreadyFriends = await storage.checkFriendship(userId, friendId);
       if (alreadyFriends) {
@@ -3316,7 +3357,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const provider2 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
         const apiKey2 = provider2 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
         const fromEmail2 = provider2 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any);
+        const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any, publicBaseUrl(c));
         
         if (sender && recipient && recipient.email) {
           const prefs = await storage.getEmailPreferences(friendId);
@@ -3482,7 +3523,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const provider3 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
         const apiKey3 = provider3 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
         const fromEmail3 = provider3 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any);
+        const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any, publicBaseUrl(c));
         
         if (sender && sender.email && recipient) {
           const prefs = await storage.getEmailPreferences(request.senderId);
@@ -3740,9 +3781,41 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const userId = c.get('authUserId');
 
       const invite = await storage.createFriendInvite(userId);
-      const inviteUrl = `${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/friends/accept/${invite.token}`;
+      // Landing page served by this Worker (pages.ts) that opens runnaio://friends/accept/<token>
+      const inviteUrl = `${publicBaseUrl(c)}/invite/${invite.token}`;
       
       return c.json({ token: invite.token, url: inviteUrl });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Preview of an invite before accepting it (the app asks the user to confirm)
+  app.get('/api/friends/invite/:token', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const userId = c.get('authUserId');
+      const invite = await storage.getFriendInviteByToken(c.req.param('token'));
+      if (!invite || isInviteExpired(invite.expiresAt)) {
+        return c.json({ error: 'La invitación no existe o ha caducado' }, 404);
+      }
+      const inviter = await storage.getUser(invite.userId);
+      if (!inviter || (invite.userId !== userId && await storage.isBlockedEitherWay(invite.userId, userId))) {
+        return c.json({ error: 'La invitación no existe o ha caducado' }, 404);
+      }
+      const isSelf = invite.userId === userId;
+      const alreadyFriends = isSelf ? false : await storage.checkFriendship(userId, invite.userId);
+      return c.json({
+        inviter: {
+          id: inviter.id,
+          name: inviter.name,
+          username: inviter.username,
+          avatar: inviter.avatar ?? null,
+          color: inviter.color,
+        },
+        alreadyFriends,
+        isSelf,
+      });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -3764,13 +3837,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Invite not found or expired" }, 404);
       }
 
-      if (new Date() > invite.expiresAt) {
+      if (isInviteExpired(invite.expiresAt)) {
         await storage.deleteFriendInvite(invite.id);
         return c.json({ error: "Invite expired" }, 400);
       }
 
       if (invite.userId === userId) {
         return c.json({ error: "Cannot accept your own invite" }, 400);
+      }
+
+      if (await storage.isBlockedEitherWay(invite.userId, userId)) {
+        return c.json({ error: 'No puedes aceptar esta invitación' }, 403);
       }
 
       // Auto-resolve color conflicts before creating friendship
@@ -3796,6 +3873,88 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       return c.json({ success: true, friendId: invite.userId, colorChanged: colorResult.changed, newColor: colorResult.newColor || null });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // ==================== REPORTS & BLOCKS (App Store guideline 1.2) ====================
+
+  const REPORT_TARGET_TYPES = ['user', 'comment', 'feed_event', 'photo'] as const;
+
+  app.post('/api/reports', requireAuth, async (c) => {
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'JSON no válido' }, 400);
+    }
+    const targetType = body?.targetType;
+    const targetId = body?.targetId;
+    const reportedUserId = body?.reportedUserId ?? null;
+    const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
+    if (!REPORT_TARGET_TYPES.includes(targetType)) {
+      return c.json({ error: 'targetType no válido' }, 400);
+    }
+    if (typeof targetId !== 'string' || targetId.length === 0 || targetId.length > 200) {
+      return c.json({ error: 'targetId no válido' }, 400);
+    }
+    if (reportedUserId !== null && (typeof reportedUserId !== 'string' || reportedUserId.length > 200)) {
+      return c.json({ error: 'reportedUserId no válido' }, 400);
+    }
+    if (reason.length > 500) {
+      return c.json({ error: 'El motivo no puede superar los 500 caracteres' }, 400);
+    }
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const reporterId = c.get('authUserId');
+      await storage.createReport({
+        reporterId,
+        targetType,
+        targetId,
+        reportedUserId: reportedUserId || null,
+        reason: reason || '(sin motivo)',
+      });
+      console.warn(`[REPORT] ${reporterId} reported ${targetType} ${targetId} (user ${reportedUserId ?? '-'}): ${reason.slice(0, 200)}`);
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[REPORT] Failed:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.get('/api/blocks', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const blocks = await storage.getBlockedUsers(c.get('authUserId'));
+      return c.json({ blocks });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/blocks/:userId', requireAuth, async (c) => {
+    try {
+      const blockerId = c.get('authUserId');
+      const blockedId = c.req.param('userId');
+      if (blockedId === blockerId) {
+        return c.json({ error: 'No puedes bloquearte a ti mismo' }, 400);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      const target = await storage.getUser(blockedId);
+      if (!target) return c.json({ error: 'Usuario no encontrado' }, 404);
+      await storage.blockUser(blockerId, blockedId);
+      return c.json({ success: true });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.delete('/api/blocks/:userId', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.unblockUser(c.get('authUserId'), c.req.param('userId'));
+      return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -6187,6 +6346,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
+
+      // Blocked users (either direction) can't send each other photos
+      if (await storage.isBlockedEitherWay(senderId, recipientId)) {
+        return c.json({ error: 'No puedes enviar fotos a este usuario' }, 403);
+      }
+
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h
 
       const photo = await storage.createEphemeralPhoto({
@@ -7285,6 +7450,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const now = new Date();
       const weekNumber = Math.ceil((now.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
 
+      // Idempotent: a week's summary (and its push) is generated only once
+      const existingSummary = await storage.getWeeklySummary(comp.id, weekNumber);
+      if (existingSummary) {
+        return c.json({ skipped: true, reason: `Weekly summary for week ${weekNumber} already exists`, weekNumber });
+      }
+
       // Get all stats for this competition
       const leaderboard = await storage.getCompetitionLeaderboard(comp.id);
       if (leaderboard.length === 0) {
@@ -7347,7 +7518,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const { sendPushToUser } = await import('./pushHelper');
         const payload = {
           title: `📊 Resumen Semanal — Semana ${weekNumber}`,
-          body: `¡El resumen de La Primera Conquista del Ebro está listo! Abre la app para ver los premios.`,
+          body: `¡El resumen de ${comp.name} está listo! Abre la app para ver los premios.`,
           tag: `weekly-summary-${weekNumber}`,
           data: { type: 'weekly_summary', weekNumber },
         };

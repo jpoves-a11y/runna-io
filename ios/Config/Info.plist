@@ -19,6 +19,11 @@
 	<string>Runna.io usa la cámara para que hagas una foto y se la envíes a quien le has robado territorio.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Runna.io lee tus entrenamientos de carrera y sus rutas GPS (por ejemplo, del Apple Watch) para convertirlos en territorio conquistado.</string>
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>RunRecording</key>
+		<string>Runna.io necesita tu ubicación exacta para dibujar bien la ruta de la carrera y calcular el territorio que conquistas.</string>
+	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Runna.io usa tu ubicación para mostrarte en el mapa y registrar la ruta de tus carreras, también con la pantalla bloqueada mientras corres.</string>
 	<key>UIBackgroundModes</key>

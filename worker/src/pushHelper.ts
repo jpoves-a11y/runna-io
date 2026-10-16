@@ -2,6 +2,9 @@
 // Implements RFC 8291 (Message Encryption) and RFC 8292 (VAPID)
 // Uses Web Crypto API (available in CF Workers)
 
+import { createDb } from './db';
+import { WorkerStorage } from './storage';
+
 interface PushSubscriptionData {
   endpoint: string;
   keys: {
@@ -278,6 +281,8 @@ interface ApnsConfig {
 }
 
 interface PushEnv {
+  DATABASE_URL?: string;
+  TURSO_AUTH_TOKEN?: string;
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;
   APNS_PRIVATE_KEY?: string;
@@ -285,10 +290,12 @@ interface PushEnv {
 }
 
 let apnsConfig: ApnsConfig | null = null;
+let pushDatabase: { url: string; authToken?: string } | null = null;
 let apnsJwtCache: { token: string; issuedAt: number; keyId: string } | null = null;
 
 /** Reads the APNs credentials from the Worker environment. Called at the start of each request. */
 export function configurePush(env: PushEnv): void {
+  pushDatabase = env.DATABASE_URL ? { url: env.DATABASE_URL, authToken: env.TURSO_AUTH_TOKEN } : null;
   if (env.APNS_KEY_ID && env.APNS_TEAM_ID && env.APNS_PRIVATE_KEY && env.APNS_BUNDLE_ID) {
     apnsConfig = {
       keyId: env.APNS_KEY_ID,
@@ -331,6 +338,34 @@ async function getApnsJwt(config: ApnsConfig): Promise<string> {
   return token;
 }
 
+/**
+ * APNs answers 410 (Unregistered) when the app was uninstalled or the token rotated, and 400
+ * BadDeviceToken / DeviceTokenNotForTopic for tokens of another environment or app: those
+ * device tokens will never work again.
+ */
+export function isDeadApnsToken(status: number, responseText: string): boolean {
+  if (status === 410) return true;
+  if (status !== 400) return false;
+  let reason = '';
+  try {
+    reason = String(JSON.parse(responseText)?.reason ?? '');
+  } catch {
+    reason = responseText;
+  }
+  return reason.includes('BadDeviceToken') || reason.includes('DeviceTokenNotForTopic');
+}
+
+async function deleteDeadSubscription(endpoint: string): Promise<void> {
+  if (!pushDatabase) return;
+  try {
+    const storage = new WorkerStorage(createDb(pushDatabase.url, pushDatabase.authToken));
+    await storage.deletePushSubscriptionByEndpoint(endpoint);
+    console.log(`[APNS] Removed dead device token ${endpoint.slice(0, 24)}...`);
+  } catch (error) {
+    console.error('[APNS] Could not remove dead device token:', error);
+  }
+}
+
 async function sendApnsNotification(endpoint: string, payload: PushNotificationPayload): Promise<boolean> {
   if (!apnsConfig) {
     console.warn('[APNS] Not configured (APNS_KEY_ID / APNS_TEAM_ID / APNS_PRIVATE_KEY / APNS_BUNDLE_ID); skipping');
@@ -369,7 +404,11 @@ async function sendApnsNotification(endpoint: string, payload: PushNotificationP
       body: JSON.stringify(body),
     });
     if (response.status === 200) return true;
-    console.error(`[APNS] ❌ ${response.status} ${await response.text()} (${environment})`);
+    const responseText = await response.text();
+    console.error(`[APNS] ❌ ${response.status} ${responseText} (${environment})`);
+    if (isDeadApnsToken(response.status, responseText)) {
+      await deleteDeadSubscription(endpoint);
+    }
     return false;
   } catch (error) {
     console.error('[APNS] Error sending notification:', error);

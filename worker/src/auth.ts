@@ -284,6 +284,8 @@ async function verifyQstashSignature(c: AppContext, signature: string): Promise<
 
 /** Cron endpoints: the admin/cron secret as a Bearer token, or a valid QStash signature. */
 export async function isCronRequest(c: AppContext): Promise<boolean> {
+  // In-process calls from the scheduled() handler (env bindings can't be set by a request)
+  if (c.env.INTERNAL_CRON === true) return true;
   if (isAdminRequest(c)) return true;
   const signature = c.req.header('Upstash-Signature');
   return signature ? verifyQstashSignature(c, signature) : false;
