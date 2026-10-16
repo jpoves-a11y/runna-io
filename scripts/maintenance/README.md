@@ -18,3 +18,10 @@ TURSO_PIPELINE_URL="https://<your-db>.turso.io/v3/pipeline" TURSO_AUTH_TOKEN="<t
 ```
 
 Many of them were written for a specific incident (hard-coded user or route IDs): read a script before running it.
+
+Older scripts moved here from the repository root (run them from the repository root):
+
+- `migrate.js`: applies `migrations/0000_empty_lyja.sql` to the database in `DATABASE_URL` / `TURSO_AUTH_TOKEN`.
+- `migrate-colors.js`: reassigns user colours to the accessible palette without two friends sharing one.
+- `calculate-spawn-time.js`: prints the treasure spawn hour for a date and competition id.
+- `check-treasure-distance.js`: checks a route's distance to the active treasures against the production API.

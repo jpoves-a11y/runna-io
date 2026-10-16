@@ -17,7 +17,10 @@ struct ProfileView: View {
     @State private var confirmLogout = false
     @State private var confirmDelete = false
     @State private var isDeleting = false
+    @State private var isSendingTest = false
+    @State private var info: String?
     @State private var errorMessage: String?
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
 
     var body: some View {
         NavigationStack {
@@ -28,6 +31,8 @@ struct ProfileView: View {
                 }
                 IntegrationsSection()
                 notificationsSection
+                appearanceSection
+                privacySection
                 aboutSection
                 accountSection
             }
@@ -47,6 +52,13 @@ struct ProfileView: View {
                 Button("Cerrar sesión", role: .destructive) {
                     Task { await session.logout() }
                 }
+            } message: {
+                let pending = PendingRuns.pendingCount
+                if pending > 0 {
+                    Text(pending == 1
+                         ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se borrará de este iPhone."
+                         : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se borrarán de este iPhone.")
+                }
             }
             .alert("¿Borrar tu cuenta?", isPresented: $confirmDelete) {
                 Button("Borrar definitivamente", role: .destructive) { deleteAccount() }
@@ -55,6 +67,11 @@ struct ProfileView: View {
                 Text("Se borrarán tu perfil, tus carreras, tu territorio y tus amigos. No se puede deshacer.")
             }
             .errorAlert($errorMessage)
+            .alert("Notificaciones", isPresented: Binding(get: { info != nil }, set: { if !$0 { info = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(info ?? "")
+            }
             .overlay {
                 if isDeleting {
                     ProgressView("Borrando cuenta…")
@@ -112,17 +129,56 @@ struct ProfileView: View {
                 StatTile(value: "\(user.friendCount ?? 0)", label: "Amigos")
             }
             .padding(.vertical, 4)
-            if let conquest {
-                LabeledContent("Has robado", value: Format.area(conquest.totalStolen))
-                LabeledContent("Te han robado", value: Format.area(conquest.totalLost))
-                if let topVictim = conquest.stolenByUser.max(by: { $0.amount < $1.amount }) {
-                    LabeledContent("Tu víctima favorita", value: "\(topVictim.userName) · \(Format.area(topVictim.amount))")
-                }
-                if let nemesis = conquest.lostToUser.max(by: { $0.amount < $1.amount }) {
-                    LabeledContent("Tu némesis", value: "\(nemesis.userName) · \(Format.area(nemesis.amount))")
+            if let conquest, conquest.totalStolen > 0 || conquest.totalLost > 0 {
+                conquestDetails(conquest)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func conquestDetails(_ conquest: ConquestStats) -> some View {
+        let net = conquest.totalStolen - conquest.totalLost
+        LabeledContent("Has robado", value: Format.area(conquest.totalStolen))
+        LabeledContent("Te han robado", value: Format.area(conquest.totalLost))
+        LabeledContent("Balance") {
+            Text((net > 0 ? "+" : "") + Format.area(net))
+                .fontWeight(.semibold)
+                .foregroundStyle(net > 0 ? Color.green : (net < 0 ? Color.red : Color.secondary))
+        }
+        let victims = Array(conquest.stolenByUser.sorted { $0.amount > $1.amount }.prefix(3))
+        if !victims.isEmpty {
+            topList(title: "Tus víctimas", entries: victims, tint: .green)
+        }
+        let attackers = Array(conquest.lostToUser.sorted { $0.amount > $1.amount }.prefix(3))
+        if !attackers.isEmpty {
+            topList(title: "Quién te roba más", entries: attackers, tint: .red)
+        }
+    }
+
+    private func topList(title: String, entries: [ConquestStats.Entry], tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                HStack(spacing: 8) {
+                    Text("\(index + 1).")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, alignment: .leading)
+                    Circle()
+                        .fill(Color(hex: entry.userColor))
+                        .frame(width: 10, height: 10)
+                    Text(entry.userName.isEmpty ? "Usuario" : entry.userName)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Spacer()
+                    Text(Format.area(entry.amount))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(tint)
                 }
             }
         }
+        .padding(.vertical, 4)
     }
 
     private var notificationsSection: some View {
@@ -131,6 +187,18 @@ struct ProfileView: View {
             case .authorized, .provisional, .ephemeral:
                 Label("Notificaciones activadas", systemImage: "bell.badge.fill")
                     .foregroundStyle(Color.brand)
+                Button {
+                    sendTestNotification()
+                } label: {
+                    HStack {
+                        Label("Enviar notificación de prueba", systemImage: "paperplane")
+                        if isSendingTest {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(isSendingTest)
             case .denied:
                 Button {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
@@ -154,11 +222,48 @@ struct ProfileView: View {
         }
     }
 
+    private var appearanceSection: some View {
+        Section("Apariencia") {
+            Picker("Tema", selection: $appearance) {
+                ForEach(AppAppearance.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var privacySection: some View {
+        Section {
+            NavigationLink {
+                BlockedUsersView()
+            } label: {
+                Label("Usuarios bloqueados", systemImage: "hand.raised.slash")
+            }
+        } header: {
+            Text("Privacidad y seguridad")
+        } footer: {
+            Text("Las personas que bloquees no podrán ver tu actividad ni comentarte, y tú no verás la suya.")
+        }
+    }
+
     private var aboutSection: some View {
         Section("Información") {
             Link(destination: AppConfig.privacyURL) { Label("Política de privacidad", systemImage: "hand.raised") }
             Link(destination: AppConfig.termsURL) { Label("Términos de uso", systemImage: "doc.text") }
             Link(destination: AppConfig.supportURL) { Label("Ayuda y soporte", systemImage: "questionmark.circle") }
+            if let mail = AppConfig.supportMailURL {
+                Link(destination: mail) {
+                    LabeledContent {
+                        Text(AppConfig.supportEmail)
+                            .font(.caption)
+                            .lineLimit(1)
+                    } label: {
+                        Label("Contactar con soporte", systemImage: "envelope")
+                    }
+                }
+            }
             LabeledContent("Versión", value: Bundle.main.appVersion)
         }
     }
@@ -179,6 +284,23 @@ struct ProfileView: View {
         notificationStatus = await PushManager.shared.authorizationStatus()
         if let userId = session.userId {
             conquest = try? await APIClient.shared.request("GET", "/api/conquest-stats/\(userId)", as: ConquestStats.self)
+        }
+    }
+
+    private func sendTestNotification() {
+        isSendingTest = true
+        Task {
+            defer { isSendingTest = false }
+            // Make sure this iPhone is registered before asking for the test
+            await PushManager.shared.registerIfAuthorized()
+            do {
+                try await PushManager.shared.sendTestNotification()
+                info = "Notificación enviada. Debería llegarte en unos segundos."
+            } catch let error as APIError where error.status == 404 {
+                info = "Este iPhone todavía no está registrado para recibir notificaciones. Inténtalo de nuevo en unos segundos."
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

@@ -201,6 +201,10 @@ final class SessionStore {
     }
 
     func logout() async {
+        // Last chance to upload runs recorded offline (they're deleted from the device on logout)
+        if PendingRuns.pendingCount > 0 {
+            _ = await PendingRuns.uploadAll()
+        }
         await PushManager.shared.unregisterDevice()
         try? await api.send("POST", "/api/auth/logout")
         AppRouter.shared.pendingInviteToken = nil

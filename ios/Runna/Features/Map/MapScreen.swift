@@ -125,7 +125,7 @@ struct MapScreen: View {
         .sheet(item: $selectedTreasure) { treasure in
             TreasureDetailView(treasure: treasure)
         }
-        .sheet(isPresented: $router.showPowers, onDismiss: refreshPowerBadge) {
+        .sheet(isPresented: $router.showPowers, onDismiss: { refreshPowerBadge() }) {
             PowersSheet()
         }
         .sheet(item: $autoWeeklySummary) { summary in

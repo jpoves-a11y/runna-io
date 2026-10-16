@@ -165,7 +165,7 @@ struct RouteReplayView: View {
                     }
                 }
                 if let head = shown.last {
-                    Annotation(progress >= 1 ? "Meta" : "", coordinate: head) {
+                    Annotation(progress >= 1 ? "Meta" : String(), coordinate: head) {
                         Circle()
                             .fill(progress >= 1 ? Color.red : color)
                             .frame(width: 16, height: 16)
