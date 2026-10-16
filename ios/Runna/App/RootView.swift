@@ -75,7 +75,7 @@ struct MainTabView: View {
         }
         .fullScreenCover(isPresented: Binding(
             // Shown once, after the first login on this device (never on top of a run being recorded)
-            get: { !onboardingDone && !tracker.isPresented },
+            get: { !onboardingDone && !tracker.isPresented && !OnboardingView.isDisabledForTests },
             set: { if !$0 { onboardingDone = true } }
         )) {
             OnboardingView {

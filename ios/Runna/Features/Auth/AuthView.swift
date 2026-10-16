@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct AuthView: View {
     @Environment(SessionStore.self) private var session
@@ -65,10 +66,8 @@ private struct LoginForm: View {
                 .autocorrectionDisabled()
                 .keyboardType(.emailAddress)
                 .authField()
-            SecureField("Contraseña", text: $password)
-                .textContentType(.password)
+            PasswordField(title: "Contraseña", text: $password, contentType: .password, onSubmit: submit)
                 .authField()
-                .onSubmit(submit)
 
             Button(action: submit) {
                 if isLoading { ProgressView().tint(.white) } else { Text("Entrar") }
@@ -130,8 +129,7 @@ private struct RegisterForm: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .authField()
-            SecureField("Contraseña (mín. 6 caracteres)", text: $password)
-                .textContentType(.newPassword)
+            PasswordField(title: "Contraseña (mín. 6 caracteres)", text: $password, contentType: .newPassword)
                 .authField()
 
             Toggle(isOn: $acceptedTerms) {
@@ -140,6 +138,11 @@ private struct RegisterForm: View {
             }
             .toggleStyle(.switch)
             .tint(.brand)
+
+            Label("Debes tener al menos \(AppConfig.minimumAge) años para usar Runna.io.", systemImage: "info.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             Button(action: submit) {
                 if isLoading { ProgressView().tint(.white) } else { Text("Crear cuenta") }
@@ -152,8 +155,8 @@ private struct RegisterForm: View {
     }
 
     private var termsText: AttributedString {
-        let markdown = "Acepto los [términos](\(AppConfig.termsURL.absoluteString)) y la [política de privacidad](\(AppConfig.privacyURL.absoluteString))"
-        return (try? AttributedString(markdown: markdown)) ?? AttributedString("Acepto los términos y la política de privacidad")
+        let markdown = "Tengo al menos \(AppConfig.minimumAge) años y acepto los [términos](\(AppConfig.termsURL.absoluteString)) y la [política de privacidad](\(AppConfig.privacyURL.absoluteString))"
+        return (try? AttributedString(markdown: markdown)) ?? AttributedString("Tengo al menos \(AppConfig.minimumAge) años y acepto los términos y la política de privacidad")
     }
 
     private func submit() {
@@ -257,6 +260,42 @@ struct VerifyEmailView: View {
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+/// Password input with a show/hide button.
+private struct PasswordField: View {
+    let title: String
+    @Binding var text: String
+    var contentType: UITextContentType = .password
+    var onSubmit: () -> Void = {}
+
+    @State private var isRevealed = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Group {
+                if isRevealed {
+                    TextField(title, text: $text)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else {
+                    SecureField(title, text: $text)
+                }
+            }
+            .textContentType(contentType)
+            .onSubmit(onSubmit)
+
+            Button {
+                isRevealed.toggle()
+            } label: {
+                Image(systemName: isRevealed ? "eye.slash" : "eye")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isRevealed ? "Ocultar contraseña" : "Mostrar contraseña")
         }
     }
 }
