@@ -17,6 +17,8 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>Runna.io usa la cámara para que hagas una foto y se la envíes a quien le has robado territorio.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Runna.io no guarda datos en Salud: solo lee tus entrenamientos de carrera y sus rutas GPS para convertirlos en territorio.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Runna.io lee tus entrenamientos de carrera y sus rutas GPS (por ejemplo, del Apple Watch) para convertirlos en territorio conquistado.</string>
 	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
