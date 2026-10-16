@@ -78,8 +78,7 @@ enum Format {
 }
 
 extension Color {
-    /// Brand green (#16A34A).
-    static let brand = Color(red: 0x16 / 255, green: 0xA3 / 255, blue: 0x4A / 255)
+    // Brand colours (Color.brand, .steal, .gold...) live in Components/DesignSystem.swift.
 
     /// "#RRGGBB" → Color (gray if the string isn't a hex colour).
     init(hex: String) {
