@@ -111,6 +111,7 @@ enum ActivityMapSnapshots {
         cache.object(forKey: key as NSString)
     }
 
+    @MainActor
     static func render(
         coordinates: [[Double]],
         color: UIColor,

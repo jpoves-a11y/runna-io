@@ -214,7 +214,8 @@ struct RunConfettiBurst: View {
         let colors: [Color] = [Color.brand, Color.brandLime, Color.gold, Color.steal, Color.sky, Color.grape]
         var result: [Piece] = []
         for index in 0..<18 {
-            let angle = Double(index) / 18.0 * 2 * Double.pi + (index.isMultiple(of: 2) ? 0.15 : -0.1)
+            let jitter: Double = index.isMultiple(of: 2) ? 0.15 : -0.1
+            let angle: Double = Double(index) / 18.0 * 2.0 * Double.pi + jitter
             let distance: CGFloat = index.isMultiple(of: 3) ? 104 : (index.isMultiple(of: 2) ? 84 : 66)
             result.append(Piece(
                 symbol: symbols[index % symbols.count],
