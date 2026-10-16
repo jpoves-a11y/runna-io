@@ -3916,6 +3916,28 @@ export function registerRoutes(app: Hono<AppEnv>) {
         reason: reason || '(sin motivo)',
       });
       console.warn(`[REPORT] ${reporterId} reported ${targetType} ${targetId} (user ${reportedUserId ?? '-'}): ${reason.slice(0, 200)}`);
+
+      // Email the app owner so reports get reviewed within 24 h (REPORTS_EMAIL, else the support address)
+      const notify = async () => {
+        const provider = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+        const apiKey = provider === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+        if (!apiKey) return;
+        const fromEmail = provider === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        const describe = async (id: string | null) => {
+          if (!id) return '-';
+          const u = await storage.getUser(id);
+          return u ? `${u.name} (@${u.username}, ${u.id})` : id;
+        };
+        const emailService = new EmailService(apiKey, fromEmail, provider as any, publicBaseUrl(c));
+        await emailService.sendReportNotification((c.env as any).REPORTS_EMAIL || 'runna.io.service@gmail.com', {
+          reporter: await describe(reporterId),
+          reported: await describe(reportedUserId || null),
+          targetType,
+          targetId,
+          reason: reason || '(sin motivo)',
+        });
+      };
+      c.executionCtx.waitUntil(notify().catch((err) => console.error('[REPORT] Email failed:', err)));
       return c.json({ success: true });
     } catch (error: any) {
       console.error('[REPORT] Failed:', error);
