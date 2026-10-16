@@ -16,36 +16,19 @@ struct TauntComposerView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 18) {
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .frame(maxHeight: 360)
-                    TextField("Mensaje (opcional)", text: $message)
-                        .textFieldStyle(.roundedBorder)
-                    Button {
-                        send(image)
-                    } label: {
-                        if isSending { ProgressView().tint(.white) } else { Text("Enviar a \(victim.userName)") }
+            ScrollView {
+                VStack(spacing: DS.Spacing.xl) {
+                    if let image {
+                        preview(image)
+                    } else {
+                        intro
                     }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(isSending)
-                    Button("Repetir foto") { showCamera = true }
-                } else {
-                    Spacer()
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 56))
-                        .foregroundStyle(Color.brand)
-                    Text("Hazle una foto a \(victim.userName). La verá una sola vez.")
-                        .multilineTextAlignment(.center)
-                    Button("Abrir cámara") { showCamera = true }
-                        .buttonStyle(PrimaryButtonStyle())
-                    Spacer()
                 }
+                .padding(DS.Spacing.l)
+                .animation(.snappy, value: image != nil)
             }
-            .padding()
+            .scrollDismissesKeyboard(.interactively)
+            .screenBackground()
             .navigationTitle("Foto para \(victim.userName)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -58,6 +41,89 @@ struct TauntComposerView: View {
                     .ignoresSafeArea()
             }
             .errorAlert($errorMessage)
+        }
+    }
+
+    private var intro: some View {
+        VStack(spacing: DS.Spacing.xl) {
+            ZStack {
+                Circle()
+                    .fill(Color.steal.opacity(0.10))
+                    .frame(width: 180, height: 180)
+                Circle()
+                    .fill(.stealGradient)
+                    .frame(width: 120, height: 120)
+                    .shadow(color: Color.steal.opacity(0.4), radius: 18, x: 0, y: 10)
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 50, weight: .bold))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.bounce, value: showCamera)
+                AvatarView(name: victim.userName, avatar: nil, color: victim.userColor, size: 54)
+                    .background(Color.surface, in: Circle())
+                    .offset(x: 62, y: 52)
+            }
+            .padding(.top, DS.Spacing.xxl)
+            VStack(spacing: DS.Spacing.s) {
+                Text("Déjale un recuerdo a \(victim.userName)")
+                    .font(.system(.title2, design: .rounded, weight: .heavy))
+                    .multilineTextAlignment(.center)
+                Text("Le has quitado \(Format.area(victim.stolenArea)). Mándale una foto: la verá una sola vez y luego desaparece.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button {
+                showCamera = true
+            } label: {
+                Label("Abrir cámara", systemImage: "camera.fill")
+            }
+            .buttonStyle(PrimaryButtonStyle(color: Color.steal))
+        }
+    }
+
+    private func preview(_ image: UIImage) -> some View {
+        VStack(spacing: DS.Spacing.l) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxHeight: 380)
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    Label("Se ve una vez", systemImage: "eye.fill")
+                        .font(.system(.caption, design: .rounded, weight: .bold))
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .glassSurface(Capsule())
+                        .padding(DS.Spacing.m)
+                }
+                .shadow(color: Color.black.opacity(0.15), radius: 14, x: 0, y: 8)
+            HStack(spacing: DS.Spacing.m) {
+                Image(systemName: "text.bubble.fill")
+                    .foregroundStyle(Color.steal)
+                TextField("Añade un mensaje (opcional)", text: $message)
+                    .font(.system(.body, design: .rounded))
+            }
+            .padding(.horizontal, DS.Spacing.l)
+            .frame(minHeight: 52)
+            .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous).strokeBorder(Color.hairline, lineWidth: 1))
+            Button {
+                send(image)
+            } label: {
+                if isSending {
+                    ProgressView().tint(.white)
+                } else {
+                    Label("Enviar a \(victim.userName)", systemImage: "paperplane.fill")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle(color: Color.steal))
+            .disabled(isSending)
+            Button {
+                showCamera = true
+            } label: {
+                Label("Repetir foto", systemImage: "arrow.triangle.2.circlepath.camera.fill")
+            }
+            .buttonStyle(SecondaryButtonStyle(tint: Color.steal))
         }
     }
 
@@ -136,50 +202,102 @@ private struct EphemeralPhotoView: View {
     @State private var revealed = false
 
     var body: some View {
-        VStack(spacing: 18) {
-            HStack(spacing: 12) {
-                AvatarView(name: photo.senderName, avatar: photo.senderAvatar, color: "#16A34A", size: 44)
-                VStack(alignment: .leading) {
-                    Text(photo.senderName).font(.headline)
-                    if let area = photo.areaStolen, area > 0 {
-                        Text("Te ha robado \(Format.area(area))")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-            }
+        VStack(spacing: DS.Spacing.xl) {
+            header
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.snappy, value: revealed)
+                .animation(.snappy, value: image != nil)
+            Button("Cerrar") { dismiss() }
+                .buttonStyle(SecondaryButtonStyle(tint: Color.secondary))
+        }
+        .padding(DS.Spacing.xl)
+        .screenBackground()
+        .presentationDetents([.large])
+        .presentationCornerRadius(32)
+    }
 
-            if !revealed {
-                Spacer()
-                Text("Te ha enviado una foto. Solo podrás verla una vez.")
+    private var header: some View {
+        HStack(spacing: DS.Spacing.m) {
+            AvatarView(name: photo.senderName, avatar: photo.senderAvatar, color: "#FF5F45", size: 52)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(photo.senderName)
+                    .font(.system(.headline, design: .rounded, weight: .bold))
+                if let area = photo.areaStolen, area > 0 {
+                    Label("Te ha robado \(Format.area(area))", systemImage: "bolt.fill")
+                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .foregroundStyle(Color.steal)
+                } else {
+                    Text("Te ha mandado una foto")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .card(padding: DS.Spacing.m)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if !revealed {
+            VStack(spacing: DS.Spacing.l) {
+                ZStack {
+                    Circle()
+                        .fill(Color.steal.opacity(0.10))
+                        .frame(width: 170, height: 170)
+                    Circle()
+                        .fill(.stealGradient)
+                        .frame(width: 112, height: 112)
+                        .shadow(color: Color.steal.opacity(0.4), radius: 16, x: 0, y: 8)
+                    Image(systemName: "eye.slash.fill")
+                        .font(.system(size: 44, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                Text("Foto sorpresa")
+                    .font(.system(.title2, design: .rounded, weight: .heavy))
+                Text("Solo podrás verla una vez. ¿Preparado para el vacile?")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button("Ver foto") { reveal() }
-                    .buttonStyle(PrimaryButtonStyle())
-                Spacer()
-            } else if let image {
+                Button {
+                    reveal()
+                } label: {
+                    Label("Ver foto", systemImage: "eye.fill")
+                }
+                .buttonStyle(PrimaryButtonStyle(color: Color.steal))
+            }
+            .transition(.opacity)
+        } else if let image {
+            VStack(spacing: DS.Spacing.l) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+                    .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 8)
                 if let text, !text.isEmpty {
-                    Text("“\(text)”").font(.title3.italic())
+                    Text("“\(text)”")
+                        .font(.system(.title3, design: .rounded, weight: .semibold))
+                        .italic()
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, DS.Spacing.l)
+                        .padding(.vertical, DS.Spacing.m)
+                        .background(Color.steal.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
                 }
-                Spacer()
-            } else if failed {
-                Spacer()
-                Text("Esta foto ya no está disponible.")
-                Spacer()
-            } else {
-                Spacer()
-                ProgressView()
-                Spacer()
             }
-
-            Button("Cerrar") { dismiss() }
+            .transition(.scale(scale: 0.9).combined(with: .opacity))
+        } else if failed {
+            EmptyStateView(
+                systemImage: "photo.badge.exclamationmark",
+                title: "Se esfumó",
+                message: "Esta foto ya no está disponible.",
+                tint: Color.steal
+            )
+        } else {
+            ProgressView()
+                .controlSize(.large)
+                .tint(Color.steal)
         }
-        .padding()
-        .presentationDetents([.large])
     }
 
     private func reveal() {

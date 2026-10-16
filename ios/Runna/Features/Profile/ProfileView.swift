@@ -16,182 +16,145 @@ struct ProfileView: View {
     @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
     @State private var confirmLogout = false
     @State private var confirmDelete = false
+    @State private var confirmRemoveAvatar = false
     @State private var isDeleting = false
     @State private var isSendingTest = false
     @State private var info: String?
     @State private var errorMessage: String?
+    @State private var avatarUploads = 0
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
 
     var body: some View {
         NavigationStack {
-            List {
-                if let user = session.user {
-                    header(user)
-                    statsSection(user)
+            list
+                .navigationTitle("Perfil")
+                .refreshable { await reload() }
+                .task(id: router.reloadSignal) { await reload() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { Task { notificationStatus = await PushManager.shared.authorizationStatus() } }
                 }
-                IntegrationsSection()
-                notificationsSection
-                appearanceSection
-                privacySection
-                aboutSection
-                accountSection
-            }
-            .navigationTitle("Perfil")
-            .refreshable { await reload() }
-            .task(id: router.reloadSignal) { await reload() }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { notificationStatus = await PushManager.shared.authorizationStatus() } }
-            }
-            .onChange(of: avatarItem) { _, item in
-                if let item { uploadAvatar(item) }
-            }
-            .sheet(isPresented: $showEdit) {
-                EditProfileView()
-            }
-            .confirmationDialog("¿Cerrar sesión?", isPresented: $confirmLogout, titleVisibility: .visible) {
-                Button("Cerrar sesión", role: .destructive) {
-                    Task { await session.logout() }
+                .onChange(of: avatarItem) { _, item in
+                    if let item { uploadAvatar(item) }
                 }
-            } message: {
-                let pending = PendingRuns.pendingCount
-                if pending > 0 {
-                    Text(pending == 1
-                         ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se borrará de este iPhone."
-                         : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se borrarán de este iPhone.")
+                .sheet(isPresented: $showEdit) {
+                    EditProfileView()
                 }
-            }
-            .alert("¿Borrar tu cuenta?", isPresented: $confirmDelete) {
-                Button("Borrar definitivamente", role: .destructive) { deleteAccount() }
-                Button("Cancelar", role: .cancel) {}
-            } message: {
-                Text("Se borrarán tu perfil, tus carreras, tu territorio y tus amigos. No se puede deshacer.")
-            }
-            .errorAlert($errorMessage)
-            .alert("Notificaciones", isPresented: Binding(get: { info != nil }, set: { if !$0 { info = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(info ?? "")
-            }
-            .overlay {
-                if isDeleting {
-                    ProgressView("Borrando cuenta…")
-                        .padding()
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .confirmationDialog("¿Cerrar sesión?", isPresented: $confirmLogout, titleVisibility: .visible) {
+                    Button("Cerrar sesión", role: .destructive) {
+                        Task { await session.logout() }
+                    }
+                } message: {
+                    let pending = PendingRuns.pendingCount
+                    if pending > 0 {
+                        Text(pending == 1
+                             ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se borrará de este iPhone."
+                             : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se borrarán de este iPhone.")
+                    }
                 }
-            }
+                .confirmationDialog("¿Quitar tu foto de perfil?", isPresented: $confirmRemoveAvatar, titleVisibility: .visible) {
+                    Button("Quitar foto", role: .destructive) { removeAvatar() }
+                } message: {
+                    Text("Volverás a aparecer con tu inicial sobre tu color de territorio.")
+                }
+                .alert("¿Borrar tu cuenta?", isPresented: $confirmDelete) {
+                    Button("Borrar definitivamente", role: .destructive) { deleteAccount() }
+                    Button("Cancelar", role: .cancel) {}
+                } message: {
+                    Text("Se borrarán tu perfil, tus carreras, tu territorio y tus amigos. No se puede deshacer.")
+                }
+                .errorAlert($errorMessage)
+                .alert("Notificaciones", isPresented: Binding(get: { info != nil }, set: { if !$0 { info = nil } })) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(info ?? "")
+                }
+                .sensoryFeedback(.success, trigger: avatarUploads)
+                .overlay {
+                    if isDeleting {
+                        ProgressView("Borrando cuenta…")
+                            .padding(DS.Spacing.xl)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+                    }
+                }
         }
     }
 
-    // MARK: - Sections
+    private var list: some View {
+        List {
+            if let user = session.user {
+                heroSection(user)
+                statsSection(user)
+                rivalriesSection
+            }
+            IntegrationsSection()
+            notificationsSection
+            appearanceSection
+            privacySection
+            aboutSection
+            accountSection
+        }
+        .listStyle(.insetGrouped)
+        .listBackground()
+        .listSectionSpacing(DS.Spacing.l)
+    }
 
-    private func header(_ user: AppUser) -> some View {
+    // MARK: - Hero
+
+    private func heroSection(_ user: AppUser) -> some View {
         Section {
-            HStack(spacing: 16) {
-                PhotosPicker(selection: $avatarItem, matching: .images) {
-                    ZStack(alignment: .bottomTrailing) {
-                        AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 76)
-                        Image(systemName: isUploadingAvatar ? "hourglass.circle.fill" : "camera.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.white, Color.brand)
-                    }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cambiar foto de perfil")
-                .disabled(isUploadingAvatar)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(user.name).font(.title2.bold())
-                    Text("@\(user.username)").foregroundStyle(.secondary)
-                    if let email = user.email {
-                        Text(email).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-            }
-            .padding(.vertical, 6)
-
-            Button("Editar perfil") { showEdit = true }
-            if user.avatar != nil {
-                Button("Quitar foto de perfil", role: .destructive) {
-                    Task {
-                        do { try await session.removeAvatar() } catch { errorMessage = error.localizedDescription }
-                    }
-                }
-            }
+            ProfileHeroCard(
+                user: user,
+                avatarItem: $avatarItem,
+                isUploadingAvatar: isUploadingAvatar,
+                onEdit: { showEdit = true },
+                onRemoveAvatar: { confirmRemoveAvatar = true }
+            )
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
         }
     }
+
+    // MARK: - Stats
 
     private func statsSection(_ user: AppUser) -> some View {
-        Section("Estadísticas") {
-            HStack {
-                StatTile(value: Format.areaParts(user.totalArea).value, label: "Territorio", unit: Format.areaParts(user.totalArea).unit, tint: .brand)
-                StatTile(value: user.rank.map { "#\($0)" } ?? "–", label: "Ranking amigos")
-                StatTile(value: "\(user.friendCount ?? 0)", label: "Amigos")
-            }
-            .padding(.vertical, 4)
-            if let conquest, conquest.totalStolen > 0 || conquest.totalLost > 0 {
-                conquestDetails(conquest)
-            }
+        Section {
+            ProfileStatsCard(user: user, conquest: conquest)
+                .listRowBackground(Color.surface)
+        } header: {
+            SocialSectionHeader(title: "Tus números", systemImage: "chart.bar.fill")
         }
     }
 
     @ViewBuilder
-    private func conquestDetails(_ conquest: ConquestStats) -> some View {
-        let net = conquest.totalStolen - conquest.totalLost
-        LabeledContent("Has robado", value: Format.area(conquest.totalStolen))
-        LabeledContent("Te han robado", value: Format.area(conquest.totalLost))
-        LabeledContent("Balance") {
-            Text((net > 0 ? "+" : "") + Format.area(net))
-                .fontWeight(.semibold)
-                .foregroundStyle(net > 0 ? Color.green : (net < 0 ? Color.red : Color.secondary))
-        }
-        let victims = Array(conquest.stolenByUser.sorted { $0.amount > $1.amount }.prefix(3))
-        if !victims.isEmpty {
-            topList(title: "Tus víctimas", entries: victims, tint: .green)
-        }
-        let attackers = Array(conquest.lostToUser.sorted { $0.amount > $1.amount }.prefix(3))
-        if !attackers.isEmpty {
-            topList(title: "Quién te roba más", entries: attackers, tint: .red)
+    private var rivalriesSection: some View {
+        if let conquest {
+            Section {
+                ProfileRivalriesContent(conquest: conquest)
+                    .listRowBackground(Color.surface)
+            } header: {
+                SocialSectionHeader(title: "Rivalidades", systemImage: "flame.fill", tint: .steal)
+            }
         }
     }
 
-    private func topList(title: String, entries: [ConquestStats.Entry], tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                HStack(spacing: 8) {
-                    Text("\(index + 1).")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, alignment: .leading)
-                    Circle()
-                        .fill(Color(hex: entry.userColor))
-                        .frame(width: 10, height: 10)
-                    Text(entry.userName.isEmpty ? "Usuario" : entry.userName)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(Format.area(entry.amount))
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(tint)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
+    // MARK: - Settings
 
     private var notificationsSection: some View {
         Section {
             switch notificationStatus {
             case .authorized, .provisional, .ephemeral:
-                Label("Notificaciones activadas", systemImage: "bell.badge.fill")
-                    .foregroundStyle(Color.brand)
+                HStack {
+                    SocialSettingsLabel(title: "Notificaciones activadas", systemImage: "bell.badge.fill", tint: .steal)
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.brand)
+                        .accessibilityHidden(true)
+                }
                 Button {
                     sendTestNotification()
                 } label: {
                     HStack {
-                        Label("Enviar notificación de prueba", systemImage: "paperplane")
+                        SocialSettingsLabel(title: "Enviar notificación de prueba", systemImage: "paperplane.fill", tint: .sky)
                         if isSendingTest {
                             Spacer()
                             ProgressView()
@@ -203,7 +166,7 @@ struct ProfileView: View {
                 Button {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                 } label: {
-                    Label("Activar notificaciones en Ajustes", systemImage: "bell.slash")
+                    SocialSettingsLabel(title: "Activar notificaciones en Ajustes", systemImage: "bell.slash.fill", tint: .secondary)
                 }
             default:
                 Button {
@@ -212,18 +175,19 @@ struct ProfileView: View {
                         notificationStatus = await PushManager.shared.authorizationStatus()
                     }
                 } label: {
-                    Label("Activar notificaciones", systemImage: "bell")
+                    SocialSettingsLabel(title: "Activar notificaciones", systemImage: "bell.fill", tint: .steal)
                 }
             }
         } header: {
-            Text("Notificaciones")
+            SocialSectionHeader(title: "Notificaciones", systemImage: "bell.fill", tint: .steal)
         } footer: {
             Text("Te avisamos cuando te roban territorio, cuando un amigo corre o te comenta.")
         }
+        .listRowBackground(Color.surface)
     }
 
     private var appearanceSection: some View {
-        Section("Apariencia") {
+        Section {
             Picker("Tema", selection: $appearance) {
                 ForEach(AppAppearance.allCases) { option in
                     Text(option.title).tag(option)
@@ -231,7 +195,10 @@ struct ProfileView: View {
             }
             .pickerStyle(.segmented)
             .padding(.vertical, 4)
+        } header: {
+            SocialSectionHeader(title: "Apariencia", systemImage: "circle.lefthalf.filled", tint: .grape)
         }
+        .listRowBackground(Color.surface)
     }
 
     private var privacySection: some View {
@@ -239,42 +206,68 @@ struct ProfileView: View {
             NavigationLink {
                 BlockedUsersView()
             } label: {
-                Label("Usuarios bloqueados", systemImage: "hand.raised.slash")
+                SocialSettingsLabel(title: "Usuarios bloqueados", systemImage: "hand.raised.fill", tint: .steal)
             }
         } header: {
-            Text("Privacidad y seguridad")
+            SocialSectionHeader(title: "Privacidad y seguridad", systemImage: "lock.fill", tint: .sky)
         } footer: {
             Text("Las personas que bloquees no podrán ver tu actividad ni comentarte, y tú no verás la suya.")
         }
+        .listRowBackground(Color.surface)
     }
 
     private var aboutSection: some View {
-        Section("Información") {
-            Link(destination: AppConfig.privacyURL) { Label("Política de privacidad", systemImage: "hand.raised") }
-            Link(destination: AppConfig.termsURL) { Label("Términos de uso", systemImage: "doc.text") }
-            Link(destination: AppConfig.supportURL) { Label("Ayuda y soporte", systemImage: "questionmark.circle") }
+        Section {
+            Link(destination: AppConfig.privacyURL) {
+                SocialSettingsLabel(title: "Política de privacidad", systemImage: "hand.raised.fill", tint: .sky)
+            }
+            Link(destination: AppConfig.termsURL) {
+                SocialSettingsLabel(title: "Términos de uso", systemImage: "doc.text.fill", tint: .grape)
+            }
+            Link(destination: AppConfig.supportURL) {
+                SocialSettingsLabel(title: "Ayuda y soporte", systemImage: "questionmark.circle.fill", tint: .brand)
+            }
             if let mail = AppConfig.supportMailURL {
                 Link(destination: mail) {
-                    LabeledContent {
-                        Text(AppConfig.supportEmail)
-                            .font(.caption)
-                            .lineLimit(1)
-                    } label: {
-                        Label("Contactar con soporte", systemImage: "envelope")
-                    }
+                    SocialSettingsLabel(title: "Contactar con soporte", systemImage: "envelope.fill", tint: .gold, value: AppConfig.supportEmail)
                 }
             }
-            LabeledContent("Versión", value: Bundle.main.appVersion)
+            SocialSettingsLabel(title: "Versión", systemImage: "info.circle.fill", tint: .secondary, value: Bundle.main.appVersion)
+        } header: {
+            SocialSectionHeader(title: "Información", systemImage: "info.circle.fill", tint: .secondary)
         }
+        .listRowBackground(Color.surface)
     }
 
     private var accountSection: some View {
         Section {
-            Button("Cerrar sesión") { confirmLogout = true }
-            Button("Borrar cuenta", role: .destructive) { confirmDelete = true }
+            Button {
+                confirmLogout = true
+            } label: {
+                SocialSettingsLabel(title: "Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right", tint: .secondary)
+            }
+            Button(role: .destructive) {
+                confirmDelete = true
+            } label: {
+                HStack(spacing: 12) {
+                    SocialIconTile(systemImage: "trash.fill", tint: .red)
+                    Text("Borrar cuenta")
+                        .foregroundStyle(Color.red)
+                }
+            }
+        } header: {
+            SocialSectionHeader(title: "Cuenta", systemImage: "person.crop.circle.fill", tint: .secondary)
         } footer: {
-            Text("Borrar la cuenta elimina todos tus datos de Runna.io de forma permanente.")
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Borrar la cuenta elimina todos tus datos de Runna.io de forma permanente.")
+                Text("Runna.io · Corre. Conquista. Repite.")
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+            }
         }
+        .listRowBackground(Color.surface)
     }
 
     // MARK: - Actions
@@ -319,7 +312,18 @@ struct ProfileView: View {
                     return
                 }
                 try await session.uploadAvatar(jpegData: jpeg)
-                Haptics.success()
+                avatarUploads += 1
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func removeAvatar() {
+        Task {
+            do {
+                try await session.removeAvatar()
+                Haptics.tap()
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -352,40 +356,30 @@ struct EditProfileView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Nombre") {
-                    TextField("Tu nombre", text: $name)
-                        .textContentType(.name)
+                Section {
+                    preview
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
                 }
                 Section {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6), spacing: 14) {
-                        ForEach(AppConfig.userColors, id: \.self) { option in
-                            let taken = takenColors.contains(option.uppercased()) && option.uppercased() != session.user?.color.uppercased()
-                            Button {
-                                color = option
-                            } label: {
-                                ZStack {
-                                    Circle().fill(Color(hex: option))
-                                    if option.uppercased() == color.uppercased() {
-                                        Image(systemName: "checkmark").font(.headline).foregroundStyle(.white)
-                                    } else if taken {
-                                        Image(systemName: "person.fill").font(.caption).foregroundStyle(.white.opacity(0.9))
-                                    }
-                                }
-                                .frame(height: 40)
-                                .opacity(taken ? 0.35 : 1)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(taken)
-                            .accessibilityLabel(AppConfig.userColorNames[option] ?? option)
-                        }
-                    }
-                    .padding(.vertical, 6)
+                    TextField("Tu nombre", text: $name)
+                        .textContentType(.name)
+                        .font(.system(.body, design: .rounded, weight: .semibold))
                 } header: {
-                    Text("Color de tu territorio")
-                } footer: {
-                    Text("Los colores con un icono ya los usa alguno de tus amigos.")
+                    SocialSectionHeader(title: "Nombre", systemImage: "person.fill")
                 }
+                .listRowBackground(Color.surface)
+                Section {
+                    colorGrid
+                        .padding(.vertical, 8)
+                } header: {
+                    SocialSectionHeader(title: "Color de tu territorio", systemImage: "paintpalette.fill", tint: Color(hex: color))
+                } footer: {
+                    Text("Tu color es tu identidad en el mapa. Los que tienen un icono ya los usa alguno de tus amigos.")
+                }
+                .listRowBackground(Color.surface)
             }
+            .listBackground()
             .navigationTitle("Editar perfil")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -393,13 +387,81 @@ struct EditProfileView: View {
                     Button("Cancelar") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Guardar") { save() }
-                        .disabled(isSaving || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button("Guardar") { save() }
+                            .fontWeight(.bold)
+                            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
                 }
             }
             .errorAlert($errorMessage)
             .task { await load() }
         }
+        .presentationCornerRadius(28)
+    }
+
+    private var preview: some View {
+        VStack(spacing: 10) {
+            AvatarView(
+                name: name.isEmpty ? (session.user?.name ?? "?") : name,
+                avatar: session.user?.avatar,
+                color: color.isEmpty ? (session.user?.color ?? "#16A34A") : color,
+                size: 96
+            )
+            .shadow(color: Color(hex: color).opacity(0.4), radius: 14, x: 0, y: 6)
+            .animation(.snappy, value: color)
+            Text(name.isEmpty ? "Tu nombre" : name)
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .lineLimit(1)
+            if !color.isEmpty {
+                SocialColorChip(color: color)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, DS.Spacing.l)
+    }
+
+    private var colorGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6), spacing: 14) {
+            ForEach(AppConfig.userColors, id: \.self) { option in
+                colorSwatch(option)
+            }
+        }
+    }
+
+    private func colorSwatch(_ option: String) -> some View {
+        let taken = takenColors.contains(option.uppercased()) && option.uppercased() != session.user?.color.uppercased()
+        let selected = option.uppercased() == color.uppercased()
+        return Button {
+            color = option
+        } label: {
+            ZStack {
+                Circle().fill(Color(hex: option).gradient)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.headline.weight(.heavy))
+                        .foregroundStyle(Color.white)
+                } else if taken {
+                    Image(systemName: "person.fill")
+                        .font(.caption)
+                        .foregroundStyle(Color.white.opacity(0.9))
+                }
+            }
+            .frame(height: 40)
+            .padding(3)
+            .overlay {
+                Circle().strokeBorder(Color(hex: option), lineWidth: selected ? 2.5 : 0)
+            }
+            .scaleEffect(selected ? 1.06 : 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: selected)
+            .opacity(taken ? 0.35 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(taken)
+        .accessibilityLabel(AppConfig.userColorNames[option] ?? option)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func load() async {

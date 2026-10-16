@@ -13,57 +13,28 @@ struct RankingsView: View {
     @State private var errorMessage: String?
     @State private var selectedUserId: String?
     @State private var showFinalResults = false
+    @State private var hasLoaded = false
 
     private var competition: CompetitionStore { CompetitionStore.shared }
     private var hasCompetitionBoard: Bool { competition.isActive || competition.isFinished }
+    private var showsBanner: Bool { competition.isUpcoming || competition.isActive || competition.isFinished }
 
     var body: some View {
         @Bindable var router = router
         NavigationStack {
-            List {
-                if competition.isUpcoming || competition.isActive || competition.isFinished {
-                    CompetitionBanner(store: competition) { showFinalResults = true }
-                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                        .listRowBackground(Color.clear)
+            ScrollView {
+                VStack(spacing: DS.Spacing.xl) {
+                    header
+                    boardContent
                 }
-                if hasCompetitionBoard {
-                    Picker("Clasificación", selection: $board) {
-                        Text("Amigos").tag(Board.friends)
-                        Text("Competición").tag(Board.competition)
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowBackground(Color.clear)
-                }
-
-                switch board {
-                case .friends:
-                    friendsSection
-                case .competition:
-                    competitionSection
-                }
+                .padding(.horizontal, DS.Spacing.l)
+                .padding(.top, DS.Spacing.s)
+                .padding(.bottom, DS.Spacing.xxl)
+                .animation(.snappy, value: board)
             }
-            .overlay {
-                if let errorMessage, friends.isEmpty {
-                    ErrorView(message: errorMessage) { Task { await load() } }
-                } else if isLoading && friends.isEmpty {
-                    ProgressView()
-                }
-            }
+            .screenBackground()
             .navigationTitle("Ranking")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    if competition.isActive {
-                        Button {
-                            router.showWeeklySummary = true
-                        } label: {
-                            Label("Resumen semanal", systemImage: "chart.bar.fill")
-                                .labelStyle(.titleAndIcon)
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .tint(.orange)
-                    }
-                }
-            }
+            .toolbar { toolbarContent }
             .refreshable { await load() }
             .task(id: router.reloadSignal) { await load() }
             .sheet(item: Binding(
@@ -81,71 +52,128 @@ struct RankingsView: View {
         }
     }
 
+    // MARK: Header
+
     @ViewBuilder
-    private var friendsSection: some View {
-        if friends.count <= 1 && !isLoading && errorMessage == nil {
-            Section {
-                EmptyStateView(
-                    systemImage: "person.2",
-                    title: "Compite con tus amigos",
-                    message: "Añade amigos en la pestaña Amigos para ver quién conquista más territorio."
-                )
-            }
+    private var header: some View {
+        if showsBanner {
+            CompetitionBanner(store: competition, style: .hero) { showFinalResults = true }
         }
-        Section {
-            ForEach(friends) { user in
+        if hasCompetitionBoard {
+            RankingCapsulePicker(options: boardOptions, selection: $board)
+        }
+    }
+
+    private var boardOptions: [RankingCapsulePicker<Board>.Option] {
+        [
+            RankingCapsulePicker<Board>.Option(value: .friends, title: "Amigos", systemImage: "person.2.fill", gradient: LinearGradient.brandGradient),
+            RankingCapsulePicker<Board>.Option(value: .competition, title: "Competición", systemImage: "trophy.fill", gradient: LinearGradient.goldGradient)
+        ]
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            if competition.isActive {
                 Button {
-                    open(user.id)
+                    router.showWeeklySummary = true
                 } label: {
-                    RankRow(
-                        rank: user.rank ?? 0,
-                        name: user.id == session.userId ? "\(user.name) (tú)" : user.name,
-                        avatar: user.avatar,
-                        color: user.color,
-                        value: Format.area(user.totalArea),
-                        subtitle: Self.subtitle(username: user.username, name: user.name, nickname: user.nickname),
-                        nickname: user.nickname,
-                        highlighted: user.id == session.userId
-                    )
+                    Label("Resumen", systemImage: "party.popper.fill")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(.subheadline, design: .rounded, weight: .bold))
                 }
-                .buttonStyle(.plain)
-            }
-        } footer: {
-            if !friends.isEmpty {
-                Text("Metros cuadrados conquistados por ti y tus amigos.")
+                .tint(Color.gold)
+                .accessibilityLabel("Resumen semanal")
             }
         }
     }
 
+    // MARK: Boards
+
     @ViewBuilder
-    private var competitionSection: some View {
-        Section {
-            if competitionEntries.isEmpty && !isLoading {
-                Text("Aún no hay participantes con territorio. ¡Sal a correr!")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(Array(competitionEntries.enumerated()), id: \.element.id) { index, entry in
-                Button {
-                    open(entry.user.id)
-                } label: {
-                    RankRow(
-                        rank: index + 1,
-                        name: entry.user.id == session.userId ? "\(entry.user.name) (tú)" : entry.user.name,
-                        avatar: entry.user.avatar,
-                        color: entry.user.color,
-                        value: Format.area(entry.totalArea),
-                        detail: Self.competitionDetail(entry),
-                        subtitle: Self.subtitle(username: entry.user.username, name: entry.user.name, nickname: entry.user.nickname),
-                        nickname: entry.user.nickname,
-                        highlighted: entry.user.id == session.userId
+    private var boardContent: some View {
+        switch board {
+        case .friends:
+            friendsBoard
+                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .opacity))
+        case .competition:
+            competitionBoard
+                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private var friendsBoard: some View {
+        if let errorMessage, friends.isEmpty {
+            ErrorView(message: errorMessage) { Task { await load() } }
+                .padding(.top, 40)
+        } else if friends.isEmpty && (isLoading || !hasLoaded) {
+            RankingSkeleton()
+        } else {
+            VStack(spacing: DS.Spacing.l) {
+                if friends.count <= 1 {
+                    inviteFriends
+                }
+                if !friends.isEmpty {
+                    RankingBoardView(
+                        items: friendItems,
+                        showsPosition: friends.count > 1,
+                        footnote: "Territorio total conquistado por ti y tus amigos.",
+                        onSelect: { item in open(item.id) }
                     )
                 }
-                .buttonStyle(.plain)
             }
-        } header: {
-            Text(competition.competition?.name ?? "Competición")
         }
+    }
+
+    private var inviteFriends: some View {
+        EmptyStateView(
+            systemImage: "person.2.wave.2.fill",
+            title: "Esto se gana en grupo",
+            message: "Añade a tu gente y descubre quién pinta más mapa. Que empiece el pique.",
+            actionTitle: "Buscar amigos",
+            action: { router.selectedTab = .friends }
+        )
+        .card()
+    }
+
+    @ViewBuilder
+    private var competitionBoard: some View {
+        if competitionEntries.isEmpty && (isLoading || !hasLoaded) {
+            RankingSkeleton()
+        } else if competitionEntries.isEmpty {
+            EmptyStateView(
+                systemImage: "flag.checkered",
+                title: "El mapa está en blanco",
+                message: "Nadie ha conquistado nada todavía. Sal a correr y estrena el podio.",
+                actionTitle: "Ir al mapa",
+                action: { router.selectedTab = .map },
+                tint: Color.gold
+            )
+            .card()
+        } else {
+            RankingBoardView(
+                items: competitionItems,
+                footnote: "Territorio conquistado durante \(competition.competition?.name ?? "la competición"). 🔥 robado · 🎁 tesoros",
+                onSelect: { item in open(item.id) }
+            )
+        }
+    }
+
+    private var friendItems: [RankingItem] {
+        var items: [RankingItem] = []
+        for (index, user) in friends.enumerated() {
+            items.append(RankingItem(user: user, rank: user.rank ?? index + 1, isMe: user.id == session.userId))
+        }
+        return items
+    }
+
+    private var competitionItems: [RankingItem] {
+        var items: [RankingItem] = []
+        for (index, entry) in competitionEntries.enumerated() {
+            items.append(RankingItem(entry: entry, rank: index + 1, isMe: entry.user.id == session.userId))
+        }
+        return items
     }
 
     /// Other players open their profile; the user's own row goes to the Profile tab.
@@ -157,27 +185,16 @@ struct RankingsView: View {
         }
     }
 
-    private static func subtitle(username: String, name: String, nickname: String?) -> String? {
-        let handle = username.isEmpty ? nil : "@\(username)"
-        if let nickname, !nickname.isEmpty {
-            return [handle, "antes: \(name)"].compactMap { $0 }.joined(separator: " · ")
-        }
-        return handle
-    }
-
-    private static func competitionDetail(_ entry: CompetitionEntry) -> String? {
-        var parts: [String] = []
-        if entry.areaStolen > 0 { parts.append("🗡️ \(Format.area(entry.areaStolen))") }
-        if entry.treasuresCollected > 0 { parts.append("🎁 \(entry.treasuresCollected)") }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ")
-    }
-
     private func load() async {
         guard let userId = session.userId else { return }
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            hasLoaded = true
+        }
         do {
-            friends = try await APIClient.shared.request("GET", "/api/leaderboard/friends/\(userId)", as: [AppUser].self)
+            let loaded = try await APIClient.shared.request("GET", "/api/leaderboard/friends/\(userId)", as: [AppUser].self)
+            withAnimation(.snappy) { friends = loaded }
             errorMessage = nil
         } catch is CancellationError {
             return
@@ -187,7 +204,8 @@ struct RankingsView: View {
         await competition.refresh()
         if hasCompetitionBoard {
             if let response = try? await APIClient.shared.request("GET", "/api/competition/leaderboard", as: CompetitionLeaderboardResponse.self) {
-                competitionEntries = response.leaderboard.sorted { $0.totalArea > $1.totalArea }
+                let sorted = response.leaderboard.sorted { $0.totalArea > $1.totalArea }
+                withAnimation(.snappy) { competitionEntries = sorted }
             }
         } else {
             competitionEntries = []
@@ -198,69 +216,4 @@ struct RankingsView: View {
 
 private struct RankedUser: Identifiable {
     let id: String
-}
-
-struct RankRow: View {
-    let rank: Int
-    let name: String
-    let avatar: String?
-    let color: String
-    let value: String
-    var detail: String? = nil
-    var subtitle: String? = nil
-    /// Active nickname (Pluma del Troll): shown as "🎭 nickname" instead of the name.
-    var nickname: String? = nil
-    var highlighted = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Group {
-                switch rank {
-                case 1: Text("🥇")
-                case 2: Text("🥈")
-                case 3: Text("🥉")
-                default: Text("\(rank)").foregroundStyle(.secondary)
-                }
-            }
-            .font(.title3.weight(.bold))
-            .frame(width: 34)
-
-            AvatarView(name: name, avatar: avatar, color: color, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                if let nickname, !nickname.isEmpty {
-                    Text("🎭 \(nickname)")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.pink)
-                        .lineLimit(1)
-                } else {
-                    Text(name)
-                        .font(.body.weight(highlighted ? .bold : .regular))
-                        .lineLimit(1)
-                }
-                if let subtitle {
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                if let detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-        }
-        .contentShape(Rectangle())
-        .padding(.vertical, 4)
-        .listRowBackground(rowBackground)
-    }
-
-    private var rowBackground: Color? {
-        if highlighted { return Color.brand.opacity(0.12) }
-        switch rank {
-        case 1: return Color.yellow.opacity(0.12)
-        case 2: return Color.gray.opacity(0.12)
-        case 3: return Color.orange.opacity(0.10)
-        default: return nil
-        }
-    }
 }

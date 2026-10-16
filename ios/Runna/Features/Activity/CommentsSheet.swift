@@ -25,20 +25,25 @@ struct CommentsSheet: View {
         NavigationStack {
             List {
                 if comments.isEmpty && !isLoading {
-                    Text("Sé el primero en comentar.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .listRowBackground(Color.clear)
+                    EmptyStateView(
+                        systemImage: "bubble.left.and.bubble.right.fill",
+                        title: "Aquí hay mucho silencio",
+                        message: "Rompe el hielo con el primer comentario. Un poco de pique sano nunca viene mal.",
+                        tint: .sky
+                    )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
                 ForEach(comments) { comment in
-                    row(comment, thread: comment)
+                    row(comment, thread: comment, isReply: false)
                     ForEach(comment.replies) { reply in
-                        row(reply, thread: comment)
-                            .padding(.leading, 36)
+                        row(reply, thread: comment, isReply: true)
                     }
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.canvas.ignoresSafeArea())
             .overlay { if isLoading { ProgressView() } }
             .safeAreaInset(edge: .bottom) { composer }
             .navigationTitle("Comentarios")
@@ -68,13 +73,15 @@ struct CommentsSheet: View {
             }
             .errorAlert($errorMessage)
         }
+        .presentationDragIndicator(.visible)
         .task { await initialLoad() }
     }
 
-    private func row(_ comment: FeedComment, thread: FeedComment) -> some View {
+    private func row(_ comment: FeedComment, thread: FeedComment, isReply: Bool) -> some View {
         CommentRow(
             comment: comment,
             isMine: comment.userId == session.userId,
+            isReply: isReply,
             people: friends,
             isReacting: reactingIds.contains(comment.id),
             onReply: { reply(to: thread) },
@@ -83,6 +90,9 @@ struct CommentsSheet: View {
             onReport: { reportTarget = .comment(comment) },
             onOpenUser: { openProfile($0) }
         )
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets(top: 6, leading: isReply ? 52 : 16, bottom: 6, trailing: 16))
     }
 
     // MARK: - Composer
@@ -92,66 +102,123 @@ struct CommentsSheet: View {
         return Mentions.suggestions(for: query, among: friends)
     }
 
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+    }
+
     private var composer: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if !mentionSuggestions.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(mentionSuggestions) { person in
-                            Button {
-                                draft = Mentions.insert(person, into: draft)
-                            } label: {
-                                HStack(spacing: 6) {
-                                    AvatarView(name: person.name, avatar: person.avatar, color: person.color, size: 24)
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        Text(person.name).font(.caption.weight(.semibold)).lineLimit(1)
-                                        if !person.username.isEmpty {
-                                            Text("@\(person.username)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                        }
-                                    }
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color(.secondarySystemBackground), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Mencionar a \(person.name)")
-                        }
-                    }
-                }
+                mentionBar
             }
             if let replyingTo {
-                HStack {
-                    Text("Respondiendo a \(replyingTo.user.name)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Cancelar") { self.replyingTo = nil }
-                        .font(.caption)
-                }
+                replyBanner(replyingTo)
             }
-            HStack(spacing: 8) {
-                TextField("Escribe un comentario… (@ para mencionar)", text: $draft, axis: .vertical)
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("Escribe algo… (@ para mencionar)", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
-                    .textFieldStyle(.roundedBorder)
                     .focused($inputFocused)
                     .disabled(isSending)
-                Button {
-                    send()
-                } label: {
-                    if isSending {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "paperplane.fill")
-                    }
-                }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
-                .accessibilityLabel("Enviar comentario")
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .strokeBorder(inputFocused ? Color.brand.opacity(0.5) : Color.hairline, lineWidth: 1)
+                    )
+                sendButton
             }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, DS.Spacing.l)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    private var sendButton: some View {
+        Button {
+            send()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(.brandGradient)
+                    .opacity(canSend || isSending ? 1 : 0.35)
+                if isSending {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.pressable)
+        .disabled(!canSend)
+        .animation(.snappy, value: canSend)
+        .accessibilityLabel("Enviar comentario")
+    }
+
+    private var mentionBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(mentionSuggestions) { person in
+                    Button {
+                        draft = Mentions.insert(person, into: draft)
+                    } label: {
+                        mentionChip(person)
+                    }
+                    .buttonStyle(.pressable)
+                    .accessibilityLabel("Mencionar a \(person.name)")
+                }
+            }
+        }
+    }
+
+    private func mentionChip(_ person: MentionCandidate) -> some View {
+        HStack(spacing: 6) {
+            AvatarView(name: person.name, avatar: person.avatar, color: person.color, size: 26)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(person.name)
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .lineLimit(1)
+                if !person.username.isEmpty {
+                    Text("@\(person.username)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 12)
+        .padding(.vertical, 4)
+        .background(Color(hex: person.color).opacity(0.14), in: Capsule())
+    }
+
+    private func replyBanner(_ comment: FeedComment) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrowshape.turn.up.left.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.brand)
+            Text("Respondiendo a \(comment.user.name)")
+                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .lineLimit(1)
+            Spacer()
+            Button {
+                replyingTo = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .background(Color.surfaceRaised, in: Circle())
+            }
+            .accessibilityLabel("Cancelar respuesta")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.brand.opacity(0.10), in: Capsule())
     }
 
     // MARK: - Actions
@@ -270,6 +337,7 @@ private struct CommentProfileTarget: Identifiable {
 private struct CommentRow: View {
     let comment: FeedComment
     let isMine: Bool
+    let isReply: Bool
     let people: [MentionCandidate]
     let isReacting: Bool
     let onReply: () -> Void
@@ -278,63 +346,25 @@ private struct CommentRow: View {
     let onReport: () -> Void
     let onOpenUser: (String) -> Void
 
+    private var userColor: Color { Color(hex: comment.user.color) }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Button { onOpenUser(comment.user.id) } label: {
-                AvatarView(name: comment.user.name, avatar: comment.user.avatar, color: comment.user.color, size: 30)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Ver perfil de \(comment.user.name)")
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Button { onOpenUser(comment.user.id) } label: {
-                        Text(comment.user.displayName)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(.borderless)
-                    Text(Format.relative(APIDate.parse(comment.createdAt)))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 8) {
+            if isMine {
+                Spacer(minLength: 40)
+            } else {
+                Button { onOpenUser(comment.user.id) } label: {
+                    AvatarView(name: comment.user.name, avatar: comment.user.avatar, color: comment.user.color, size: isReply ? 28 : 34)
                 }
-                MentionText(text: comment.content, people: people, onOpenUser: onOpenUser)
-                    .font(.subheadline)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 16) {
-                    Button { onReact("like") } label: {
-                        Label("\(comment.likeCount)", systemImage: comment.userReaction == "like" ? "heart.fill" : "heart")
-                            .foregroundStyle(comment.userReaction == "like" ? Color.red : Color.secondary)
-                    }
-                    .accessibilityLabel("Me gusta, \(comment.likeCount)")
-                    Button { onReact("dislike") } label: {
-                        Label("\(comment.dislikeCount)", systemImage: comment.userReaction == "dislike" ? "hand.thumbsdown.fill" : "hand.thumbsdown")
-                            .foregroundStyle(comment.userReaction == "dislike" ? Color.brand : Color.secondary)
-                    }
-                    .accessibilityLabel("No me gusta, \(comment.dislikeCount)")
-                    Button("Responder", action: onReply)
-                    Spacer()
-                    Menu {
-                        if isMine {
-                            Button(role: .destructive, action: onDelete) {
-                                Label("Borrar", systemImage: "trash")
-                            }
-                        } else {
-                            Button(action: onReport) {
-                                Label("Denunciar comentario", systemImage: "exclamationmark.bubble")
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .frame(width: 28, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("Más opciones")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
                 .buttonStyle(.borderless)
-                .disabled(isReacting)
+                .accessibilityLabel("Ver perfil de \(comment.user.name)")
+            }
+            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+                bubble
+                actions
+            }
+            if !isMine {
+                Spacer(minLength: 24)
             }
         }
         .swipeActions {
@@ -342,8 +372,84 @@ private struct CommentRow: View {
                 Button("Borrar", role: .destructive, action: onDelete)
             } else {
                 Button("Denunciar", action: onReport)
-                    .tint(.orange)
+                    .tint(Color.steal)
             }
         }
+    }
+
+    private var bubbleShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: isMine ? 20 : 6,
+            bottomLeadingRadius: 20,
+            bottomTrailingRadius: 20,
+            topTrailingRadius: isMine ? 6 : 20,
+            style: .continuous
+        )
+    }
+
+    private var bubble: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Button { onOpenUser(comment.user.id) } label: {
+                    Text(isMine ? "Tú" : comment.user.displayName)
+                        .font(.system(.caption, design: .rounded, weight: .bold))
+                        .foregroundStyle(isMine ? Color.brandDeep : userColor)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.borderless)
+                Text(Format.relative(APIDate.parse(comment.createdAt)))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            MentionText(text: comment.content, people: people, onOpenUser: onOpenUser)
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(isMine ? Color.brand.opacity(0.16) : Color.surface, in: bubbleShape)
+        .overlay(bubbleShape.stroke(isMine ? Color.brand.opacity(0.25) : Color.hairline, lineWidth: 1))
+    }
+
+    private var actions: some View {
+        HStack(spacing: 14) {
+            Button { onReact("like") } label: {
+                Label("\(comment.likeCount)", systemImage: comment.userReaction == "like" ? "heart.fill" : "heart")
+                    .foregroundStyle(comment.userReaction == "like" ? Color.steal : Color.secondary)
+                    .contentTransition(.numericText(value: Double(comment.likeCount)))
+            }
+            .accessibilityLabel("Me gusta, \(comment.likeCount)")
+            Button { onReact("dislike") } label: {
+                Label("\(comment.dislikeCount)", systemImage: comment.userReaction == "dislike" ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                    .foregroundStyle(comment.userReaction == "dislike" ? Color.grape : Color.secondary)
+                    .contentTransition(.numericText(value: Double(comment.dislikeCount)))
+            }
+            .accessibilityLabel("No me gusta, \(comment.dislikeCount)")
+            Button("Responder", action: onReply)
+                .fontWeight(.semibold)
+            Menu {
+                if isMine {
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Borrar", systemImage: "trash")
+                    }
+                } else {
+                    Button(action: onReport) {
+                        Label("Denunciar comentario", systemImage: "exclamationmark.bubble")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 28, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Más opciones")
+        }
+        .font(.system(.caption, design: .rounded))
+        .foregroundStyle(.secondary)
+        .buttonStyle(.borderless)
+        .disabled(isReacting)
+        .padding(.horizontal, 6)
+        .animation(.snappy, value: comment.likeCount)
+        .animation(.snappy, value: comment.dislikeCount)
     }
 }

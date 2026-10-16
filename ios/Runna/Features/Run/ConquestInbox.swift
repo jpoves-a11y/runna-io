@@ -208,36 +208,40 @@ private struct ConquestInboxView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: DS.Spacing.l) {
+                    RunCelebrationHeader(
+                        title: isLoading ? "Llega una conquista…" : "¡Conquista completada!",
+                        subtitle: route?.name ?? "Actividad importada",
+                        systemImage: "flag.fill",
+                        isWorking: isLoading
+                    )
+                    .padding(.top, DS.Spacing.s)
                     if let route, route.locations.count >= 2 {
                         RouteReplayView(
                             coordinates: route.locations,
-                            color: Color(hex: session.user?.color ?? "#16A34A")
+                            color: Color(hex: session.user?.color ?? "#16A34A"),
+                            height: 220
                         )
                     }
                     if let route {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(route.name)
-                                .font(.headline)
-                            HStack {
-                                StatTile(value: Format.distance(route.distance), label: "Distancia")
-                                StatTile(value: Format.duration(route.duration), label: "Tiempo")
-                                StatTile(value: Format.pace(distanceMeters: route.distance, seconds: route.duration), label: "Ritmo")
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .cardStyle()
+                        RunStatsCard(distance: route.distance, duration: route.duration)
                     }
                     resultSection
+                    Button("¡Genial!", action: onDone)
+                        .buttonStyle(PrimaryButtonStyle())
+                        .padding(.top, DS.Spacing.s)
                 }
-                .padding()
+                .padding(.horizontal, DS.Spacing.l)
+                .padding(.bottom, DS.Spacing.xxl)
+                .animation(.snappy, value: isLoading)
             }
-            .background(Color(.systemGroupedBackground))
-            .navigationTitle(isLoading ? "Procesando…" : "¡Conquista completada!")
+            .screenBackground()
+            .navigationTitle("Nueva actividad")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Hecho", action: onDone)
+                        .fontWeight(.bold)
                 }
             }
             .sheet(item: $tauntVictim) { victim in
@@ -261,21 +265,19 @@ private struct ConquestInboxView: View {
                 TreasuresCard(treasures: treasures)
             }
         } else if isLoading {
-            HStack(spacing: 12) {
-                ProgressView()
-                Text("Calculando el territorio conquistado…")
-                Spacer()
-            }
-            .cardStyle()
+            RunStatusCard(
+                systemImage: "map",
+                title: "Calculando tu conquista…",
+                message: "Estamos midiendo cuánto mapa has pintado con esta actividad.",
+                isLoading: true
+            )
         } else {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "hourglass")
-                    .foregroundStyle(.secondary)
-                Text("El territorio de esta actividad todavía se está calculando. Aparecerá en el mapa en unos minutos.")
-                    .font(.subheadline)
-                Spacer()
-            }
-            .cardStyle()
+            RunStatusCard(
+                systemImage: "hourglass",
+                title: "Casi listo",
+                message: "El territorio de esta actividad todavía se está calculando. Aparecerá en el mapa en unos minutos.",
+                tint: Color.grape
+            )
         }
     }
 

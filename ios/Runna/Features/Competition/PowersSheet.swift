@@ -50,79 +50,34 @@ final class PowersModel {
     }
 }
 
-/// "Poderes": powers won from treasures, grouped into active, available and used.
+/// "Poderes": powers won from treasures as a collectible card grid — active, ready to use and spent.
 struct PowersSheet: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var model = PowersModel()
     @State private var nicknamePower: UserPower?
 
+    private let gridColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    private let spentColumns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+
     var body: some View {
         NavigationStack {
-            List {
-                if !model.active.isEmpty {
-                    Section("Activos (\(model.active.count))") {
-                        ForEach(model.active) { power in
-                            PowerRow(power: power, mode: .active)
-                        }
-                    }
-                }
-                if !model.available.isEmpty {
-                    Section("Disponibles (\(model.available.count))") {
-                        ForEach(model.available) { power in
-                            PowerRow(power: power, mode: .available(isActivating: model.activatingId == power.id)) {
-                                activate(power)
-                            }
-                            .disabled(model.activatingId != nil)
-                        }
-                    }
-                }
-                if !model.spent.isEmpty {
-                    Section("Usados (\(model.spent.count))") {
-                        ForEach(model.spent) { power in
-                            PowerRow(power: power, mode: .spent)
-                        }
-                    }
+            ScrollView {
+                if !model.powers.isEmpty {
+                    content
                 }
             }
-            .overlay {
-                if model.powers.isEmpty {
-                    if model.isLoading || !model.loaded {
-                        ProgressView()
-                    } else if let message = model.errorMessage {
-                        ErrorView(message: message) { Task { await reload() } }
-                    } else {
-                        EmptyStateView(
-                            systemImage: "map",
-                            title: "Aún no tienes poderes",
-                            message: "🗺️ ¡Recoge tesoros corriendo para obtenerlos!"
-                        )
-                    }
-                }
-            }
+            .screenBackground()
+            .overlay { stateOverlay }
             .navigationTitle("Poderes")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if !model.available.isEmpty {
-                        Text("\(model.available.count) disponible\(model.available.count == 1 ? "" : "s")")
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.orange, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Cerrar") { dismiss() }
-                }
-            }
+            .toolbar { toolbarContent }
             .refreshable { await reload() }
             .task { await reload() }
             .alert(
                 "¡Poder activado!",
                 isPresented: Binding(get: { model.resultMessage != nil }, set: { if !$0 { model.resultMessage = nil } }),
-                actions: { Button("OK", role: .cancel) {} },
+                actions: { Button("¡Vamos!", role: .cancel) {} },
                 message: { Text(model.resultMessage ?? "") }
             )
             .errorAlert(Binding(
@@ -139,6 +94,104 @@ struct PowersSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    // MARK: Content
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
+            PowersSummaryStrip(available: model.available.count, active: model.active.count, spent: model.spent.count)
+            if !model.active.isEmpty {
+                activeSection
+            }
+            if !model.available.isEmpty {
+                availableSection
+            }
+            if !model.spent.isEmpty {
+                spentSection
+            }
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.top, DS.Spacing.s)
+        .padding(.bottom, DS.Spacing.xxl)
+        .animation(.snappy, value: model.powers)
+    }
+
+    private var activeSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            SectionHeader(title: "En marcha", subtitle: "Tus poderes están trabajando ahora mismo", systemImage: "bolt.circle.fill")
+            ForEach(model.active) { power in
+                PowerActiveCard(power: power)
+            }
+        }
+    }
+
+    private var availableSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            SectionHeader(title: "Listos para usar", subtitle: "Elige bien el momento", systemImage: "sparkles")
+            LazyVGrid(columns: gridColumns, spacing: 12) {
+                ForEach(model.available) { power in
+                    PowerCollectibleCard(
+                        power: power,
+                        isActivating: model.activatingId == power.id,
+                        isDisabled: model.activatingId != nil,
+                        onActivate: { activate(power) }
+                    )
+                }
+            }
+        }
+    }
+
+    private var spentSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            SectionHeader(title: "Ya usados", systemImage: "clock.arrow.circlepath")
+            LazyVGrid(columns: spentColumns, spacing: 10) {
+                ForEach(model.spent) { power in
+                    PowerSpentTile(power: power)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var stateOverlay: some View {
+        if model.powers.isEmpty {
+            if model.isLoading || !model.loaded {
+                ProgressView()
+                    .controlSize(.large)
+            } else if let message = model.errorMessage {
+                ErrorView(message: message) { Task { await reload() } }
+            } else {
+                EmptyStateView(
+                    systemImage: "shippingbox.fill",
+                    title: "Tu cofre está vacío",
+                    message: "Pasa corriendo junto a los tesoros del mapa y llénalo de poderes.",
+                    tint: Color.gold
+                )
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            if !model.available.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.fill")
+                    Text("\(model.available.count) disponible\(model.available.count == 1 ? "" : "s")")
+                        .contentTransition(.numericText())
+                }
+                .font(.system(.caption, design: .rounded, weight: .heavy))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(LinearGradient.goldGradient, in: Capsule())
+                .foregroundStyle(.white)
+            }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Cerrar") { dismiss() }
+        }
     }
 
     private func reload() async {
@@ -163,69 +216,281 @@ struct PowersSheet: View {
     }
 }
 
-private struct PowerRow: View {
-    enum Mode {
-        case active
-        case available(isActivating: Bool)
-        case spent
-    }
+// MARK: - Summary
 
-    let power: UserPower
-    let mode: Mode
-    var onActivate: () -> Void = {}
+/// "3 listos · 1 activo · 4 usados"
+private struct PowersSummaryStrip: View {
+    let available: Int
+    let active: Int
+    let spent: Int
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text(power.emoji)
-                .font(.title)
-                .frame(width: 46, height: 46)
-                .background(Rarity.color(power.rarity).opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(power.name)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    RarityPill(rarity: power.rarity)
-                }
-                switch mode {
-                case .active:
-                    HStack(spacing: 4) {
-                        Circle().fill(Color.green).frame(width: 7, height: 7)
-                        Text(power.activeLabel)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.green)
-                        if let expires = power.expiresDate, expires > Date() {
-                            Text("· quedan \(Text(timerInterval: Date.countdownRange(to: expires), countsDown: true))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                    }
-                case .available, .spent:
-                    Text(power.definition?.description ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 4)
-            if case .available(let isActivating) = mode {
-                if isActivating {
-                    ProgressView()
-                } else {
-                    Button("Activar", action: onActivate)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                }
-            }
+        HStack(spacing: 0) {
+            stat(value: available, label: available == 1 ? "listo" : "listos", tint: Color.gold, systemImage: "bolt.fill")
+            divider
+            stat(value: active, label: active == 1 ? "activo" : "activos", tint: Color.brand, systemImage: "flame.fill")
+            divider
+            stat(value: spent, label: spent == 1 ? "usado" : "usados", tint: Color.secondary, systemImage: "checkmark.seal.fill")
         }
-        .padding(.vertical, 4)
-        .opacity(isSpent ? 0.5 : 1)
+        .card(padding: 14)
     }
 
-    private var isSpent: Bool {
-        if case .spent = mode { return true }
-        return false
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.hairline)
+            .frame(width: 1, height: 36)
+    }
+
+    private func stat(value: Int, label: String, tint: Color, systemImage: String) -> some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                Text("\(value)")
+                    .font(Font.statNumber)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+            }
+            Text(label)
+                .statLabelStyle()
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Cards
+
+/// Collectible card for a power ready to use: rarity art, name, description and "Activar".
+private struct PowerCollectibleCard: View {
+    let power: UserPower
+    let isActivating: Bool
+    let isDisabled: Bool
+    let onActivate: () -> Void
+
+    @State private var glowing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var tint: Color { Rarity.color(power.rarity) }
+    private var isLegendary: Bool { power.rarity == "legendary" }
+    private var isShiny: Bool { power.rarity == "legendary" || power.rarity == "epic" }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 20, style: .continuous) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PowerCardArt(power: power, height: 112, sparkles: isShiny)
+            info
+        }
+        .background(Color.surface)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(Rarity.gradient(power.rarity), lineWidth: isLegendary ? 2.5 : 1.5))
+        .shadow(color: tint.opacity(glowShadowOpacity), radius: isLegendary ? 18 : 10, x: 0, y: 5)
+        .onAppear {
+            guard isLegendary, !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
+                glowing = true
+            }
+        }
+    }
+
+    private var glowShadowOpacity: Double {
+        if isLegendary { return glowing ? 0.7 : 0.3 }
+        return 0.18
+    }
+
+    private var info: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(power.name)
+                .font(Font.cardTitle)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(power.definition?.description ?? "")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3, reservesSpace: true)
+            activateButton
+                .padding(.top, 4)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var activateButton: some View {
+        Button(action: onActivate) {
+            HStack(spacing: 6) {
+                if isActivating {
+                    ProgressView()
+                        .tint(Color.white)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "bolt.fill")
+                }
+                Text(isActivating ? "Activando…" : "Activar")
+            }
+            .font(.system(.subheadline, design: .rounded, weight: .heavy))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, minHeight: 38)
+            .background(Rarity.gradient(power.rarity), in: Capsule())
+            .shadow(color: tint.opacity(0.35), radius: 6, x: 0, y: 3)
+        }
+        .buttonStyle(.pressable)
+        .disabled(isDisabled)
+        .opacity(isDisabled && !isActivating ? 0.5 : 1)
+        .sensoryFeedback(.impact(weight: .medium), trigger: isActivating)
+        .accessibilityLabel("Activar \(power.name)")
+    }
+}
+
+/// Top half of a power card: rarity gradient, glow and the big emoji.
+private struct PowerCardArt: View {
+    let power: UserPower
+    let height: CGFloat
+    let sparkles: Bool
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Rarity.gradient(power.rarity))
+            RadialGradient(colors: [Color.white.opacity(0.5), Color.white.opacity(0)], center: .center, startRadius: 2, endRadius: 64)
+            if sparkles {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.75))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(10)
+                Image(systemName: "sparkle")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.6))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(12)
+            }
+            Text(power.emoji)
+                .font(.system(size: 52))
+                .shadow(color: Color.black.opacity(0.25), radius: 6, x: 0, y: 4)
+        }
+        .frame(height: height)
+        .overlay(alignment: .topTrailing) {
+            Text(Rarity.label(power.rarity))
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(Rarity.color(power.rarity))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.white, in: Capsule())
+                .padding(8)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// Wide card for a power that is working right now, with a live countdown.
+private struct PowerActiveCard: View {
+    let power: UserPower
+
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var tint: Color { Rarity.color(power.rarity) }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(power.emoji)
+                .font(.system(size: 32))
+                .frame(width: 60, height: 60)
+                .background(Rarity.gradient(power.rarity), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .shadow(color: tint.opacity(0.4), radius: 8, x: 0, y: 4)
+            VStack(alignment: .leading, spacing: 4) {
+                liveBadge
+                Text(power.name)
+                    .font(Font.cardTitle)
+                    .lineLimit(1)
+                Text(power.activeLabel)
+                    .font(.system(.footnote, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            timer
+        }
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                .fill(tint.opacity(0.10))
+                .background(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).fill(Color.surface))
+        }
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: 1.5))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var liveBadge: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(Color.brand)
+                .frame(width: 7, height: 7)
+                .scaleEffect(pulse ? 1.3 : 0.8)
+                .opacity(pulse ? 1 : 0.6)
+            Text("Activo")
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(Color.brand)
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var timer: some View {
+        if let expires = power.expiresDate, expires > Date() {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(timerInterval: Date.countdownRange(to: expires), countsDown: true)
+                    .font(Font.stat(18, weight: .heavy))
+                    .monospacedDigit()
+                    .multilineTextAlignment(.trailing)
+                    .frame(minWidth: 70, alignment: .trailing)
+                Text("restante")
+                    .statLabelStyle()
+            }
+        } else {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.title2)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Color.brand)
+        }
+    }
+}
+
+/// Small faded tile for a used or expired power.
+private struct PowerSpentTile: View {
+    let power: UserPower
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Text(power.emoji)
+                .font(.system(size: 28))
+                .grayscale(1)
+            Text(power.name)
+                .font(.system(.caption, design: .rounded, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(power.status == "expired" ? "Caducado" : "Usado")
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .textCase(.uppercase)
+                .tracking(0.5)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 6)
+        .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous).strokeBorder(Color.hairline, lineWidth: 1))
+        .opacity(0.65)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -307,6 +572,7 @@ private struct NicknamePowerSheet: View {
                     }
                 }
             }
+            .listBackground()
             .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Buscar por nombre o @usuario")
             .navigationTitle("✏️ Pluma del Troll")
             .navigationBarTitleDisplayMode(.inline)
@@ -319,6 +585,7 @@ private struct NicknamePowerSheet: View {
                         ProgressView()
                     } else {
                         Button("Asignar") { assign() }
+                            .fontWeight(.bold)
                             .disabled(selectedId == nil || trimmedNickname.isEmpty)
                     }
                 }

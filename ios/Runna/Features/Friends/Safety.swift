@@ -45,6 +45,16 @@ enum ReportReason: String, CaseIterable, Identifiable {
         case .other: return "Otro"
         }
     }
+
+    var systemImage: String {
+        switch self {
+        case .spam: return "envelope.badge.fill"
+        case .harassment: return "bubble.left.and.exclamationmark.bubble.right.fill"
+        case .inappropriate: return "eye.slash.fill"
+        case .cheating: return "location.slash.fill"
+        case .other: return "ellipsis.circle.fill"
+        }
+    }
 }
 
 /// Calls for reports and blocks.
@@ -100,14 +110,15 @@ struct ReportSheet: View {
         NavigationStack {
             Group {
                 if sent {
-                    ContentUnavailableView {
-                        Label("Gracias, lo revisaremos", systemImage: "checkmark.shield")
-                    } description: {
-                        Text("Nuestro equipo revisará la denuncia y tomará medidas si incumple las normas de Runna.io. Si no quieres ver más a esta persona, también puedes bloquearla desde su perfil.")
-                    } actions: {
-                        Button("Cerrar") { dismiss() }
-                            .buttonStyle(.borderedProminent)
-                    }
+                    EmptyStateView(
+                        systemImage: "checkmark.shield.fill",
+                        title: "Gracias, lo revisaremos",
+                        message: "Nuestro equipo revisará la denuncia y tomará medidas si incumple las normas de Runna.io. Si no quieres ver más a esta persona, también puedes bloquearla desde su perfil.",
+                        actionTitle: "Cerrar",
+                        action: { dismiss() }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .screenBackground()
                 } else {
                     form
                 }
@@ -133,6 +144,7 @@ struct ReportSheet: View {
             .errorAlert($errorMessage)
         }
         .presentationDetents([.medium, .large])
+        .presentationCornerRadius(28)
         .interactiveDismissDisabled(isSending)
     }
 
@@ -141,22 +153,26 @@ struct ReportSheet: View {
             Section {
                 Picker("Motivo", selection: $reason) {
                     ForEach(ReportReason.allCases) { option in
-                        Text(option.title).tag(option)
+                        Label(option.title, systemImage: option.systemImage).tag(option)
                     }
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
+                .listRowBackground(Color.surface)
             } header: {
-                Text("¿Qué ocurre?")
+                SocialSectionHeader(title: "¿Qué ocurre?", systemImage: "exclamationmark.bubble.fill", tint: .steal)
             }
 
             Section {
                 TextField("Cuéntanos más (opcional)", text: $details, axis: .vertical)
                     .lineLimit(3...6)
+                    .listRowBackground(Color.surface)
             } footer: {
                 Text("La denuncia es anónima: la otra persona no sabrá quién la ha enviado.")
             }
         }
+        .listBackground()
+        .tint(Color.steal)
         .disabled(isSending)
     }
 
@@ -213,15 +229,20 @@ struct BlockedUsersView: View {
                     ForEach(users) { user in
                         HStack {
                             PersonRow(name: user.name, username: user.username, avatar: user.avatar, color: user.color)
+                                .grayscale(0.6)
                             Spacer()
                             if busyIds.contains(user.id) {
                                 ProgressView()
                             } else {
-                                Button("Desbloquear") { userToUnblock = user }
-                                    .buttonStyle(.bordered)
-                                    .font(.caption)
+                                Button {
+                                    userToUnblock = user
+                                } label: {
+                                    SocialPillLabel(title: "Desbloquear", systemImage: "hand.raised.slash", tint: .secondary, kind: .soft, compact: true)
+                                }
+                                .buttonStyle(.borderless)
                             }
                         }
+                        .listRowBackground(Color.surface)
                     }
                 } footer: {
                     Text("No veis la actividad, los comentarios ni las fotos del otro, y no podéis enviaros solicitudes de amistad.")
@@ -236,13 +257,15 @@ struct BlockedUsersView: View {
                     ErrorView(message: loadError) { Task { await load() } }
                 } else {
                     EmptyStateView(
-                        systemImage: "hand.raised",
-                        title: "No has bloqueado a nadie",
-                        message: "Puedes bloquear a alguien desde su perfil. Dejaréis de ver vuestra actividad y comentarios."
+                        systemImage: "hand.thumbsup.fill",
+                        title: "Todo en paz por aquí",
+                        message: "No has bloqueado a nadie. Si alguien se pasa de la raya, puedes bloquearlo desde su perfil."
                     )
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .listBackground()
         .navigationTitle("Usuarios bloqueados")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }

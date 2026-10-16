@@ -14,22 +14,34 @@ struct RunView: View {
     @State private var tooShortAlert = false
     @State private var confirmReplaceRecovered = false
 
+    private var userColor: Color { Color(hex: session.user?.color ?? "#16A34A") }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             map
                 .ignoresSafeArea()
 
-            VStack(spacing: 10) {
+            // Soft fade so the glass panel reads well over busy maps
+            LinearGradient(colors: [Color.black.opacity(0), Color.black.opacity(0.18)], startPoint: .center, endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+
+            VStack(spacing: DS.Spacing.m) {
                 topBar
                 if let treasure = tracker.lastCollected {
-                    collectedBanner(treasure)
+                    RunCollectedBanner(treasure: treasure)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                Spacer()
+                Spacer(minLength: 0)
+                HStack {
+                    Spacer()
+                    recenterButton
+                }
+                .padding(.horizontal, DS.Spacing.l)
+                controlPanel
             }
             .animation(.spring(duration: 0.35), value: tracker.lastCollected?.id)
-
-            controlPanel
+            .animation(.snappy, value: tracker.phase)
         }
         .onAppear {
             tracker.refreshRecoverableRun()
@@ -38,9 +50,12 @@ struct RunView: View {
         .onDisappear {
             tracker.stopPreview()
         }
+        .sensoryFeedback(.impact(weight: .medium), trigger: tracker.phase)
         .confirmationDialog("¿Terminar la carrera?", isPresented: $confirmFinish, titleVisibility: .visible) {
             Button("Terminar y guardar") { finish() }
             Button("Seguir corriendo", role: .cancel) {}
+        } message: {
+            Text("Truco: mantén pulsado el botón de meta para terminar al instante.")
         }
         .confirmationDialog("¿Descartar esta carrera?", isPresented: $confirmCancel, titleVisibility: .visible) {
             Button("Descartar", role: .destructive) {
@@ -94,62 +109,69 @@ struct RunView: View {
         Map(position: $camera) {
             ForEach(tracker.territoryShapes) { shape in
                 MapPolygon(shape.polygon)
-                    .foregroundStyle(shape.color.opacity(0.2))
-                    .stroke(shape.color.opacity(0.5), lineWidth: 1.5)
+                    .foregroundStyle(shape.color.opacity(0.22))
+                    .stroke(shape.color.opacity(0.6), lineWidth: 1.5)
             }
             UserAnnotation()
             if tracker.coordinates.count >= 2 {
                 MapPolyline(coordinates: tracker.coordinates)
-                    .stroke(Color(hex: session.user?.color ?? "#16A34A"), style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                    .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: tracker.coordinates)
+                    .stroke(userColor, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
             }
             ForEach(tracker.visibleTreasures) { treasure in
                 Annotation(treasure.name, coordinate: treasure.coordinate) {
-                    Text(treasure.emoji ?? "🎁")
-                        .font(.title)
-                        .padding(6)
-                        .background(.thinMaterial, in: Circle())
+                    RunTreasurePin(treasure: treasure)
                 }
             }
         }
         .mapControls {
-            MapUserLocationButton()
             MapCompass()
+        }
+    }
+
+    private var recenterButton: some View {
+        GlassCircleButton(systemImage: "location.fill", accessibilityLabel: "Centrar en mí", size: 44) {
+            withAnimation(.snappy) {
+                camera = .userLocation(followsHeading: false, fallback: .automatic)
+            }
         }
     }
 
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack {
+        HStack(spacing: DS.Spacing.s) {
             if !tracker.isRecording || tracker.phase == .paused {
-                Button {
+                GlassCircleButton(
+                    systemImage: tracker.isRecording ? "trash" : "xmark",
+                    accessibilityLabel: tracker.isRecording ? "Descartar carrera" : "Cerrar",
+                    tint: tracker.isRecording ? Color.steal : nil,
+                    size: 44
+                ) {
                     if tracker.isRecording {
                         confirmCancel = true
                     } else {
                         tracker.isPresented = false
                     }
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.headline)
-                        .padding(12)
-                        .background(.regularMaterial, in: Circle())
                 }
-                .accessibilityLabel(tracker.isRecording ? "Descartar carrera" : "Cerrar")
+                .transition(.scale.combined(with: .opacity))
             }
             if tracker.isRecording {
                 RecordingBadge(isPaused: tracker.phase == .paused)
+                    .transition(.scale.combined(with: .opacity))
             }
-            Spacer()
+            Spacer(minLength: 0)
             GPSSignalView(accuracy: tracker.gpsAccuracy)
         }
-        .padding(.horizontal)
-        .padding(.top, 8)
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.top, DS.Spacing.s)
     }
 
     // MARK: - Controls
 
     private var controlPanel: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: DS.Spacing.l) {
             if tracker.isLocationDenied {
                 locationDeniedNotice
             } else if tracker.hasReducedAccuracy {
@@ -157,124 +179,103 @@ struct RunView: View {
             }
 
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                let seconds = Int(tracker.elapsed(at: context.date))
-                HStack {
-                    StatTile(value: Format.distance(tracker.distance), label: "Distancia")
-                    StatTile(value: Format.duration(seconds), label: "Tiempo")
-                    StatTile(value: Format.pace(distanceMeters: tracker.distance, seconds: seconds), label: "Ritmo")
-                }
+                RunLiveMetrics(
+                    seconds: Int(tracker.elapsed(at: context.date)),
+                    distance: tracker.distance,
+                    isPaused: tracker.phase == .paused,
+                    isIdle: tracker.phase == .idle
+                )
             }
 
             if !tracker.collectedTreasures.isEmpty {
-                Label("\(tracker.collectedTreasures.count) tesoro(s) recogido(s)", systemImage: "gift.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.orange)
+                StatPill(
+                    value: "\(tracker.collectedTreasures.count)",
+                    label: tracker.collectedTreasures.count == 1 ? "tesoro recogido" : "tesoros recogidos",
+                    systemImage: "gift.fill",
+                    tint: Color.gold
+                )
             }
 
             buttons
         }
-        .padding(20)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
+        .padding(DS.Spacing.xl)
+        .frame(maxWidth: .infinity)
+        .glassSurface(RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.bottom, DS.Spacing.s)
     }
 
     @ViewBuilder
     private var buttons: some View {
         switch tracker.phase {
         case .idle:
-            Button {
+            PrimaryActionButton(title: "Empezar", systemImage: "play.fill", pulse: canStart) {
                 if tracker.hasRecoverableRun {
                     confirmReplaceRecovered = true
                 } else {
                     startRun()
                 }
-            } label: {
-                Label("Empezar", systemImage: "play.fill")
             }
-            .buttonStyle(PrimaryButtonStyle())
             // With approximate location every GPS fix is discarded: the run would be lost
-            .disabled(tracker.isLocationDenied || tracker.hasReducedAccuracy)
+            .disabled(!canStart)
+            .opacity(canStart ? 1 : 0.45)
         case .running:
-            Button {
-                Haptics.tap()
-                tracker.pause()
-            } label: {
-                Label("Pausar", systemImage: "pause.fill")
+            HStack(spacing: DS.Spacing.xl) {
+                Spacer(minLength: 0)
+                RunRoundControl(systemImage: "pause.fill", title: "Pausar", gradient: .stealGradient, size: 84) {
+                    Haptics.tap()
+                    tracker.pause()
+                }
+                HoldToFinishButton(size: 64, onTap: { confirmFinish = true }, onFinish: { finish() })
+                Spacer(minLength: 0)
             }
-            .buttonStyle(PrimaryButtonStyle(color: .orange))
         case .paused:
-            HStack(spacing: 12) {
-                Button {
+            HStack(spacing: DS.Spacing.xl) {
+                Spacer(minLength: 0)
+                RunRoundControl(systemImage: "play.fill", title: "Seguir", gradient: .brandGradient, size: 84) {
                     Haptics.tap()
                     tracker.resume()
-                } label: {
-                    Label("Seguir", systemImage: "play.fill")
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                Button {
-                    confirmFinish = true
-                } label: {
-                    Label("Terminar", systemImage: "flag.checkered")
-                }
-                .buttonStyle(PrimaryButtonStyle(color: .red))
+                HoldToFinishButton(size: 84, onTap: { confirmFinish = true }, onFinish: { finish() })
+                Spacer(minLength: 0)
             }
         }
     }
 
+    private var canStart: Bool { !tracker.isLocationDenied && !tracker.hasReducedAccuracy }
+
     private var locationDeniedNotice: some View {
-        VStack(spacing: 8) {
-            Text("Runna.io necesita tu ubicación para grabar la carrera.")
-                .font(.subheadline)
-                .multilineTextAlignment(.center)
-            Button("Abrir Ajustes") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            .font(.subheadline.weight(.semibold))
+        RunNoticeCard(
+            systemImage: "location.slash.fill",
+            title: "Sin ubicación no hay conquista",
+            message: "Runna.io necesita tu ubicación para grabar la carrera."
+        ) {
+            Button("Abrir Ajustes") { openSettings() }
+                .buttonStyle(SecondaryButtonStyle(tint: Color.steal))
         }
     }
 
     private var reducedAccuracyNotice: some View {
-        VStack(spacing: 8) {
-            Label("Ubicación aproximada", systemImage: "location.slash")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.orange)
-            Text("Para grabar la ruta, Runna.io necesita tu ubicación exacta. Sin ella no se guarda ningún punto GPS.")
-                .font(.footnote)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 16) {
-                Button("Permitir ubicación exacta") {
+        RunNoticeCard(
+            systemImage: "location.slash",
+            title: "Ubicación aproximada",
+            message: "Para grabar la ruta, Runna.io necesita tu ubicación exacta. Sin ella no se guarda ningún punto GPS."
+        ) {
+            HStack(spacing: DS.Spacing.s) {
+                Button("Permitir exacta") {
                     tracker.requestFullAccuracy()
                 }
-                Button("Abrir Ajustes") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) {
-                        UIApplication.shared.open(url)
-                    }
-                }
+                .buttonStyle(SecondaryButtonStyle(tint: Color.brand))
+                Button("Ajustes") { openSettings() }
+                    .buttonStyle(SecondaryButtonStyle(tint: Color.steal))
             }
-            .font(.subheadline.weight(.semibold))
         }
     }
 
-    private func collectedBanner(_ treasure: Treasure) -> some View {
-        HStack(spacing: 10) {
-            Text(treasure.emoji ?? "🎁")
-                .font(.title2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("¡Cofre recogido!")
-                    .font(.subheadline.weight(.bold))
-                Text("\(treasure.powerName ?? treasure.name) · \(TreasureLine.rarityName(treasure.rarity))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(TreasureLine.rarityColor(treasure.rarity), lineWidth: 2))
-        .accessibilityElement(children: .combine)
     }
 
     private var tooShortMessage: String {
@@ -291,6 +292,8 @@ struct RunView: View {
 
     private func finish(force: Bool = false) {
         guard let run = tracker.finish(force: force) else {
+            // Stop the clock while the user decides what to do
+            tracker.pause()
             tooShortAlert = true
             return
         }
@@ -307,22 +310,302 @@ private struct IdentifiedSubmission: Identifiable {
     var id: ObjectIdentifier { ObjectIdentifier(submission) }
 }
 
+// MARK: - Metrics
+
+/// Big time on top, distance and pace below.
+private struct RunLiveMetrics: View {
+    let seconds: Int
+    let distance: Double
+    let isPaused: Bool
+    let isIdle: Bool
+
+    var body: some View {
+        VStack(spacing: DS.Spacing.m) {
+            VStack(spacing: 2) {
+                Text(Format.duration(seconds))
+                    .font(.system(size: 64, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .foregroundStyle(isPaused ? Color.secondary : Color.primary)
+                    .animation(.snappy, value: seconds)
+                Text(isIdle ? "Listo para salir" : (isPaused ? "En pausa" : "Tiempo"))
+                    .statLabelStyle()
+            }
+            HStack(spacing: 0) {
+                metric(value: distanceValue, unit: distanceUnit, label: "Distancia", systemImage: "point.topleft.down.to.point.bottomright.curvepath.fill", tint: Color.sky)
+                Rectangle()
+                    .fill(Color.hairline)
+                    .frame(width: 1, height: 44)
+                metric(value: paceValue, unit: "/km", label: "Ritmo", systemImage: "speedometer", tint: Color.brand)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var distanceValue: String {
+        let text = Format.distance(distance)
+        return text.components(separatedBy: " ").first ?? text
+    }
+
+    private var distanceUnit: String {
+        let parts = Format.distance(distance).components(separatedBy: " ")
+        return parts.count > 1 ? parts[1] : ""
+    }
+
+    private var paceValue: String {
+        let text = Format.pace(distanceMeters: distance, seconds: seconds)
+        return text.components(separatedBy: " ").first ?? text
+    }
+
+    private func metric(value: String, unit: String, label: String, systemImage: String, tint: Color) -> some View {
+        VStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(Font.stat(30, weight: .bold))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(unit)
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Label(label, systemImage: systemImage)
+                .font(Font.statLabel)
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Controls
+
+/// Big round gradient control with a caption.
+private struct RunRoundControl: View {
+    let systemImage: String
+    let title: String
+    let gradient: LinearGradient
+    var size: CGFloat = 84
+    let action: () -> Void
+
+    @State private var taps = 0
+
+    var body: some View {
+        Button {
+            taps += 1
+            action()
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: size * 0.36, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.bounce, value: taps)
+                    .frame(width: size, height: size)
+                    .background(gradient, in: Circle())
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.3), lineWidth: 1))
+                    .shadow(color: Color.black.opacity(0.2), radius: 10, x: 0, y: 6)
+                Text(title)
+                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(PressableButtonStyle(scale: 0.92))
+        .accessibilityLabel(title)
+    }
+}
+
+/// Finish button: hold it to finish right away (a progress ring fills), a quick tap asks first.
+private struct HoldToFinishButton: View {
+    var size: CGFloat = 84
+    let onTap: () -> Void
+    let onFinish: () -> Void
+
+    private let holdDuration: Double = 1.2
+    @State private var progress: CGFloat = 0
+    @State private var pressStart: Date?
+    @State private var completions = 0
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .fill(Color.surface)
+                Circle()
+                    .strokeBorder(Color.steal.opacity(0.25), lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(Color.steal, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .padding(2.5)
+                Image(systemName: "flag.checkered")
+                    .font(.system(size: size * 0.32, weight: .heavy))
+                    .foregroundStyle(Color.steal)
+                    .symbolEffect(.bounce, value: completions)
+            }
+            .frame(width: size, height: size)
+            .scaleEffect(progress > 0 ? 1.08 : 1)
+            .shadow(color: Color.black.opacity(0.15), radius: 10, x: 0, y: 6)
+            .contentShape(Circle())
+            .onLongPressGesture(minimumDuration: holdDuration, maximumDistance: 40) {
+                pressStart = nil
+                completions += 1
+                progress = 0
+                onFinish()
+            } onPressingChanged: { pressing in
+                if pressing {
+                    pressStart = Date()
+                    withAnimation(.linear(duration: holdDuration)) { progress = 1 }
+                } else {
+                    withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
+                    // Released early (a tap or a short press): ask instead
+                    if let start = pressStart, Date().timeIntervalSince(start) < holdDuration - 0.1 {
+                        onTap()
+                    }
+                    pressStart = nil
+                }
+            }
+            Text("Mantén para terminar")
+                .font(.system(.caption, design: .rounded, weight: .bold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .sensoryFeedback(.success, trigger: completions)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Terminar carrera")
+        .accessibilityHint("Mantén pulsado para terminar al instante")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onTap() }
+    }
+}
+
+/// Coloured card for location problems inside the panel.
+private struct RunNoticeCard<Actions: View>: View {
+    let systemImage: String
+    let title: String
+    let message: String
+    @ViewBuilder var actions: Actions
+
+    var body: some View {
+        VStack(spacing: DS.Spacing.s) {
+            Label(title, systemImage: systemImage)
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .foregroundStyle(Color.steal)
+            Text(message)
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            actions
+        }
+        .padding(DS.Spacing.m)
+        .frame(maxWidth: .infinity)
+        .background(Color.steal.opacity(0.12), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+    }
+}
+
+/// Treasure on the live map: emoji on a rarity-coloured glass bubble.
+private struct RunTreasurePin: View {
+    let treasure: Treasure
+
+    var body: some View {
+        Text(treasure.emoji ?? "🎁")
+            .font(.title2)
+            .frame(width: 44, height: 44)
+            .background(.thinMaterial, in: Circle())
+            .overlay(Circle().strokeBorder(TreasureLine.rarityColor(treasure.rarity), lineWidth: 2.5))
+            .shadow(color: TreasureLine.rarityColor(treasure.rarity).opacity(0.5), radius: 8)
+    }
+}
+
+/// "¡Cofre recogido!" banner at the top.
+private struct RunCollectedBanner: View {
+    let treasure: Treasure
+    @State private var appeared = false
+
+    var body: some View {
+        HStack(spacing: DS.Spacing.m) {
+            Text(treasure.emoji ?? "🎁")
+                .font(.title)
+                .scaleEffect(appeared ? 1 : 0.4)
+                .rotationEffect(.degrees(appeared ? 0 : -30))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("¡Cofre recogido!")
+                    .font(.system(.subheadline, design: .rounded, weight: .heavy))
+                Text("\(treasure.powerName ?? treasure.name) · \(TreasureLine.rarityName(treasure.rarity))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(TreasureLine.rarityColor(treasure.rarity))
+            }
+            Image(systemName: "sparkles")
+                .foregroundStyle(Color.gold)
+                .symbolEffect(.bounce, value: appeared)
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.vertical, DS.Spacing.m)
+        .glassSurface(Capsule())
+        .overlay(Capsule().strokeBorder(TreasureLine.rarityColor(treasure.rarity), lineWidth: 2))
+        .sensoryFeedback(.success, trigger: appeared)
+        .onAppear {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) { appeared = true }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// "REC" while recording, "PAUSA" while paused.
 private struct RecordingBadge: View {
     let isPaused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: isPaused ? "pause.circle.fill" : "record.circle")
-                .symbolEffect(.pulse, isActive: !isPaused)
+            Circle()
+                .fill(Color.white)
+                .frame(width: 8, height: 8)
+                .opacity(isPaused ? 0 : 1)
+                .overlay {
+                    if isPaused {
+                        Image(systemName: "pause.fill")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(.white)
+                    }
+                }
             Text(isPaused ? "PAUSA" : "REC")
-                .font(.caption.weight(.heavy))
+                .font(.system(.caption, design: .rounded, weight: .heavy))
+                .tracking(1)
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(isPaused ? Color.orange : Color.red, in: Capsule())
+        .padding(.horizontal, 14)
+        .frame(height: 36)
+        .background(isPaused ? AnyShapeStyle(LinearGradient.goldGradient) : AnyShapeStyle(Color.red), in: Capsule())
+        .shadow(color: (isPaused ? Color.gold : Color.red).opacity(0.4), radius: 8, x: 0, y: 4)
+        .modifier(RunBlinkModifier(active: !isPaused))
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(isPaused ? "Carrera en pausa" : "Grabando carrera")
+    }
+}
+
+/// Slow breathing opacity for the REC badge.
+private struct RunBlinkModifier: ViewModifier {
+    let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dim = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(active && dim && !reduceMotion ? 0.75 : 1)
+            .onAppear { start() }
+            .onChange(of: active) { _, _ in start() }
+    }
+
+    private func start() {
+        guard active, !reduceMotion else {
+            dim = false
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
     }
 }
 
@@ -334,30 +617,32 @@ struct GPSSignalView: View {
         guard let accuracy else { return (0, .gray, "Buscando GPS…") }
         let meters = Int(accuracy.rounded())
         switch accuracy {
-        case ...5: return (4, .green, "\(meters) m · Excelente")
-        case ...10: return (3, Color(hex: "#84CC16"), "\(meters) m · Buena")
-        case ...20: return (2, .yellow, "\(meters) m · Aceptable")
-        case ...30: return (1, .orange, "\(meters) m · Débil")
+        case ...5: return (4, Color.brand, "\(meters) m · Excelente")
+        case ...10: return (3, Color.brandLime, "\(meters) m · Buena")
+        case ...20: return (2, Color.gold, "\(meters) m · Aceptable")
+        case ...30: return (1, Color.steal, "\(meters) m · Débil")
         default: return (0, .red, "\(meters) m · Mala")
         }
     }
 
     var body: some View {
         let current = level
-        HStack(spacing: 6) {
-            HStack(alignment: .bottom, spacing: 2) {
+        HStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 2.5) {
                 ForEach(0..<4) { index in
-                    RoundedRectangle(cornerRadius: 1)
+                    RoundedRectangle(cornerRadius: 1.5)
                         .fill(index < current.bars ? current.color : Color.secondary.opacity(0.3))
-                        .frame(width: 4, height: CGFloat(5 + index * 3))
+                        .frame(width: 4, height: CGFloat(6 + index * 3))
                 }
             }
+            .animation(.snappy, value: current.bars)
             Text(current.label)
-                .font(.caption.weight(.semibold))
+                .font(.system(.caption, design: .rounded, weight: .bold))
+                .monospacedDigit()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        .padding(.horizontal, 14)
+        .frame(height: 36)
+        .glassSurface(Capsule())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Señal GPS: \(current.label)")
     }
