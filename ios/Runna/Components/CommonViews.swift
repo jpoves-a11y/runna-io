@@ -1,42 +1,66 @@
 import SwiftUI
 import UIKit
 
-/// User avatar: data-URL or http image, or initials on the user's colour.
+/// User avatar: data-URL or http image, or initials on the user's colour,
+/// surrounded by a ring in the user's territory colour (their identity).
 struct AvatarView: View {
     let name: String
     let avatar: String?
     let color: String
     var size: CGFloat = 40
+    /// Territory-colour ring with a thin gap around the picture.
+    var ring: Bool = true
+
+    private var tint: Color { Color(hex: color) }
+    private var ringWidth: CGFloat { ring ? max(1.5, size / 18) : 0 }
+    private var gap: CGFloat { ring ? max(1, size / 28) : 0 }
+    private var innerSize: CGFloat { max(1, size - 2 * (ringWidth + gap)) }
 
     var body: some View {
         ZStack {
-            Circle().fill(Color(hex: color))
-            if let image = AvatarImageCache.image(for: avatar) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else if let avatar, avatar.hasPrefix("http"), let url = URL(string: avatar) {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        initials
-                    }
-                }
-            } else {
-                initials
+            if ring {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(colors: [tint, tint.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: ringWidth
+                    )
             }
+            picture
+                .frame(width: innerSize, height: innerSize)
+                .clipShape(Circle())
         }
         .frame(width: size, height: size)
-        .clipShape(Circle())
-        .overlay(Circle().stroke(Color(hex: color), lineWidth: max(1.5, size / 24)))
         .accessibilityHidden(true)
     }
 
+    @ViewBuilder
+    private var picture: some View {
+        if let image = AvatarImageCache.image(for: avatar) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+        } else if let avatar, avatar.hasPrefix("http"), let url = URL(string: avatar) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    initials
+                }
+            }
+        } else {
+            initials
+        }
+    }
+
     private var initials: some View {
-        Text(String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased())
-            .font(.system(size: size * 0.42, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
+        ZStack {
+            Circle().fill(
+                LinearGradient(colors: [tint.opacity(0.85), tint], startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+            Text(String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased())
+                .font(.system(size: innerSize * 0.44, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white)
+        }
     }
 }
 
@@ -55,7 +79,7 @@ enum AvatarImageCache {
     }
 }
 
-/// Number + label tile used on the map, profile and run screens.
+/// Number + label tile used on the map, profile and run screens (rounded, animated digits).
 struct StatTile: View {
     let value: String
     let label: String
@@ -63,23 +87,27 @@ struct StatTile: View {
     var tint: Color = .primary
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
-                    .font(.title3.weight(.bold))
+                    .font(Font.statNumber)
                     .monospacedDigit()
                     .foregroundStyle(tint)
+                    .contentTransition(.numericText())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 if let unit {
                     Text(unit)
-                        .font(.caption.weight(.semibold))
+                        .font(.system(.caption, design: .rounded, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
             }
             Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .statLabelStyle()
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -115,17 +143,51 @@ struct RouteShape: Shape {
     }
 }
 
+/// Friendly empty state: big symbol on a soft halo, witty title, short message and an optional action.
 struct EmptyStateView: View {
     let systemImage: String
     let title: String
     let message: String
+    var actionTitle: String? = nil
+    var action: (() -> Void)? = nil
+    var tint: Color = .brand
+
+    @State private var appeared = false
 
     var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: systemImage)
-        } description: {
-            Text(message)
+        VStack(spacing: DS.Spacing.l) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.10))
+                    .frame(width: 128, height: 128)
+                Circle()
+                    .fill(tint.opacity(0.16))
+                    .frame(width: 92, height: 92)
+                Image(systemName: systemImage)
+                    .font(.system(size: 40, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tint)
+                    .symbolEffect(.bounce, value: appeared)
+            }
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .multilineTextAlignment(.center)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(PrimaryButtonStyle(color: tint))
+                    .frame(maxWidth: 260)
+            }
         }
+        .padding(.horizontal, 32)
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity)
+        .onAppear { appeared = true }
     }
 }
 
@@ -135,28 +197,42 @@ struct ErrorView: View {
     let retry: () -> Void
 
     var body: some View {
-        ContentUnavailableView {
-            Label("No se ha podido cargar", systemImage: "wifi.exclamationmark")
-        } description: {
-            Text(message)
-        } actions: {
-            Button("Reintentar", action: retry)
-                .buttonStyle(.borderedProminent)
-        }
+        EmptyStateView(
+            systemImage: "wifi.exclamationmark",
+            title: "Vaya, no ha cargado",
+            message: message,
+            actionTitle: "Reintentar",
+            action: retry,
+            tint: .steal
+        )
     }
 }
 
-/// Primary call-to-action button style.
+/// Primary call-to-action button style: full-width capsule, gradient for the brand colour.
 struct PrimaryButtonStyle: ButtonStyle {
     var color: Color = .brand
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.headline)
+            .font(.system(.headline, design: .rounded, weight: .bold))
             .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .background(color.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .background { background }
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
+            .shadow(color: color.opacity(isEnabled ? 0.30 : 0), radius: 10, x: 0, y: 5)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.9 : 1) : 0.45)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        if color == Color.brand {
+            Capsule().fill(.brandGradient)
+        } else {
+            Capsule().fill(color.gradient)
+        }
     }
 }
 
@@ -171,10 +247,9 @@ extension View {
         )
     }
 
-    /// Card background used across the app.
+    /// Card background used across the app (same as `.card()`).
     func cardStyle() -> some View {
-        padding()
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        card()
     }
 }
 
