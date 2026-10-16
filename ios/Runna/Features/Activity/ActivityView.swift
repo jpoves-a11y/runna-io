@@ -391,20 +391,30 @@ private struct ActivityRunRow: View {
     private var thumbnail: some View {
         if route.coordinates.count >= 2 {
             ActivityRouteMap(cacheKey: "route-\(route.id)", coordinates: route.coordinates, color: color, cornerRadius: 14, lineWidth: 3)
-                .frame(width: 76, height: 76)
+                .frame(width: 64, height: 64)
         } else {
             Image(systemName: "figure.run")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(color)
-                .frame(width: 76, height: 76)
+                .frame(width: 64, height: 64)
                 .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
 
+    // Pills never truncate: if all three don't fit, the time pill is dropped
     private var pills: some View {
+        ViewThatFits(in: .horizontal) {
+            pillRow(showDuration: true)
+            pillRow(showDuration: false)
+        }
+    }
+
+    private func pillRow(showDuration: Bool) -> some View {
         HStack(spacing: 6) {
             ActivityMiniPill(systemImage: "figure.run", text: Format.distance(route.distance), tint: Color.sky)
-            ActivityMiniPill(systemImage: "stopwatch.fill", text: Format.duration(route.duration), tint: Color.grape)
+            if showDuration {
+                ActivityMiniPill(systemImage: "stopwatch.fill", text: Format.duration(route.duration), tint: Color.grape)
+            }
             if let area = route.territoryArea, area > 0 {
                 ActivityMiniPill(systemImage: "flag.fill", text: "+\(Format.area(area))", tint: Color.brand)
             }
@@ -431,6 +441,7 @@ private struct ActivityMiniPill: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background(tint.opacity(0.13), in: Capsule())
+        .fixedSize()
     }
 }
 
