@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     /// Reads "type" and data.routeId from the APNs payload ({aps, type, data: {type, url, routeId?, photoId?}}).
-    private static func payload(from userInfo: [AnyHashable: Any]) -> (type: String?, routeId: String?) {
+    nonisolated private static func payload(from userInfo: [AnyHashable: Any]) -> (type: String?, routeId: String?) {
         let data = userInfo["data"] as? [String: Any]
         let type = (userInfo["type"] as? String) ?? (data?["type"] as? String)
         var routeId = (data?["routeId"] as? String) ?? (userInfo["routeId"] as? String)

@@ -91,6 +91,7 @@ struct TauntComposerView: View {
 /// Shows photos other runners sent you; each one is deleted on the server once opened.
 struct PendingPhotosModifier: ViewModifier {
     @Environment(SessionStore.self) private var session
+    @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
     @State private var pending: [PendingPhoto] = []
     @State private var current: PendingPhoto?
@@ -100,6 +101,10 @@ struct PendingPhotosModifier: ViewModifier {
             .task(id: session.userId) { await refresh() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { Task { await refresh() } }
+            }
+            // A taunt-photo push was tapped or arrived while the app is open
+            .onChange(of: router.reloadSignal) { _, _ in
+                Task { await refresh() }
             }
             .sheet(item: $current, onDismiss: showNext) { photo in
                 EphemeralPhotoView(photo: photo)

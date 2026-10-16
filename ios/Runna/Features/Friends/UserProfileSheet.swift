@@ -149,7 +149,7 @@ struct UserProfileContent: View {
             Section("Estadísticas") {
                 LabeledContent("Territorio", value: Format.area(stats.totalArea))
                 NavigationLink {
-                    UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: reloadRoutes)
+                    UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
                 } label: {
                     LabeledContent("Actividades", value: "\(max(stats.activitiesCount, routes.count))")
                 }
@@ -184,14 +184,14 @@ struct UserProfileContent: View {
                     }
                     ForEach(routes.prefix(10)) { route in
                         NavigationLink {
-                            RouteDetailView(route: route, color: stats.user.color, editable: isMe, onChange: reloadRoutes)
+                            RouteDetailView(route: route, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
                         } label: {
                             RouteRow(route: route, color: Color(hex: stats.user.color))
                         }
                     }
                     if routes.count > 10 {
                         NavigationLink("Ver todas (\(routes.count))") {
-                            UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: reloadRoutes)
+                            UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
                         }
                     }
                 }

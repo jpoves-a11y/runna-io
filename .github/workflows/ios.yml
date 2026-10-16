@@ -7,6 +7,9 @@ on:
       - 'worker/**'
       - 'shared/**'
       - 'scripts/e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'drizzle.config.ts'
       - '.github/scripts/**'
       - '.github/workflows/ios.yml'
   pull_request:

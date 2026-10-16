@@ -1,20 +1,20 @@
 # Runna.io para iPhone
 
-App nativa en SwiftUI (iOS 17 o superior) que usa la misma API (Cloudflare Worker) que la web.
+App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: habla con la API del Cloudflare Worker (`worker/`).
 
 ## Qué incluye
 
-- **Cuenta**: inicio de sesión, registro con verificación por email, cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app).
-- **Mapa**: tu territorio y el de tus amigos (MapKit), filtro por amigo, toca un territorio para ver de quién es, tesoros cuando hay competición.
-- **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, pausa/reanudar, recuperación si iOS cierra la app a mitad de carrera, y si no hay conexión al terminar la carrera se guarda en el móvil y se sube después.
-- **Después de correr**: territorio conquistado y robado, a quién se lo has robado, enviarle una foto que solo puede ver una vez, renombrar la carrera.
-- **Actividad**: feed de tus amigos con "me gusta"/"no me gusta" y comentarios con respuestas; tus carreras con mapa, renombrar y borrar.
-- **Ranking** de amigos (y de la competición cuando hay una).
-- **Amigos**: solicitudes, búsqueda, enlace de invitación para compartir, invitaciones `runnaio://friends/accept/<token>`.
-- **Perfil**: foto, nombre, color del territorio, estadísticas de robos, Strava, Polar y **Apple Salud** (importa las carreras del Apple Watch), notificaciones, enlaces legales.
-- **Notificaciones push** nativas (APNs): robos de territorio, solicitudes de amistad, comentarios, etc.
-
-Aún no está en la app (solo en la web): activar poderes de la competición, resúmenes semanales y la animación de la ruta.
+- **Cuenta**: inicio de sesión, registro con verificación por email (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez.
+- **Mapa**: tu territorio y el de tus amigos (MapKit), filtro por amigo, toca un territorio para ver de quién es, tus recorridos, fortificaciones y castillos.
+- **Competiciones**: banner con la cuenta atrás, cofres en el mapa (común, raro, épico y legendario) que se recogen corriendo, **poderes** que se activan desde el botón ⚡, apodos, ranking de la competición, **resumen semanal** y podio final.
+- **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, pausa/reanudar, aviso si la ubicación no es exacta, recuperación si iOS cierra la app a mitad de carrera, y cola sin conexión: la carrera se guarda en el móvil y se sube después (sin duplicados).
+- **Después de correr**: territorio conquistado y robado, a quién se lo has robado, cofres recogidos, **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Strava, Polar o Apple Salud muestran el mismo resumen al abrir la app.
+- **Actividad**: feed de tus amigos (carreras, robos, cofres, apodos, récords) con "me gusta"/"no me gusta" y comentarios con respuestas y @menciones; tus carreras con mapa, renombrar y borrar.
+- **Ranking** de amigos y de la competición.
+- **Amigos**: solicitudes, búsqueda, perfiles con sus amigos y actividades, enlace de invitación para compartir (`/invite/<token>` abre la app y pide confirmar).
+- **Seguridad**: denunciar publicaciones, comentarios y usuarios; bloquear y desbloquear (Perfil → Usuarios bloqueados).
+- **Perfil**: foto, nombre, color del territorio, estadísticas de robos, apariencia clara/oscura, Strava, Polar y **Apple Salud** (importa las carreras del Apple Watch) en "Conectar dispositivos", notificaciones, soporte y enlaces legales.
+- **Notificaciones push** nativas (APNs): robos de territorio, solicitudes de amistad, comentarios, cofres, resumen semanal, importaciones automáticas, etc.
 
 ## Abrir y ejecutar (Mac)
 
@@ -26,6 +26,8 @@ Aún no está en la app (solo en la web): activar poderes de la competición, re
 3. Elige tu iPhone y pulsa ▶︎.
 
 La app habla con la API de producción (`AppConfig.apiBaseURL` en `Runna/Core/AppConfig.swift`).
+
+Para probarla en el simulador contra una API local con datos de prueba (ver el [README principal](../README.md#api-en-local)), pasa en el esquema de Xcode las variables de entorno `RUNNA_API_BASE_URL=http://127.0.0.1:8787`, `RUNNA_TEST_TOKEN` y `RUNNA_TEST_USER_ID` (los imprime `scripts/e2e/seed.mjs`).
 
 ## Subir a TestFlight
 
@@ -59,6 +61,12 @@ Las builds de Xcode (Debug) se registran en el entorno *sandbox* de APNs. Las de
 La app abre el login de Strava/Polar en una ventana segura del sistema. Al terminar, el servidor la devuelve a la app con `runnaio://oauth/...`. No hace falta cambiar nada en Strava ni en Polar: la URL de callback sigue siendo la del Worker.
 
 ## Revisión de Apple: notas útiles
+
+- **URLs para App Store Connect**:
+  - Política de privacidad: `https://runna-io-api.runna-io-api.workers.dev/privacy`
+  - Soporte: `https://runna-io-api.runna-io-api.workers.dev/support`
+  - Condiciones de uso (opcional, como EULA o en la descripción): `https://runna-io-api.runna-io-api.workers.dev/terms`
+- **Contenido generado por usuarios** (guideline 1.2): se puede denunciar y bloquear desde el perfil de un usuario, un comentario o una publicación. Las denuncias se revisan en 24 horas.
 
 - **Ubicación en segundo plano**: solo se usa mientras grabas una carrera que has empezado tú. Si lo preguntan, explícalo en las notas de la revisión.
 - **HealthKit**: solo lectura de entrenamientos de carrera y sus rutas, para crear territorio.

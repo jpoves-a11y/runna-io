@@ -1023,10 +1023,8 @@ export async function processTerritoryConquest(
       if (activityStartedAt && activityCompletedAt) {
         routeDuration = Math.round((new Date(activityCompletedAt).getTime() - new Date(activityStartedAt).getTime()) / 1000);
       }
-      // Sync totalArea to competition stats (includes 1.5x new-territory bonus)
-      try {
-        await storage.updateCompetitionStats(competition.id, userId, { totalArea: finalTotalArea });
-      } catch (_) {}
+      // incrementCompetitionStats creates the row on the first run of the competition,
+      // so it must run before the plain UPDATE of totalArea below.
       await storage.incrementCompetitionStats(competition.id, userId, {
         activities: 1,
         distance: routeDistance,
@@ -1035,6 +1033,10 @@ export async function processTerritoryConquest(
         treasures: treasuresCollected.length,
         ranTogether: ranTogetherWith.length,
       });
+      // Sync totalArea to competition stats (includes 1.5x new-territory bonus)
+      try {
+        await storage.updateCompetitionStats(competition.id, userId, { totalArea: finalTotalArea });
+      } catch (_) {}
       // Fix: compute truly unique victims from conquest_metrics (not per-run)
       try {
         const distinctVictims = await storage.getDistinctVictimsCount(userId);
@@ -3151,7 +3153,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
               const friendUsernameLower = friend.username?.toLowerCase() || '';
               const isMentioned = mentions.some((m: string) => {
                 const ml = m.toLowerCase();
-                return ml === friendNameLower || ml === friendUsernameLower;
+                // The pattern also captures the next word ("@Ana hola" -> "Ana hola"): try the first word too
+                const firstWord = ml.split(/\s/)[0];
+                return ml === friendNameLower || ml === friendUsernameLower
+                  || firstWord === friendNameLower || firstWord === friendUsernameLower;
               });
               if (isMentioned) {
                 notifiedUserIds.add(friend.id);
