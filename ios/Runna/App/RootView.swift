@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(SessionStore.self) private var session
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -17,6 +18,9 @@ struct RootView: View {
         .animation(.easeInOut(duration: 0.25), value: session.state)
         .task {
             await session.bootstrap()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { session.appBecameActive() }
         }
     }
 }
@@ -42,6 +46,7 @@ struct SplashView: View {
 struct MainTabView: View {
     @Environment(AppRouter.self) private var router
     @Environment(RunTracker.self) private var tracker
+    @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
 
     var body: some View {
         @Bindable var router = router
@@ -67,6 +72,15 @@ struct MainTabView: View {
             set: { tracker.isPresented = $0 }
         )) {
             RunView()
+        }
+        .fullScreenCover(isPresented: Binding(
+            // Shown once, after the first login on this device (never on top of a run being recorded)
+            get: { !onboardingDone && !tracker.isPresented },
+            set: { if !$0 { onboardingDone = true } }
+        )) {
+            OnboardingView {
+                onboardingDone = true
+            }
         }
         .modifier(PendingPhotosModifier())
     }

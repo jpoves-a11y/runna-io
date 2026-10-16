@@ -11,7 +11,8 @@ final class SessionStore {
         case loggedIn
     }
 
-    /// Account created but email not verified yet. The registration token is only used to verify it.
+    /// Account created but email not verified yet. The registration token is only used to verify it
+    /// and is kept in the keychain (never in UserDefaults, which ends up in backups unencrypted).
     struct PendingVerification: Codable, Equatable {
         let userId: String
         let email: String
@@ -28,15 +29,30 @@ final class SessionStore {
     private let userIdKey = "sessionUserId"
     private let cachedUserKey = "cachedUser"
     private let pendingKey = "pendingVerification"
+    /// How long the "verify your email" screen is kept after registering (the user may take a while to find the email).
+    private let pendingValidity: TimeInterval = 24 * 60 * 60
 
     init() {
         api.onUnauthorized = { [weak self] in
             self?.endSession()
         }
-        if let data = UserDefaults.standard.data(forKey: pendingKey),
-           let pending = try? JSONDecoder().decode(PendingVerification.self, from: data),
-           Date().timeIntervalSince(pending.createdAt) < 10 * 60 {
-            pendingVerification = pending
+        // Older versions kept the pending registration in UserDefaults: move it to the keychain
+        if let legacy = UserDefaults.standard.data(forKey: pendingKey) {
+            UserDefaults.standard.removeObject(forKey: pendingKey)
+            if let text = String(data: legacy, encoding: .utf8) {
+                KeychainStore.set(text, for: pendingKey)
+            }
+        }
+        if let text = KeychainStore.get(pendingKey),
+           let data = text.data(using: .utf8),
+           let pending = try? JSONDecoder().decode(PendingVerification.self, from: data) {
+            if Date().timeIntervalSince(pending.createdAt) < pendingValidity {
+                pendingVerification = pending
+            } else {
+                // Expired: forget it and revoke its token on the server
+                KeychainStore.delete(pendingKey)
+                Self.revoke(token: pending.token)
+            }
         }
     }
 
@@ -66,6 +82,8 @@ final class SessionStore {
             user = cached
             state = .loggedIn
         }
+        // Register with APNs on every launch (the token can change, and a restored session never went through login)
+        Task { await PushManager.shared.registerIfAuthorized() }
         do {
             let fresh: AppUser = try await api.request("GET", "/api/current-user/\(userId)")
             setUser(fresh)
@@ -106,10 +124,13 @@ final class SessionStore {
             throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inténtalo más tarde.")
         }
         if response.requiresVerification == true {
+            if let previous = pendingVerification, previous.token != token {
+                Self.revoke(token: previous.token)
+            }
             let pending = PendingVerification(userId: response.id, email: response.email ?? email, token: token, createdAt: Date())
             pendingVerification = pending
-            if let data = try? JSONEncoder().encode(pending) {
-                UserDefaults.standard.set(data, forKey: pendingKey)
+            if let data = try? JSONEncoder().encode(pending), let text = String(data: data, encoding: .utf8) {
+                KeychainStore.set(text, for: pendingKey)
             }
         } else {
             startSession(user: response, token: token)
@@ -133,8 +154,19 @@ final class SessionStore {
         try await api.send("POST", "/api/auth/resend-verification", body: [:], token: pending.token)
     }
 
+    /// "Usar otra cuenta": forgets the pending registration and revokes its token on the server.
     func cancelVerification() {
+        if let pending = pendingVerification {
+            Self.revoke(token: pending.token)
+        }
         clearPendingVerification()
+    }
+
+    /// Called when the app comes back to the foreground.
+    func appBecameActive() {
+        guard state == .loggedIn else { return }
+        // Permission may have been granted in Settings meanwhile
+        Task { await PushManager.shared.registerIfAuthorized() }
     }
 
     // MARK: - Account
@@ -171,7 +203,8 @@ final class SessionStore {
     func logout() async {
         await PushManager.shared.unregisterDevice()
         try? await api.send("POST", "/api/auth/logout")
-        endSession()
+        AppRouter.shared.pendingInviteToken = nil
+        endSession(clearDeviceData: true)
     }
 
     /// Permanently deletes the account and all its data (required by the App Store).
@@ -179,7 +212,8 @@ final class SessionStore {
         guard let userId else { return }
         await PushManager.shared.unregisterDevice()
         try await api.send("DELETE", "/api/users/\(userId)")
-        endSession()
+        AppRouter.shared.pendingInviteToken = nil
+        endSession(clearDeviceData: true)
     }
 
     // MARK: - Internals
@@ -190,7 +224,14 @@ final class SessionStore {
         api.sessionToken = token
         setUser(user)
         state = .loggedIn
-        Task { await PushManager.shared.registerIfAllowed() }
+        Task {
+            // Before the onboarding is done, its last page asks for permission in context
+            if UserDefaults.standard.bool(forKey: OnboardingView.doneKey) {
+                await PushManager.shared.registerIfAllowed()
+            } else {
+                await PushManager.shared.registerIfAuthorized()
+            }
+        }
     }
 
     private func setUser(_ user: AppUser) {
@@ -203,17 +244,38 @@ final class SessionStore {
     }
 
     /// Forgets the session locally (logout, deleted account, or a token the server rejected).
-    func endSession() {
+    /// - Parameter clearDeviceData: also deletes the runs waiting to be uploaded and the unfinished run
+    ///   (explicit logout or account deletion). When the server rejects the token they are kept: they are tagged
+    ///   with their owner, so another account never uploads them, and the same user gets them back after logging in.
+    func endSession(clearDeviceData: Bool = false) {
         KeychainStore.delete(tokenKey)
         KeychainStore.delete(userIdKey)
         UserDefaults.standard.removeObject(forKey: cachedUserKey)
         api.sessionToken = nil
         user = nil
         state = .loggedOut
+
+        if clearDeviceData {
+            PendingRuns.forgetAll()
+        }
+        ConquestInbox.shared.reset()
+        // Apple Health auto-import is a device setting: the next account must opt in again,
+        // otherwise the device owner's workouts would be uploaded to it.
+        HealthImporter.shared.autoImport = false
+        AppRouter.shared.reset()
+        PushManager.shared.clearDelivered()
     }
 
     private func clearPendingVerification() {
         pendingVerification = nil
+        KeychainStore.delete(pendingKey)
         UserDefaults.standard.removeObject(forKey: pendingKey)
+    }
+
+    /// Revokes a session token on the server (abandoned registration), without waiting.
+    private static func revoke(token: String) {
+        Task {
+            try? await APIClient.shared.send("POST", "/api/auth/logout", token: token)
+        }
     }
 }

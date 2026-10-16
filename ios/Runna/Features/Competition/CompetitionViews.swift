@@ -325,10 +325,14 @@ struct CompetitionIntroView: View {
     private let pageCount = 4
 
     private var powers: [(key: String, value: PowerDefinition)] {
-        let order = ["common": 0, "rare": 1, "epic": 2, "legendary": 3]
-        return store.info?.treasurePowers
-            .map { (key: $0.key, value: $0.value) }
-            .sorted { (order[$0.value.rarity] ?? 0, $0.value.name) < (order[$1.value.rarity] ?? 0, $1.value.name) } ?? []
+        let order: [String: Int] = ["common": 0, "rare": 1, "epic": 2, "legendary": 3]
+        let definitions: [String: PowerDefinition] = store.info?.treasurePowers ?? [:]
+        let items: [(key: String, value: PowerDefinition)] = definitions.map { (key: $0.key, value: $0.value) }
+        return items.sorted { a, b in
+            let rankA = order[a.value.rarity] ?? 0
+            let rankB = order[b.value.rarity] ?? 0
+            return rankA != rankB ? rankA < rankB : a.value.name < b.value.name
+        }
     }
 
     var body: some View {

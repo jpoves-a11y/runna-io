@@ -15,19 +15,57 @@ struct TerritoryShape: Identifiable {
     let rings: [[CLLocationCoordinate2D]]
 }
 
+/// One of the user's own runs drawn as a thin line on the map.
+struct RouteLine: Identifiable {
+    let id: String
+    let userId: String
+    let color: Color
+    let coordinates: [CLLocationCoordinate2D]
+}
+
 @MainActor
 @Observable
 final class MapModel {
     private(set) var shapes: [TerritoryShape] = []
     private(set) var players: [UserRef] = []
     private(set) var treasures: [Treasure] = []
-    private(set) var competitionName: String?
+    private(set) var fortifications: [FortificationShape] = []
+    private(set) var castles: [CastleZone] = []
+    private(set) var routeLines: [RouteLine] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
     var hiddenUserIds: Set<String> = []
 
+    /// Most recent own runs drawn on the map.
+    private let maxRouteLines = 40
+
     var visibleShapes: [TerritoryShape] {
         hiddenUserIds.isEmpty ? shapes : shapes.filter { !hiddenUserIds.contains($0.userId) }
+    }
+
+    var visibleFortifications: [FortificationShape] {
+        hiddenUserIds.isEmpty ? fortifications : fortifications.filter { !hiddenUserIds.contains($0.userId) }
+    }
+
+    var visibleCastles: [CastleZone] {
+        hiddenUserIds.isEmpty ? castles : castles.filter { !hiddenUserIds.contains($0.userId) }
+    }
+
+    var visibleRouteLines: [RouteLine] {
+        hiddenUserIds.isEmpty ? routeLines : routeLines.filter { !hiddenUserIds.contains($0.userId) }
+    }
+
+    /// Treasures that haven't expired yet.
+    var liveTreasures: [Treasure] {
+        let now = Date()
+        return treasures.filter { treasure in
+            guard let expires = treasure.expiresDate else { return true }
+            return expires > now
+        }
+    }
+
+    var visiblePlayerCount: Int {
+        players.filter { !hiddenUserIds.contains($0.id) }.count
     }
 
     func load(user: AppUser) async {
@@ -46,19 +84,46 @@ final class MapModel {
         } catch {
             errorMessage = error.localizedDescription
         }
-        await loadCompetition()
+        await loadRoutes(user: user)
+        await loadCompetition(userId: user.id)
     }
 
-    private func loadCompetition() async {
-        guard let info: CompetitionInfo = try? await APIClient.shared.request("GET", "/api/competition/active"),
-              info.status == "active" else {
-            competitionName = nil
+    private func loadRoutes(user: AppUser) async {
+        guard let routes = try? await APIClient.shared.request("GET", "/api/routes/\(user.id)", as: [RunRoute].self) else { return }
+        let color = Color(hex: user.color)
+        let recent = routes
+            .sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+            .prefix(maxRouteLines)
+        routeLines = recent.compactMap { route -> RouteLine? in
+            let coordinates = route.locations
+            guard coordinates.count >= 2 else { return nil }
+            return RouteLine(id: route.id, userId: user.id, color: color, coordinates: coordinates)
+        }
+    }
+
+    /// Competition state, then treasures, fortifications and the powers badge while it is active.
+    private func loadCompetition(userId: String) async {
+        let store = CompetitionStore.shared
+        await store.refresh()
+        guard store.isActive else {
             treasures = []
+            fortifications = []
+            castles = []
+            store.setAvailablePowerCount(0)
             return
         }
-        competitionName = info.competition?.name
-        if let response: TreasuresResponse = try? await APIClient.shared.request("GET", "/api/treasures/active") {
+        await refreshCompetitionOverlays()
+        await store.refreshPowers(userId: userId)
+    }
+
+    /// Treasures and fortifications (refreshed every minute while the map is visible).
+    func refreshCompetitionOverlays() async {
+        guard CompetitionStore.shared.isActive else { return }
+        if let response = try? await APIClient.shared.request("GET", "/api/treasures/active", as: TreasuresResponse.self) {
             treasures = response.treasures
+        }
+        if let response = try? await APIClient.shared.request("GET", "/api/territories/fortifications", as: FortificationsResponse.self) {
+            makeFortifications(response.fortifications)
         }
     }
 
@@ -68,6 +133,14 @@ final class MapModel {
         } else {
             hiddenUserIds.insert(userId)
         }
+    }
+
+    func showAll() {
+        hiddenUserIds = []
+    }
+
+    func hideAll() {
+        hiddenUserIds = Set(players.map(\.id))
     }
 
     /// The territory under a tapped coordinate, if any (topmost first).
@@ -87,6 +160,84 @@ final class MapModel {
             center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLng + maxLng) / 2),
             span: MKCoordinateSpan(latitudeDelta: max(0.01, (maxLat - minLat) * 1.3), longitudeDelta: max(0.01, (maxLng - minLng) * 1.3))
         )
+    }
+
+    // MARK: - Fortifications
+
+    /// Fortified zones in the owner's colour (darker), and a castle on each zone fortified several times.
+    private func makeFortifications(_ groups: [FortificationsResponse.Group]) {
+        var colors: [String: Color] = [:]
+        for shape in shapes where colors[shape.userId] == nil {
+            colors[shape.userId] = shape.color
+        }
+        for player in players {
+            colors[player.id] = Color(hex: player.color)
+        }
+
+        var newShapes: [FortificationShape] = []
+        var newCastles: [CastleZone] = []
+        for group in groups where group.layers >= 1 {
+            let baseColor = colors[group.userId] ?? Color.gray
+            let color = baseColor.darkened(0.35)
+            let level = 1 + Double(group.layers) * 0.5
+
+            // Zones: record centroids closer than 0.0005° are the same zone
+            var zones: [(lat: Double, lng: Double, sumLat: Double, sumLng: Double, count: Int)] = []
+
+            for (recordIndex, record) in group.records.enumerated() {
+                for (polygonIndex, rings) in record.polygons.enumerated() {
+                    guard let outer = rings.first else { continue }
+                    let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
+                    let polygon = MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
+                    newShapes.append(FortificationShape(
+                        id: "\(group.userId)-\(recordIndex)-\(polygonIndex)",
+                        userId: group.userId,
+                        color: color,
+                        polygon: polygon,
+                        level: level
+                    ))
+                }
+
+                guard group.layers >= 2, let centroid = Self.centroid(of: record.polygons) else { continue }
+                if let index = zones.firstIndex(where: { abs($0.lat - centroid.latitude) < 0.0005 && abs($0.lng - centroid.longitude) < 0.0005 }) {
+                    zones[index].sumLat += centroid.latitude
+                    zones[index].sumLng += centroid.longitude
+                    zones[index].count += 1
+                } else {
+                    zones.append((lat: centroid.latitude, lng: centroid.longitude, sumLat: centroid.latitude, sumLng: centroid.longitude, count: 1))
+                }
+            }
+
+            for (zoneIndex, zone) in zones.enumerated() {
+                let count = Double(zone.count)
+                newCastles.append(CastleZone(
+                    id: "\(group.userId)-castle-\(zoneIndex)",
+                    userId: group.userId,
+                    coordinate: CLLocationCoordinate2D(latitude: zone.sumLat / count, longitude: zone.sumLng / count),
+                    level: 1 + count * 0.5,
+                    color: color
+                ))
+            }
+        }
+        fortifications = newShapes
+        castles = newCastles
+    }
+
+    /// Average of the outer-ring points of every polygon of a record.
+    private static func centroid(of polygons: [[[CLLocationCoordinate2D]]]) -> CLLocationCoordinate2D? {
+        var sumLat = 0.0
+        var sumLng = 0.0
+        var count = 0
+        for rings in polygons {
+            guard let outer = rings.first else { continue }
+            for point in outer {
+                sumLat += point.latitude
+                sumLng += point.longitude
+                count += 1
+            }
+        }
+        guard count > 0 else { return nil }
+        return CLLocationCoordinate2D(latitude: sumLat / Double(count), longitude: sumLng / Double(count))
     }
 
     private static func makeShapes(_ territories: [Territory]) -> [TerritoryShape] {

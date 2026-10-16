@@ -131,6 +131,9 @@ jobs:
           shoot tab/activity/mine 4-my-runs
           shoot tab/friends 5-friends
           shoot tab/profile 6-profile
+          # Competition screens (DEBUG-only deep links handled by AppRouter)
+          shoot powers 7-powers
+          shoot weekly-summary 8-weekly-summary
           if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
             echo "App crashed while showing the screens"
             exit 1
