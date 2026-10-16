@@ -24,34 +24,22 @@ RESEND_FROM = "onboarding@resend.dev"
 # wrangler secret put TURSO_AUTH_TOKEN -c wrangler.worker.toml
 # wrangler secret put UPSTASH_CRON_SECRET -c wrangler.worker.toml
 #
-# ===== Upstash Inactivity Reminders Setup =====
-# 1. Create an Upstash account at https://upstash.com
-# 2. Create a QStash schedule (every 12 hours):
-#    - URL: https://runna-io-api.<your-subdomain>.workers.dev/api/tasks/inactivity-check
-#    - Method: POST
-#    - Schedule: 0 */12 * * *  (every 12 hours)
-#    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
-# 3. Set the secret:
-#    wrangler secret put UPSTASH_CRON_SECRET -c wrangler.worker.toml
+# ===== Scheduled tasks =====
+# A single Cloudflare Cron Trigger (every 5 minutes) runs every task in-process, without HTTP
+# (see worker/src/cron.ts, times in Europe/Madrid):
+#   - polar-auto-sync: every run
+#   - spawn-treasure: minute 0 of every hour (the task picks today's random spawn hour)
+#   - inactivity-check: 10:00 and 19:00
+#   - weekly-summary: Sundays 20:00
+# Upstash/QStash schedules are no longer needed (delete them). The /api/tasks/* endpoints still
+# accept "Authorization: Bearer <UPSTASH_CRON_SECRET>" or a QStash signature for manual runs.
 #
-# ===== Upstash Treasure Spawn Setup =====
-# Create a QStash schedule (every hour) for daily treasure spawn:
-#    - URL: https://runna-io-api.runna-io-api.workers.dev/api/tasks/spawn-treasure
-#    - Method: POST
-#    - Schedule: 0 * * * *  (every hour)
-#    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
-# NOTE: Even without this cron, treasures auto-spawn when users load the map (fallback).
+# Optional vars:
+#   WORKER_URL       public URL of this Worker (invite links, email buttons); default: request origin
+#   APP_DOWNLOAD_URL App Store / TestFlight link shown on the /invite and /open landing pages
+#
+# Public pages served by the Worker: /privacy, /terms, /support, /invite/<token>, /open
 
-# ===== Polar Auto-Sync =====
-# Automatically syncs Polar activities every 5 minutes via Cloudflare Cron Trigger.
-# Also available as Upstash QStash endpoint:
-#    - URL: https://runna-io-api.runna-io-api.workers.dev/api/tasks/polar-auto-sync
-#    - Method: POST
-#    - Schedule: */5 * * * *  (every 5 minutes)
-#    - Header: Authorization: Bearer <your-UPSTASH_CRON_SECRET>
-
-# ===== Cloudflare Cron Triggers =====
-# Auto-sync Polar activities every 5 minutes
 [triggers]
 crons = ["*/5 * * * *"]
 

@@ -28,7 +28,8 @@ final class HealthImporter {
     static var isAvailable: Bool { HKHealthStore.isHealthDataAvailable() }
 
     private let store = HKHealthStore()
-    private let importedKey = "healthImportedWorkouts"
+    /// Legacy key, shared by every account on the device (read once and migrated per account).
+    private let legacyImportedKey = "healthImportedWorkouts"
     private let autoImportKey = "healthAutoImport"
     private let lastImportKey = "healthLastImport"
 
@@ -39,7 +40,28 @@ final class HealthImporter {
         set { UserDefaults.standard.set(newValue, forKey: autoImportKey) }
     }
 
+    /// A workout without a GPS route is only given up on after this long (Apple Watch routes sync later)
+    /// unless it's marked as indoor.
+    private let routeGracePeriod: TimeInterval = 36 * 60 * 60
+
     private init() {}
+
+    private func importedKey(for userId: String) -> String { "healthImportedWorkouts.\(userId)" }
+
+    private func loadImported(userId: String) -> Set<String> {
+        let defaults = UserDefaults.standard
+        if let stored = defaults.stringArray(forKey: importedKey(for: userId)) {
+            return Set(stored)
+        }
+        // First import for this account since workouts were tracked per account
+        let legacy = defaults.stringArray(forKey: legacyImportedKey) ?? []
+        defaults.removeObject(forKey: legacyImportedKey)
+        return Set(legacy)
+    }
+
+    private func saveImported(_ imported: Set<String>, userId: String) {
+        UserDefaults.standard.set(Array(imported), forKey: importedKey(for: userId))
+    }
 
     func requestAuthorization() async throws {
         let types: Set<HKObjectType> = [HKObjectType.workoutType(), HKSeriesType.workoutRoute()]
@@ -63,18 +85,38 @@ final class HealthImporter {
         isImporting = true
         defer { isImporting = false }
 
-        try await requestAuthorization()
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastImportKey)
+        guard let userId = RunOwner.currentUserId else {
+            throw APIError(status: 401, message: "Inicia sesión para importar tus carreras.")
+        }
 
-        var imported = Set(UserDefaults.standard.stringArray(forKey: importedKey) ?? [])
+        try await requestAuthorization()
+
+        var imported = loadImported(userId: userId)
         var summary = Summary()
 
         for workout in try await runningWorkouts(days: days) where !imported.contains(workout.uuid.uuidString) {
-            let locations = try await routeLocations(for: workout)
-            let coordinates = Self.filtered(locations)
+            // The account may have changed during a long import
+            guard RunOwner.currentUserId == userId else { break }
+            let workoutId = workout.uuid.uuidString
+            let coordinates: [CLLocation]
+            do {
+                coordinates = Self.filtered(try await routeLocations(for: workout))
+            } catch is CancellationError {
+                break
+            } catch {
+                // One unreadable route must not stop the others; it's retried next time
+                summary.failed += 1
+                continue
+            }
             guard coordinates.count >= 3 else {
                 summary.withoutRoute += 1
-                imported.insert(workout.uuid.uuidString)
+                let isIndoor = (workout.metadata?[HKMetadataKeyIndoorWorkout] as? Bool) == true
+                let isOld = Date().timeIntervalSince(workout.endDate) > routeGracePeriod
+                // The Watch syncs the route after the workout: keep trying for a while
+                if isIndoor || isOld {
+                    imported.insert(workoutId)
+                    saveImported(imported, userId: userId)
+                }
                 continue
             }
 
@@ -87,20 +129,30 @@ final class HealthImporter {
                 "startedAt": APIDate.string(workout.startDate),
                 "completedAt": APIDate.string(workout.endDate),
                 "source": "healthkit",
+                // Idempotency key: the workout UUID (a retry after a lost response doesn't duplicate it)
+                "clientRunId": "healthkit-\(workoutId)",
             ]
             do {
-                let _: CreateRouteResponse = try await APIClient.shared.request("POST", "/api/routes", body: body)
+                let response: CreateRouteResponse = try await APIClient.shared.request("POST", "/api/routes", body: body)
                 summary.imported += 1
-                imported.insert(workout.uuid.uuidString)
+                imported.insert(workoutId)
+                saveImported(imported, userId: userId)
+                // Show what this run conquered
+                ConquestInbox.shared.enqueue(routeId: response.route.id)
             } catch let error as APIError where error.status == 409 {
                 summary.duplicates += 1
-                imported.insert(workout.uuid.uuidString)
+                imported.insert(workoutId)
+                saveImported(imported, userId: userId)
+            } catch is CancellationError {
+                break
             } catch {
                 summary.failed += 1
             }
         }
 
-        UserDefaults.standard.set(Array(imported), forKey: importedKey)
+        saveImported(imported, userId: userId)
+        // Throttle auto-import only after a pass that got through
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastImportKey)
         return summary
     }
 

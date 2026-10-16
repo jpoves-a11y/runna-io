@@ -225,11 +225,12 @@ enum PendingRuns {
         return save(entries)
     }
 
-    /// Deletes every queued run (called on logout).
+    /// Deletes every queued run and the unfinished run, and forgets the conquest inbox state (called on logout).
     static func forgetAll() {
         recentlyUploaded = [:]
         try? FileManager.default.removeItem(at: fileURL)
         ConquestInbox.shared.reset()
+        RunPersistence.forgetAll()
     }
 
     @discardableResult
@@ -359,12 +360,20 @@ enum PendingRuns {
             remove(id: id)
             return .uploaded(routeId: nil)
         } catch let error as APIError where isRetryable(error.status) {
+            keepQueued(entry)
             return .pending(error.message)
         } catch let error as APIError {
             return recordRejection(entry: entry, message: error.message)
         } catch {
+            keepQueued(entry)
             return .pending(APIError.network.message)
         }
+    }
+
+    /// Makes sure a run that couldn't be uploaded is in the queue file (it normally already is).
+    private static func keepQueued(_ entry: Entry) {
+        guard !all().contains(where: { $0.id == entry.id }) else { return }
+        add(entry)
     }
 
     /// Network errors (0), expired sessions, timeouts, rate limits and server errors are retried without limit.

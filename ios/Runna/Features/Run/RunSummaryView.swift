@@ -6,11 +6,14 @@ struct RunSummaryView: View {
     let submission: RunSubmission
     let onClose: () -> Void
 
+    @Environment(SessionStore.self) private var session
     @State private var routeName = ""
     @State private var renameSaved = false
     @State private var errorMessage: String?
     @State private var tauntVictim: Victim?
+    @State private var sentVictimIds: Set<String> = []
     @State private var retrying = false
+    @State private var retryMessage: String?
 
     private var run: FinishedRun { submission.run }
 
@@ -18,14 +21,19 @@ struct RunSummaryView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    routePreview
+                    RouteReplayView(
+                        coordinates: run.coordinates,
+                        color: Color(hex: session.user?.color ?? "#16A34A"),
+                        height: 220
+                    )
                     stats
                     resultSection
-                    if submission.route != nil {
+                    if submission.routeId != nil {
                         renameSection
                     }
-                    if !run.treasures.isEmpty {
-                        treasuresSection
+                    let treasures = treasureLines
+                    if !treasures.isEmpty {
+                        TreasuresCard(treasures: treasures)
                     }
                 }
                 .padding()
@@ -36,29 +44,32 @@ struct RunSummaryView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Hecho", action: onClose)
-                        .disabled(isUploading)
+                        .disabled(isBlocking)
                 }
             }
             .errorAlert($errorMessage)
             .sheet(item: $tauntVictim) { victim in
-                TauntComposerView(victim: victim)
+                TauntComposerView(victim: victim) {
+                    sentVictimIds.insert(victim.userId)
+                }
             }
         }
-        .interactiveDismissDisabled(isUploading)
+        .interactiveDismissDisabled(isBlocking)
     }
 
-    private var isUploading: Bool {
+    /// While uploading (or retrying) the screen can't be closed, so two uploads never overlap.
+    private var isBlocking: Bool {
+        if retrying { return true }
         if case .uploading = submission.state { return true }
         return false
     }
 
-    private var routePreview: some View {
-        Map(initialPosition: .automatic, interactionModes: []) {
-            MapPolyline(coordinates: run.coordinates)
-                .stroke(Color.brand, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+    private var treasureLines: [TreasureLine] {
+        var server: [CollectedTreasure] = []
+        if case .done(let result) = submission.state, let result {
+            server = result.treasuresCollected
         }
-        .frame(height: 220)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        return TreasureLine.merge(live: run.treasures, server: server)
     }
 
     private var stats: some View {
@@ -79,7 +90,9 @@ struct RunSummaryView: View {
             progressCard("Calculando el territorio conquistado…")
         case .done(let result):
             if let result {
-                conquestCard(result)
+                ConquestCard(result: result, sentVictimIds: sentVictimIds) { victim in
+                    tauntVictim = victim
+                }
             } else {
                 infoCard(
                     icon: "hourglass",
@@ -92,59 +105,39 @@ struct RunSummaryView: View {
                     icon: "icloud.slash",
                     text: "No se ha podido subir (\(message)). La carrera está guardada en el móvil y se subirá sola cuando haya conexión."
                 )
-                Button {
-                    retrying = true
-                    Task {
-                        let uploaded = await PendingRuns.uploadAll()
-                        retrying = false
-                        if uploaded > 0 {
-                            onClose()
-                        } else {
-                            errorMessage = "Sigue sin haber conexión con el servidor."
-                        }
-                    }
-                } label: {
-                    if retrying { ProgressView().tint(.white) } else { Text("Reintentar ahora") }
+                if let retryMessage {
+                    Text(retryMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(retrying)
+                retryButton
+            }
+        case .rejected(let message):
+            VStack(spacing: 12) {
+                infoCard(
+                    icon: "exclamationmark.triangle",
+                    text: "El servidor no ha aceptado la carrera (\(message)). Sigue guardada en el móvil y se volverá a intentar otro día."
+                )
+                if let retryMessage {
+                    Text(retryMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                retryButton
             }
         }
     }
 
-    private func conquestCard(_ result: ConquestResult) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Territorio", systemImage: "flag.fill")
-                .font(.headline)
-            HStack {
-                StatTile(value: Format.area(result.newAreaConquered), label: "Conquistado", tint: .brand)
-                StatTile(value: Format.area(result.areaStolen), label: "Robado", tint: .red)
-            }
-            if !result.victims.isEmpty {
-                Divider()
-                Text("Has robado territorio a:")
-                    .font(.subheadline.weight(.semibold))
-                ForEach(result.victims) { victim in
-                    HStack {
-                        Circle().fill(Color(hex: victim.userColor)).frame(width: 12, height: 12)
-                        Text(victim.userName)
-                        Spacer()
-                        Text(Format.area(victim.stolenArea))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Button {
-                            tauntVictim = victim
-                        } label: {
-                            Image(systemName: "camera.fill")
-                        }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("Enviar foto a \(victim.userName)")
-                    }
-                }
-            }
+    private var retryButton: some View {
+        Button {
+            retry()
+        } label: {
+            if retrying { ProgressView().tint(.white) } else { Text("Reintentar ahora") }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardStyle()
+        .buttonStyle(PrimaryButtonStyle())
+        .disabled(retrying)
     }
 
     private var renameSection: some View {
@@ -152,7 +145,7 @@ struct RunSummaryView: View {
             Text("Nombre de la carrera")
                 .font(.subheadline.weight(.semibold))
             HStack {
-                TextField(PendingRuns.Entry(run: run).name, text: $routeName)
+                TextField(run.defaultName, text: $routeName)
                     .textFieldStyle(.roundedBorder)
                 Button(renameSaved ? "Guardado" : "Guardar") {
                     rename()
@@ -161,25 +154,9 @@ struct RunSummaryView: View {
             }
         }
         .cardStyle()
-    }
-
-    private var treasuresSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Tesoros recogidos", systemImage: "gift.fill")
-                .font(.headline)
-            ForEach(run.treasures) { treasure in
-                HStack {
-                    Text(treasure.emoji ?? "🎁")
-                    Text(treasure.powerName ?? treasure.name)
-                    Spacer()
-                    Text(treasure.rarity.capitalized)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+        .onChange(of: routeName) { _, _ in
+            renameSaved = false
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardStyle()
     }
 
     private func progressCard(_ text: String) -> some View {
@@ -202,12 +179,30 @@ struct RunSummaryView: View {
         .cardStyle()
     }
 
+    private func retry() {
+        guard !retrying else { return }
+        retrying = true
+        retryMessage = nil
+        Task {
+            await submission.submit()
+            retrying = false
+            switch submission.state {
+            case .failed:
+                retryMessage = "Sigue sin poder subirse. Lo volveremos a intentar automáticamente."
+            case .rejected:
+                retryMessage = "El servidor sigue sin aceptarla."
+            default:
+                break
+            }
+        }
+    }
+
     private func rename() {
-        guard let route = submission.route else { return }
+        guard let routeId = submission.routeId else { return }
         let name = routeName.trimmingCharacters(in: .whitespaces)
         Task {
             do {
-                try await APIClient.shared.send("PATCH", "/api/routes/\(route.id)/name", body: ["name": name])
+                try await APIClient.shared.send("PATCH", "/api/routes/\(routeId)/name", body: ["name": name])
                 renameSaved = true
             } catch {
                 errorMessage = error.localizedDescription

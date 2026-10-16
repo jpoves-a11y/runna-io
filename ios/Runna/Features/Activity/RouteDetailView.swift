@@ -1,9 +1,13 @@
 import SwiftUI
 import MapKit
 
-/// One of your activities: map, stats, rename and delete.
+/// An activity: map, stats and, for your own activities, rename and delete.
 struct RouteDetailView: View {
     let route: RunRoute
+    /// Route colour (the owner's territory colour); defaults to yours.
+    let color: String?
+    /// Rename/delete are only offered on your own activities.
+    let editable: Bool
     let onChange: () -> Void
 
     @Environment(SessionStore.self) private var session
@@ -14,25 +18,40 @@ struct RouteDetailView: View {
     @State private var isWorking = false
     @State private var errorMessage: String?
 
-    init(route: RunRoute, onChange: @escaping () -> Void) {
+    init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
         self.route = route
+        self.color = color
+        self.editable = editable
         self.onChange = onChange
         _name = State(initialValue: route.name)
+    }
+
+    private var lineColor: Color {
+        Color(hex: color ?? session.user?.color ?? "#16A34A")
     }
 
     var body: some View {
         List {
             Section {
-                Map(initialPosition: .automatic) {
-                    MapPolyline(coordinates: route.locations)
-                        .stroke(Color(hex: session.user?.color ?? "#16A34A"), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
-                    if let start = route.locations.first {
-                        Marker("Salida", systemImage: "flag", coordinate: start)
-                            .tint(.green)
+                if route.locations.count >= 2 {
+                    Map(initialPosition: .automatic) {
+                        MapPolyline(coordinates: route.locations)
+                            .stroke(lineColor, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                        if let start = route.locations.first {
+                            Marker("Salida", systemImage: "flag", coordinate: start)
+                                .tint(.green)
+                        }
+                        if let end = route.locations.last {
+                            Marker("Llegada", systemImage: "flag.checkered", coordinate: end)
+                                .tint(.red)
+                        }
                     }
+                    .frame(height: 280)
+                    .listRowInsets(EdgeInsets())
+                } else {
+                    ContentUnavailableView("Sin datos GPS", systemImage: "location.slash", description: Text("Esta actividad no tiene recorrido registrado."))
+                        .frame(height: 200)
                 }
-                .frame(height: 280)
-                .listRowInsets(EdgeInsets())
             }
 
             Section {
@@ -40,19 +59,21 @@ struct RouteDetailView: View {
                 LabeledContent("Distancia", value: Format.distance(route.distance))
                 LabeledContent("Tiempo", value: Format.duration(route.duration))
                 LabeledContent("Ritmo", value: Format.pace(distanceMeters: route.distance, seconds: route.duration))
-                if let area = route.territoryArea {
-                    LabeledContent("Territorio", value: Format.area(area))
+                if let area = route.territoryArea, area > 0 {
+                    LabeledContent("Conquistado", value: "+\(Format.area(area))")
                 }
                 if !route.ranTogetherWith.isEmpty {
                     LabeledContent("Con", value: route.ranTogetherWith.joined(separator: ", "))
                 }
             }
 
-            Section {
-                Button("Cambiar nombre") { isRenaming = true }
-                Button("Borrar actividad", role: .destructive) { confirmDelete = true }
-            } footer: {
-                Text("Al borrarla se recalcula tu territorio sin esta carrera.")
+            if editable {
+                Section {
+                    Button("Cambiar nombre") { isRenaming = true }
+                    Button("Borrar actividad", role: .destructive) { confirmDelete = true }
+                } footer: {
+                    Text("Al borrarla se recalcula tu territorio sin esta carrera.")
+                }
             }
         }
         .navigationTitle(name)
