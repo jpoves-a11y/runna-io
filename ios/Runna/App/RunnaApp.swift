@@ -6,6 +6,7 @@ struct RunnaApp: App {
     @State private var session = SessionStore()
     @State private var router = AppRouter.shared
     @State private var runTracker = RunTracker()
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
 
     init() {
         #if DEBUG
@@ -23,9 +24,35 @@ struct RunnaApp: App {
                 .environment(router)
                 .environment(runTracker)
                 .tint(.brand)
+                .preferredColorScheme(appearance.colorScheme)
                 .onOpenURL { url in
                     router.handle(url: url)
                 }
+        }
+    }
+}
+
+/// Light / dark mode chosen in Profile ("Sistema" follows the iPhone setting).
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let storageKey = "appearance"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "Sistema"
+        case .light: return "Claro"
+        case .dark: return "Oscuro"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 }

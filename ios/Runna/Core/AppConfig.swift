@@ -12,15 +12,22 @@ enum AppConfig {
         return URL(string: "https://runna-io-api.runna-io-api.workers.dev")!
     }()
 
-    /// Web app (privacy policy, terms, support pages).
-    static let webBaseURL = URL(string: "https://runna-io.pages.dev")!
-
     /// Custom URL scheme registered in Info.plist (OAuth returns and friend invites).
     static let urlScheme = "runnaio"
 
-    static var privacyURL: URL { webBaseURL.appendingPathComponent("privacy") }
-    static var termsURL: URL { webBaseURL.appendingPathComponent("terms") }
-    static var supportURL: URL { webBaseURL.appendingPathComponent("support") }
+    /// Privacy policy, terms and support pages, served as static HTML by the Worker.
+    static var privacyURL: URL { apiBaseURL.appendingPathComponent("privacy") }
+    static var termsURL: URL { apiBaseURL.appendingPathComponent("terms") }
+    static var supportURL: URL { apiBaseURL.appendingPathComponent("support") }
+
+    /// Support contact (same address as the support page).
+    static let supportEmail = "runna.io.service@gmail.com"
+    static var supportMailURL: URL? {
+        URL(string: "mailto:\(supportEmail)?subject=Soporte%20Runna.io")
+    }
+
+    /// Minimum age to use the app (Terms, "Elegibilidad").
+    static let minimumAge = 14
 
     /// Zaragoza, used to center the map before the first location fix.
     static let defaultLatitude = 41.6488

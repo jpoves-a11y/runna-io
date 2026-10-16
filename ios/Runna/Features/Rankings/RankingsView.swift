@@ -1,28 +1,5 @@
 import SwiftUI
 
-/// Competition leaderboard entry (GET /api/competition/leaderboard).
-struct CompetitionEntry: Decodable, Identifiable {
-    let user: UserRef
-    let totalArea: Double
-    let totalDistance: Double
-    let treasuresCollected: Int
-    var id: String { user.id }
-
-    enum CodingKeys: String, CodingKey { case user, totalArea, totalDistance, treasuresCollected }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        user = try c.decode(UserRef.self, forKey: .user)
-        totalArea = c.double(.totalArea) ?? 0
-        totalDistance = c.double(.totalDistance) ?? 0
-        treasuresCollected = c.int(.treasuresCollected) ?? 0
-    }
-}
-
-private struct CompetitionLeaderboardResponse: Decodable {
-    let leaderboard: [CompetitionEntry]
-}
-
 struct RankingsView: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
@@ -31,16 +8,25 @@ struct RankingsView: View {
 
     @State private var board: Board = .friends
     @State private var friends: [AppUser] = []
-    @State private var competition: [CompetitionEntry] = []
-    @State private var competitionName: String?
+    @State private var competitionEntries: [CompetitionEntry] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedUserId: String?
+    @State private var showFinalResults = false
+
+    private var competition: CompetitionStore { CompetitionStore.shared }
+    private var hasCompetitionBoard: Bool { competition.isActive || competition.isFinished }
 
     var body: some View {
+        @Bindable var router = router
         NavigationStack {
             List {
-                if competitionName != nil {
+                if competition.isUpcoming || competition.isActive || competition.isFinished {
+                    CompetitionBanner(store: competition) { showFinalResults = true }
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
+                }
+                if hasCompetitionBoard {
                     Picker("Clasificación", selection: $board) {
                         Text("Amigos").tag(Board.friends)
                         Text("Competición").tag(Board.competition)
@@ -64,6 +50,20 @@ struct RankingsView: View {
                 }
             }
             .navigationTitle("Ranking")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if competition.isActive {
+                        Button {
+                            router.showWeeklySummary = true
+                        } label: {
+                            Label("Resumen semanal", systemImage: "chart.bar.fill")
+                                .labelStyle(.titleAndIcon)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .tint(.orange)
+                    }
+                }
+            }
             .refreshable { await load() }
             .task(id: router.reloadSignal) { await load() }
             .sheet(item: Binding(
@@ -71,6 +71,12 @@ struct RankingsView: View {
                 set: { selectedUserId = $0?.id }
             )) { user in
                 UserProfileSheet(userId: user.id)
+            }
+            .sheet(isPresented: $router.showWeeklySummary) {
+                WeeklySummaryView()
+            }
+            .sheet(isPresented: $showFinalResults) {
+                CompetitionFinalView(competitionName: competition.competition?.name ?? "La competición")
             }
         }
     }
@@ -89,14 +95,16 @@ struct RankingsView: View {
         Section {
             ForEach(friends) { user in
                 Button {
-                    if user.id != session.userId { selectedUserId = user.id }
+                    open(user.id)
                 } label: {
                     RankRow(
                         rank: user.rank ?? 0,
-                        name: user.id == session.userId ? "\(user.displayName) (tú)" : user.displayName,
+                        name: user.id == session.userId ? "\(user.name) (tú)" : user.name,
                         avatar: user.avatar,
                         color: user.color,
                         value: Format.area(user.totalArea),
+                        subtitle: Self.subtitle(username: user.username, name: user.name, nickname: user.nickname),
+                        nickname: user.nickname,
                         highlighted: user.id == session.userId
                     )
                 }
@@ -111,24 +119,57 @@ struct RankingsView: View {
 
     @ViewBuilder
     private var competitionSection: some View {
-        Section(competitionName ?? "Competición") {
-            ForEach(Array(competition.enumerated()), id: \.element.id) { index, entry in
+        Section {
+            if competitionEntries.isEmpty && !isLoading {
+                Text("Aún no hay participantes con territorio. ¡Sal a correr!")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(competitionEntries.enumerated()), id: \.element.id) { index, entry in
                 Button {
-                    if entry.user.id != session.userId { selectedUserId = entry.user.id }
+                    open(entry.user.id)
                 } label: {
                     RankRow(
                         rank: index + 1,
-                        name: entry.user.displayName,
+                        name: entry.user.id == session.userId ? "\(entry.user.name) (tú)" : entry.user.name,
                         avatar: entry.user.avatar,
                         color: entry.user.color,
                         value: Format.area(entry.totalArea),
-                        detail: entry.treasuresCollected > 0 ? "🎁 \(entry.treasuresCollected)" : nil,
+                        detail: Self.competitionDetail(entry),
+                        subtitle: Self.subtitle(username: entry.user.username, name: entry.user.name, nickname: entry.user.nickname),
+                        nickname: entry.user.nickname,
                         highlighted: entry.user.id == session.userId
                     )
                 }
                 .buttonStyle(.plain)
             }
+        } header: {
+            Text(competition.competition?.name ?? "Competición")
         }
+    }
+
+    /// Other players open their profile; the user's own row goes to the Profile tab.
+    private func open(_ userId: String) {
+        if userId == session.userId {
+            router.selectedTab = .profile
+        } else {
+            selectedUserId = userId
+        }
+    }
+
+    private static func subtitle(username: String, name: String, nickname: String?) -> String? {
+        let handle = username.isEmpty ? nil : "@\(username)"
+        if let nickname, !nickname.isEmpty {
+            return [handle, "antes: \(name)"].compactMap { $0 }.joined(separator: " · ")
+        }
+        return handle
+    }
+
+    private static func competitionDetail(_ entry: CompetitionEntry) -> String? {
+        var parts: [String] = []
+        if entry.areaStolen > 0 { parts.append("🗡️ \(Format.area(entry.areaStolen))") }
+        if entry.treasuresCollected > 0 { parts.append("🎁 \(entry.treasuresCollected)") }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ")
     }
 
     private func load() async {
@@ -143,12 +184,13 @@ struct RankingsView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-        if let info = try? await APIClient.shared.request("GET", "/api/competition/active", as: CompetitionInfo.self),
-           info.status == "active" || info.status == "finished" {
-            competitionName = info.competition?.name
-            competition = (try? await APIClient.shared.request("GET", "/api/competition/leaderboard", as: CompetitionLeaderboardResponse.self))?.leaderboard ?? []
+        await competition.refresh()
+        if hasCompetitionBoard {
+            if let response = try? await APIClient.shared.request("GET", "/api/competition/leaderboard", as: CompetitionLeaderboardResponse.self) {
+                competitionEntries = response.leaderboard.sorted { $0.totalArea > $1.totalArea }
+            }
         } else {
-            competitionName = nil
+            competitionEntries = []
             board = .friends
         }
     }
@@ -165,6 +207,9 @@ struct RankRow: View {
     let color: String
     let value: String
     var detail: String? = nil
+    var subtitle: String? = nil
+    /// Active nickname (Pluma del Troll): shown as "🎭 nickname" instead of the name.
+    var nickname: String? = nil
     var highlighted = false
 
     var body: some View {
@@ -182,9 +227,19 @@ struct RankRow: View {
 
             AvatarView(name: name, avatar: avatar, color: color, size: 40)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.body.weight(highlighted ? .bold : .regular))
-                    .lineLimit(1)
+                if let nickname, !nickname.isEmpty {
+                    Text("🎭 \(nickname)")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.pink)
+                        .lineLimit(1)
+                } else {
+                    Text(name)
+                        .font(.body.weight(highlighted ? .bold : .regular))
+                        .lineLimit(1)
+                }
+                if let subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if let detail {
                     Text(detail).font(.caption).foregroundStyle(.secondary)
                 }
@@ -196,6 +251,16 @@ struct RankRow: View {
         }
         .contentShape(Rectangle())
         .padding(.vertical, 4)
-        .listRowBackground(highlighted ? Color.brand.opacity(0.12) : nil)
+        .listRowBackground(rowBackground)
+    }
+
+    private var rowBackground: Color? {
+        if highlighted { return Color.brand.opacity(0.12) }
+        switch rank {
+        case 1: return Color.yellow.opacity(0.12)
+        case 2: return Color.gray.opacity(0.12)
+        case 3: return Color.orange.opacity(0.10)
+        default: return nil
+        }
     }
 }

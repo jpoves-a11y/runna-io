@@ -39,6 +39,24 @@ final class PushManager {
         }
     }
 
+    /// Registers with APNs without ever showing the permission prompt (app launch, back to foreground).
+    /// Apple recommends registering on every launch: the token can change, and permission may have been
+    /// granted later in Settings.
+    func registerIfAuthorized() async {
+        guard APIClient.shared.sessionToken != nil else { return }
+        switch await authorizationStatus() {
+        case .authorized, .provisional, .ephemeral:
+            UIApplication.shared.registerForRemoteNotifications()
+        default:
+            break
+        }
+    }
+
+    /// Asks the server to send a test notification to every device of the user.
+    func sendTestNotification() async throws {
+        try await APIClient.shared.send("POST", "/api/push/test", body: [:])
+    }
+
     func didRegister(deviceToken data: Data) {
         let token = data.map { String(format: "%02x", $0) }.joined()
         deviceToken = token
@@ -69,5 +87,12 @@ final class PushManager {
     func unregisterDevice() async {
         guard let token = deviceToken else { return }
         try? await APIClient.shared.send("POST", "/api/push/apns/unregister", body: ["deviceToken": token])
+    }
+
+    /// Clears the app icon badge and delivered notifications (logout).
+    func clearDelivered() {
+        let center = UNUserNotificationCenter.current()
+        center.removeAllDeliveredNotifications()
+        center.setBadgeCount(0, withCompletionHandler: nil)
     }
 }

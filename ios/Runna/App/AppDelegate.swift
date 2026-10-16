@@ -22,12 +22,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         #endif
     }
 
-    // Show notifications while the app is open
+    // Show notifications while the app is open, and refresh the screens that depend on them
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        let payload = Self.payload(from: notification.request.content.userInfo)
+        Task { @MainActor in
+            AppRouter.shared.receivedNotificationInForeground(type: payload.type, routeId: payload.routeId)
+        }
         completionHandler([.banner, .sound, .list])
     }
 
@@ -37,10 +41,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let type = response.notification.request.content.userInfo["type"] as? String
+        let payload = Self.payload(from: response.notification.request.content.userInfo)
         Task { @MainActor in
-            AppRouter.shared.openNotification(type: type)
+            AppRouter.shared.openNotification(type: payload.type, routeId: payload.routeId)
         }
         completionHandler()
+    }
+
+    /// Reads "type" and data.routeId from the APNs payload ({aps, type, data: {type, url, routeId?, photoId?}}).
+    private static func payload(from userInfo: [AnyHashable: Any]) -> (type: String?, routeId: String?) {
+        let data = userInfo["data"] as? [String: Any]
+        let type = (userInfo["type"] as? String) ?? (data?["type"] as? String)
+        var routeId = (data?["routeId"] as? String) ?? (userInfo["routeId"] as? String)
+        if routeId == nil, let number = data?["routeId"] as? NSNumber {
+            routeId = number.stringValue
+        }
+        return (type, routeId)
     }
 }
