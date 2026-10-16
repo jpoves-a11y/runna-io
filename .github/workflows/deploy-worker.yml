@@ -1,0 +1,48 @@
+name: Deploy Worker
+
+# Deploys the API (Cloudflare Worker) from the selected branch. Run it by hand:
+# Actions -> Deploy Worker -> Run workflow. Needs the repository secret CLOUDFLARE_API_TOKEN
+# (Cloudflare dashboard -> My Profile -> API Tokens -> template "Edit Cloudflare Workers").
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: wrangler deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check secret
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Missing repository secret CLOUDFLARE_API_TOKEN (Settings -> Secrets and variables -> Actions)"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          npm ci --legacy-peer-deps --no-audit --no-fund
+          (cd worker && npm ci --no-audit --no-fund)
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: worker/node_modules/.bin/wrangler deploy -c wrangler.worker.toml
+
+      - name: Check the API answers
+        run: |
+          sleep 5
+          curl -sf https://runna-io-api.runna-io-api.workers.dev/api/health && echo
+          curl -sf -o /dev/null -w "privacy page: %{http_code}\n" https://runna-io-api.runna-io-api.workers.dev/privacy
