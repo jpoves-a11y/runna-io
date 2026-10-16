@@ -5,6 +5,9 @@
 //     --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --external:@libsql/client
 //   DATABASE_URL=file:scripts/e2e/.build/e2e.db npx drizzle-kit push --force
 //   node scripts/e2e/server.mjs
+//
+// E2E_RUN_CRON=1 also runs the Worker's scheduled() handler once at start-up (all tasks due at
+// E2E_CRON_TIME, an ISO date; default now), the same way the Cloudflare Cron Trigger does.
 import { serve } from '@hono/node-server';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -45,4 +48,18 @@ const ctx = { waitUntil: (promise) => { Promise.resolve(promise).catch(() => {})
 
 serve({ fetch: (request) => worker.fetch(request, env, ctx), port, hostname: '127.0.0.1' }, () => {
   console.log(`[e2e] API listening on http://127.0.0.1:${port} (${databaseUrl})`);
+  if (process.env.E2E_RUN_CRON === '1') runCronOnce();
 });
+
+function runCronOnce() {
+  const scheduledTime = process.env.E2E_CRON_TIME ? Date.parse(process.env.E2E_CRON_TIME) : Date.now();
+  const pending = [];
+  const cronCtx = { waitUntil: (promise) => { pending.push(Promise.resolve(promise)); }, passThroughOnException() {} };
+  try {
+    worker.scheduled({ cron: '*/5 * * * *', scheduledTime, type: 'scheduled' }, env, cronCtx);
+  } catch (error) {
+    console.error('[e2e cron] scheduled() threw:', error);
+    return;
+  }
+  Promise.allSettled(pending).then(() => console.log(`[e2e cron] scheduled run finished (${new Date(scheduledTime).toISOString()})`));
+}

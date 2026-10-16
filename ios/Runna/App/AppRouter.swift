@@ -21,6 +21,10 @@ final class AppRouter {
     var pendingInviteToken: String?
     /// Bumped when something changed elsewhere (e.g. a notification arrived) so screens reload.
     var reloadSignal = 0
+    /// Opens the competition powers sheet on the map.
+    var showPowers = false
+    /// Opens the latest weekly competition summary in Rankings.
+    var showWeeklySummary = false
 
     private init() {}
 
@@ -46,6 +50,16 @@ final class AppRouter {
             if parts.count >= 2 {
                 activitySection = parts[1] == "mine" ? .mine : .feed
             }
+        #if DEBUG
+        case "powers":
+            // runnaio://powers (e2e screenshots)
+            selectedTab = .map
+            showPowers = true
+        case "weekly-summary":
+            // runnaio://weekly-summary (e2e screenshots)
+            selectedTab = .rankings
+            showWeeklySummary = true
+        #endif
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)
             selectedTab = .profile
@@ -62,8 +76,11 @@ final class AppRouter {
         case "reaction", "comment", "feed_comment", "feed_reply", "feed_mention", "friend_activity":
             activitySection = .feed
             selectedTab = .activity
-        case "area_overtake", "weekly_summary":
+        case "area_overtake", "nickname_changed":
             selectedTab = .rankings
+        case "weekly_summary":
+            selectedTab = .rankings
+            showWeeklySummary = true
         case "strava_auto_import", "polar_auto_import":
             activitySection = .mine
             selectedTab = .activity

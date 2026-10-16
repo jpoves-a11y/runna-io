@@ -353,9 +353,49 @@ struct FeedMetadata: Decodable, Hashable {
     let treasures: [TreasureRef]?
     let records: [Record]?
     let fortressesDestroyed: Int?
+    let fortificationLayers: Int?
+    let fortificationArea: Double?
     let treasureName: String?
     let emoji: String?
     let rarity: String?
+    let zone: String?
+    let powerType: String?
+    /// nickname_changed
+    let nickname: String?
+    let targetName: String?
+    let attackerName: String?
+    /// sentinel_alert
+    let alertMessage: String?
+    let attackerId: String?
+    let stolenArea: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case victims, ranTogetherWith, treasures, records, fortressesDestroyed, fortificationLayers, fortificationArea
+        case treasureName, emoji, rarity, zone, powerType, nickname, targetName, attackerName
+        case alertMessage, attackerId, stolenArea
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        victims = try? c.decodeIfPresent([Victim].self, forKey: .victims)
+        ranTogetherWith = try? c.decodeIfPresent([NameRef].self, forKey: .ranTogetherWith)
+        treasures = try? c.decodeIfPresent([TreasureRef].self, forKey: .treasures)
+        records = try? c.decodeIfPresent([Record].self, forKey: .records)
+        fortressesDestroyed = c.int(.fortressesDestroyed)
+        fortificationLayers = c.int(.fortificationLayers)
+        fortificationArea = c.double(.fortificationArea)
+        treasureName = c.string(.treasureName)
+        emoji = c.string(.emoji)
+        rarity = c.string(.rarity)
+        zone = c.string(.zone)
+        powerType = c.string(.powerType)
+        nickname = c.string(.nickname)
+        targetName = c.string(.targetName)
+        attackerName = c.string(.attackerName)
+        alertMessage = c.string(.alertMessage)
+        attackerId = c.string(.attackerId)
+        stolenArea = c.double(.stolenArea)
+    }
 }
 
 struct FeedEvent: Decodable, Identifiable, Hashable {
@@ -428,7 +468,7 @@ struct FeedComment: Decodable, Identifiable {
     let content: String
     let createdAt: String
     let user: UserRef
-    let replies: [FeedComment]
+    var replies: [FeedComment]
     var likeCount: Int
     var dislikeCount: Int
     var userReaction: String?
@@ -500,6 +540,38 @@ struct InviteResponse: Decodable {
 struct AcceptInviteResponse: Decodable {
     let success: Bool?
     let colorChanged: Bool?
+    /// Colour assigned to whichever of the two users had to change (null when nobody changed).
+    let newColor: String?
+    /// Inviter id (only POST /api/friends/accept/:token).
+    let friendId: String?
+}
+
+/// GET /api/friends/invite/:token: who sent the invite, before accepting it.
+struct InvitePreview: Decodable {
+    let inviter: UserRef
+    let alreadyFriends: Bool
+    let isSelf: Bool
+
+    enum CodingKeys: String, CodingKey { case inviter, alreadyFriends, isSelf }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inviter = try c.decode(UserRef.self, forKey: .inviter)
+        alreadyFriends = c.bool(.alreadyFriends) ?? false
+        isSelf = c.bool(.isSelf) ?? false
+    }
+}
+
+/// GET /api/blocks
+struct BlockedUsersResponse: Decodable {
+    let blocks: [UserRef]
+
+    enum CodingKeys: String, CodingKey { case blocks }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        blocks = (try? c.decodeIfPresent([UserRef].self, forKey: .blocks)) ?? []
+    }
 }
 
 // MARK: - Integrations
@@ -593,14 +665,70 @@ struct PhotoContent: Decodable {
 
 // MARK: - Competition
 
+/// GET /api/competition/active
 struct CompetitionInfo: Decodable {
-    struct Competition: Decodable {
+    struct Competition: Decodable, Hashable {
         let id: String
         let name: String
+        let startsAt: String?
+        let endsAt: String?
+
+        enum CodingKeys: String, CodingKey { case id, name, startsAt, endsAt }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = c.string(.name) ?? "Competición"
+            startsAt = c.string(.startsAt)
+            endsAt = c.string(.endsAt)
+        }
+
+        var startDate: Date? { APIDate.parse(startsAt) }
+        var endDate: Date? { APIDate.parse(endsAt) }
     }
 
     let competition: Competition?
+    /// "no_competition", "upcoming", "active" or "finished".
     let status: String
+    /// Milliseconds until the start (upcoming only).
+    let timeUntilStart: Double?
+    /// 1-based day number (active only).
+    let dayOfCompetition: Int?
+    let totalDays: Int?
+    /// Power definitions by power type (shield, double_area, nickname...).
+    let treasurePowers: [String: PowerDefinition]
+
+    enum CodingKeys: String, CodingKey { case competition, status, timeUntilStart, dayOfCompetition, totalDays, treasurePowers }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        competition = try? c.decodeIfPresent(Competition.self, forKey: .competition)
+        status = c.string(.status) ?? "no_competition"
+        timeUntilStart = c.double(.timeUntilStart)
+        dayOfCompetition = c.int(.dayOfCompetition)
+        totalDays = c.int(.totalDays)
+        treasurePowers = (try? c.decodeIfPresent([String: PowerDefinition].self, forKey: .treasurePowers)) ?? [:]
+    }
+}
+
+/// How a power looks and what it does (from the server's TREASURE_POWERS).
+struct PowerDefinition: Decodable, Hashable {
+    let name: String
+    let rarity: String
+    let description: String
+    let color: String?
+    let emoji: String
+
+    enum CodingKeys: String, CodingKey { case name, rarity, description, color, emoji }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = c.string(.name) ?? "Poder"
+        rarity = c.string(.rarity) ?? "common"
+        description = c.string(.description) ?? ""
+        color = c.string(.color)
+        emoji = c.string(.emoji) ?? "✨"
+    }
 }
 
 struct Treasure: Decodable, Identifiable, Hashable {
@@ -612,8 +740,11 @@ struct Treasure: Decodable, Identifiable, Hashable {
     let emoji: String?
     let powerName: String?
     let powerDescription: String?
+    let powerType: String?
+    let spawnedAt: String?
+    let expiresAt: String?
 
-    enum CodingKeys: String, CodingKey { case id, name, rarity, lat, lng, power }
+    enum CodingKeys: String, CodingKey { case id, name, rarity, lat, lng, power, powerType, spawnedAt, expiresAt }
 
     private struct Power: Decodable {
         let name: String?
@@ -632,9 +763,13 @@ struct Treasure: Decodable, Identifiable, Hashable {
         emoji = power?.emoji
         powerName = power?.name
         powerDescription = power?.description
+        powerType = c.string(.powerType)
+        spawnedAt = c.string(.spawnedAt)
+        expiresAt = c.string(.expiresAt)
     }
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
+    var expiresDate: Date? { APIDate.parse(expiresAt) }
 }
 
 struct TreasuresResponse: Decodable {

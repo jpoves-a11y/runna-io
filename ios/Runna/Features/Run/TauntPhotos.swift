@@ -4,6 +4,8 @@ import UIKit
 /// Take a photo and send it (viewable once) to someone whose territory you stole.
 struct TauntComposerView: View {
     let victim: Victim
+    /// Called once the photo has been sent.
+    var onSent: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     @State private var image: UIImage?
@@ -76,6 +78,7 @@ struct TauntComposerView: View {
                 if !trimmed.isEmpty { body["message"] = String(trimmed.prefix(140)) }
                 try await APIClient.shared.send("POST", "/api/ephemeral-photos", body: body)
                 Haptics.success()
+                onSent()
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
