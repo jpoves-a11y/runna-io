@@ -5,6 +5,10 @@ import { registerRoutes } from './routes';
 import type { AppEnv } from './auth';
 import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 import { configurePush } from './pushHelper';
+import { runScheduledTasks } from './cron';
+import { registerPublicPages } from './pages';
+import { createDb } from './db';
+import { WorkerStorage } from './storage';
 
 export interface Env {
   DATABASE_URL: string;
@@ -17,8 +21,13 @@ export interface Env {
   POLAR_CLIENT_SECRET?: string;
   COROS_CLIENT_ID?: string;
   COROS_CLIENT_SECRET?: string;
+  // Public base URL of this Worker (invite links, legal pages, email buttons)
   WORKER_URL?: string;
   FRONTEND_URL?: string;
+  // Optional App Store / TestFlight link shown on the invite and /open landing pages
+  APP_DOWNLOAD_URL?: string;
+  // Set only by the scheduled() handler for in-process cron calls; a request can never set it
+  INTERNAL_CRON?: boolean;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   EMAIL_PROVIDER?: 'resend' | 'sendgrid';
@@ -69,35 +78,49 @@ app.use('*', cors({
 }));
 
 registerRoutes(app);
+registerPublicPages(app);
 
 app.get('/', (c) => {
   return c.json({ message: 'Runna.io API - Cloudflare Workers' });
 });
 
+/** Adds columns/tables newer than the database (once per isolate; errors are logged, not thrown). */
+function ensureSchema(env: Env): Promise<void> {
+  if (!env.DATABASE_URL) return Promise.resolve();
+  try {
+    return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN)).ensureSchemaUpgrades();
+  } catch (error) {
+    console.error('[SCHEMA] Could not open the database:', error);
+    return Promise.resolve();
+  }
+}
+
+/** Paths that never touch the database (static pages) skip the schema check. */
+function needsDatabase(request: Request): boolean {
+  const { pathname } = new URL(request.url);
+  return pathname.startsWith('/api/');
+}
+
 export default {
-  fetch(request: Request, env: Env, ctx: ExecutionContext) {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     configurePush(env);
+    if (needsDatabase(request)) await ensureSchema(env);
     return app.fetch(request, env, ctx);
   },
-  queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
+  async queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
     configurePush(env);
+    await ensureSchema(env);
     return handleQueueBatch(batch, env);
   },
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    // Cloudflare Cron Trigger: auto-sync Polar activities every 5 minutes
-    const workerUrl = (env as any).WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
+  scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    // Cloudflare Cron Trigger ("*/5 * * * *"): runs the due /api/tasks/* in-process (see cron.ts)
+    configurePush(env);
     ctx.waitUntil(
-      fetch(`${workerUrl}/api/tasks/polar-auto-sync`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${(env as any).UPSTASH_CRON_SECRET || ''}`,
-          'Content-Type': 'application/json',
-        },
-      }).then(r => r.json()).then(result => {
-        console.log('[CRON] Polar auto-sync result:', JSON.stringify(result));
-      }).catch(err => {
-        console.error('[CRON] Polar auto-sync failed:', err);
-      })
+      ensureSchema(env)
+        .then(() => runScheduledTasks(app, event.scheduledTime, env, ctx))
+        .catch((err) => {
+          console.error('[CRON] Scheduled run failed:', err);
+        }),
     );
   },
 };

@@ -30,6 +30,8 @@ import {
   weeklySummaries,
   userNicknames,
   territoryFortifications,
+  reports,
+  userBlocks,
   type User,
   type InsertUser,
   type Route,
@@ -90,7 +92,7 @@ import {
   RARITY_CONFIG,
   ZARAGOZA_BOUNDS,
 } from '../../shared/schema';
-import { eq, desc, sql, and, inArray, lt } from 'drizzle-orm';
+import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
@@ -173,6 +175,9 @@ export class WorkerStorage {
   async deleteUser(userId: string): Promise<void> {
     // Delete from all child tables first to avoid FK constraint issues
     await this.deleteAuthSessionsByUserId(userId);
+    await this.ensureSchemaUpgrades();
+    await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
+    await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
     await this.db.delete(feedEvents).where(eq(feedEvents.userId, userId));
     await this.db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.senderId, userId));
@@ -195,6 +200,130 @@ export class WorkerStorage {
     await this.db.delete(territories).where(eq(territories.userId, userId));
     await this.db.delete(routes).where(eq(routes.userId, userId));
     await this.db.delete(users).where(eq(users.id, userId));
+  }
+
+  // ===== Schema upgrades applied at runtime (see migrations/0008_client_run_id_reports_blocks.sql) =====
+
+  private static schemaUpgrades: Promise<void> | null = null;
+
+  /**
+   * Adds routes.client_run_id and the reports / user_blocks tables if the database predates them.
+   * Runs once per isolate (index.ts calls it before handling requests, queue messages and crons),
+   * because every `select().from(routes)` lists client_run_id.
+   */
+  ensureSchemaUpgrades(): Promise<void> {
+    if (!WorkerStorage.schemaUpgrades) {
+      WorkerStorage.schemaUpgrades = this.applySchemaUpgrades().catch((error) => {
+        WorkerStorage.schemaUpgrades = null; // retry on the next request
+        console.error('[SCHEMA] Upgrade failed:', error);
+      });
+    }
+    return WorkerStorage.schemaUpgrades;
+  }
+
+  private async applySchemaUpgrades(): Promise<void> {
+    try {
+      await this.db.run(sql`ALTER TABLE routes ADD COLUMN client_run_id TEXT`);
+    } catch (_) { /* column already exists */ }
+    await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_user_client_run ON routes(user_id, client_run_id)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS reports (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+      reporter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      reported_user_id TEXT,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports(created_at)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS user_blocks (
+      blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (blocker_id, blocked_id)
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+  }
+
+  // ===== Idempotent run uploads =====
+
+  async getRouteByClientRunId(userId: string, clientRunId: string): Promise<Route | undefined> {
+    const [route] = await this.db
+      .select()
+      .from(routes)
+      .where(and(eq(routes.userId, userId), eq(routes.clientRunId, clientRunId)))
+      .limit(1);
+    return route || undefined;
+  }
+
+  // ===== Reports & blocks =====
+
+  async createReport(data: { reporterId: string; targetType: string; targetId: string; reportedUserId: string | null; reason: string }): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.insert(reports).values(data);
+  }
+
+  /** Blocks `blockedId` for `blockerId` and removes any friendship / friend requests between both. */
+  async blockUser(blockerId: string, blockedId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.insert(userBlocks).values({ blockerId, blockedId }).onConflictDoNothing();
+    await this.deleteBidirectionalFriendship(blockerId, blockedId);
+    await this.db.delete(friendRequests).where(
+      or(
+        and(eq(friendRequests.senderId, blockerId), eq(friendRequests.recipientId, blockedId)),
+        and(eq(friendRequests.senderId, blockedId), eq(friendRequests.recipientId, blockerId)),
+      )
+    );
+    // Unseen photos between both are discarded
+    await this.ensureEphemeralPhotosTable();
+    await this.db.delete(ephemeralPhotos).where(
+      or(
+        and(eq(ephemeralPhotos.senderId, blockerId), eq(ephemeralPhotos.recipientId, blockedId)),
+        and(eq(ephemeralPhotos.senderId, blockedId), eq(ephemeralPhotos.recipientId, blockerId)),
+      )
+    );
+  }
+
+  async unblockUser(blockerId: string, blockedId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.delete(userBlocks).where(and(eq(userBlocks.blockerId, blockerId), eq(userBlocks.blockedId, blockedId)));
+  }
+
+  /** Users that `blockerId` has blocked (public fields only). */
+  async getBlockedUsers(blockerId: string): Promise<Array<{ id: string; name: string; username: string; avatar: string | null; color: string }>> {
+    await this.ensureSchemaUpgrades();
+    return await this.db
+      .select({ id: users.id, name: users.name, username: users.username, avatar: users.avatar, color: users.color })
+      .from(userBlocks)
+      .innerJoin(users, eq(userBlocks.blockedId, users.id))
+      .where(eq(userBlocks.blockerId, blockerId))
+      .orderBy(desc(userBlocks.createdAt));
+  }
+
+  /** IDs of users whose content `userId` must not see (blocked by them, or who blocked them). */
+  async getBlockedUserIds(userId: string): Promise<string[]> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db
+      .select({ blockerId: userBlocks.blockerId, blockedId: userBlocks.blockedId })
+      .from(userBlocks)
+      .where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
+    const ids = new Set<string>();
+    for (const row of rows) ids.add(row.blockerId === userId ? row.blockedId : row.blockerId);
+    return [...ids];
+  }
+
+  /** True if either user has blocked the other. */
+  async isBlockedEitherWay(userA: string, userB: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db
+      .select({ blockerId: userBlocks.blockerId })
+      .from(userBlocks)
+      .where(or(
+        and(eq(userBlocks.blockerId, userA), eq(userBlocks.blockedId, userB)),
+        and(eq(userBlocks.blockerId, userB), eq(userBlocks.blockedId, userA)),
+      ))
+      .limit(1);
+    return rows.length > 0;
   }
 
   // ===== Auth Sessions =====
@@ -1064,6 +1193,11 @@ export class WorkerStorage {
     );
   }
 
+  /** Removes one device/browser subscription (e.g. an APNs token that Apple reports as dead). */
+  async deletePushSubscriptionByEndpoint(endpoint: string): Promise<void> {
+    await this.db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, endpoint));
+  }
+
   async deleteUserPushSubscriptionsByEndpoints(userId: string, endpoints: string[]): Promise<void> {
     if (endpoints.length === 0) return;
     await this.db.delete(pushSubscriptions).where(
@@ -1774,12 +1908,12 @@ export class WorkerStorage {
 
   async searchUsers(query: string, currentUserId: string, limit: number = 20): Promise<User[]> {
     const lowerQuery = query.toLowerCase();
+    const blockedIds = await this.getBlockedUserIds(currentUserId);
+    const matches = sql`(LOWER(${users.username}) LIKE ${`%${lowerQuery}%`} OR LOWER(${users.name}) LIKE ${`%${lowerQuery}%`}) AND ${users.id} != ${currentUserId}`;
     return await this.db
       .select()
       .from(users)
-      .where(
-        sql`(LOWER(${users.username}) LIKE ${`%${lowerQuery}%`} OR LOWER(${users.name}) LIKE ${`%${lowerQuery}%`}) AND ${users.id} != ${currentUserId}`
-      )
+      .where(blockedIds.length > 0 ? and(matches, notInArray(users.id, blockedIds)) : matches)
       .limit(limit);
   }
 
@@ -1813,7 +1947,7 @@ export class WorkerStorage {
 
   async createFriendInvite(userId: string): Promise<FriendInvite> {
     const token = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days
     
     const [invite] = await this.db
       .insert(friendInvites)
@@ -2080,7 +2214,8 @@ export class WorkerStorage {
           eq(ephemeralPhotos.viewed, false)
         )
       );
-    return results as any;
+    const blockedIds = new Set(await this.getBlockedUserIds(userId));
+    return (blockedIds.size > 0 ? results.filter((photo) => !blockedIds.has(photo.senderId)) : results) as any;
   }
 
   async viewAndDeleteEphemeralPhoto(photoId: string, userId: string): Promise<EphemeralPhoto | null> {
@@ -2225,12 +2360,22 @@ export class WorkerStorage {
       }
     } catch (_) {}
 
+    // Sentinel alerts are private to their owner (the defender); events by or against
+    // blocked users (either direction) are hidden.
+    const blockedIds = await this.getBlockedUserIds(userId);
+    const visibility = and(
+      or(sql`${feedEvents.eventType} != 'sentinel_alert'`, eq(feedEvents.userId, userId)),
+      blockedIds.length > 0 ? notInArray(feedEvents.userId, blockedIds) : undefined,
+      blockedIds.length > 0 ? or(isNull(feedEvents.victimId), notInArray(feedEvents.victimId, blockedIds)) : undefined,
+    );
+
     // Get feed events — global during competition, friends-only otherwise
     let events;
     if (isCompetitionMode) {
       events = await this.db
         .select()
         .from(feedEvents)
+        .where(visibility)
         .orderBy(desc(feedEvents.createdAt))
         .limit(limit)
         .offset(offset);
@@ -2240,7 +2385,7 @@ export class WorkerStorage {
       events = await this.db
         .select()
         .from(feedEvents)
-        .where(inArray(feedEvents.userId, allUserIds))
+        .where(and(inArray(feedEvents.userId, allUserIds), visibility))
         .orderBy(desc(feedEvents.createdAt))
         .limit(limit)
         .offset(offset);
@@ -2400,7 +2545,7 @@ export class WorkerStorage {
   async getFeedEventComments(eventId: string, viewerUserId?: string): Promise<FeedCommentWithUser[]> {
     await this.ensureFeedTables();
 
-    const rawComments = await this.db
+    const allRawComments = await this.db
       .select({
         id: feedComments.id,
         feedEventId: feedComments.feedEventId,
@@ -2417,6 +2562,10 @@ export class WorkerStorage {
       .innerJoin(users, eq(feedComments.userId, users.id))
       .where(eq(feedComments.feedEventId, eventId))
       .orderBy(feedComments.createdAt);
+
+    // Hide comments by users blocked by (or blocking) the viewer
+    const blockedIds = viewerUserId ? new Set(await this.getBlockedUserIds(viewerUserId)) : new Set<string>();
+    const rawComments = blockedIds.size > 0 ? allRawComments.filter((row) => !blockedIds.has(row.userId)) : allRawComments;
 
     if (rawComments.length === 0) return [];
 

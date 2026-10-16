@@ -3,8 +3,9 @@ import type { WorkerStorage } from './storage';
 
 type EmailProvider = 'resend' | 'sendgrid';
 
-// URL base de la aplicación
-const APP_URL = 'https://runna-io.pages.dev';
+// Public URL of the Worker: email buttons open its /open landing page, which launches the iOS app
+// (email clients don't reliably open custom URL schemes such as runnaio://).
+export const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 export class EmailService {
   private resend?: Resend;
@@ -12,9 +13,11 @@ export class EmailService {
   private apiKey: string;
   private fromEmail = 'onboarding@resend.dev';
   private fromName = 'Runna.io';
+  private baseUrl: string;
 
-  constructor(apiKey: string, fromEmail?: string, provider?: EmailProvider) {
+  constructor(apiKey: string, fromEmail?: string, provider?: EmailProvider, baseUrl?: string) {
     this.apiKey = apiKey;
+    this.baseUrl = (baseUrl || DEFAULT_WORKER_URL).replace(/\/+$/, '');
     this.provider = provider || 'resend';
     if (this.provider === 'resend') {
       this.resend = new Resend(apiKey);
@@ -84,7 +87,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 30px 0;">
-              <a href="${APP_URL}/friends" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+              <a href="${this.baseUrl}/open?tab=friends" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
                 Ver solicitud
               </a>
             </div>
@@ -123,7 +126,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 30px 0;">
-              <a href="${APP_URL}" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+              <a href="${this.baseUrl}/open?tab=friends" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
                 Ir a Runna.io
               </a>
             </div>
@@ -170,7 +173,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 30px 0;">
-              <a href="${APP_URL}" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+              <a href="${this.baseUrl}/open?tab=map" style="display: inline-block; background: #3b82f6; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
                 Ver mapa
               </a>
             </div>
@@ -224,7 +227,7 @@ export class EmailService {
             </div>
 
             <div style="text-align: center; margin: 24px 0;">
-              <a href="${APP_URL}" style="display: inline-block; background: #2563eb; color: white; padding: 14px 22px; border-radius: 10px; text-decoration: none; font-weight: 700; box-shadow: 0 10px 30px rgba(37, 99, 235, 0.25);">
+              <a href="${this.baseUrl}/open" style="display: inline-block; background: #2563eb; color: white; padding: 14px 22px; border-radius: 10px; text-decoration: none; font-weight: 700; box-shadow: 0 10px 30px rgba(37, 99, 235, 0.25);">
                 Abrir Runna.io
               </a>
             </div>
