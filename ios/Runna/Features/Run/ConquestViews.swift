@@ -163,6 +163,7 @@ struct RouteReplayView: View {
                             .frame(width: 12, height: 12)
                             .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
+                    .annotationTitles(.hidden)
                 }
                 if let head = shown.last {
                     Annotation(progress >= 1 ? "Meta" : String(), coordinate: head) {
@@ -172,9 +173,9 @@ struct RouteReplayView: View {
                             .overlay(Circle().stroke(Color.white, lineWidth: 3))
                             .shadow(radius: 2)
                     }
+                    .annotationTitles(.hidden)
                 }
             }
-            .annotationTitles(.hidden)
 
             if progress >= 1, coordinates.count >= 2 {
                 Button {
