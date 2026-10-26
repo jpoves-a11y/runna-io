@@ -39,6 +39,8 @@ final class APIClient {
 
     private let session: URLSession
     private let decoder = JSONDecoder()
+    private let inFlightLock = NSLock()
+    private var inFlight: [String: Task<Data, Error>] = [:]
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -64,7 +66,13 @@ final class APIClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let data = try await perform(request)
+        let data: Data
+        if method == "GET" && body == nil {
+            data = try await performGET(request, path: path, query: query, usesSessionToken: token == nil)
+        } else {
+            data = try await perform(request)
+            noteMutation(method, path: path)
+        }
         return try decode(T.self, from: data)
     }
 
@@ -107,7 +115,37 @@ final class APIClient {
         request.httpBody = body
 
         let data = try await perform(request)
+        noteMutation("POST", path: path)
         return try decode(T.self, from: data)
+    }
+
+    // MARK: - Cached GETs (stale-while-revalidate)
+
+    /// GET returning the raw JSON body (also stored in the response cache).
+    func getData(_ path: String, query: [String: String] = [:]) async throws -> Data {
+        let request = try makeRequest("GET", path, query: query, token: nil)
+        return try await performGET(request, path: path, query: query, usesSessionToken: true)
+    }
+
+    /// The last body received for this GET (memory, else the Caches directory), if any.
+    func cachedData(_ path: String, query: [String: String] = [:]) -> Data? {
+        ResponseCache.shared.entry(for: ResponseCache.key(path: path, query: query))?.data
+    }
+
+    /// The last body received for this GET, decoded; nil when there is none (or it no longer decodes).
+    func cached<T: Decodable>(_ path: String, query: [String: String] = [:], as type: T.Type = T.self) -> T? {
+        guard let data = cachedData(path, query: query) else { return nil }
+        return try? decode(T.self, from: data)
+    }
+
+    /// True when this GET was answered less than `maxAge` seconds ago and nothing was changed since.
+    func isCacheFresh(_ path: String, query: [String: String] = [:], maxAge: TimeInterval = ResponseCache.freshness) -> Bool {
+        ResponseCache.shared.isFresh(ResponseCache.key(path: path, query: query), maxAge: maxAge)
+    }
+
+    /// Decodes a body obtained with `getData` / `cachedData`.
+    func decodeBody<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        try decode(T.self, from: data)
     }
 
     // MARK: - Internals
@@ -128,6 +166,57 @@ final class APIClient {
             request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
         }
         return request
+    }
+
+    /// Identical GETs in flight at the same time share one network request, and the body of a
+    /// session GET is stored in the response cache. A cancelled caller still gets CancellationError,
+    /// but the shared request finishes and fills the cache for the next visit.
+    private func performGET(_ request: URLRequest, path: String, query: [String: String], usesSessionToken: Bool) async throws -> Data {
+        let cache = ResponseCache.shared
+        guard usesSessionToken, cache.isCacheable(path: path), let url = request.url else {
+            return try await perform(request)
+        }
+        let cacheKey = ResponseCache.key(path: path, query: query)
+        let flightKey = (request.value(forHTTPHeaderField: "Authorization") ?? "-") + " " + url.absoluteString
+        let generation = cache.generation
+
+        let task: Task<Data, Error> = sharedFlight(flightKey) {
+            Task<Data, Error> {
+                defer { self.endFlight(flightKey) }
+                let requestedAt = Date()
+                let data = try await self.perform(request)
+                cache.store(data, for: cacheKey, generation: generation, requestedAt: requestedAt)
+                return data
+            }
+        }
+        let data = try await task.value
+        try Task.checkCancellation()
+        return data
+    }
+
+    /// The request in flight for this key, or a new one (synchronous: the lock never spans a suspension).
+    private func sharedFlight(_ key: String, start: () -> Task<Data, Error>) -> Task<Data, Error> {
+        inFlightLock.lock()
+        defer { inFlightLock.unlock() }
+        if let running = inFlight[key] { return running }
+        let task = start()
+        inFlight[key] = task
+        return task
+    }
+
+    private func endFlight(_ key: String) {
+        inFlightLock.lock()
+        inFlight[key] = nil
+        inFlightLock.unlock()
+    }
+
+    /// Requests that don't change anything the screens show (device registration, reports, invite links).
+    private static let nonInvalidatingPrefixes = ["/api/push/", "/api/reports", "/api/friends/invite"]
+
+    /// A request that changes data succeeded: cached GETs must be revalidated on the next visit.
+    private func noteMutation(_ method: String, path: String) {
+        guard method != "GET", !Self.nonInvalidatingPrefixes.contains(where: { path.hasPrefix($0) }) else { return }
+        ResponseCache.shared.invalidateAll()
     }
 
     private func perform(_ request: URLRequest) async throws -> Data {

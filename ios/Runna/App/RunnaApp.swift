@@ -9,6 +9,8 @@ struct RunnaApp: App {
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
 
     init() {
+        // Avatars and other remote images survive relaunches (the default cache is tiny)
+        URLCache.shared = URLCache(memoryCapacity: 16 * 1024 * 1024, diskCapacity: 150 * 1024 * 1024, directory: nil)
         #if DEBUG
         // e2e tests open a screen at launch (simctl openurl shows a confirmation prompt instead)
         if let link = ProcessInfo.processInfo.environment["RUNNA_TEST_DEEP_LINK"], let url = URL(string: link) {

@@ -68,32 +68,172 @@ final class MapModel {
         players.filter { !hiddenUserIds.contains($0.id) }.count
     }
 
-    func load(user: AppUser) async {
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            async let territoriesRequest: [Territory] = APIClient.shared.request("GET", "/api/territories/friends/\(user.id)")
-            async let friendsRequest: [AppUser] = APIClient.shared.request("GET", "/api/friends/\(user.id)")
-            let (territories, friends) = try await (territoriesRequest, friendsRequest)
+    // MARK: - Loading (stale-while-revalidate)
+
+    /// Shared by the map tab across tab switches; reset on logout.
+    static let shared = MapModel()
+
+    /// Account the data belongs to.
+    private var ownerId: String?
+    private var territoriesResource: CachedResource<[Territory]>?
+    private var friendsResource: CachedResource<[AppUser]>?
+    private var routesResource: CachedResource<[RunRoute]>?
+    private let treasuresResource = CachedResource<TreasuresResponse>("/api/treasures/active")
+    private let fortificationsResource = CachedResource<FortificationsResponse>("/api/territories/fortifications")
+    /// Friends as last received (players are rebuilt when the user's own name/colour changes).
+    private var friendList: [AppUser] = []
+    private var latestRoutes: [RunRoute] = []
+    private var routeColor: String?
+    /// Something was drawn (from the cache or the server).
+    private(set) var hasContent = false
+    var reloadTracker = ReloadSignalTracker()
+
+    /// Forgets everything (logout).
+    func reset() {
+        ownerId = nil
+        territoriesResource = nil
+        friendsResource = nil
+        routesResource = nil
+        treasuresResource.forget()
+        fortificationsResource.forget()
+        friendList = []
+        latestRoutes = []
+        routeColor = nil
+        hasContent = false
+        reloadTracker = ReloadSignalTracker()
+        shapes = []
+        players = []
+        treasures = []
+        fortifications = []
+        castles = []
+        routeLines = []
+        isLoading = false
+        errorMessage = nil
+        hiddenUserIds = []
+    }
+
+    private func prepare(for userId: String) {
+        guard ownerId != userId else { return }
+        reset()
+        ownerId = userId
+        territoriesResource = CachedResource("/api/territories/friends/\(userId)")
+        friendsResource = CachedResource("/api/friends/\(userId)")
+        routesResource = CachedResource("/api/routes/\(userId)")
+    }
+
+    /// Main data answered recently: switching back to the map doesn't refetch it.
+    func isFresh(userId: String) -> Bool {
+        guard ownerId == userId, hasContent,
+              let territories = territoriesResource, let friends = friendsResource else { return false }
+        return territories.isFresh && friends.isFresh && CompetitionStore.shared.isFresh
+    }
+
+    /// Draws the last known data right away (memory, or disk after a cold start).
+    func showCached(user: AppUser) async {
+        prepare(for: user.id)
+        CompetitionStore.shared.loadCachedIfNeeded()
+        if let territories = await territoriesResource?.loadCached() {
             shapes = Self.makeShapes(territories)
-            let me = UserRef(id: user.id, username: user.username, name: "Tú", color: user.color, avatar: user.avatar)
-            players = [me] + friends.map { UserRef(id: $0.id, username: $0.username, name: $0.name, color: $0.color, avatar: $0.avatar) }
-            errorMessage = nil
-        } catch is CancellationError {
-            return
-        } catch {
-            errorMessage = error.localizedDescription
+            hasContent = true
         }
-        await loadRoutes(user: user)
+        if let friends = await friendsResource?.loadCached() {
+            friendList = friends
+            hasContent = true
+        }
+        updatePlayers(user: user)
+        if let routes = await routesResource?.loadCached() {
+            latestRoutes = routes
+        }
+        updateRouteLines(user: user)
+        if CompetitionStore.shared.isActive {
+            if let response = await treasuresResource.loadCached() {
+                treasures = response.treasures
+            }
+            if let response = await fortificationsResource.loadCached() {
+                makeFortifications(response.fortifications)
+            }
+        }
+    }
+
+    /// Cached data first, then everything refetched in parallel (territories, friends, routes and the
+    /// competition), then the competition overlays. With `force == false` fresh data isn't refetched.
+    func load(user: AppUser, force: Bool = true) async {
+        await showCached(user: user)
+        guard force || !isFresh(userId: user.id) else {
+            updatePlayers(user: user)
+            updateRouteLines(user: user)
+            return
+        }
+        guard let territoriesResource, let friendsResource, let routesResource else { return }
+
+        // The spinner only shows while there is nothing to draw yet
+        isLoading = !hasContent
+        defer { isLoading = false }
+
+        let competitionStore: CompetitionStore = CompetitionStore.shared
+        async let territoriesResult = Self.fetch(territoriesResource)
+        async let friendsResult = Self.fetch(friendsResource)
+        async let routesResult = Self.fetch(routesResource)
+        async let competitionRefresh: Void = competitionStore.refresh()
+
+        let territories: Result<[Territory]?, Error> = await territoriesResult
+        let friends: Result<[AppUser]?, Error> = await friendsResult
+        let routes: Result<[RunRoute]?, Error> = await routesResult
+        await competitionRefresh
+
+        var failure: Error?
+        switch territories {
+        case .success(let value):
+            if let value { shapes = Self.makeShapes(value) }
+        case .failure(let error):
+            failure = error
+        }
+        switch friends {
+        case .success(let value):
+            if let value { friendList = value }
+        case .failure(let error):
+            failure = failure ?? error
+        }
+        if case .success(let value) = routes, let value {
+            latestRoutes = value
+        }
+        updatePlayers(user: user)
+        updateRouteLines(user: user)
+
+        if let failure {
+            if failure is CancellationError { return }
+            // With cached data on screen the refresh fails silently (it's retried on the next visit)
+            errorMessage = (territoriesResource.hasValue && friendsResource.hasValue) ? nil : failure.localizedDescription
+        } else {
+            errorMessage = nil
+            hasContent = true
+        }
         await loadCompetition(userId: user.id)
     }
 
-    private func loadRoutes(user: AppUser) async {
-        guard let routes = try? await APIClient.shared.request("GET", "/api/routes/\(user.id)", as: [RunRoute].self) else { return }
+    private static func fetch<T: Decodable>(_ resource: CachedResource<T>) async -> Result<T?, Error> {
+        do {
+            return .success(try await resource.fetch())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private func updatePlayers(user: AppUser) {
+        let me = UserRef(id: user.id, username: user.username, name: "Tú", color: user.color, avatar: user.avatar)
+        let updated = [me] + friendList.map { UserRef(id: $0.id, username: $0.username, name: $0.name, color: $0.color, avatar: $0.avatar) }
+        if updated != players { players = updated }
+    }
+
+    private func updateRouteLines(user: AppUser) {
         let color = Color(hex: user.color)
-        let recent = routes
+        let recent = latestRoutes
             .sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
             .prefix(maxRouteLines)
+        let ids = recent.map(\.id)
+        // Same routes in the same colour: nothing to redraw
+        if routeColor == user.color && ids == routeLines.map(\.id) { return }
+        routeColor = user.color
         routeLines = recent.compactMap { route -> RouteLine? in
             let coordinates = route.locations
             guard coordinates.count >= 2 else { return nil }
@@ -104,7 +244,6 @@ final class MapModel {
     /// Competition state, then treasures, fortifications and the powers badge while it is active.
     private func loadCompetition(userId: String) async {
         let store = CompetitionStore.shared
-        await store.refresh()
         guard store.isActive else {
             treasures = []
             fortifications = []
@@ -112,17 +251,25 @@ final class MapModel {
             store.setAvailablePowerCount(0)
             return
         }
-        await refreshCompetitionOverlays()
-        await store.refreshPowers(userId: userId)
+        async let overlays: Void = refreshCompetitionOverlays()
+        async let powers: Void = store.refreshPowers(userId: userId)
+        await overlays
+        await powers
     }
 
-    /// Treasures and fortifications (refreshed every minute while the map is visible).
+    /// Treasures and fortifications (refreshed every minute while the map is visible), in parallel.
     func refreshCompetitionOverlays() async {
         guard CompetitionStore.shared.isActive else { return }
-        if let response = try? await APIClient.shared.request("GET", "/api/treasures/active", as: TreasuresResponse.self) {
+        let treasuresSource: CachedResource<TreasuresResponse> = treasuresResource
+        let fortificationsSource: CachedResource<FortificationsResponse> = fortificationsResource
+        async let treasuresResult = Self.fetch(treasuresSource)
+        async let fortificationsResult = Self.fetch(fortificationsSource)
+        let treasuresOutcome: Result<TreasuresResponse?, Error> = await treasuresResult
+        let fortificationsOutcome: Result<FortificationsResponse?, Error> = await fortificationsResult
+        if case .success(let response) = treasuresOutcome, let response {
             treasures = response.treasures
         }
-        if let response = try? await APIClient.shared.request("GET", "/api/territories/fortifications", as: FortificationsResponse.self) {
+        if case .success(let response) = fortificationsOutcome, let response {
             makeFortifications(response.fortifications)
         }
     }

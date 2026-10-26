@@ -1485,12 +1485,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
-      const user = await storage.getUser(userId);
+      // The user and the friends leaderboard (rank among friends, not global) in parallel
+      const [user, friendsLeaderboard] = await Promise.all([
+        storage.getUser(userId),
+        storage.getLeaderboardFriends(userId),
+      ]);
       if (!user) {
         return c.json({ error: "User not found" }, 404);
       }
-      // Use friends leaderboard so rank is among friends, not global
-      const friendsLeaderboard = await storage.getLeaderboardFriends(userId);
       const userWithStats = friendsLeaderboard.find(u => u.id === userId);
       if (!userWithStats) {
         // Fallback to global stats if somehow not in friends list
@@ -3430,10 +3432,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const userId = c.req.param('userId');
       const requests = await storage.getFriendRequestsByRecipient(userId);
       
-      // Enrich with sender info
+      // Enrich with sender info (one query for all senders)
+      const senders = await storage.getUsersMapByIds(requests.map((req) => req.senderId));
       const enrichedRequests = await Promise.all(
         requests.map(async (req) => {
-          const sender = await storage.getUser(req.senderId);
+          const sender = senders.get(req.senderId);
           return {
             ...req,
             sender: sender ? {
@@ -3462,10 +3465,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
       
       const requests = await storage.getFriendRequestsBySender(userId);
       
-      // Enrich with recipient info
+      // Enrich with recipient info (one query for all recipients)
+      const recipients = await storage.getUsersMapByIds(requests.map((req) => req.recipientId));
       const enrichedRequests = await Promise.all(
         requests.map(async (req) => {
-          const recipient = await storage.getUser(req.recipientId);
+          const recipient = recipients.get(req.recipientId);
           return {
             ...req,
             recipient: recipient ? {
@@ -7172,11 +7176,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const comp = await storage.getActiveCompetition();
       if (!comp) return c.json({ leaderboard: [] });
       const leaderboard = await storage.getCompetitionLeaderboard(comp.id);
-      // Enrich with active nicknames
-      const enriched = await Promise.all(leaderboard.map(async (entry) => {
-        const nn = await storage.getActiveNickname(entry.user.id);
+      // Enrich with active nicknames (one query for everyone)
+      const nicknames = await storage.getActiveNicknamesForUsers(leaderboard.map((entry) => entry.user.id));
+      const enriched = leaderboard.map((entry) => {
+        const nn = nicknames.get(entry.user.id);
         return { ...entry, user: { ...entry.user, nickname: nn?.nickname || null, nicknameExpiresAt: nn?.expiresAt || null } };
-      }));
+      });
       return c.json({ leaderboard: enriched });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);

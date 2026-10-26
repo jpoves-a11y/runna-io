@@ -95,6 +95,16 @@ function ensureSchema(env: Env): Promise<void> {
   }
 }
 
+/** Read-path indexes (once per isolate), without delaying the request that triggers them. */
+function ensureIndexesInBackground(env: Env, ctx: ExecutionContext): void {
+  if (!env.DATABASE_URL) return;
+  try {
+    ctx.waitUntil(new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN)).ensureReadPathIndexes());
+  } catch (error) {
+    console.error('[SCHEMA] Could not schedule index creation:', error);
+  }
+}
+
 /** Paths that never touch the database (static pages) skip the schema check. */
 function needsDatabase(request: Request): boolean {
   const { pathname } = new URL(request.url);
@@ -104,7 +114,10 @@ function needsDatabase(request: Request): boolean {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     configurePush(env);
-    if (needsDatabase(request)) await ensureSchema(env);
+    if (needsDatabase(request)) {
+      await ensureSchema(env);
+      ensureIndexesInBackground(env, ctx);
+    }
     return app.fetch(request, env, ctx);
   },
   async queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
