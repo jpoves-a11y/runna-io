@@ -28,6 +28,10 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Runna.io usa tu ubicación para mostrarte en el mapa y registrar la ruta de tus carreras, también con la pantalla bloqueada mientras corres.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

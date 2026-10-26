@@ -125,8 +125,13 @@ function safeUnion(geomA: any, geomB: any): any | null {
 }
 
 export class WorkerStorage {
-  private _competitionTablesEnsured = false;
-  private _feedTablesEnsured = false;
+  // Runtime CREATE TABLE / ALTER checks run once per isolate (static), not once per request:
+  // a WorkerStorage is created for every request, and each DDL statement is a round trip to Turso.
+  private static competitionTablesEnsured = false;
+  private static feedTablesEnsured = false;
+  private static ephemeralPhotosTableEnsured = false;
+  private static inactivityRemindersTableEnsured = false;
+  private static territoryLossNotificationsTableEnsured = false;
   constructor(private db: Database) {}
 
   async getUser(id: string): Promise<User | undefined> {
@@ -386,20 +391,19 @@ export class WorkerStorage {
       .from(users)
       .orderBy(desc(users.totalArea));
 
-    const usersWithStats: UserWithStats[] = await Promise.all(
-      allUsers.map(async (user, index) => {
-        const friendCount = await this.db
-          .select({ count: sql<number>`count(*)` })
-          .from(friendships)
-          .where(eq(friendships.userId, user.id));
+    // friendCount of every user in one grouped query (was one query per user)
+    const countRows = await this.db
+      .select({ userId: friendships.userId, count: sql<number>`count(*)` })
+      .from(friendships)
+      .groupBy(friendships.userId);
+    const friendCounts = new Map<string, number>();
+    for (const row of countRows) friendCounts.set(row.userId, Number(row.count) || 0);
 
-        return {
-          ...user,
-          rank: index + 1,
-          friendCount: Number(friendCount[0]?.count || 0),
-        };
-      })
-    );
+    const usersWithStats: UserWithStats[] = allUsers.map((user, index) => ({
+      ...user,
+      rank: index + 1,
+      friendCount: friendCounts.get(user.id) ?? 0,
+    }));
 
     return usersWithStats;
   }
@@ -1085,8 +1089,9 @@ export class WorkerStorage {
     const friendIds = userFriendships.map((f) => f.friendId);
     
     // Rank friends among the friend group (including the user) instead of globally
-    const friendsLeaderboard = await this.getLeaderboardFriends(userId);
-    return friendsLeaderboard.filter((user) => friendIds.includes(user.id));
+    const friendsLeaderboard = await this.getLeaderboardFriends(userId, friendIds);
+    const friendIdSet = new Set(friendIds);
+    return friendsLeaderboard.filter((user) => friendIdSet.has(user.id));
   }
 
   async checkFriendship(userId: string, friendId: string): Promise<boolean> {
@@ -1834,14 +1839,16 @@ export class WorkerStorage {
   }
 
   // New friendship methods for friend-only competition
-  async getLeaderboardFriends(userId: string): Promise<UserWithStats[]> {
+  /**
+   * The user and their friends ordered by territory, with rank and friendCount.
+   * @param knownFriendIds the user's friend ids when the caller already loaded them (saves a query).
+   */
+  async getLeaderboardFriends(userId: string, knownFriendIds?: string[]): Promise<UserWithStats[]> {
     // Get friend IDs
-    const userFriendships = await this.db
+    const friendIds = knownFriendIds ?? (await this.db
       .select({ friendId: friendships.friendId })
       .from(friendships)
-      .where(eq(friendships.userId, userId));
-
-    const friendIds = userFriendships.map((f) => f.friendId);
+      .where(eq(friendships.userId, userId))).map((f) => f.friendId);
     
     // Include the user themselves in the list
     const allIds = [userId, ...friendIds];
@@ -1853,23 +1860,28 @@ export class WorkerStorage {
       .where(sql`${users.id} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`)
       .orderBy(desc(users.totalArea));
 
-    // Calculate rank and friendCount
-    const friendsWithStats: UserWithStats[] = [];
-    for (let i = 0; i < friends.length; i++) {
-      const friend = friends[i];
-      const [{ count }] = await this.db
-        .select({ count: sql<number>`count(*)` })
-        .from(friendships)
-        .where(eq(friendships.userId, friend.id));
-      
-      friendsWithStats.push({
-        ...friend,
-        rank: i + 1,
-        friendCount: Number(count) || 0,
-      });
-    }
+    // friendCount of everyone in one grouped query (was one query per user)
+    const friendCounts = await this.getFriendCounts(friends.map((friend) => friend.id));
 
-    return friendsWithStats;
+    // Calculate rank and friendCount
+    return friends.map((friend, i) => ({
+      ...friend,
+      rank: i + 1,
+      friendCount: friendCounts.get(friend.id) ?? 0,
+    }));
+  }
+
+  /** Number of friendships of each user, in a single query. */
+  async getFriendCounts(userIds: string[]): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    if (userIds.length === 0) return counts;
+    const rows = await this.db
+      .select({ userId: friendships.userId, count: sql<number>`count(*)` })
+      .from(friendships)
+      .where(inArray(friendships.userId, userIds))
+      .groupBy(friendships.userId);
+    for (const row of rows) counts.set(row.userId, Number(row.count) || 0);
+    return counts;
   }
 
   async getTerritoriesWithUsersByFriends(userId: string): Promise<TerritoryWithUser[]> {
@@ -2165,6 +2177,7 @@ export class WorkerStorage {
   // --- Ephemeral Photos ---
 
   async ensureEphemeralPhotosTable(): Promise<void> {
+    if (WorkerStorage.ephemeralPhotosTableEnsured) return;
     try {
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS ephemeral_photos (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -2177,6 +2190,7 @@ export class WorkerStorage {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         expires_at TEXT NOT NULL
       )`);
+      WorkerStorage.ephemeralPhotosTableEnsured = true;
     } catch (_) {}
   }
 
@@ -2252,7 +2266,7 @@ export class WorkerStorage {
   // --- Social Feed ---
 
   async ensureFeedTables(): Promise<void> {
-    if (this._feedTablesEnsured) return;
+    if (WorkerStorage.feedTablesEnsured) return;
     try {
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS feed_events (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -2292,7 +2306,7 @@ export class WorkerStorage {
       )`);
       // Create unique index for one reaction per user per target
       await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_reactions_unique ON feed_reactions(user_id, target_type, target_id)`);
-      this._feedTablesEnsured = true;
+      WorkerStorage.feedTablesEnsured = true;
     } catch (e) {
       console.error('[FEED] ensureFeedTables error:', e);
     }
@@ -2769,6 +2783,7 @@ export class WorkerStorage {
    * Ensure the inactivity_reminders table exists (auto-create if missing)
    */
   async ensureInactivityRemindersTable(): Promise<void> {
+    if (WorkerStorage.inactivityRemindersTableEnsured) return;
     try {
       await this.db.run(sql`
         CREATE TABLE IF NOT EXISTS inactivity_reminders (
@@ -2778,6 +2793,7 @@ export class WorkerStorage {
           sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      WorkerStorage.inactivityRemindersTableEnsured = true;
     } catch (e) {
       // Table likely already exists
     }
@@ -2830,6 +2846,7 @@ export class WorkerStorage {
    * Ensure the territory_loss_notifications table exists (auto-create if missing)
    */
   async ensureTerritoryLossNotificationsTable(): Promise<void> {
+    if (WorkerStorage.territoryLossNotificationsTableEnsured) return;
     try {
       await this.db.run(sql`
         CREATE TABLE IF NOT EXISTS territory_loss_notifications (
@@ -2839,6 +2856,7 @@ export class WorkerStorage {
           sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      WorkerStorage.territoryLossNotificationsTableEnsured = true;
     } catch (e) {
       // Table likely already exists
     }
@@ -2874,7 +2892,7 @@ export class WorkerStorage {
   // ============ COMPETITION SYSTEM ============
 
   async ensureCompetitionTables(): Promise<void> {
-    if (this._competitionTablesEnsured) return;
+    if (WorkerStorage.competitionTablesEnsured) return;
     try {
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS competitions (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -2959,7 +2977,7 @@ export class WorkerStorage {
       await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_bbox ON territory_fortifications(bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat)`);
       // Add zone column to treasures
       try { await this.db.run(sql`ALTER TABLE treasures ADD COLUMN zone TEXT`); } catch (_) { /* column already exists */ }
-      this._competitionTablesEnsured = true;
+      WorkerStorage.competitionTablesEnsured = true;
     } catch (_) {}
   }
 
