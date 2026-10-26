@@ -20,43 +20,40 @@ struct RunSummaryView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: DS.Spacing.l) {
+                VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     RunCelebrationHeader(
                         title: headerTitle,
                         subtitle: headerSubtitle,
                         isWorking: isWorking
                     )
                     .padding(.top, DS.Spacing.s)
-                    RouteReplayView(
-                        coordinates: run.coordinates,
-                        color: Color(hex: session.user?.color ?? "#16A34A"),
-                        height: 220
-                    )
-                    RunStatsCard(distance: run.distance, duration: run.duration)
+                    VStack(spacing: DS.Spacing.m) {
+                        RouteReplayView(
+                            coordinates: run.coordinates,
+                            color: Color.brand,
+                            height: 220
+                        )
+                        RunStatsCard(distance: run.distance, duration: run.duration)
+                    }
                     resultSection
-                    let treasures = treasureLines
+                    let treasures: [TreasureLine] = treasureLines
                     if !treasures.isEmpty {
                         TreasuresCard(treasures: treasures)
                     }
                     if submission.routeId != nil {
                         renameSection
                     }
-                    doneButton
                 }
-                .padding(.horizontal, DS.Spacing.l)
+                .padding(.horizontal, DS.Spacing.screen)
                 .padding(.bottom, DS.Spacing.xxl)
                 .animation(.snappy, value: stateKey)
             }
             .screenBackground()
+            .safeAreaInset(edge: .bottom) {
+                doneButton
+            }
             .navigationTitle("Resumen")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Hecho", action: onClose)
-                        .fontWeight(.bold)
-                        .disabled(isBlocking)
-                }
-            }
             .errorAlert($errorMessage)
             .sheet(item: $tauntVictim) { victim in
                 TauntComposerView(victim: victim) {
@@ -87,34 +84,39 @@ struct RunSummaryView: View {
 
     private var headerTitle: String {
         switch submission.state {
-        case .uploading, .processing: return "¡Carrera terminada!"
+        case .uploading, .processing: return "Carrera terminada"
         case .done(let result):
-            if let result, result.totalStolen > 0 { return "¡Golpe maestro!" }
-            if let result, result.newAreaConquered > 0 { return "¡Territorio conquistado!" }
-            return "¡Carrera guardada!"
-        case .failed, .rejected: return "¡Carrera terminada!"
+            if let result, result.newAreaConquered > 0 { return "Territorio conquistado" }
+            return "Carrera guardada"
+        case .failed, .rejected: return "Carrera terminada"
         }
     }
 
     private var headerSubtitle: String {
         switch submission.state {
-        case .uploading: return "Subiendo tu ruta…"
-        case .processing: return "Pintando el mapa con tu color…"
+        case .uploading: return "Subiendo la ruta…"
+        case .processing: return "Calculando el territorio…"
         case .done(let result):
-            if let result, result.totalStolen > 0 { return "Has entrado en terreno ajeno y has salido ganando." }
-            if let result, result.newAreaConquered > 0 { return "Tu color ya ocupa más mapa. Sigue así." }
-            return "Cada kilómetro cuenta."
-        case .failed, .rejected: return "Tus kilómetros están a salvo en el móvil."
+            if let result, result.totalStolen > 0 { return "Has ganado terreno a otros corredores." }
+            if let result, result.newAreaConquered > 0 { return "Tu zona en el mapa es más grande." }
+            return run.defaultName
+        case .failed, .rejected: return "La carrera está guardada en este iPhone."
         }
     }
 
     private var doneButton: some View {
         Button(action: onClose) {
-            Label(isBlocking ? "Guardando…" : "¡A por la siguiente!", systemImage: "figure.run")
+            Text(isBlocking ? "Guardando…" : "Hecho")
         }
         .buttonStyle(PrimaryButtonStyle())
         .disabled(isBlocking)
-        .padding(.top, DS.Spacing.s)
+        .padding(.horizontal, DS.Spacing.screen)
+        .padding(.top, DS.Spacing.m)
+        .padding(.bottom, DS.Spacing.s)
+        .background(Color.canvas.ignoresSafeArea(edges: .bottom))
+        .overlay(alignment: .top) {
+            HairlineDivider()
+        }
     }
 
     /// While uploading (or retrying) the screen can't be closed, so two uploads never overlap.
@@ -136,9 +138,9 @@ struct RunSummaryView: View {
     private var resultSection: some View {
         switch submission.state {
         case .uploading:
-            RunStatusCard(systemImage: "icloud.and.arrow.up", title: "Guardando carrera…", message: "Un segundo, estamos subiendo tu recorrido.", isLoading: true)
+            RunStatusCard(systemImage: "icloud.and.arrow.up", title: "Guardando la carrera", message: "Estamos subiendo tu recorrido.", isLoading: true)
         case .processing:
-            RunStatusCard(systemImage: "map", title: "Calculando tu conquista…", message: "Estamos midiendo cuánto mapa has pintado y a quién se lo has quitado.", isLoading: true)
+            RunStatusCard(systemImage: "map", title: "Calculando el territorio", message: "Medimos el área conquistada y a quién se la has ganado.", isLoading: true)
         case .done(let result):
             if let result {
                 ConquestCard(result: result, sentVictimIds: sentVictimIds) { victim in
@@ -146,37 +148,38 @@ struct RunSummaryView: View {
                 }
             } else {
                 RunStatusCard(
-                    systemImage: "hourglass",
+                    systemImage: "clock",
                     title: "Carrera guardada",
-                    message: "El territorio se está calculando y aparecerá en el mapa en unos minutos.",
-                    tint: Color.grape
+                    message: "El territorio se está calculando y aparecerá en el mapa en unos minutos."
                 )
             }
         case .failed(let message):
             failureSection(
                 systemImage: "icloud.slash",
                 title: "Sin conexión",
-                text: "No se ha podido subir (\(message)). La carrera está guardada en el móvil y se subirá sola cuando haya conexión."
+                text: "No se ha podido subir (\(message)). La carrera está guardada en el iPhone y se subirá automáticamente cuando haya conexión."
             )
         case .rejected(let message):
             failureSection(
                 systemImage: "exclamationmark.triangle",
                 title: "El servidor no la ha aceptado",
-                text: "Motivo: \(message). Sigue guardada en el móvil y se volverá a intentar otro día."
+                text: "Motivo: \(message). Sigue guardada en el iPhone y se volverá a intentar más adelante."
             )
         }
     }
 
     private func failureSection(systemImage: String, title: String, text: String) -> some View {
-        VStack(spacing: DS.Spacing.m) {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
             RunStatusCard(systemImage: systemImage, title: title, message: text, tint: Color.steal)
-            if let retryMessage {
-                Text(retryMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+            HStack(spacing: DS.Spacing.m) {
+                retryButton
+                if let retryMessage {
+                    Text(retryMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            retryButton
         }
     }
 
@@ -185,44 +188,46 @@ struct RunSummaryView: View {
             retry()
         } label: {
             if retrying {
-                ProgressView().tint(Color.steal)
+                ProgressView()
+                    .controlSize(.small)
             } else {
-                Label("Reintentar ahora", systemImage: "arrow.clockwise")
+                Text("Reintentar")
             }
         }
-        .buttonStyle(SecondaryButtonStyle(tint: Color.steal))
+        .buttonStyle(SecondaryButtonStyle(tint: Color.primary))
         .disabled(retrying)
     }
 
     private var renameSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            Label("Ponle nombre a tu hazaña", systemImage: "pencil.line")
-                .font(Font.cardTitle)
-            HStack(spacing: DS.Spacing.s) {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: "Nombre de la carrera")
+            HStack(spacing: DS.Spacing.m) {
                 TextField(run.defaultName, text: $routeName)
-                    .font(.system(.body, design: .rounded))
-                    .padding(.horizontal, DS.Spacing.m)
-                    .frame(minHeight: 46)
-                    .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous))
+                    .font(.body)
                     .submitLabel(.done)
                     .onSubmit { rename() }
                 Button {
                     rename()
                 } label: {
-                    Image(systemName: renameSaved ? "checkmark" : "arrow.up")
-                        .font(.headline.weight(.heavy))
-                        .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace))
-                        .frame(width: 46, height: 46)
-                        .background(.brandGradient, in: Circle())
+                    if renameSaved {
+                        Label("Guardado", systemImage: "checkmark")
+                            .labelStyle(.titleAndIcon)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Guardar")
+                            .foregroundStyle(Color.brand)
+                    }
                 }
-                .buttonStyle(.pressable)
+                .font(.subheadline.weight(.semibold))
                 .disabled(routeName.trimmingCharacters(in: .whitespaces).isEmpty || renameSaved)
-                .opacity(routeName.trimmingCharacters(in: .whitespaces).isEmpty && !renameSaved ? 0.45 : 1)
+                .opacity(routeName.trimmingCharacters(in: .whitespaces).isEmpty && !renameSaved ? 0.4 : 1)
                 .accessibilityLabel(renameSaved ? "Guardado" : "Guardar nombre")
             }
+            .padding(.horizontal, DS.Spacing.l)
+            .frame(minHeight: 50)
+            .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            .hairlineBorder()
         }
-        .card()
         .sensoryFeedback(.success, trigger: renameSaved)
         .onChange(of: routeName) { _, _ in
             renameSaved = false
@@ -238,7 +243,7 @@ struct RunSummaryView: View {
             retrying = false
             switch submission.state {
             case .failed:
-                retryMessage = "Sigue sin poder subirse. Lo volveremos a intentar automáticamente."
+                retryMessage = "Sigue sin conexión. Se volverá a intentar automáticamente."
             case .rejected:
                 retryMessage = "El servidor sigue sin aceptarla."
             default:

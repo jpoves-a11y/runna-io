@@ -26,10 +26,9 @@ struct CommentsSheet: View {
             List {
                 if comments.isEmpty && !isLoading {
                     EmptyStateView(
-                        systemImage: "bubble.left.and.bubble.right.fill",
-                        title: "Aquí hay mucho silencio",
-                        message: "Rompe el hielo con el primer comentario. Un poco de pique sano nunca viene mal.",
-                        tint: .sky
+                        systemImage: "bubble.left.and.bubble.right",
+                        title: "Sin comentarios",
+                        message: "Escribe el primero."
                     )
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -92,7 +91,7 @@ struct CommentsSheet: View {
         )
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 6, leading: isReply ? 52 : 16, bottom: 6, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 8, leading: isReply ? 60 : DS.Spacing.l, bottom: 8, trailing: DS.Spacing.l))
     }
 
     // MARK: - Composer
@@ -115,16 +114,17 @@ struct CommentsSheet: View {
                 replyBanner(replyingTo)
             }
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Escribe algo… (@ para mencionar)", text: $draft, axis: .vertical)
+                TextField("Añade un comentario (@ para mencionar)", text: $draft, axis: .vertical)
+                    .font(.subheadline)
                     .lineLimit(1...4)
                     .focused($inputFocused)
                     .disabled(isSending)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 11)
-                    .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .strokeBorder(inputFocused ? Color.brand.opacity(0.5) : Color.hairline, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
                     )
                 sendButton
             }
@@ -140,17 +140,17 @@ struct CommentsSheet: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(.brandGradient)
-                    .opacity(canSend || isSending ? 1 : 0.35)
+                    .fill(canSend || isSending ? Color.brand : Color(uiColor: .tertiarySystemFill))
                 if isSending {
                     ProgressView()
-                        .tint(.white)
+                        .tint(Color.onBrand)
                 } else {
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 18, weight: .heavy))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(canSend ? Color.onBrand : Color.secondary)
                 }
             }
+            .frame(width: 40, height: 40)
             .frame(width: 44, height: 44)
         }
         .buttonStyle(.pressable)
@@ -180,7 +180,8 @@ struct CommentsSheet: View {
             AvatarView(name: person.name, avatar: person.avatar, color: person.color, size: 26)
             VStack(alignment: .leading, spacing: 0) {
                 Text(person.name)
-                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                 if !person.username.isEmpty {
                     Text("@\(person.username)")
@@ -193,32 +194,32 @@ struct CommentsSheet: View {
         .padding(.leading, 4)
         .padding(.trailing, 12)
         .padding(.vertical, 4)
-        .background(Color(hex: person.color).opacity(0.14), in: Capsule())
+        .background(Color.surface, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
     }
 
     private func replyBanner(_ comment: FeedComment) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "arrowshape.turn.up.left.fill")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(Color.brand)
+            Image(systemName: "arrowshape.turn.up.left")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
             Text("Respondiendo a \(comment.user.name)")
-                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer()
             Button {
                 replyingTo = nil
             } label: {
                 Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .background(Color.surfaceRaised, in: Circle())
+                    .frame(width: 28, height: 24)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Cancelar respuesta")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.brand.opacity(0.10), in: Capsule())
+        .padding(.horizontal, DS.Spacing.xs)
     }
 
     // MARK: - Actions
@@ -346,26 +347,18 @@ private struct CommentRow: View {
     let onReport: () -> Void
     let onOpenUser: (String) -> Void
 
-    private var userColor: Color { Color(hex: comment.user.color) }
-
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if isMine {
-                Spacer(minLength: 40)
-            } else {
-                Button { onOpenUser(comment.user.id) } label: {
-                    AvatarView(name: comment.user.name, avatar: comment.user.avatar, color: comment.user.color, size: isReply ? 28 : 34)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Ver perfil de \(comment.user.name)")
+        HStack(alignment: .top, spacing: DS.Spacing.m) {
+            Button { onOpenUser(comment.user.id) } label: {
+                AvatarView(name: comment.user.name, avatar: comment.user.avatar, color: comment.user.color, size: isReply ? 28 : 34)
             }
-            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
-                bubble
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Ver perfil de \(comment.user.name)")
+            VStack(alignment: .leading, spacing: 6) {
+                content
                 actions
             }
-            if !isMine {
-                Spacer(minLength: 24)
-            }
+            Spacer(minLength: 0)
         }
         .swipeActions {
             if isMine {
@@ -377,56 +370,43 @@ private struct CommentRow: View {
         }
     }
 
-    private var bubbleShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: isMine ? 20 : 6,
-            bottomLeadingRadius: 20,
-            bottomTrailingRadius: 20,
-            topTrailingRadius: isMine ? 6 : 20,
-            style: .continuous
-        )
-    }
-
-    private var bubble: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Button { onOpenUser(comment.user.id) } label: {
                     Text(isMine ? "Tú" : comment.user.displayName)
-                        .font(.system(.caption, design: .rounded, weight: .bold))
-                        .foregroundStyle(isMine ? Color.brandDeep : userColor)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                 }
                 .buttonStyle(.borderless)
                 Text(Format.relative(APIDate.parse(comment.createdAt)))
-                    .font(.caption2)
+                    .font(Font.meta)
                     .foregroundStyle(.secondary)
             }
             MentionText(text: comment.content, people: people, onOpenUser: onOpenUser)
                 .font(.subheadline)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(isMine ? Color.brand.opacity(0.16) : Color.surface, in: bubbleShape)
-        .overlay(bubbleShape.stroke(isMine ? Color.brand.opacity(0.25) : Color.hairline, lineWidth: 1))
     }
 
     private var actions: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: DS.Spacing.l) {
             Button { onReact("like") } label: {
-                Label("\(comment.likeCount)", systemImage: comment.userReaction == "like" ? "heart.fill" : "heart")
-                    .foregroundStyle(comment.userReaction == "like" ? Color.steal : Color.secondary)
+                Label("\(comment.likeCount)", systemImage: comment.userReaction == "like" ? "hand.thumbsup.fill" : "hand.thumbsup")
+                    .foregroundStyle(comment.userReaction == "like" ? Color.brand : Color.secondary)
                     .contentTransition(.numericText(value: Double(comment.likeCount)))
             }
             .accessibilityLabel("Me gusta, \(comment.likeCount)")
             Button { onReact("dislike") } label: {
                 Label("\(comment.dislikeCount)", systemImage: comment.userReaction == "dislike" ? "hand.thumbsdown.fill" : "hand.thumbsdown")
-                    .foregroundStyle(comment.userReaction == "dislike" ? Color.grape : Color.secondary)
+                    .foregroundStyle(comment.userReaction == "dislike" ? Color.primary : Color.secondary)
                     .contentTransition(.numericText(value: Double(comment.dislikeCount)))
             }
             .accessibilityLabel("No me gusta, \(comment.dislikeCount)")
             Button("Responder", action: onReply)
-                .fontWeight(.semibold)
+                .fontWeight(.medium)
             Menu {
                 if isMine {
                     Button(role: .destructive, action: onDelete) {
@@ -444,11 +424,11 @@ private struct CommentRow: View {
             }
             .accessibilityLabel("Más opciones")
         }
-        .font(.system(.caption, design: .rounded))
+        .font(.caption)
+        .monospacedDigit()
         .foregroundStyle(.secondary)
         .buttonStyle(.borderless)
         .disabled(isReacting)
-        .padding(.horizontal, 6)
         .animation(.snappy, value: comment.likeCount)
         .animation(.snappy, value: comment.dislikeCount)
     }

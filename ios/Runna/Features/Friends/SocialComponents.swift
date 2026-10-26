@@ -4,8 +4,11 @@ import SwiftUI
 //
 // Small building blocks shared by the social screens. Names are prefixed with `Social`
 // so they never clash with the shared design system or other screens.
+// They follow the design-system rules: flat, neutral, one accent, no rounded fonts,
+// no gradients or shadows, no tinted capsules behind numbers.
 
-/// Rounded section header for social lists: icon, title and an optional count bubble.
+/// Section header for social lists: uppercase label and an optional count in secondary text.
+/// `systemImage` and `tint` are accepted for API compatibility but not drawn.
 struct SocialSectionHeader: View {
     let title: String
     var systemImage: String? = nil
@@ -13,70 +16,48 @@ struct SocialSectionHeader: View {
     var tint: Color = .brand
 
     var body: some View {
-        HStack(spacing: 8) {
-            if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(tint)
-            }
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(title)
-                .font(.system(.headline, design: .rounded, weight: .bold))
-                .foregroundStyle(Color.primary)
+                .sectionLabelStyle()
             if let count {
                 Text("\(count)")
-                    .font(.system(.caption, design: .rounded, weight: .heavy))
+                    .font(Font.sectionLabel)
                     .monospacedDigit()
-                    .foregroundStyle(tint)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(tint.opacity(0.15), in: Capsule())
+                    .foregroundStyle(.tertiary)
                     .contentTransition(.numericText())
             }
             Spacer(minLength: 0)
         }
-        .textCase(nil)
-        .padding(.bottom, 2)
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// "#3" position within the friend group: crown for #1, medals for #2 and #3.
+/// "#3" position within the friend group. Plain text; only #1 gets a gold crown.
 struct SocialRankBadge: View {
     let rank: Int
 
-    private static let silver = Color(hex: "#9AA6B2")
-    private static let bronze = Color(hex: "#C98A4B")
+    private var isFirst: Bool { rank == 1 }
 
     var body: some View {
         HStack(spacing: 3) {
-            if rank >= 1 && rank <= 3 {
-                Image(systemName: rank == 1 ? "crown.fill" : "medal.fill")
-                    .font(.system(size: 9, weight: .bold))
+            if isFirst {
+                Image(systemName: "crown.fill")
+                    .font(.system(size: 9, weight: .semibold))
             }
             Text("#\(rank)")
-                .font(.system(.caption2, design: .rounded, weight: .heavy))
+                .font(.caption.weight(.semibold))
                 .monospacedDigit()
         }
-        .foregroundStyle(rank >= 1 && rank <= 3 ? Color.white : Color.secondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(fill, in: Capsule())
+        .foregroundStyle(isFirst ? Color.gold : Color.secondary)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Puesto \(rank)")
     }
-
-    private var fill: AnyShapeStyle {
-        switch rank {
-        case 1: return AnyShapeStyle(LinearGradient.goldGradient)
-        case 2: return AnyShapeStyle(Self.silver)
-        case 3: return AnyShapeStyle(Self.bronze)
-        default: return AnyShapeStyle(Color.secondary.opacity(0.14))
-        }
-    }
 }
 
-/// Capsule label for row actions (Aceptar, Rechazar, Añadir…). Use inside a `Button` with
+/// Label for row actions (Aceptar, Rechazar, Añadir…). Use inside a `Button` with
 /// `.buttonStyle(.borderless)` when it sits in a List row so each button gets its own tap area.
+/// `.filled` = solid brand (the prominent action), `.soft` = neutral fill with a tinted label.
 struct SocialPillLabel: View {
     enum Kind {
         case filled
@@ -90,62 +71,77 @@ struct SocialPillLabel: View {
     var compact: Bool = false
     var expand: Bool = false
 
+    private var fill: Color {
+        kind == .filled ? DS.buttonFill(tint) : Color(uiColor: .tertiarySystemFill)
+    }
+
+    private var labelColor: Color {
+        switch kind {
+        case .filled:
+            return fill == Color.brand ? Color.onBrand : Color.white
+        case .soft:
+            return DS.restrainedTint(tint)
+        }
+    }
+
     var body: some View {
         HStack(spacing: 5) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: compact ? 11 : 13, weight: .bold))
+                    .font(.system(size: compact ? 11 : 13, weight: .semibold))
             }
             Text(title)
-                .font(.system(compact ? Font.TextStyle.footnote : Font.TextStyle.subheadline, design: .rounded, weight: .bold))
+                .font(compact ? Font.footnote.weight(.semibold) : Font.subheadline.weight(.semibold))
                 .lineLimit(1)
         }
-        .foregroundStyle(kind == .filled ? Color.white : tint)
+        .foregroundStyle(labelColor)
         .padding(.horizontal, compact ? 12 : 16)
         .frame(maxWidth: expand ? .infinity : nil)
         .frame(minHeight: compact ? 32 : 40)
-        .background { pillBackground }
-        .contentShape(Capsule())
-    }
-
-    @ViewBuilder
-    private var pillBackground: some View {
-        switch kind {
-        case .filled:
-            Capsule().fill(tint.gradient)
-                .shadow(color: tint.opacity(0.28), radius: 6, x: 0, y: 3)
-        case .soft:
-            Capsule().fill(tint.opacity(0.14))
-        }
+        .background(fill, in: RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous))
     }
 }
 
-/// Coloured rounded-square icon (iOS Settings style) for setting rows and devices.
+/// Leading glyph for setting rows: a plain SF Symbol (no coloured tile).
+/// Coral is kept for destructive rows; everything else is secondary.
+/// `inverted` draws a white rounded tile with a hairline and the tinted symbol — reserved for
+/// third-party brand marks such as Apple Health.
 struct SocialIconTile: View {
     let systemImage: String
     var tint: Color = .brand
     var size: CGFloat = 30
-    /// White tile with a tinted symbol (e.g. Apple Health) instead of a tinted tile.
     var inverted: Bool = false
+
+    private var glyphColor: Color {
+        if inverted { return tint }
+        if tint == Color.steal || tint == Color.red { return Color.steal }
+        return Color.secondary
+    }
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: size * 0.5, weight: .semibold))
-            .foregroundStyle(inverted ? tint : Color.white)
+            .font(.system(size: inverted ? size * 0.5 : min(DS.Size.icon, size * 0.6), weight: .regular))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(glyphColor)
             .frame(width: size, height: size)
             .background {
-                RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                    .fill(inverted ? AnyShapeStyle(Color.white) : AnyShapeStyle(tint.gradient))
+                if inverted {
+                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                        .fill(Color.white)
+                }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-                    .strokeBorder(Color.hairline, lineWidth: inverted ? 1 : 0)
+                if inverted {
+                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                        .strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+                }
             }
             .accessibilityHidden(true)
     }
 }
 
-/// Settings row label: coloured icon tile + title (+ optional trailing value).
+/// Settings row label: plain glyph + title (+ optional trailing value).
 struct SocialSettingsLabel: View {
     let title: String
     let systemImage: String
@@ -154,7 +150,7 @@ struct SocialSettingsLabel: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            SocialIconTile(systemImage: systemImage, tint: tint)
+            SocialIconTile(systemImage: systemImage, tint: tint, size: 28)
             Text(title)
                 .foregroundStyle(Color.primary)
             if let value {
@@ -168,116 +164,99 @@ struct SocialSettingsLabel: View {
     }
 }
 
-/// Little coloured dot + name of a territory colour.
+/// Small territory-colour dot + the colour's name.
 struct SocialColorChip: View {
     let color: String
     var onDark: Bool = false
+
+    private var colorName: String {
+        AppConfig.userColorNames[color.uppercased()] ?? "Personalizado"
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             Circle()
                 .fill(Color(hex: color))
-                .frame(width: 10, height: 10)
-                .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1.5))
-            Text(AppConfig.userColorNames[color.uppercased()] ?? "Personalizado")
-                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .frame(width: 8, height: 8)
+            Text(colorName)
+                .font(.footnote)
+                .foregroundStyle(onDark ? Color.white : Color.secondary)
         }
-        .foregroundStyle(onDark ? Color.white : Color.primary)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(onDark ? Color.white.opacity(0.2) : Color(hex: color).opacity(0.14), in: Capsule())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Color de territorio: \(AppConfig.userColorNames[color.uppercased()] ?? "personalizado")")
+        .accessibilityLabel("Color de territorio: \(colorName.lowercased())")
     }
 }
 
-/// Tinted hero backdrop for a runner's header: their territory colour blended into the canvas,
-/// with soft decorative circles.
+/// Legacy hero backdrop. Now a flat surface (no tinted gradient or blurred circles).
 struct SocialHeroBackdrop: View {
     let color: Color
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [color.opacity(0.55), color.opacity(0.18), Color.surface],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            Circle()
-                .fill(color.opacity(0.25))
-                .frame(width: 220, height: 220)
-                .blur(radius: 30)
-                .offset(x: -110, y: -70)
-            Circle()
-                .fill(Color.brandLime.opacity(0.18))
-                .frame(width: 180, height: 180)
-                .blur(radius: 30)
-                .offset(x: 120, y: -40)
-        }
+        Color.surface
     }
 }
 
-/// One stat inside a hero/stat grid card: icon, big rounded number and a small label.
+/// One stat column: condensed value (+ unit) over an uppercase label. No icon tile, no fill.
+/// `systemImage` is accepted for API compatibility but not drawn.
 struct SocialStatCell: View {
     let value: String
     let label: String
     var unit: String? = nil
     var systemImage: String? = nil
-    var tint: Color = .brand
+    var tint: Color = .primary
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(tint)
-                    .frame(width: 26, height: 26)
-                    .background(tint.opacity(0.15), in: Circle())
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(Font.stat(22))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.primary)
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                if let unit {
-                    Text(unit)
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
+        VStack(spacing: 4) {
+            StatValue(value: value, unit: unit, font: Font.statNumber, tint: DS.restrainedTint(tint))
             Text(label)
                 .statLabelStyle()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
     }
 }
 
-/// Two-sided bar comparing what one side stole vs the other (rivalries).
+/// Thin two-sided bar comparing what each side took from the other (rivalries).
 struct SocialDuelBar: View {
     let left: Double
     let right: Double
     var leftColor: Color = .brand
-    var rightColor: Color = .steal
+    var rightColor: Color = Color(uiColor: .tertiaryLabel)
 
     var body: some View {
         GeometryReader { proxy in
-            let total = max(left + right, 1)
-            let leftWidth = max(6, proxy.size.width * CGFloat(left / total))
-            HStack(spacing: 3) {
-                Capsule().fill(leftColor.gradient)
-                    .frame(width: max(0, min(leftWidth, proxy.size.width - 9)))
-                Capsule().fill(rightColor.gradient)
+            let total: Double = max(left + right, 1)
+            let available: CGFloat = max(0, proxy.size.width - 2)
+            let leftWidth: CGFloat = min(max(4, available * CGFloat(left / total)), max(0, available - 4))
+            HStack(spacing: 2) {
+                Rectangle()
+                    .fill(leftColor)
+                    .frame(width: leftWidth)
+                Rectangle()
+                    .fill(rightColor)
             }
+            .clipShape(Capsule())
         }
-        .frame(height: 10)
+        .frame(height: 4)
         .accessibilityHidden(true)
+    }
+}
+
+/// Neutral text-style button label for the secondary choice next to a prominent one
+/// (e.g. "Rechazar" next to "Aceptar").
+struct SocialPlainActionLabel: View {
+    let title: String
+    var tint: Color = .secondary
+
+    var body: some View {
+        Text(title)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .frame(minHeight: 32)
+            .contentShape(Rectangle())
     }
 }

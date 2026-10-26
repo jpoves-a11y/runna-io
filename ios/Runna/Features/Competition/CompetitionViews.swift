@@ -4,7 +4,7 @@ import MapKit
 // MARK: - Banner
 
 /// Competition state: countdown before it starts, day counter while active, results link when finished.
-/// `.compact` is the slim strip floating over the map; `.hero` is the big gradient card in Ranking.
+/// `.compact` is the slim glass strip floating over the map; `.hero` is the flat card in Ranking.
 struct CompetitionBanner: View {
     enum Style { case compact, hero }
 
@@ -38,10 +38,8 @@ struct CompetitionBanner: View {
     private func upcoming(_ competition: CompetitionInfo.Competition) -> some View {
         switch style {
         case .hero:
-            CompetitionHeroCard(gradient: LinearGradient.stealGradient, glow: Color.steal, symbol: "flag.2.crossed.fill") {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    CompetitionUpcomingContent(name: competition.name, remaining: remainingSeconds(competition, now: context.date))
-                }
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                CompetitionUpcomingCard(name: competition.name, remaining: remainingSeconds(competition, now: context.date))
             }
             .accessibilityElement(children: .combine)
         case .compact:
@@ -50,12 +48,10 @@ struct CompetitionBanner: View {
             } label: {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     CompetitionCompactStrip(
-                        emoji: "⚔️",
+                        systemImage: "flag",
                         title: competition.name,
-                        subtitle: collapsed ? nil : "Todos contra todos · empieza en",
+                        subtitle: collapsed ? nil : "Empieza en",
                         trailing: compactCountdown(competition, now: context.date),
-                        gradient: LinearGradient.stealGradient,
-                        glow: Color.steal,
                         compact: collapsed,
                         showsChevron: false
                     )
@@ -70,23 +66,19 @@ struct CompetitionBanner: View {
     private func active(_ competition: CompetitionInfo.Competition) -> some View {
         switch style {
         case .hero:
-            CompetitionHeroCard(gradient: LinearGradient.brandGradient, glow: Color.brand, symbol: "trophy.fill") {
-                CompetitionActiveContent(
-                    name: competition.name,
-                    day: store.info?.dayOfCompetition,
-                    totalDays: store.info?.totalDays,
-                    week: store.currentWeek
-                )
-            }
+            CompetitionActiveCard(
+                name: competition.name,
+                day: store.info?.dayOfCompetition,
+                totalDays: store.info?.totalDays,
+                week: store.currentWeek
+            )
             .accessibilityElement(children: .combine)
         case .compact:
             CompetitionCompactStrip(
-                emoji: "🏆",
+                systemImage: "trophy",
                 title: competition.name,
                 subtitle: nil,
                 trailing: dayText,
-                gradient: LinearGradient.brandGradient,
-                glow: Color.brand,
                 compact: true,
                 showsChevron: false
             )
@@ -98,7 +90,7 @@ struct CompetitionBanner: View {
         Button(action: onShowResults) {
             finishedLabel(competition)
         }
-        .buttonStyle(PressableButtonStyle(scale: 0.97))
+        .buttonStyle(PressableButtonStyle(scale: 0.98))
         .accessibilityLabel("\(competition.name) ha terminado. Ver resultados")
     }
 
@@ -106,17 +98,13 @@ struct CompetitionBanner: View {
     private func finishedLabel(_ competition: CompetitionInfo.Competition) -> some View {
         switch style {
         case .hero:
-            CompetitionHeroCard(gradient: LinearGradient.grapeGradient, glow: Color.grape, symbol: "crown.fill") {
-                CompetitionFinishedContent(name: competition.name)
-            }
+            CompetitionFinishedCard(name: competition.name)
         case .compact:
             CompetitionCompactStrip(
-                emoji: "👑",
-                title: "¡\(competition.name) ha terminado!",
-                subtitle: "Toca para ver quién se lleva la corona",
+                systemImage: "flag.checkered",
+                title: "\(competition.name) ha terminado",
+                subtitle: "Ver resultados finales",
                 trailing: nil,
-                gradient: LinearGradient.grapeGradient,
-                glow: Color.grape,
                 compact: false,
                 showsChevron: true
             )
@@ -130,7 +118,7 @@ struct CompetitionBanner: View {
 
     private func compactCountdown(_ competition: CompetitionInfo.Competition, now: Date) -> String {
         let remaining = remainingSeconds(competition, now: now)
-        return remaining <= 0 ? "¡Ya!" : Self.countdown(remaining, withSeconds: !collapsed)
+        return remaining <= 0 ? "Ahora" : Self.countdown(remaining, withSeconds: !collapsed)
     }
 
     private func remainingSeconds(_ competition: CompetitionInfo.Competition, now: Date) -> Double {
@@ -151,201 +139,146 @@ struct CompetitionBanner: View {
     }
 }
 
-/// Slim gradient strip (map).
+/// Slim glass strip over the map: symbol, name, optional subtitle and a monospaced trailing value.
 private struct CompetitionCompactStrip: View {
-    let emoji: String
+    let systemImage: String
     let title: String
     let subtitle: String?
     let trailing: String?
-    let gradient: LinearGradient
-    let glow: Color
     let compact: Bool
     let showsChevron: Bool
 
-    private var trailingStyle: Font.TextStyle { compact ? Font.TextStyle.caption : Font.TextStyle.subheadline }
-
     var body: some View {
         HStack(spacing: 10) {
-            Text(emoji)
-                .font(.system(size: compact ? 15 : 18))
-                .frame(width: compact ? 28 : 34, height: compact ? 28 : 34)
-                .background(Color.white.opacity(0.22), in: Circle())
+            Image(systemName: systemImage)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .heavy))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.primary)
                     .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(.caption2, design: .rounded, weight: .semibold))
-                        .opacity(0.88)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 6)
             if let trailing {
                 Text(trailing)
-                    .font(.system(trailingStyle, design: .rounded, weight: .heavy))
+                    .font(.subheadline.weight(.semibold))
                     .monospacedDigit()
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.22), in: Capsule())
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
             }
             if showsChevron {
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.heavy))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
             }
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 10)
-        .padding(.vertical, compact ? 6 : 8)
-        .background(gradient, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
-        .shadow(color: glow.opacity(0.35), radius: 10, x: 0, y: 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, compact ? 8 : 10)
+        .glassSurface(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
     }
 }
 
-/// Big vibrant gradient card with a watermark symbol.
-private struct CompetitionHeroCard<Content: View>: View {
-    let gradient: LinearGradient
-    let glow: Color
-    let symbol: String
-    @ViewBuilder let content: Content
+/// Card header row: uppercase status label (+ optional trailing meta).
+private struct CompetitionCardHeader: View {
+    let label: String
+    var trailing: String? = nil
+    var accent: Bool = false
 
     var body: some View {
-        content
-            .foregroundStyle(.white)
-            .padding(DS.Spacing.xl)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background { backdrop }
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card + 2, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: DS.Radius.card + 2, style: .continuous).strokeBorder(Color.white.opacity(0.2), lineWidth: 1))
-            .shadow(color: glow.opacity(0.35), radius: 16, x: 0, y: 8)
-    }
-
-    private var backdrop: some View {
-        ZStack(alignment: .topTrailing) {
-            Rectangle().fill(gradient)
-            Circle()
-                .fill(Color.white.opacity(0.10))
-                .frame(width: 220, height: 220)
-                .offset(x: 70, y: -110)
-            Image(systemName: symbol)
-                .font(.system(size: 120, weight: .black))
-                .foregroundStyle(Color.white.opacity(0.14))
-                .rotationEffect(.degrees(-14))
-                .offset(x: 26, y: 14)
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-/// Small white-on-glass tag at the top of a hero card ("EN JUEGO").
-struct CompetitionTag: View {
-    let emoji: String
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text(emoji)
-            Text(text)
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .font(Font.sectionLabel)
                 .textCase(.uppercase)
-                .tracking(0.8)
+                .tracking(DS.Tracking.label)
+                .foregroundStyle(accent ? Color.brand : Color.secondary)
+            Spacer(minLength: 8)
+            if let trailing {
+                Text(trailing)
+                    .font(Font.meta)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .font(.system(size: 11, weight: .heavy, design: .rounded))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Color.white.opacity(0.22), in: Capsule())
     }
 }
 
-private struct CompetitionUpcomingContent: View {
+private struct CompetitionUpcomingCard: View {
     let name: String
     let remaining: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            CompetitionTag(emoji: "⚔️", text: "Próximamente")
-            VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            CompetitionCardHeader(label: "Próximamente")
+            VStack(alignment: .leading, spacing: 2) {
                 Text(name)
-                    .font(.system(.title2, design: .rounded, weight: .heavy))
+                    .font(Font.sectionTitle)
                     .lineLimit(2)
-                Text(remaining > 0 ? "Todos contra todos. Calienta, que empieza en…" : "¡Arranca ya! Prepárate para correr.")
-                    .font(.system(.subheadline, design: .rounded, weight: .medium))
-                    .opacity(0.9)
+                Text(remaining > 0 ? "Todos contra todos. Empieza en" : "Empieza ahora.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
             if remaining > 0 {
-                CompetitionCountdownBlocks(seconds: remaining)
+                CompetitionCountdownRow(seconds: remaining)
+                    .padding(.top, DS.Spacing.xs)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
     }
 }
 
-/// Days / hours / minutes / seconds tiles.
-private struct CompetitionCountdownBlocks: View {
+/// Days · hours · minutes · seconds, separated by hairlines.
+private struct CompetitionCountdownRow: View {
     let seconds: Double
 
     private var total: Int { max(0, Int(seconds)) }
 
     var body: some View {
-        HStack(spacing: 8) {
-            block(total / 86_400, label: "días")
-            block((total % 86_400) / 3600, label: "horas")
-            block((total % 3600) / 60, label: "min")
-            block(total % 60, label: "seg")
+        HStack(spacing: 0) {
+            StatTile(value: String(format: "%02d", total / 86_400), label: "días")
+            StatDivider()
+            StatTile(value: String(format: "%02d", (total % 86_400) / 3600), label: "horas")
+            StatDivider()
+            StatTile(value: String(format: "%02d", (total % 3600) / 60), label: "min")
+            StatDivider()
+            StatTile(value: String(format: "%02d", total % 60), label: "seg")
         }
-    }
-
-    private func block(_ value: Int, label: String) -> some View {
-        VStack(spacing: 1) {
-            Text(String(format: "%02d", value))
-                .font(Font.stat(26, weight: .heavy))
-                .monospacedDigit()
-            Text(label)
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .textCase(.uppercase)
-                .tracking(0.6)
-                .opacity(0.85)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10)
-        .background(Color.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
     }
 }
 
-private struct CompetitionActiveContent: View {
+private struct CompetitionActiveCard: View {
     let name: String
     let day: Int?
     let totalDays: Int?
     let week: Int?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                CompetitionTag(emoji: "🔥", text: "En juego")
-                Spacer()
-                if let week {
-                    Text("Semana \(week)")
-                        .font(.system(.caption, design: .rounded, weight: .bold))
-                        .opacity(0.9)
-                }
-            }
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            CompetitionCardHeader(label: "En curso", trailing: week.map { "Semana \($0)" }, accent: true)
             Text(name)
-                .font(.system(.title2, design: .rounded, weight: .heavy))
+                .font(Font.sectionTitle)
                 .lineLimit(2)
             if let day, let totalDays, totalDays > 0 {
                 CompetitionDayProgress(day: day, total: totalDays)
             } else {
                 Text("Gana quien tenga más territorio al final.")
-                    .font(.system(.subheadline, design: .rounded, weight: .medium))
-                    .opacity(0.9)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
     }
 }
 
-/// "Día 12 de 28" + "Quedan 16 días" + progress bar.
+/// "Día 12 de 28" · "Quedan 16 días" + a thin progress bar.
 private struct CompetitionDayProgress: View {
     let day: Int
     let total: Int
@@ -353,26 +286,24 @@ private struct CompetitionDayProgress: View {
     private var fraction: Double { min(1, max(0, Double(day) / Double(total))) }
     private var left: Int { max(0, total - day) }
     private var leftText: String {
-        if left == 0 { return "¡Último día!" }
+        if left == 0 { return "Último día" }
         return left == 1 ? "Queda 1 día" : "Quedan \(left) días"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("Día \(day)")
-                    .font(Font.stat(30, weight: .black))
+                    .font(Font.statNumber)
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 Text("de \(total)")
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
-                    .opacity(0.85)
+                    .font(Font.statUnit)
+                    .foregroundStyle(.secondary)
                 Spacer(minLength: 6)
                 Text(leftText)
-                    .font(.system(.caption, design: .rounded, weight: .heavy))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.22), in: Capsule())
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             bar
         }
@@ -380,80 +311,65 @@ private struct CompetitionDayProgress: View {
 
     private var bar: some View {
         Capsule()
-            .fill(Color.white.opacity(0.25))
-            .frame(height: 8)
+            .fill(Color(uiColor: .tertiarySystemFill))
+            .frame(height: 4)
             .overlay(alignment: .leading) {
                 GeometryReader { proxy in
                     Capsule()
-                        .fill(Color.white)
-                        .frame(width: max(8, proxy.size.width * fraction))
+                        .fill(Color.brand)
+                        .frame(width: max(4, proxy.size.width * fraction))
                 }
             }
             .accessibilityHidden(true)
     }
 }
 
-private struct CompetitionFinishedContent: View {
+private struct CompetitionFinishedCard: View {
     let name: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            CompetitionTag(emoji: "👑", text: "Finalizada")
-            VStack(alignment: .leading, spacing: 4) {
-                Text("¡\(name) ha terminado!")
-                    .font(.system(.title2, design: .rounded, weight: .heavy))
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            CompetitionCardHeader(label: "Finalizada")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(name) ha terminado")
+                    .font(Font.sectionTitle)
+                    .foregroundStyle(Color.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                Text("Descubre quién se ha llevado la corona.")
-                    .font(.system(.subheadline, design: .rounded, weight: .medium))
-                    .opacity(0.9)
+                Text("Consulta la clasificación final.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Text("Ver resultados")
-                Image(systemName: "arrow.right")
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
             }
-            .font(.system(.subheadline, design: .rounded, weight: .heavy))
-            .foregroundStyle(Color.grape)
-            .padding(.horizontal, 16)
-            .frame(minHeight: 40)
-            .background(Color.white, in: Capsule())
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Color.brand)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
     }
 }
 
 // MARK: - Treasures
 
-/// Chest image with a pulsing halo in the rarity colour.
+/// Treasure on the map: a small solid disc with a rarity-coloured ring and a box glyph. Static.
 struct TreasureMarker: View {
     let treasure: Treasure
-    @State private var pulse = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let color = Rarity.color(treasure.rarity)
-        ZStack {
-            Circle()
-                .fill(color.opacity(0.35))
-                .frame(width: 46, height: 46)
-                .scaleEffect(pulse ? 1.35 : 0.85)
-                .opacity(pulse ? 0 : 0.9)
-            Circle()
-                .fill(.thinMaterial)
-                .frame(width: 40, height: 40)
-                .overlay(Circle().stroke(color, lineWidth: 2))
-                .shadow(color: color.opacity(0.6), radius: 6)
-            Image(Rarity.chestImage(treasure.rarity))
-                .resizable()
-                .scaledToFit()
-                .frame(width: 30, height: 30)
-        }
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
-                pulse = true
-            }
-        }
-        .accessibilityLabel("Tesoro \(Rarity.label(treasure.rarity)): \(treasure.name)")
+        let color: Color = Rarity.color(treasure.rarity)
+        Image(systemName: "shippingbox.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 32, height: 32)
+            .background(Color(uiColor: .systemBackground), in: Circle())
+            .overlay(Circle().strokeBorder(color, lineWidth: 2))
+            .shadow(color: Color.black.opacity(0.18), radius: 2, x: 0, y: 1)
+            .contentShape(Circle())
+            .accessibilityLabel("Tesoro \(Rarity.label(treasure.rarity)): \(treasure.name)")
     }
 }
 
@@ -462,52 +378,49 @@ struct TreasureDetailView: View {
     let treasure: Treasure
     @Environment(\.dismiss) private var dismiss
 
-    private var tint: Color { Rarity.color(treasure.rarity) }
-
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
             header
             if let description = treasure.powerDescription, !description.isEmpty {
                 Text(description)
                     .font(.subheadline)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 timeLeft
-                Spacer(minLength: 0)
+                Label("Pasa corriendo a menos de 100 m para recogerlo.", systemImage: "figure.run")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            Label("Pasa corriendo a menos de 100 m para recogerlo", systemImage: "figure.run")
-                .font(.system(.footnote, design: .rounded, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("¡A por él!") { dismiss() }
-                .buttonStyle(PrimaryButtonStyle(color: tint))
+            Spacer(minLength: 0)
+            Button("Entendido") { dismiss() }
+                .buttonStyle(PrimaryButtonStyle())
         }
-        .padding(20)
-        .presentationDetents([.height(360), .medium])
+        .padding(DS.Spacing.xl)
+        .presentationDetents([.height(340), .medium])
         .presentationDragIndicator(.visible)
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
-            Image(Rarity.chestImage(treasure.rarity))
-                .resizable()
-                .scaledToFit()
-                .frame(width: 58, height: 58)
-                .frame(width: 76, height: 76)
-                .background(
-                    RadialGradient(colors: [tint.opacity(0.35), tint.opacity(0.08)], center: .center, startRadius: 2, endRadius: 44),
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous)
-                )
-                .shadow(color: tint.opacity(0.35), radius: 10, x: 0, y: 4)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(treasure.emoji ?? "🎁").font(.title2)
-                    Text(treasure.name)
-                        .font(.system(.title3, design: .rounded, weight: .heavy))
-                        .lineLimit(2)
-                }
+            Image(systemName: PowerSymbol.name(treasure.powerType))
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(Color.primary)
+                .frame(width: 52, height: 52)
+                .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+                .hairlineBorder(radius: DS.Radius.tile)
+            VStack(alignment: .leading, spacing: 4) {
                 RarityPill(rarity: treasure.rarity)
+                Text(treasure.powerName ?? treasure.name)
+                    .font(Font.sectionTitle)
+                    .lineLimit(2)
+                if let powerName = treasure.powerName, powerName != treasure.name {
+                    Text(treasure.name)
+                        .font(Font.meta)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -518,15 +431,24 @@ struct TreasureDetailView: View {
         if let expires = treasure.expiresDate {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let remaining = expires.timeIntervalSince(context.date)
-                StatPill(
-                    value: remaining > 0 ? Self.remaining(remaining) : "Expirado",
-                    label: remaining > 0 ? "para que desaparezca" : nil,
-                    systemImage: "hourglass",
-                    tint: remaining > 0 ? Color.gold : Color.steal
-                )
+                Label {
+                    if remaining > 0 {
+                        Text("Desaparece en \(Self.remaining(remaining))")
+                            .monospacedDigit()
+                    } else {
+                        Text("Ha caducado")
+                            .foregroundStyle(Color.steal)
+                    }
+                } icon: {
+                    Image(systemName: "hourglass")
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
         } else {
-            StatPill(value: "Disponible hoy", systemImage: "hourglass", tint: Color.gold)
+            Label("Disponible hoy", systemImage: "hourglass")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -564,25 +486,26 @@ struct CastleZone: Identifiable {
     }
 }
 
+/// Fortress on the map: a compact solid capsule with a shield glyph and the level, ringed in the owner's colour.
 struct CastleMarker: View {
     let zone: CastleZone
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Text("🏰")
-                .font(.title3)
-                .padding(4)
-                .background(.thinMaterial, in: Circle())
-                .overlay(Circle().stroke(zone.color, lineWidth: 1.5))
+        HStack(spacing: 3) {
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(zone.color)
             Text(zone.levelText)
-                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(zone.color, in: Capsule())
-                .foregroundStyle(.white)
-                .offset(x: 8, y: -6)
+                .foregroundStyle(Color.primary)
         }
+        .padding(.horizontal, 7)
+        .frame(height: 24)
+        .background(Color(uiColor: .systemBackground), in: Capsule())
+        .overlay(Capsule().strokeBorder(zone.color, lineWidth: 1.5))
+        .shadow(color: Color.black.opacity(0.15), radius: 2, x: 0, y: 1)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Fortaleza nivel \(zone.levelText)")
     }
 }
@@ -603,7 +526,7 @@ extension Color {
 
 // MARK: - Leaderboard names
 
-/// Name as shown in competition lists: "🎭 nickname" when a nickname is active.
+/// Name as shown in competition lists: the nickname (with a small masks glyph) when one is active.
 struct CompetitorName: View {
     let user: UserRef
     var isMe = false
@@ -611,15 +534,17 @@ struct CompetitorName: View {
 
     var body: some View {
         if let nickname = user.nickname, !nickname.isEmpty {
-            Text("🎭 \(nickname)")
-                .font(font.weight(.semibold))
-                .fontDesign(.rounded)
-                .foregroundStyle(Color.pink)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Image(systemName: "theatermasks")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Text(nickname)
+                    .font(font.weight(.semibold))
+                    .lineLimit(1)
+            }
         } else {
             Text(isMe ? "\(user.name) (tú)" : user.name)
-                .font(isMe ? font.weight(.bold) : font.weight(.medium))
-                .fontDesign(.rounded)
+                .font(isMe ? font.weight(.semibold) : font.weight(.medium))
                 .lineLimit(1)
         }
     }
@@ -649,47 +574,43 @@ struct CompetitionIntroView: View {
     private var isLastPage: Bool { page >= pageCount - 1 }
 
     var body: some View {
-        ZStack {
-            CompetitionIntroBackground(page: page)
-            VStack(spacing: 18) {
-                topBar
-                TabView(selection: $page) {
-                    welcome.tag(0)
-                    rules.tag(1)
-                    treasures.tag(2)
-                    finale.tag(3)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                pageDots
-                Button(isLastPage ? "¡A conquistar!" : "Siguiente") {
-                    if isLastPage {
-                        dismiss()
-                    } else {
-                        withAnimation(.snappy) { page += 1 }
-                    }
-                }
-                .buttonStyle(PrimaryButtonStyle(color: isLastPage ? Color.gold : Color.steal))
-                .sensoryFeedback(.impact(weight: .light), trigger: page)
+        VStack(spacing: DS.Spacing.l) {
+            topBar
+            TabView(selection: $page) {
+                welcome.tag(0)
+                rules.tag(1)
+                treasures.tag(2)
+                finale.tag(3)
             }
-            .padding(20)
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            pageDots
+            Button(isLastPage ? "Empezar" : "Siguiente") {
+                if isLastPage {
+                    dismiss()
+                } else {
+                    withAnimation(.snappy) { page += 1 }
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .sensoryFeedback(.selection, trigger: page)
         }
-        .foregroundStyle(.white)
-        .environment(\.colorScheme, .dark)
+        .padding(DS.Spacing.xl)
+        .screenBackground()
     }
 
     private var topBar: some View {
         HStack {
-            CompetitionTag(emoji: "⚔️", text: "Nueva competición")
+            SectionLabel("Nueva competición")
             Spacer()
             Button {
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.subheadline.weight(.bold))
-                    .frame(width: 34, height: 34)
-                    .background(Color.white.opacity(0.14), in: Circle())
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .background(Color(uiColor: .tertiarySystemFill), in: Circle())
             }
-            .foregroundStyle(Color.white.opacity(0.85))
             .accessibilityLabel("Cerrar")
         }
     }
@@ -697,9 +618,9 @@ struct CompetitionIntroView: View {
     private var pageDots: some View {
         HStack(spacing: 6) {
             ForEach(0..<pageCount, id: \.self) { index in
-                Capsule()
-                    .fill(index == page ? Color.white : Color.white.opacity(0.3))
-                    .frame(width: index == page ? 22 : 7, height: 7)
+                Circle()
+                    .fill(index == page ? Color.primary : Color(uiColor: .tertiaryLabel))
+                    .frame(width: 6, height: 6)
             }
         }
         .animation(.snappy, value: page)
@@ -707,195 +628,141 @@ struct CompetitionIntroView: View {
     }
 
     private var welcome: some View {
-        CompetitionIntroPage(emoji: "⚔️", title: store.competition?.name ?? "Competición", glow: Color.steal) {
-            Text("Una competición épica de \(store.info?.totalDays ?? 28) días donde todos luchan contra todos por conquistar el mapa.")
-                .font(.system(.body, design: .rounded, weight: .medium))
-                .multilineTextAlignment(.center)
-                .opacity(0.9)
-            Text("Todos contra todos")
-                .font(.system(.caption, design: .rounded, weight: .heavy))
-                .textCase(.uppercase)
-                .tracking(1)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(LinearGradient.stealGradient, in: Capsule())
-                .shadow(color: Color.steal.opacity(0.5), radius: 10, x: 0, y: 4)
+        CompetitionIntroPage(systemImage: "flag.checkered", title: store.competition?.name ?? "Competición") {
+            Text("Una competición de \(store.info?.totalDays ?? 28) días en la que todos los participantes compiten por el mismo mapa.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            SectionLabel("Todos contra todos")
+                .padding(.top, DS.Spacing.xs)
         }
     }
 
     private var rules: some View {
-        CompetitionIntroPage(emoji: "📜", title: "Reglas del juego", glow: Color.brand) {
-            VStack(spacing: 10) {
-                CompetitionIntroRule(emoji: "🏃", text: "Corre para conquistar territorio: cada vuelta cerrada es tuya.")
-                CompetitionIntroRule(emoji: "🗡️", text: "Puedes robar territorio a CUALQUIER participante, no solo a tus amigos.")
-                CompetitionIntroRule(emoji: "🏰", text: "Volver a correr por tu zona la fortifica y cuesta más robarla.")
-                CompetitionIntroRule(emoji: "📊", text: "Cada domingo a las 20:00 hay resumen semanal con premios.")
+        CompetitionIntroPage(systemImage: "list.bullet", title: "Reglas") {
+            VStack(spacing: 0) {
+                CompetitionIntroRule(systemImage: "figure.run", text: "Cada recorrido cerrado conquista el territorio que encierra.")
+                HairlineDivider().padding(.leading, 48)
+                CompetitionIntroRule(systemImage: "arrow.left.arrow.right", text: "Puedes robar territorio a cualquier participante, no solo a tus amigos.")
+                HairlineDivider().padding(.leading, 48)
+                CompetitionIntroRule(systemImage: "shield.lefthalf.filled", text: "Volver a correr por tu zona la fortifica y la hace más difícil de robar.")
+                HairlineDivider().padding(.leading, 48)
+                CompetitionIntroRule(systemImage: "calendar", text: "Cada domingo a las 20:00 se publica el resumen semanal con premios.")
             }
+            .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            .hairlineBorder(radius: DS.Radius.card)
         }
     }
 
     private var treasures: some View {
-        CompetitionIntroPage(emoji: "💎", title: "Tesoros y poderes", glow: Color.grape) {
-            Text("Cada día aparecen tesoros en el mapa. Pasa corriendo a menos de 100 m para recogerlos y conseguir poderes.")
-                .font(.system(.subheadline, design: .rounded, weight: .medium))
-                .multilineTextAlignment(.center)
-                .opacity(0.9)
+        CompetitionIntroPage(systemImage: "shippingbox", title: "Tesoros y poderes") {
+            Text("Cada día aparecen tesoros en el mapa. Pasa a menos de 100 m corriendo para recogerlos y conseguir poderes.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ForEach(powers, id: \.key) { item in
-                        CompetitionIntroPowerTile(power: item.value)
+                VStack(spacing: 0) {
+                    ForEach(Array(powers.enumerated()), id: \.element.key) { index, item in
+                        if index > 0 {
+                            HairlineDivider().padding(.leading, 48)
+                        }
+                        CompetitionIntroPowerRow(powerType: item.key, power: item.value)
                     }
                 }
+                .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+                .hairlineBorder(radius: DS.Radius.card)
             }
             .scrollIndicators(.hidden)
         }
     }
 
     private var finale: some View {
-        CompetitionIntroPage(emoji: "🏆", title: "¡A conquistar!", glow: Color.gold) {
-            Text("Quien tenga más territorio al final de la competición gana. Sin excusas.")
-                .font(.system(.body, design: .rounded, weight: .medium))
-                .multilineTextAlignment(.center)
-                .opacity(0.9)
-            HStack(spacing: 14) {
-                Text("🥈").font(.system(size: 40))
-                Text("👑").font(.system(size: 56))
-                Text("🥉").font(.system(size: 40))
-            }
+        CompetitionIntroPage(systemImage: "trophy", title: "Cómo se gana") {
+            Text("Gana quien tenga más territorio cuando termine la competición. La clasificación se actualiza con cada carrera.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-    }
-}
-
-/// Night-sky gradient with soft coloured blobs that shift per page.
-private struct CompetitionIntroBackground: View {
-    let page: Int
-
-    private var blobColor: Color {
-        switch page {
-        case 0: return Color.steal
-        case 1: return Color.brand
-        case 2: return Color.grape
-        default: return Color.gold
-        }
-    }
-
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.05, green: 0.08, blue: 0.10), Color(red: 0.10, green: 0.07, blue: 0.20)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            Circle()
-                .fill(blobColor.opacity(0.45))
-                .frame(width: 340, height: 340)
-                .blur(radius: 90)
-                .offset(x: -110, y: -260)
-            Circle()
-                .fill(Color.brand.opacity(0.25))
-                .frame(width: 300, height: 300)
-                .blur(radius: 90)
-                .offset(x: 140, y: 300)
-        }
-        .animation(.easeInOut(duration: 0.6), value: page)
-        .ignoresSafeArea()
     }
 }
 
 private struct CompetitionIntroPage<Content: View>: View {
-    let emoji: String
+    let systemImage: String
     let title: String
-    let glow: Color
     @ViewBuilder let content: Content
 
-    @State private var floating = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
-        VStack(spacing: 18) {
-            ZStack {
-                Circle()
-                    .fill(RadialGradient(colors: [glow.opacity(0.55), glow.opacity(0.0)], center: .center, startRadius: 4, endRadius: 70))
-                    .frame(width: 140, height: 140)
-                Circle()
-                    .fill(Color.white.opacity(0.08))
-                    .frame(width: 104, height: 104)
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
-                Text(emoji).font(.system(size: 54))
-            }
-            .offset(y: floating ? -4 : 4)
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
-                    floating = true
-                }
-            }
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            Image(systemName: systemImage)
+                .font(.system(size: 30, weight: .regular))
+                .foregroundStyle(Color.brand)
+                .frame(height: 36)
+                .padding(.top, DS.Spacing.xxl)
             Text(title)
-                .font(.system(.title, design: .rounded, weight: .heavy))
-                .multilineTextAlignment(.center)
+                .font(Font.screenTitle)
+                .tracking(DS.Tracking.title)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
             content
-            Spacer(minLength: 12)
+            Spacer(minLength: DS.Spacing.m)
         }
-        .padding(.horizontal, 4)
-        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 2)
     }
 }
 
 private struct CompetitionIntroRule: View {
-    let emoji: String
+    let systemImage: String
     let text: String
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(emoji)
-                .font(.title3)
-                .frame(width: 40, height: 40)
-                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.m) {
+            Image(systemName: systemImage)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
             Text(text)
-                .font(.system(.subheadline, design: .rounded, weight: .medium))
+                .font(.subheadline)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .padding(10)
-        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, DS.Spacing.m)
     }
 }
 
-private struct CompetitionIntroPowerTile: View {
+private struct CompetitionIntroPowerRow: View {
+    let powerType: String
     let power: PowerDefinition
 
-    private var tint: Color { Rarity.color(power.rarity) }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(power.emoji)
-                Text(power.name)
-                    .font(.system(.caption, design: .rounded, weight: .heavy))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.m) {
+            Image(systemName: PowerSymbol.name(powerType))
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
+                    Text(power.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    RarityPill(rarity: power.rarity)
+                }
+                Text(power.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(power.description)
-                .font(.caption2)
-                .opacity(0.78)
-                .lineLimit(3, reservesSpace: true)
-            Text(Rarity.label(power.rarity))
-                .font(.system(size: 9, weight: .heavy, design: .rounded))
-                .textCase(.uppercase)
-                .tracking(0.6)
-                .foregroundStyle(tint)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(tint.opacity(0.20), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: 1))
+        .padding(DS.Spacing.m)
+        .accessibilityElement(children: .combine)
     }
 }
 
 // MARK: - Final results
 
-/// Podium and places 4-10 when the competition has finished.
+/// Final standings when the competition has finished (top 10).
 struct CompetitionFinalView: View {
     let competitionName: String
     @Environment(SessionStore.self) private var session
@@ -915,11 +782,8 @@ struct CompetitionFinalView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: DS.Spacing.xl) {
-                    CompetitionFinalHero(competitionName: competitionName, winner: items.first, me: items.first(where: { $0.isMe }))
+                    CompetitionFinalHeader(competitionName: competitionName, winner: items.first, me: items.first(where: { $0.isMe }))
                     results
-                    Button("¡Ha sido épico!") { dismiss() }
-                        .buttonStyle(PrimaryButtonStyle(color: Color.grape))
-                        .padding(.top, DS.Spacing.s)
                 }
                 .padding(.horizontal, DS.Spacing.l)
                 .padding(.vertical, DS.Spacing.l)
@@ -928,13 +792,8 @@ struct CompetitionFinalView: View {
             .navigationTitle("Resultados finales")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .accessibilityLabel("Cerrar")
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Cerrar") { dismiss() }
                 }
             }
             .task { await load() }
@@ -949,12 +808,14 @@ struct CompetitionFinalView: View {
             EmptyStateView(
                 systemImage: "flag.checkered",
                 title: "Sin resultados",
-                message: "Nadie llegó a conquistar territorio en esta competición.",
-                tint: Color.grape
+                message: "Nadie conquistó territorio en esta competición."
             )
             .card()
         } else {
-            RankingBoardView(items: items, showsPosition: false)
+            VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                SectionHeader(title: "Clasificación final")
+                RankingBoardView(items: items, showsPosition: false)
+            }
         }
     }
 
@@ -966,40 +827,67 @@ struct CompetitionFinalView: View {
     }
 }
 
-/// Grape gradient header: competition over, champion and the user's final place.
-private struct CompetitionFinalHero: View {
+/// Editorial header: competition over, champion and the user's final place.
+private struct CompetitionFinalHeader: View {
     let competitionName: String
     let winner: RankingItem?
     let me: RankingItem?
 
     var body: some View {
-        VStack(spacing: 10) {
-            Text("👑").font(.system(size: 56))
-            Text("¡\(competitionName) ha terminado!")
-                .font(.system(.title2, design: .rounded, weight: .heavy))
-                .multilineTextAlignment(.center)
-            if let winner {
-                Text("Campeón: \(winner.hasNickname ? (winner.nickname ?? winner.name) : winner.name) · \(Format.area(winner.area))")
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
-                    .multilineTextAlignment(.center)
-                    .opacity(0.92)
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            VStack(alignment: .leading, spacing: 4) {
+                SectionLabel("Competición finalizada")
+                Text(competitionName)
+                    .font(Font.screenTitle)
+                    .tracking(DS.Tracking.title)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
             }
-            if let me {
-                Text(me.rank == 1 ? "¡Has ganado! 🏆" : "Has terminado #\(me.rank)")
-                    .font(.system(.caption, design: .rounded, weight: .heavy))
-                    .textCase(.uppercase)
-                    .tracking(0.8)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.22), in: Capsule())
+            if winner != nil || me != nil {
+                stats
             }
         }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 26)
-        .padding(.horizontal, 20)
-        .background(LinearGradient.grapeGradient, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .shadow(color: Color.grape.opacity(0.35), radius: 18, x: 0, y: 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+
+    private var stats: some View {
+        HStack(spacing: DS.Spacing.l) {
+            if let winner {
+                HStack(spacing: DS.Spacing.m) {
+                    AvatarView(name: winner.name, avatar: winner.avatar, color: winner.color, size: 44)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "crown.fill")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.gold)
+                            Text("Campeón")
+                                .statLabelStyle()
+                        }
+                        Text(winner.displayName)
+                            .font(Font.cardTitle)
+                            .lineLimit(1)
+                        Text(Format.area(winner.area))
+                            .font(Font.meta)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            if let me {
+                StatDivider(height: 44)
+                VStack(spacing: 2) {
+                    Text("#\(me.rank)")
+                        .font(Font.statNumber)
+                        .monospacedDigit()
+                        .foregroundStyle(me.rank == 1 ? Color.gold : Color.primary)
+                    Text("Tu puesto")
+                        .statLabelStyle()
+                }
+                .frame(minWidth: 72)
+            }
+        }
+        .card()
     }
 }

@@ -25,7 +25,7 @@ struct RankingsView: View {
         @Bindable var router = router
         NavigationStack {
             ScrollView {
-                VStack(spacing: DS.Spacing.xl) {
+                VStack(spacing: DS.Spacing.l) {
                     header
                     boardContent
                 }
@@ -64,15 +64,13 @@ struct RankingsView: View {
             CompetitionBanner(store: competition, style: .hero) { showFinalResults = true }
         }
         if hasCompetitionBoard {
-            RankingCapsulePicker(options: boardOptions, selection: $board)
+            Picker("Clasificación", selection: $board) {
+                Text("Amigos").tag(Board.friends)
+                Text("Competición").tag(Board.competition)
+            }
+            .pickerStyle(.segmented)
+            .sensoryFeedback(.selection, trigger: board)
         }
-    }
-
-    private var boardOptions: [RankingCapsulePicker<Board>.Option] {
-        [
-            RankingCapsulePicker<Board>.Option(value: .friends, title: "Amigos", systemImage: "person.2.fill", gradient: LinearGradient.brandGradient),
-            RankingCapsulePicker<Board>.Option(value: .competition, title: "Competición", systemImage: "trophy.fill", gradient: LinearGradient.goldGradient)
-        ]
     }
 
     @ToolbarContentBuilder
@@ -82,11 +80,9 @@ struct RankingsView: View {
                 Button {
                     router.showWeeklySummary = true
                 } label: {
-                    Label("Resumen", systemImage: "party.popper.fill")
-                        .labelStyle(.titleAndIcon)
-                        .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    Label("Resumen semanal", systemImage: "chart.bar.doc.horizontal")
                 }
-                .tint(Color.gold)
+                .tint(Color.brand)
                 .accessibilityLabel("Resumen semanal")
             }
         }
@@ -99,10 +95,10 @@ struct RankingsView: View {
         switch board {
         case .friends:
             friendsBoard
-                .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .opacity))
+                .transition(.opacity)
         case .competition:
             competitionBoard
-                .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .opacity))
+                .transition(.opacity)
         }
     }
 
@@ -132,9 +128,9 @@ struct RankingsView: View {
 
     private var inviteFriends: some View {
         EmptyStateView(
-            systemImage: "person.2.wave.2.fill",
-            title: "Esto se gana en grupo",
-            message: "Añade a tu gente y descubre quién pinta más mapa. Que empiece el pique.",
+            systemImage: "person.2",
+            title: "Compite con tus amigos",
+            message: "Añade amigos para comparar el territorio que conquista cada uno.",
             actionTitle: "Buscar amigos",
             action: { router.selectedTab = .friends }
         )
@@ -148,17 +144,16 @@ struct RankingsView: View {
         } else if competitionEntries.isEmpty {
             EmptyStateView(
                 systemImage: "flag.checkered",
-                title: "El mapa está en blanco",
-                message: "Nadie ha conquistado nada todavía. Sal a correr y estrena el podio.",
+                title: "Sin territorio todavía",
+                message: "Nadie ha conquistado zona en la competición. La primera carrera abre la clasificación.",
                 actionTitle: "Ir al mapa",
-                action: { router.selectedTab = .map },
-                tint: Color.gold
+                action: { router.selectedTab = .map }
             )
             .card()
         } else {
             RankingBoardView(
                 items: competitionItems,
-                footnote: "Territorio conquistado durante \(competition.competition?.name ?? "la competición"). 🔥 robado · 🎁 tesoros",
+                footnote: "Territorio conquistado durante \(competition.competition?.name ?? "la competición").",
                 onSelect: { item in open(item.id) }
             )
         }

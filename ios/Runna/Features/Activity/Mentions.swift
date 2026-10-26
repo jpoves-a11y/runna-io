@@ -54,7 +54,7 @@ enum Mentions {
         return Array(matches.prefix(5))
     }
 
-    /// Comment text with mentions in bold sky blue; mentions of known people become tappable links.
+    /// Comment text with mentions in semibold brand colour; mentions of known people become tappable links.
     static func attributed(_ text: String, people: [MentionCandidate]) -> AttributedString {
         guard let mentionRegex, text.contains("@") else { return AttributedString(text) }
         let ns = text as NSString
@@ -81,7 +81,7 @@ enum Mentions {
                 result.append(AttributedString(ns.substring(with: NSRange(location: cursor, length: full.location - cursor))))
             }
             var piece = AttributedString(ns.substring(with: NSRange(location: full.location, length: mentionLength)))
-            piece.foregroundColor = Color.sky
+            piece.foregroundColor = Color.brand
             piece.inlinePresentationIntent = .stronglyEmphasized
             if let person, let url = URL(string: "\(urlScheme)://user/\(person.id)") {
                 piece.link = url

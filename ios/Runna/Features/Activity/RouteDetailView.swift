@@ -32,12 +32,12 @@ struct RouteDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: DS.Spacing.xl) {
+            VStack(alignment: .leading, spacing: DS.Spacing.l) {
                 mapHeader
-                VStack(alignment: .leading, spacing: DS.Spacing.l) {
+                VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     titleBlock
-                    statsGrid
-                    conquestCard
+                    statsSection
+                    conquestSection
                     companions
                     if editable {
                         actions
@@ -45,7 +45,7 @@ struct RouteDetailView: View {
                 }
                 .padding(.horizontal, DS.Spacing.l)
             }
-            .padding(.bottom, 32)
+            .padding(.bottom, DS.Spacing.xxxl)
         }
         .screenBackground()
         .navigationTitle(name)
@@ -86,15 +86,13 @@ struct RouteDetailView: View {
     private var mapHeader: some View {
         if route.locations.count >= 2 {
             RouteDetailMap(locations: route.locations, color: lineColor)
-                .frame(height: 340)
-                .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: 28, bottomTrailingRadius: 28, style: .continuous))
-                .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 6)
+                .frame(height: 320)
+                .overlay(alignment: .bottom) { HairlineDivider() }
         } else {
             EmptyStateView(
                 systemImage: "location.slash",
                 title: "Sin recorrido GPS",
-                message: "Esta actividad no tiene ruta registrada, pero sus números cuentan igual.",
-                tint: .sky
+                message: "Esta actividad no tiene ruta registrada. Sus datos cuentan igualmente."
             )
         }
     }
@@ -102,29 +100,32 @@ struct RouteDetailView: View {
     // MARK: Title
 
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
                 Text(name)
-                    .font(.system(.title, design: .rounded, weight: .heavy))
+                    .font(.title2.weight(.bold))
+                    .tracking(DS.Tracking.title)
                     .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
                 if editable {
                     Button {
                         isRenaming = true
                     } label: {
                         Image(systemName: "pencil")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.brand)
-                            .frame(width: 30, height: 30)
-                            .background(Color.brand.opacity(0.14), in: Circle())
+                            .font(.body.weight(.regular))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 32)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.pressable)
                     .accessibilityLabel("Cambiar nombre")
                 }
             }
-            Label(Format.dayAndTime(route.startDate), systemImage: "calendar")
-                .font(.system(.subheadline, design: .rounded, weight: .medium))
+            Text(Format.dayAndTime(route.startDate))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
+        .padding(.top, route.locations.count >= 2 ? 0 : DS.Spacing.s)
     }
 
     // MARK: Stats
@@ -139,46 +140,52 @@ struct RouteDetailView: View {
         return kmh.formatted(.number.precision(.fractionLength(1)).locale(Locale(identifier: "es_ES")))
     }
 
-    private var statsGrid: some View {
-        let columns: [GridItem] = [GridItem(.flexible(), spacing: DS.Spacing.m), GridItem(.flexible(), spacing: DS.Spacing.m)]
-        return LazyVGrid(columns: columns, spacing: DS.Spacing.m) {
-            RouteDetailStatTile(systemImage: "figure.run", value: Format.distance(route.distance), unit: nil, label: "Distancia", tint: Color.sky)
-            RouteDetailStatTile(systemImage: "stopwatch.fill", value: Format.duration(route.duration), unit: nil, label: "Tiempo", tint: Color.grape)
-            RouteDetailStatTile(systemImage: "speedometer", value: paceText, unit: "/km", label: "Ritmo medio", tint: Color.gold)
-            RouteDetailStatTile(systemImage: "bolt.fill", value: speedText, unit: "km/h", label: "Velocidad", tint: Color.steal)
+    private var statsSection: some View {
+        let distance = ActivityFormat.distanceParts(route.distance)
+        return VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: "Resumen")
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    RouteDetailStatTile(value: distance.value, unit: distance.unit, label: "Distancia")
+                    StatDivider(height: 44)
+                    RouteDetailStatTile(value: Format.duration(route.duration), unit: nil, label: "Tiempo")
+                }
+                HairlineDivider()
+                    .padding(.vertical, DS.Spacing.m)
+                HStack(spacing: 0) {
+                    RouteDetailStatTile(value: paceText, unit: "/km", label: "Ritmo medio")
+                    StatDivider(height: 44)
+                    RouteDetailStatTile(value: speedText, unit: "km/h", label: "Velocidad media")
+                }
+            }
+            .card()
         }
     }
 
     // MARK: Conquest
 
     @ViewBuilder
-    private var conquestCard: some View {
+    private var conquestSection: some View {
         if let area = route.territoryArea, area > 0 {
-            HStack(spacing: 14) {
-                Image(systemName: "flag.fill")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Color.brand)
-                    .frame(width: 48, height: 48)
-                    .background(Color.white, in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Territorio conquistado")
-                        .font(Font.statLabel)
-                        .textCase(.uppercase)
-                        .tracking(0.6)
-                        .opacity(0.9)
-                    Text("+\(Format.area(area))")
-                        .font(Font.stat(30, weight: .heavy))
-                        .monospacedDigit()
-                    Text(editable ? "Si borras esta carrera, tu territorio se recalcula." : "Pintado en el mapa con su color.")
-                        .font(.caption)
-                        .opacity(0.85)
+            let parts = ActivityFormat.areaParts(area)
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                SectionHeader(title: "Territorio")
+                HStack(alignment: .center, spacing: DS.Spacing.m) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(32, weight: .bold), tint: Color.brand)
+                        Text(editable ? "Si borras esta carrera, tu territorio se recalcula." : "Pintado en el mapa con su color.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "flag")
+                        .font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
-                Spacer(minLength: 0)
+                .card()
             }
-            .foregroundStyle(.white)
-            .padding(DS.Spacing.l)
-            .background(.brandGradient, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .shadow(color: Color.brand.opacity(0.3), radius: 12, x: 0, y: 6)
         }
     }
 
@@ -187,24 +194,29 @@ struct RouteDetailView: View {
     @ViewBuilder
     private var companions: some View {
         if !route.ranTogetherWith.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("Corriste con", systemImage: "person.2.fill")
-                    .font(Font.cardTitle)
-                    .foregroundStyle(Color.sky)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Array(route.ranTogetherWith.enumerated()), id: \.offset) { _, person in
-                            Text(person)
-                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .background(Color.sky.opacity(0.14), in: Capsule())
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                SectionHeader(title: "Corriste con")
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(route.ranTogetherWith.enumerated()), id: \.offset) { index, person in
+                        if index > 0 {
+                            HairlineDivider()
                         }
+                        HStack(spacing: DS.Spacing.m) {
+                            Image(systemName: "person")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text(person)
+                                .font(.body)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, DS.Spacing.m)
                     }
                 }
+                .padding(.horizontal, DS.Spacing.l)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .card(padding: 0)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
         }
     }
 
@@ -219,7 +231,7 @@ struct RouteDetailView: View {
                     Label("Renombrar", systemImage: "pencil")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(SecondaryButtonStyle(tint: .brand))
+                .buttonStyle(SecondaryButtonStyle(tint: .primary))
 
                 Button {
                     confirmDelete = true
@@ -229,13 +241,12 @@ struct RouteDetailView: View {
                 }
                 .buttonStyle(SecondaryButtonStyle(tint: .steal))
             }
-            Text("Al borrarla se recalcula tu territorio sin esta carrera.")
+            Text("Al borrarla, tu territorio se recalcula sin esta carrera.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
-        .padding(.top, DS.Spacing.s)
     }
 
     private var shareText: String {
@@ -243,7 +254,7 @@ struct RouteDetailView: View {
         if let area = route.territoryArea, area > 0 {
             text += " y +\(Format.area(area)) conquistados"
         }
-        return text + " con Runna.io 🏃"
+        return text + " con Runna.io"
     }
 
     // MARK: Requests
@@ -286,7 +297,7 @@ struct RouteDetailView: View {
 
 // MARK: - Pieces
 
-/// Interactive map of the route with start and finish pins.
+/// Interactive map of the route with start and finish markers.
 private struct RouteDetailMap: View {
     let locations: [CLLocationCoordinate2D]
     let color: Color
@@ -294,74 +305,52 @@ private struct RouteDetailMap: View {
     var body: some View {
         Map(initialPosition: .automatic) {
             MapPolyline(coordinates: locations)
-                .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
             MapPolyline(coordinates: locations)
-                .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                .stroke(color, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
             if let start = locations.first {
                 Annotation("Salida", coordinate: start) {
-                    RouteDetailPin(systemImage: "figure.run", tint: Color.brand)
+                    RouteDetailPin(isFinish: false, tint: color)
                 }
             }
             if let end = locations.last {
                 Annotation("Llegada", coordinate: end) {
-                    RouteDetailPin(systemImage: "flag.checkered", tint: Color.steal)
+                    RouteDetailPin(isFinish: true, tint: color)
                 }
             }
         }
-        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        .mapStyle(.standard(emphasis: .muted, pointsOfInterest: .excludingAll))
     }
 }
 
+/// Small start (hollow) / finish (solid) dot.
 private struct RouteDetailPin: View {
-    let systemImage: String
+    let isFinish: Bool
     let tint: Color
 
     var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: 12, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 28, height: 28)
-            .background(tint, in: Circle())
-            .overlay(Circle().stroke(Color.white, lineWidth: 2.5))
-            .shadow(color: Color.black.opacity(0.25), radius: 4, x: 0, y: 2)
+        Circle()
+            .fill(isFinish ? tint : Color.white)
+            .frame(width: 14, height: 14)
+            .overlay(Circle().strokeBorder(isFinish ? Color.white : tint, lineWidth: 3))
     }
 }
 
-/// Stat card of the detail grid: icon on a gradient circle, big rounded value, small label.
+/// One figure of the summary grid: condensed value (+ unit) over an uppercase label.
 private struct RouteDetailStatTile: View {
-    let systemImage: String
     let value: String
     let unit: String?
     let label: String
-    let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(tint.gradient, in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(value)
-                        .font(Font.statNumber)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    if let unit {
-                        Text(unit)
-                            .font(.system(.caption, design: .rounded, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Text(label)
-                    .statLabelStyle()
-                    .lineLimit(1)
-            }
+        VStack(alignment: .leading, spacing: 4) {
+            StatValue(value: value, unit: unit, font: Font.stat(28, weight: .semibold))
+            Text(label)
+                .statLabelStyle()
+                .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card(padding: 14, radius: DS.Radius.tile + 4)
+        .padding(.leading, DS.Spacing.xs)
         .accessibilityElement(children: .combine)
     }
 }

@@ -6,13 +6,18 @@ import SwiftUI
 // MARK: - Rarity
 
 /// Colours, labels and chest images for treasure / power rarities.
+/// Muted, adaptive tones: rarity is a quiet detail (a label colour, a marker ring), never a big fill.
 enum Rarity {
+    private static let common = Color.adaptive(light: 0x6B7280, dark: 0x9CA3AF)
+    private static let rare = Color.adaptive(light: 0x3F6EA8, dark: 0x86A8D6)
+    private static let epic = Color.adaptive(light: 0x6A5AA6, dark: 0xA99BDB)
+
     static func color(_ rarity: String) -> Color {
         switch rarity {
-        case "rare": return Color(red: 0x3B / 255, green: 0x82 / 255, blue: 0xF6 / 255)
-        case "epic": return Color(red: 0xA8 / 255, green: 0x55 / 255, blue: 0xF7 / 255)
-        case "legendary": return Color(red: 0xF5 / 255, green: 0x9E / 255, blue: 0x0B / 255)
-        default: return Color(red: 0x6B / 255, green: 0x72 / 255, blue: 0x80 / 255)
+        case "rare": return rare
+        case "epic": return epic
+        case "legendary": return Color.gold
+        default: return common
         }
     }
 
@@ -25,21 +30,10 @@ enum Rarity {
         }
     }
 
-    /// Collectible-card gradient for a rarity (lighter top-left → rarity colour → deeper bottom-right).
+    /// Legacy: renders as the flat rarity colour (no gradients in the current direction).
     static func gradient(_ rarity: String) -> LinearGradient {
-        let base = color(rarity)
-        let colors: [Color]
-        switch rarity {
-        case "legendary":
-            colors = [Color(red: 1.0, green: 0.84, blue: 0.30), base, Color(red: 0.93, green: 0.36, blue: 0.10)]
-        case "epic":
-            colors = [Color(red: 0.84, green: 0.55, blue: 1.0), base, Color(red: 0.43, green: 0.20, blue: 0.85)]
-        case "rare":
-            colors = [Color(red: 0.45, green: 0.75, blue: 1.0), base, Color(red: 0.15, green: 0.35, blue: 0.85)]
-        default:
-            colors = [Color(red: 0.62, green: 0.66, blue: 0.72), base, Color(red: 0.32, green: 0.36, blue: 0.42)]
-        }
-        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+        let base: Color = color(rarity)
+        return LinearGradient(colors: [base, base], startPoint: .top, endPoint: .bottom)
     }
 
     /// Asset catalogue image (chest_common, chest_rare, chest_epic, chest_legendary).
@@ -51,19 +45,38 @@ enum Rarity {
     }
 }
 
-/// Small coloured capsule with the rarity name.
+/// Rarity as a small uppercase text label in the (muted) rarity colour. No capsule fill.
 struct RarityPill: View {
     let rarity: String
 
     var body: some View {
         Text(Rarity.label(rarity))
-            .font(.system(.caption2, design: .rounded, weight: .heavy))
+            .font(Font.statLabel)
             .textCase(.uppercase)
-            .tracking(0.5)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Rarity.color(rarity).opacity(0.18), in: Capsule())
+            .tracking(DS.Tracking.label)
             .foregroundStyle(Rarity.color(rarity))
+            .lineLimit(1)
+    }
+}
+
+/// SF Symbol for each power type (used instead of the API's emoji in our UI chrome).
+enum PowerSymbol {
+    static func name(_ powerType: String?) -> String {
+        switch powerType ?? "" {
+        case "shield": return "shield"
+        case "double_area": return "plus.square.on.square"
+        case "nickname": return "pencil"
+        case "steal_boost": return "bolt"
+        case "invisibility": return "eye.slash"
+        case "time_bomb": return "timer"
+        case "magnet": return "magnet"
+        case "reveal": return "eye"
+        case "bulldozer": return "hammer"
+        case "battering_ram": return "burst"
+        case "wall": return "square.stack.3d.up"
+        case "sentinel": return "bell"
+        default: return "sparkle"
+        }
     }
 }
 

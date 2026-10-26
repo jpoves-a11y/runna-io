@@ -17,9 +17,7 @@ struct IntegrationsSection: View {
     @State private var health = HealthImporter.shared
     @State private var healthAutoImport = HealthImporter.shared.autoImport
 
-    private static let stravaOrange = Color(hex: "#FC4C02")
-    private static let polarRed = Color(hex: "#D10027")
-    private static let healthPink = Color(hex: "#FF2D55")
+    private static let stravaOrange = IntegrationBrandMark.stravaOrange
 
     var body: some View {
         Section {
@@ -33,8 +31,7 @@ struct IntegrationsSection: View {
             }
             providerRow(
                 name: "Polar",
-                systemImage: "heart.fill",
-                tint: Self.polarRed,
+                mark: .polar,
                 connected: polar?.connected == true,
                 detail: polarDetail,
                 provider: "polar"
@@ -50,7 +47,7 @@ struct IntegrationsSection: View {
                 healthRow
             }
         } header: {
-            SocialSectionHeader(title: "Dispositivos conectados", systemImage: "applewatch.radiowaves.left.and.right", tint: .sky)
+            SocialSectionHeader(title: "Servicios conectados")
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Las carreras que registres en Strava, Polar o en el Apple Watch (Apple Salud) se convierten en territorio.")
@@ -58,6 +55,7 @@ struct IntegrationsSection: View {
                     Link(destination: url) {
                         HStack(spacing: 4) {
                             Text("Powered by")
+                                .foregroundStyle(.secondary)
                             Text("STRAVA").fontWeight(.heavy).foregroundStyle(Self.stravaOrange)
                         }
                         .font(.caption)
@@ -106,18 +104,22 @@ struct IntegrationsSection: View {
 
     // MARK: - Rows
 
+    /// Width of the leading brand mark; detail lines below a row are indented by this plus the spacing.
+    private static let markSize: CGFloat = 32
+    private static let detailIndent: CGFloat = markSize + 12
+
     private var stravaRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
                 stravaIcon
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Strava")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
+                        .font(.body.weight(.semibold))
                     statusLine(connected: strava?.connected == true, detail: stravaDetail)
                     if let place = strava?.athlete?.place, strava?.connected == true {
                         Text(place)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 }
                 Spacer(minLength: 8)
@@ -126,21 +128,23 @@ struct IntegrationsSection: View {
             if strava?.connected == true, let athleteId = strava?.athlete?.id,
                let url = URL(string: "https://www.strava.com/athletes/\(athleteId)") {
                 Link(destination: url) {
-                    Label("Ver mi perfil en Strava", systemImage: "arrow.up.right")
-                        .font(.system(.caption, design: .rounded, weight: .bold))
-                        .foregroundStyle(Self.stravaOrange)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Self.stravaOrange.opacity(0.12), in: Capsule())
+                    HStack(spacing: 4) {
+                        Text("Ver mi perfil en Strava")
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Self.stravaOrange)
                 }
                 .buttonStyle(.borderless)
-                .padding(.leading, 52)
+                .padding(.leading, Self.detailIndent)
             }
             progressLine(for: "strava")
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
 
+    /// Strava athlete photo when connected (with the Strava mark as a corner badge), else the mark.
     @ViewBuilder
     private var stravaIcon: some View {
         if let avatar = strava?.athlete?.profileMedium, let url = URL(string: avatar), strava?.connected == true {
@@ -148,27 +152,32 @@ struct IntegrationsSection: View {
                 if let image = phase.image {
                     image.resizable().scaledToFill()
                 } else {
-                    SocialIconTile(systemImage: "figure.run", tint: Self.stravaOrange, size: 40)
+                    IntegrationBrandMark(brand: .strava, size: Self.markSize)
                 }
             }
-            .frame(width: 40, height: 40)
+            .frame(width: Self.markSize, height: Self.markSize)
             .clipShape(Circle())
-            .overlay(Circle().strokeBorder(Self.stravaOrange, lineWidth: 2))
+            .overlay(alignment: .bottomTrailing) {
+                IntegrationBrandMark(brand: .strava, size: 14)
+                    .offset(x: 3, y: 3)
+            }
             .accessibilityHidden(true)
         } else {
-            SocialIconTile(systemImage: "figure.run", tint: Self.stravaOrange, size: 40)
+            IntegrationBrandMark(brand: .strava, size: Self.markSize)
         }
     }
 
-    /// Green dot + detail when connected, grey dot + "No conectado" otherwise.
+    /// Small dot + detail when connected, "No conectado" otherwise.
     private func statusLine(connected: Bool, detail: String?) -> some View {
         HStack(spacing: 5) {
-            Circle()
-                .fill(connected ? Color.brand : Color.secondary.opacity(0.5))
-                .frame(width: 7, height: 7)
+            if connected {
+                Circle()
+                    .fill(Color.brand)
+                    .frame(width: 6, height: 6)
+            }
             Text(detail ?? "No conectado")
-                .font(.caption)
-                .foregroundStyle(connected ? Color.primary.opacity(0.75) : Color.secondary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
     }
@@ -183,7 +192,7 @@ struct IntegrationsSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(.leading, 52)
+            .padding(.leading, Self.detailIndent)
         }
     }
 
@@ -203,40 +212,36 @@ struct IntegrationsSection: View {
 
     private func activitiesLinkLabel(failed: Int) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: "list.bullet.rectangle.portrait.fill")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 40)
+            Color.clear
+                .frame(width: Self.markSize, height: 1)
             Text("Actividades importadas")
-                .font(.subheadline.weight(.medium))
+                .font(.subheadline)
                 .foregroundStyle(Color.primary)
             Spacer(minLength: 8)
             if failed > 0 {
                 Text("\(failed) sin territorio")
-                    .font(.system(.caption, design: .rounded, weight: .bold))
+                    .font(.footnote.weight(.medium))
+                    .monospacedDigit()
                     .foregroundStyle(Color.steal)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.steal.opacity(0.14), in: Capsule())
             }
         }
     }
 
-    private func providerRow(name: String, systemImage: String, tint: Color, connected: Bool, detail: String?, provider: String) -> some View {
+    private func providerRow(name: String, mark: IntegrationBrandMark.Brand, connected: Bool, detail: String?, provider: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
-                SocialIconTile(systemImage: systemImage, tint: tint, size: 40)
+                IntegrationBrandMark(brand: mark, size: Self.markSize)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
-                        .font(.system(.body, design: .rounded, weight: .semibold))
+                        .font(.body.weight(.semibold))
                     statusLine(connected: connected, detail: detail)
                 }
                 Spacer(minLength: 8)
-                providerActions(name: name, connected: connected, provider: provider, tint: tint)
+                providerActions(name: name, connected: connected, provider: provider, tint: .brand)
             }
             progressLine(for: provider)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder
@@ -253,23 +258,21 @@ struct IntegrationsSection: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.primary)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
                     .frame(width: 36, height: 36)
-                    .background(Color.surfaceRaised, in: Circle())
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Opciones de \(name)")
         } else {
-            Button {
+            Button("Conectar") {
                 if provider == "strava" {
                     showStravaConsent = true
                 } else {
                     Task { await connect(provider) }
                 }
-            } label: {
-                SocialPillLabel(title: "Conectar", systemImage: "link", tint: tint, kind: .filled, compact: true)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(SecondaryButtonStyle(tint: tint))
             .disabled(busyProvider != nil)
             .accessibilityLabel("Conectar \(name)")
         }
@@ -278,29 +281,29 @@ struct IntegrationsSection: View {
     private var healthRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                SocialIconTile(systemImage: "heart.fill", tint: Self.healthPink, size: 40, inverted: true)
+                IntegrationBrandMark(brand: .appleHealth, size: Self.markSize)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Apple Salud")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
+                        .font(.body.weight(.semibold))
                     Text("Carreras del Apple Watch y otras apps")
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 8)
                 if health.isImporting {
                     ProgressView()
                 } else {
-                    Button {
+                    Button("Importar") {
                         Task { await importFromHealth() }
-                    } label: {
-                        SocialPillLabel(title: "Importar", systemImage: "arrow.down", tint: Self.healthPink, kind: .soft, compact: true)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(SecondaryButtonStyle(tint: .brand))
                 }
             }
             Toggle("Importar automáticamente", isOn: $healthAutoImport)
                 .font(.subheadline)
                 .tint(Color.brand)
+                .padding(.leading, Self.detailIndent)
                 .onChange(of: healthAutoImport) { _, enabled in
                     health.autoImport = enabled
                     if enabled { Task { await importFromHealth() } }
@@ -310,7 +313,7 @@ struct IntegrationsSection: View {
             // The setting is reset on logout
             healthAutoImport = health.autoImport
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
 
     // MARK: - Actions
@@ -705,8 +708,8 @@ struct ImportedActivitiesView: View {
                 ErrorView(message: loadError) { Task { await load() } }
             } else if activities.isEmpty {
                 EmptyStateView(
-                    systemImage: "tray.fill",
-                    title: "Nada por aquí todavía",
+                    systemImage: "tray",
+                    title: "Sin actividades importadas",
                     message: "Todavía no hay actividades importadas de \(providerName). Usa \"Sincronizar ahora\" en tu perfil."
                 )
             }
@@ -741,10 +744,12 @@ struct ImportedActivitiesView: View {
         let pending = activities.filter { $0.status == .pending }.count
         let skipped = activities.filter { $0.status == .skipped }.count
         return Section {
-            HStack {
-                StatTile(value: "\(imported)", label: "Importadas", tint: .brand)
-                StatTile(value: "\(pending)", label: "Pendientes", tint: .sky)
-                StatTile(value: "\(skipped)", label: "Omitidas", tint: .steal)
+            HStack(spacing: 0) {
+                StatTile(value: "\(imported)", label: "Importadas")
+                StatDivider()
+                StatTile(value: "\(pending)", label: "Pendientes")
+                StatDivider()
+                StatTile(value: "\(skipped)", label: "Omitidas", tint: skipped > 0 ? Color.steal : Color.primary)
             }
             .padding(.vertical, 8)
             .listRowBackground(Color.surface)
@@ -755,7 +760,7 @@ struct ImportedActivitiesView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(activity.name)
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .lineLimit(2)
                 Spacer()
                 if busyIds.contains(activity.id) {
@@ -768,7 +773,7 @@ struct ImportedActivitiesView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if activity.status == .skipped, let reason = activity.skipReasonText {
-                Label("Motivo: \(reason)", systemImage: "exclamationmark.triangle.fill")
+                Label("Motivo: \(reason)", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(Color.steal)
             }
@@ -817,18 +822,16 @@ struct ImportedActivitiesView: View {
     @ViewBuilder
     private func statusBadge(_ status: ProviderActivity.Status) -> some View {
         switch status {
-        case .imported: badge("Importada", color: .brand)
-        case .pending: badge("Pendiente", color: .sky)
-        case .skipped: badge("Omitida", color: .steal)
+        case .imported: badge("Importada", color: Color.secondary)
+        case .pending: badge("Pendiente", color: Color.secondary)
+        case .skipped: badge("Omitida", color: Color.steal)
         }
     }
 
+    /// Plain status text (no tinted capsule).
     private func badge(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(.caption2, design: .rounded, weight: .bold))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.15), in: Capsule())
+            .font(.footnote.weight(.medium))
             .foregroundStyle(color)
     }
 
@@ -887,5 +890,79 @@ struct ImportedActivitiesView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+// MARK: - Brand marks
+
+/// Third-party service marks for the connected-services rows: the brand's own colour tile with a
+/// white glyph (Strava peaks, Polar), or Apple Health's white tile with the pink heart.
+struct IntegrationBrandMark: View {
+    enum Brand {
+        case strava, polar, appleHealth
+    }
+
+    let brand: Brand
+    var size: CGFloat = 32
+
+    static let stravaOrange = Color(hex: "#FC4C02")
+    static let polarRed = Color(hex: "#D10027")
+    static let healthPink = Color(hex: "#FF2D55")
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+    }
+
+    var body: some View {
+        ZStack {
+            switch brand {
+            case .strava:
+                shape.fill(Self.stravaOrange)
+                StravaPeaksShape()
+                    .fill(Color.white)
+                    .frame(width: size * 0.62, height: size * 0.62)
+            case .polar:
+                shape.fill(Self.polarRed)
+                Text("P")
+                    .font(.system(size: size * 0.56, weight: .heavy))
+                    .italic()
+                    .foregroundStyle(Color.white)
+            case .appleHealth:
+                shape.fill(Color.white)
+                shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+                Image(systemName: "heart.fill")
+                    .font(.system(size: size * 0.5, weight: .regular))
+                    .foregroundStyle(Self.healthPink)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Simplified Strava mark: a large peak with a smaller inverted peak at its lower right.
+private struct StravaPeaksShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height)
+        }
+        var path = Path()
+        // Large peak
+        path.move(to: point(0.42, 0.04))
+        path.addLine(to: point(0.72, 0.64))
+        path.addLine(to: point(0.56, 0.64))
+        path.addLine(to: point(0.42, 0.36))
+        path.addLine(to: point(0.28, 0.64))
+        path.addLine(to: point(0.12, 0.64))
+        path.closeSubpath()
+        // Small inverted peak, continuing the large peak's right edge
+        path.move(to: point(0.60, 0.70))
+        path.addLine(to: point(0.72, 0.70))
+        path.addLine(to: point(0.74, 0.74))
+        path.addLine(to: point(0.76, 0.70))
+        path.addLine(to: point(0.88, 0.70))
+        path.addLine(to: point(0.74, 0.98))
+        path.closeSubpath()
+        return path
     }
 }

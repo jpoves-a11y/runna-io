@@ -2,104 +2,84 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-/// Territory won in a run: big conquered area, total stolen and the victims, each with a button to send them a photo.
+/// Territory won in a run: the conquered area as the hero number, then the people you took
+/// territory from, each with a plain "Enviar foto" button.
 struct ConquestCard: View {
     let result: ConquestResult
     /// Victims who already got a photo for this run.
     let sentVictimIds: Set<String>
     let onTaunt: (Victim) -> Void
 
-    @State private var appeared = false
-
     var body: some View {
-        VStack(spacing: DS.Spacing.l) {
+        VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
             conqueredHero
-            let victims = result.stolenVictims
+            let victims: [Victim] = result.stolenVictims
             if !victims.isEmpty {
                 stolenSection(victims)
             }
-        }
-        .onAppear {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.15)) { appeared = true }
         }
     }
 
     private var conqueredHero: some View {
         let parts = Format.areaParts(result.newAreaConquered)
-        return VStack(spacing: DS.Spacing.s) {
-            Label("Territorio conquistado", systemImage: "flag.fill")
-                .font(Font.statLabel)
-                .textCase(.uppercase)
-                .tracking(0.8)
-                .foregroundStyle(Color.white.opacity(0.9))
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("+\(parts.value)")
-                    .font(.system(size: 56, weight: .heavy, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                Text(parts.unit)
-                    .font(.system(.title2, design: .rounded, weight: .bold))
-                    .opacity(0.85)
-            }
-            .foregroundStyle(.white)
-            .scaleEffect(appeared ? 1 : 0.6)
-            .opacity(appeared ? 1 : 0)
+        return VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            Text("Territorio conquistado")
+                .statLabelStyle()
+            StatValue(
+                value: result.newAreaConquered > 0 ? "+\(parts.value)" : parts.value,
+                unit: parts.unit,
+                font: Font.stat(56, weight: .semibold),
+                tint: result.newAreaConquered > 0 ? Color.brand : Color.primary
+            )
             if result.totalStolen > 0 {
-                Label("\(Format.area(result.totalStolen)) robados", systemImage: "bolt.fill")
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, DS.Spacing.m)
-                    .padding(.vertical, 6)
-                    .background(.stealGradient, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                stolenSummary
             } else if result.newAreaConquered <= 0 {
-                Text("Esta vez no has sumado terreno nuevo. ¡La próxima, por calles sin pintar!")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(Color.white.opacity(0.9))
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .padding(.vertical, DS.Spacing.xxl)
-        .padding(.horizontal, DS.Spacing.l)
-        .frame(maxWidth: .infinity)
-        .background(.brandGradient, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 28, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.7))
-                .symbolEffect(.bounce, value: appeared)
-                .padding(DS.Spacing.l)
-        }
-        .shadow(color: Color.brand.opacity(0.35), radius: 16, x: 0, y: 8)
-        .accessibilityElement(children: .combine)
-    }
-
-    private func stolenSection(_ victims: [Victim]) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            HStack(spacing: DS.Spacing.s) {
-                Image(systemName: "bolt.shield.fill")
-                    .foregroundStyle(Color.steal)
-                Text(victims.count == 1 ? "Has asaltado a" : "Has asaltado a \(victims.count) rivales")
-                    .font(Font.cardTitle)
-                Spacer()
-            }
-            ForEach(victims) { victim in
-                ConquestVictimRow(victim: victim, sent: sentVictimIds.contains(victim.userId)) {
-                    onTaunt(victim)
-                }
+                Text("Esta carrera no ha sumado territorio nuevo.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(Color.steal.opacity(0.35), lineWidth: 1.5)
-        )
+        .card(padding: DS.Spacing.xl)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var stolenSummary: some View {
+        HStack(spacing: 4) {
+            Text("Incluye")
+                .foregroundStyle(.secondary)
+            Text(Format.area(result.totalStolen))
+                .foregroundStyle(Color.steal)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+            Text("de otros corredores")
+                .foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    private func stolenSection(_ victims: [Victim]) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: victims.count == 1 ? "Territorio robado a" : "Territorio robado a \(victims.count) corredores")
+            VStack(spacing: 0) {
+                ForEach(Array(victims.enumerated()), id: \.element.id) { index, victim in
+                    if index > 0 {
+                        HairlineDivider()
+                            .padding(.leading, 64)
+                    }
+                    ConquestVictimRow(victim: victim, sent: sentVictimIds.contains(victim.userId)) {
+                        onTaunt(victim)
+                    }
+                }
+            }
+            .card(padding: 0)
+        }
     }
 }
 
-/// One victim: their colour, what you took and the "send photo" button.
+/// One victim: avatar, name, area taken (coral text) and the photo action.
 private struct ConquestVictimRow: View {
     let victim: Victim
     let sent: Bool
@@ -107,182 +87,101 @@ private struct ConquestVictimRow: View {
 
     var body: some View {
         HStack(spacing: DS.Spacing.m) {
-            AvatarView(name: victim.userName, avatar: nil, color: victim.userColor, size: 44)
+            AvatarView(name: victim.userName, avatar: nil, color: victim.userColor, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(victim.userName)
-                    .font(.system(.body, design: .rounded, weight: .bold))
+                    .font(.body.weight(.medium))
                     .lineLimit(1)
                 Text("−\(Format.area(victim.stolenArea))")
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.subheadline.weight(.medium))
                     .monospacedDigit()
                     .foregroundStyle(Color.steal)
             }
             Spacer(minLength: DS.Spacing.s)
             actionView
         }
-        .padding(DS.Spacing.m)
-        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.vertical, DS.Spacing.m)
         .animation(.snappy, value: sent)
     }
 
     @ViewBuilder
     private var actionView: some View {
         if sent {
-            Label("Enviada", systemImage: "checkmark.circle.fill")
-                .font(.system(.footnote, design: .rounded, weight: .bold))
-                .foregroundStyle(Color.brand)
-                .transition(.scale.combined(with: .opacity))
+            Label("Enviada", systemImage: "checkmark")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .transition(.opacity)
         } else {
-            Button(action: onTaunt) {
-                Label("Foto", systemImage: "camera.fill")
-                    .font(.system(.subheadline, design: .rounded, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 38)
-                    .background(.stealGradient, in: Capsule())
-                    .shadow(color: Color.steal.opacity(0.35), radius: 6, x: 0, y: 3)
-            }
-            .buttonStyle(.pressable)
-            .accessibilityLabel("Enviar foto a \(victim.userName)")
+            Button("Enviar foto", action: onTaunt)
+                .buttonStyle(SecondaryButtonStyle(tint: Color.primary))
+                .accessibilityLabel("Enviar foto a \(victim.userName)")
         }
     }
 }
 
-// MARK: - Celebration pieces (shared by the run summary and the conquest inbox)
+// MARK: - Report pieces (shared by the run summary and the conquest inbox)
 
-/// Gradient hero with a title, a subtitle and a burst of sparkles.
+/// Editorial header of a report: large title and a secondary line (with a small spinner while working).
+/// `systemImage` is kept for API compatibility and not drawn.
 struct RunCelebrationHeader: View {
     let title: String
     let subtitle: String
     var systemImage: String = "flag.checkered"
     var isWorking: Bool = false
 
-    @State private var appeared = false
-
     var body: some View {
-        VStack(spacing: DS.Spacing.s) {
-            ZStack {
-                if !isWorking {
-                    RunConfettiBurst()
-                        .frame(width: 220, height: 140)
-                }
-                Image(systemName: isWorking ? "hourglass" : systemImage)
-                    .font(.system(size: 34, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .frame(width: 72, height: 72)
-                    .background(isWorking ? AnyShapeStyle(LinearGradient.grapeGradient) : AnyShapeStyle(LinearGradient.brandGradient), in: Circle())
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 2))
-                    .shadow(color: Color.brand.opacity(0.4), radius: 12, x: 0, y: 6)
-                    .symbolEffect(.bounce, value: appeared)
-                    .symbolEffect(.pulse, isActive: isWorking)
-                    .scaleEffect(appeared ? 1 : 0.5)
-            }
-            .frame(height: 120)
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
             Text(title)
-                .font(.system(size: 30, weight: .heavy, design: .rounded))
-                .multilineTextAlignment(.center)
+                .font(Font.screenTitle)
+                .tracking(DS.Tracking.title)
+                .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)
-            Text(subtitle)
-                .font(.system(.subheadline, design: .rounded, weight: .medium))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            HStack(spacing: DS.Spacing.s) {
+                if isWorking {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.opacity)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .sensoryFeedback(.success, trigger: appeared)
-        .onAppear {
-            withAnimation(.spring(response: 0.55, dampingFraction: 0.55)) { appeared = true }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// Confetti-like burst of coloured symbols flying out from the centre (once).
-struct RunConfettiBurst: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var exploded = false
-
-    private struct Piece {
-        let symbol: String
-        let color: Color
-        let angle: Double
-        let distance: CGFloat
-        let size: CGFloat
-        let spin: Double
-    }
-
-    private let pieces: [Piece] = {
-        let symbols = ["star.fill", "sparkle", "circle.fill", "triangle.fill", "heart.fill", "diamond.fill"]
-        let colors: [Color] = [Color.brand, Color.brandLime, Color.gold, Color.steal, Color.sky, Color.grape]
-        var result: [Piece] = []
-        for index in 0..<18 {
-            let jitter: Double = index.isMultiple(of: 2) ? 0.15 : -0.1
-            let angle: Double = Double(index) / 18.0 * 2.0 * Double.pi + jitter
-            let distance: CGFloat = index.isMultiple(of: 3) ? 104 : (index.isMultiple(of: 2) ? 84 : 66)
-            result.append(Piece(
-                symbol: symbols[index % symbols.count],
-                color: colors[(index * 5) % colors.count],
-                angle: angle,
-                distance: distance,
-                size: index.isMultiple(of: 4) ? 14 : 10,
-                spin: Double((index % 5) * 70 - 140)
-            ))
-        }
-        return result
-    }()
-
-    var body: some View {
-        ZStack {
-            ForEach(0..<pieces.count, id: \.self) { index in
-                pieceView(pieces[index])
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        .onAppear {
-            if reduceMotion {
-                exploded = true
-            } else {
-                withAnimation(.spring(response: 0.9, dampingFraction: 0.6).delay(0.1)) { exploded = true }
-            }
-        }
-    }
-
-    private func pieceView(_ piece: Piece) -> some View {
-        let dx = CGFloat(cos(piece.angle)) * piece.distance
-        let dy = CGFloat(sin(piece.angle)) * piece.distance * 0.62
-        return Image(systemName: piece.symbol)
-            .font(.system(size: piece.size, weight: .bold))
-            .foregroundStyle(piece.color)
-            .rotationEffect(.degrees(exploded ? piece.spin : 0))
-            .offset(x: exploded ? dx : 0, y: exploded ? dy : 0)
-            .scaleEffect(exploded ? 1 : 0.2)
-            .opacity(exploded ? 0.95 : 0)
-    }
-}
-
-/// Distance · time · pace in one card (big rounded numbers).
+/// Distance · time · pace in one flat card, separated by hairlines.
 struct RunStatsCard: View {
     let distance: Double
     let duration: Int
 
     var body: some View {
-        HStack(spacing: 0) {
-            StatTile(value: Format.distance(distance), label: "Distancia", tint: Color.sky)
-            divider
+        let distanceParts: (String, String?) = Self.split(Format.distance(distance))
+        let paceParts: (String, String?) = Self.split(Format.pace(distanceMeters: distance, seconds: duration))
+        return HStack(spacing: 0) {
+            StatTile(value: distanceParts.0, label: "Distancia", unit: distanceParts.1)
+            StatDivider(height: 40)
             StatTile(value: Format.duration(duration), label: "Tiempo")
-            divider
-            StatTile(value: Format.pace(distanceMeters: distance, seconds: duration), label: "Ritmo", tint: Color.brand)
+            StatDivider(height: 40)
+            StatTile(value: paceParts.0, label: "Ritmo", unit: paceParts.1)
         }
         .card(padding: DS.Spacing.l)
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.hairline)
-            .frame(width: 1, height: 40)
+    /// "5,23 km" → ("5,23", "km").
+    private static func split(_ text: String) -> (String, String?) {
+        guard let space = text.firstIndex(of: " ") else { return (text, nil) }
+        let value = String(text[..<space])
+        let unit = String(text[text.index(after: space)...])
+        return (value, unit.isEmpty ? nil : unit)
     }
 }
 
-/// Card with a spinner (or icon) and a short status message.
+/// Card with a spinner (or quiet icon) and a short status message.
 struct RunStatusCard: View {
     let systemImage: String
     let title: String
@@ -290,21 +189,22 @@ struct RunStatusCard: View {
     var tint: Color = Color.brand
     var isLoading: Bool = false
 
+    /// Coral stays for problems; anything else is a neutral icon.
+    private var iconColor: Color { tint == Color.steal ? Color.steal : Color.secondary }
+
     var body: some View {
-        HStack(alignment: .top, spacing: DS.Spacing.m) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.14))
-                    .frame(width: 44, height: 44)
+        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.m) {
+            Group {
                 if isLoading {
                     ProgressView()
-                        .tint(tint)
+                        .controlSize(.small)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.headline)
-                        .foregroundStyle(tint)
+                        .font(.body)
+                        .foregroundStyle(iconColor)
                 }
             }
+            .frame(width: 22)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(Font.cardTitle)
@@ -367,50 +267,43 @@ struct TreasureLine: Identifiable, Hashable {
     }
 }
 
+/// Treasures found in a run: simple rows (small emoji, name, rarity as secondary text).
 struct TreasuresCard: View {
     let treasures: [TreasureLine]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            HStack(spacing: DS.Spacing.s) {
-                Image(systemName: "gift.fill")
-                    .foregroundStyle(.goldGradient)
-                    .symbolEffect(.bounce, value: treasures.count)
-                Text(treasures.count == 1 ? "¡Tesoro encontrado!" : "¡\(treasures.count) tesoros encontrados!")
-                    .font(Font.cardTitle)
-                Spacer()
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: treasures.count == 1 ? "Tesoro encontrado" : "\(treasures.count) tesoros encontrados")
+            VStack(spacing: 0) {
+                ForEach(Array(treasures.enumerated()), id: \.element.id) { index, treasure in
+                    if index > 0 {
+                        HairlineDivider()
+                            .padding(.leading, 52)
+                    }
+                    row(treasure)
+                }
             }
-            ForEach(treasures) { treasure in
-                row(treasure)
-            }
+            .card(padding: 0)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(Color.gold.opacity(0.45), lineWidth: 1.5)
-        )
     }
 
     private func row(_ treasure: TreasureLine) -> some View {
-        let color = TreasureLine.rarityColor(treasure.rarity)
-        return HStack(spacing: DS.Spacing.m) {
+        HStack(spacing: DS.Spacing.m) {
             Text(treasure.emoji)
-                .font(.title2)
-                .frame(width: 44, height: 44)
-                .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous))
+                .font(.body)
+                .frame(width: 24)
+                .accessibilityHidden(true)
             Text(treasure.name)
-                .font(.system(.body, design: .rounded, weight: .semibold))
+                .font(.body)
                 .lineLimit(2)
             Spacer(minLength: DS.Spacing.s)
             Text(TreasureLine.rarityName(treasure.rarity))
-                .font(.system(.caption, design: .rounded, weight: .heavy))
-                .textCase(.uppercase)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(color.opacity(0.15), in: Capsule())
-                .foregroundStyle(color)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, DS.Spacing.l)
+        .frame(minHeight: 48)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -431,26 +324,25 @@ struct RouteReplayView: View {
             Map(initialPosition: Self.cameraPosition(for: coordinates), interactionModes: []) {
                 if shown.count >= 2 {
                     MapPolyline(coordinates: shown)
-                        .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                        .stroke(Color.white, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                     MapPolyline(coordinates: shown)
-                        .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                        .stroke(color, style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
                 }
                 if let start = coordinates.first {
                     Annotation("Salida", coordinate: start) {
                         Circle()
-                            .fill(Color.brand)
-                            .frame(width: 14, height: 14)
-                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                            .fill(Color.white)
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().strokeBorder(color, lineWidth: 3))
                     }
                     .annotationTitles(.hidden)
                 }
                 if let head = shown.last {
                     Annotation(progress >= 1 ? "Meta" : String(), coordinate: head) {
                         Circle()
-                            .fill(progress >= 1 ? Color.steal : color)
-                            .frame(width: 16, height: 16)
-                            .overlay(Circle().stroke(Color.white, lineWidth: 3))
-                            .shadow(radius: 2)
+                            .fill(progress >= 1 ? Color.primary : color)
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
                     .annotationTitles(.hidden)
                 }
@@ -461,20 +353,21 @@ struct RouteReplayView: View {
                     replayToken += 1
                 } label: {
                     Label("Repetir", systemImage: "arrow.counterclockwise")
-                        .font(.system(.footnote, design: .rounded, weight: .bold))
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 12)
                         .frame(height: 34)
                         .glassSurface(Capsule(), interactive: true)
                 }
                 .buttonStyle(.pressable)
                 .padding(DS.Spacing.m)
-                .transition(.scale.combined(with: .opacity))
+                .transition(.opacity)
                 .accessibilityLabel("Repetir recorrido")
             }
         }
         .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(Color.hairline, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
         .animation(.snappy, value: progress >= 1)
         .task(id: replayToken) { await play() }
     }

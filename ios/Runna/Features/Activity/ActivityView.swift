@@ -10,18 +10,18 @@ struct ActivityView: View {
                 ActivitySectionPicker(selection: $router.activitySection)
                     .padding(.horizontal, DS.Spacing.l)
                     .padding(.top, DS.Spacing.xs)
-                    .padding(.bottom, DS.Spacing.s)
+                    .padding(.bottom, DS.Spacing.m)
 
                 switch router.activitySection {
                 case .feed:
                     FeedList()
-                        .transition(.move(edge: .leading).combined(with: .opacity))
+                        .transition(.opacity)
                 case .mine:
                     MyRoutesList()
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                        .transition(.opacity)
                 }
             }
-            .animation(.snappy(duration: 0.3), value: router.activitySection)
+            .animation(.snappy(duration: 0.25), value: router.activitySection)
             .navigationTitle("Actividad")
             .screenBackground()
         }
@@ -271,7 +271,7 @@ private struct FeedList: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: DS.Spacing.l) {
+            LazyVStack(spacing: DS.Spacing.m) {
                 if let message = model.errorMessage, !model.events.isEmpty {
                     ErrorBanner(message: message, retry: { Task { await reload(force: true) } })
                 }
@@ -284,7 +284,7 @@ private struct FeedList: View {
                 footer
             }
             .padding(.horizontal, DS.Spacing.l)
-            .padding(.top, DS.Spacing.s)
+            .padding(.top, DS.Spacing.xs)
             .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
@@ -337,9 +337,9 @@ private struct FeedList: View {
             ActivitySkeletonCard()
         } else {
             EmptyStateView(
-                systemImage: "figure.run.circle",
-                title: "Aquí aún no corre nadie",
-                message: "Cuando tú o tus amigos salgáis a correr, vuestras carreras, robos y tesoros aparecerán aquí.",
+                systemImage: "figure.run",
+                title: "Sin actividad todavía",
+                message: "Las carreras, conquistas y tesoros tuyos y de tus amigos aparecerán aquí.",
                 actionTitle: "Buscar amigos",
                 action: { router.selectedTab = .friends }
             )
@@ -354,9 +354,9 @@ private struct FeedList: View {
                 ProgressView()
                     .padding(.vertical, DS.Spacing.l)
             } else if model.reachedEnd {
-                Label("Estás al día", systemImage: "flag.checkered")
-                    .font(.system(.footnote, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                Text("No hay más actividad")
+                    .font(Font.meta)
+                    .foregroundStyle(.tertiary)
                     .padding(.vertical, DS.Spacing.l)
             }
         }
@@ -447,12 +447,12 @@ private struct MyRoutesList: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: DS.Spacing.m) {
+            LazyVStack(alignment: .leading, spacing: DS.Spacing.s) {
                 if routes.isEmpty {
                     emptyContent
                 } else {
                     ActivityWeekCard(summary: ActivityWeekSummary(routes: routes))
-                        .padding(.bottom, DS.Spacing.s)
+                        .padding(.bottom, DS.Spacing.m)
                     if let errorMessage {
                         ErrorBanner(message: errorMessage, retry: { Task { await load(force: true) } })
                     }
@@ -462,7 +462,7 @@ private struct MyRoutesList: View {
                 }
             }
             .padding(.horizontal, DS.Spacing.l)
-            .padding(.top, DS.Spacing.s)
+            .padding(.top, DS.Spacing.xs)
             .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
@@ -479,22 +479,29 @@ private struct MyRoutesList: View {
 
     @ViewBuilder
     private func monthSection(_ group: ActivityMonthGroup) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(group.title)
-                .font(Font.sectionTitle)
-            Spacer()
+        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
+            SectionLabel(group.title)
+            Spacer(minLength: DS.Spacing.s)
             Text(group.summary)
-                .font(.system(.caption, design: .rounded, weight: .semibold))
+                .font(Font.meta)
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
         }
-        .padding(.top, DS.Spacing.m)
+        .padding(.top, DS.Spacing.l)
         .padding(.horizontal, DS.Spacing.xs)
-        ForEach(group.routes) { route in
-            NavigationLink(value: route) {
-                ActivityRunRow(route: route, color: userColor)
+        VStack(spacing: 0) {
+            ForEach(Array(group.routes.enumerated()), id: \.element.id) { index, route in
+                if index > 0 {
+                    HairlineDivider()
+                        .padding(.leading, ActivityRunRow.textInset)
+                }
+                NavigationLink(value: route) {
+                    ActivityRunRow(route: route, color: userColor)
+                }
+                .buttonStyle(.pressable)
             }
-            .buttonStyle(.pressable)
         }
+        .card(padding: 0)
     }
 
     @ViewBuilder
@@ -508,9 +515,9 @@ private struct MyRoutesList: View {
                 .padding(.top, 80)
         } else {
             EmptyStateView(
-                systemImage: "shoeprints.fill",
-                title: "Tus zapatillas te echan de menos",
-                message: "Sal a correr desde el mapa, conecta Strava/Polar o importa tus entrenos de Apple Salud desde el Perfil.",
+                systemImage: "figure.run",
+                title: "Aún no tienes carreras",
+                message: "Sal a correr desde el mapa, conecta Strava o Polar, o importa tus entrenamientos de Apple Salud desde el perfil.",
                 actionTitle: "Ir al mapa",
                 action: { router.selectedTab = .map }
             )
@@ -526,88 +533,75 @@ private struct MyRoutesList: View {
 
 // MARK: - Run row
 
-/// One of your runs: map thumbnail, name, date and stat pills.
+/// One of your runs inside the month list: map thumbnail, name, date and condensed stats.
 private struct ActivityRunRow: View {
     let route: RunRoute
     let color: Color
 
+    static let thumbnailSize: CGFloat = 56
+    /// Leading inset of the separator so it lines up with the text column.
+    static let textInset: CGFloat = DS.Spacing.m + thumbnailSize + DS.Spacing.m
+
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: DS.Spacing.m) {
             thumbnail
-            VStack(alignment: .leading, spacing: 6) {
-                Text(route.name)
-                    .font(Font.cardTitle)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(Format.dayAndTime(route.startDate))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                pills
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.s) {
+                    Text(route.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: DS.Spacing.xs)
+                    Text(Format.dayAndTime(route.startDate))
+                        .font(Font.meta)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                }
+                stats
             }
-            Spacer(minLength: 0)
             Image(systemName: "chevron.right")
-                .font(.caption.weight(.bold))
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
-        .activityCard(padding: DS.Spacing.m)
-        .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .padding(DS.Spacing.m)
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
     private var thumbnail: some View {
         if route.coordinates.count >= 2 {
-            ActivityRouteMap(cacheKey: "route-\(route.id)", coordinates: route.coordinates, color: color, cornerRadius: 14, lineWidth: 3)
-                .frame(width: 64, height: 64)
+            ActivityRouteMap(cacheKey: "route-\(route.id)", coordinates: route.coordinates, color: color, cornerRadius: DS.Radius.small, lineWidth: 2.5)
+                .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
         } else {
             Image(systemName: "figure.run")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(color)
-                .frame(width: 64, height: 64)
-                .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(.secondary)
+                .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
+                .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous))
         }
     }
 
-    // Pills never truncate: if all three don't fit, the time pill is dropped
-    private var pills: some View {
+    // Figures never truncate: if all of them don't fit, the time is dropped
+    private var stats: some View {
         ViewThatFits(in: .horizontal) {
-            pillRow(showDuration: true)
-            pillRow(showDuration: false)
+            statsRow(showDuration: true)
+            statsRow(showDuration: false)
         }
     }
 
-    private func pillRow(showDuration: Bool) -> some View {
-        HStack(spacing: 6) {
-            ActivityMiniPill(systemImage: "figure.run", text: Format.distance(route.distance), tint: Color.sky)
+    private func statsRow(showDuration: Bool) -> some View {
+        let distance = ActivityFormat.distanceParts(route.distance)
+        return HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.m) {
+            StatValue(value: distance.value, unit: distance.unit, font: Font.stat(19, weight: .semibold))
             if showDuration {
-                ActivityMiniPill(systemImage: "stopwatch.fill", text: Format.duration(route.duration), tint: Color.grape)
+                StatValue(value: Format.duration(route.duration), font: Font.stat(19, weight: .semibold))
             }
             if let area = route.territoryArea, area > 0 {
-                ActivityMiniPill(systemImage: "flag.fill", text: "+\(Format.area(area))", tint: Color.brand)
+                let parts = ActivityFormat.areaParts(area)
+                StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(19, weight: .semibold), tint: Color.brand)
             }
         }
-    }
-}
-
-private struct ActivityMiniPill: View {
-    let systemImage: String
-    let text: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: systemImage)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(tint)
-            Text(text)
-                .font(.system(.caption2, design: .rounded, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(tint.opacity(0.13), in: Capsule())
         .fixedSize()
     }
 }
@@ -702,14 +696,19 @@ private struct ActivityWeekSummary {
     }
 }
 
-/// Hero card at the top of "Mis carreras": this week's kilometres and a mini day-by-day chart.
+/// Summary card at the top of "Mis carreras": this week's kilometres, a day-by-day bar chart and a stats row.
 private struct ActivityWeekCard: View {
     let summary: ActivityWeekSummary
 
     private static let dayLetters: [String] = ["L", "M", "X", "J", "V", "S", "D"]
+    private static let chartHeight: CGFloat = 56
 
     private var kmText: String {
         (summary.distance / 1000).formatted(.number.precision(.fractionLength(1)).locale(ActivityCalendar.locale))
+    }
+
+    private var lastWeekText: String {
+        (summary.lastWeekDistance / 1000).formatted(.number.precision(.fractionLength(1)).locale(ActivityCalendar.locale))
     }
 
     var body: some View {
@@ -720,128 +719,81 @@ private struct ActivityWeekCard: View {
                 Spacer(minLength: 0)
                 chart
             }
+            HairlineDivider()
             statsRow
         }
-        .foregroundStyle(.white)
-        .padding(DS.Spacing.xl)
-        .background { background }
-        .shadow(color: Color.brand.opacity(0.35), radius: 16, x: 0, y: 8)
+        .card()
         .accessibilityElement(children: .combine)
     }
 
-    private var background: some View {
-        let shape = RoundedRectangle(cornerRadius: DS.Radius.card + 2, style: .continuous)
-        return ZStack(alignment: .topTrailing) {
-            shape.fill(.brandGradient)
-            Image(systemName: "figure.run")
-                .font(.system(size: 120, weight: .black))
-                .foregroundStyle(Color.white.opacity(0.08))
-                .offset(x: 20, y: -10)
-                .accessibilityHidden(true)
-        }
-        .clipShape(shape)
-    }
-
     private var topRow: some View {
-        HStack {
-            Text("Esta semana")
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
-                .textCase(.uppercase)
-                .tracking(0.8)
-                .opacity(0.9)
+        HStack(alignment: .firstTextBaseline) {
+            SectionLabel("Esta semana")
             Spacer()
             if let delta = summary.deltaPercent {
-                deltaBadge(delta)
+                deltaLabel(delta)
             }
         }
     }
 
-    private func deltaBadge(_ delta: Int) -> some View {
+    private func deltaLabel(_ delta: Int) -> some View {
         HStack(spacing: 3) {
             Image(systemName: delta >= 0 ? "arrow.up.right" : "arrow.down.right")
-                .font(.caption2.weight(.heavy))
-            Text("\(delta >= 0 ? "+" : "")\(delta)% vs. anterior")
-                .font(.system(.caption, design: .rounded, weight: .bold))
+                .font(.caption2.weight(.semibold))
+            Text("\(delta >= 0 ? "+" : "")\(delta) % vs. semana anterior")
+                .font(Font.meta)
+                .monospacedDigit()
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Color.white.opacity(0.2), in: Capsule())
+        .foregroundStyle(.secondary)
     }
 
     private var bigNumber: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(kmText)
-                    .font(Font.stat(52, weight: .heavy))
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                Text("km")
-                    .font(.system(.title3, design: .rounded, weight: .bold))
-                    .opacity(0.85)
-            }
-            Text(summary.runs == 0 ? "¿Salimos hoy?" : "¡Sigue así!")
-                .font(.system(.footnote, design: .rounded, weight: .semibold))
-                .opacity(0.85)
+        VStack(alignment: .leading, spacing: 2) {
+            StatValue(value: kmText, unit: "km", font: Font.statHero)
+            Text(summary.lastWeekDistance > 0 ? "Semana anterior: \(lastWeekText) km" : "Lunes a domingo")
+                .font(Font.meta)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
         }
     }
 
     private var chart: some View {
         let maxKm: Double = max(summary.dailyKm.max() ?? 0, 0.1)
-        return HStack(alignment: .bottom, spacing: 6) {
+        return HStack(alignment: .bottom, spacing: 7) {
             ForEach(0..<7, id: \.self) { index in
                 dayBar(index: index, maxKm: maxKm)
             }
         }
-        .frame(height: 74, alignment: .bottom)
         .accessibilityHidden(true)
     }
 
     private func dayBar(index: Int, maxKm: Double) -> some View {
         let km: Double = summary.dailyKm[index]
-        let height: CGFloat = km > 0 ? max(8, CGFloat(km / maxKm) * 54) : 6
+        let height: CGFloat = km > 0 ? max(6, CGFloat(km / maxKm) * Self.chartHeight) : 3
         let isToday: Bool = index == summary.todayIndex
-        return VStack(spacing: 4) {
-            Capsule()
-                .fill(Color.white.opacity(km > 0 ? 0.95 : 0.3))
-                .frame(width: 10, height: height)
+        let fill: Color = km > 0 ? Color.brand.opacity(isToday ? 0.85 : 0.4) : Color.hairline
+        return VStack(spacing: 5) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(fill)
+                    .frame(width: 8, height: height)
+            }
+            .frame(height: Self.chartHeight)
             Text(Self.dayLetters[index])
-                .font(.system(size: 10, weight: isToday ? .heavy : .semibold, design: .rounded))
-                .opacity(isToday ? 1 : 0.75)
+                .font(.system(size: 10, weight: isToday ? .semibold : .regular))
+                .foregroundStyle(isToday ? Color.primary : Color.secondary)
         }
     }
 
     private var statsRow: some View {
-        HStack(spacing: 0) {
-            weekStat(value: "\(summary.runs)", label: summary.runs == 1 ? "Carrera" : "Carreras")
-            divider
-            weekStat(value: Format.duration(summary.duration), label: "Tiempo")
-            divider
-            weekStat(value: Format.area(summary.area), label: "Conquistado")
+        let area = ActivityFormat.areaParts(summary.area)
+        return HStack(spacing: 0) {
+            StatTile(value: "\(summary.runs)", label: summary.runs == 1 ? "Carrera" : "Carreras")
+            StatDivider()
+            StatTile(value: Format.duration(summary.duration), label: "Tiempo")
+            StatDivider()
+            StatTile(value: area.value, label: "Conquistado", unit: area.unit)
         }
-        .padding(.vertical, 10)
-        .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
-    }
-
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.25))
-            .frame(width: 1, height: 28)
-    }
-
-    private func weekStat(value: String, label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.system(.headline, design: .rounded, weight: .heavy))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(label)
-                .font(Font.statLabel)
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .opacity(0.85)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
     }
 }

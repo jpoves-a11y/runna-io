@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// One event of the friends feed: author, headline, route map hero, stats, achievements,
-/// reactions and the first comments.
+/// One event of the friends feed: author row, headline, edge-to-edge route map, stats row,
+/// achievements, quiet reactions and the first comments.
 struct FeedEventCard: View {
     let event: FeedEvent
     let currentUserId: String?
@@ -26,39 +26,58 @@ struct FeedEventCard: View {
     private var hasRoute: Bool { event.routeCoordinates.count >= 2 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            headlineView
-            typeSpecificContent
+        VStack(alignment: .leading, spacing: 0) {
+            topSection
+                .padding(.horizontal, DS.Spacing.l)
+                .padding(.top, DS.Spacing.l)
+                .padding(.bottom, hasRoute ? DS.Spacing.m : 0)
             if hasRoute {
                 routeHero
             }
+            bottomSection
+                .padding(.horizontal, DS.Spacing.l)
+                .padding(.top, DS.Spacing.m)
+                .padding(.bottom, DS.Spacing.s)
+        }
+        .activityCard(padding: 0)
+    }
+
+    private var topSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            header
+            headlineView
+            typeSpecificContent
+        }
+    }
+
+    private var bottomSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.m) {
             if !stats.isEmpty {
                 ActivityStatsStrip(stats: stats)
             }
             FeedEventEmblems(event: event, currentUserId: currentUserId, onOpenUser: onOpenUser)
-            actionBar
+            VStack(alignment: .leading, spacing: 0) {
+                HairlineDivider()
+                actionBar
+                    .padding(.vertical, DS.Spacing.xs)
+            }
             if !previewComments.isEmpty {
                 commentPreviews
+                    .padding(.bottom, DS.Spacing.s)
             }
         }
-        .activityCard(tint: kind.isSpecial ? kind.tint : nil)
     }
 
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Spacing.m) {
             authorAvatar
             VStack(alignment: .leading, spacing: 2) {
                 authorName
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                metaLine
             }
-            Spacer(minLength: 8)
-            ActivityKindBadge(kind: kind)
+            Spacer(minLength: DS.Spacing.s)
             if !isMine && !isSystemEvent {
                 moreMenu
             }
@@ -68,15 +87,17 @@ struct FeedEventCard: View {
     @ViewBuilder
     private var authorAvatar: some View {
         if isSystemEvent {
-            ZStack {
-                Circle().fill(.goldGradient)
-                Text("🏴‍☠️").font(.system(size: 22))
-            }
-            .frame(width: 44, height: 44)
-            .accessibilityHidden(true)
+            Image(systemName: "shippingbox")
+                .font(.system(size: 17, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 40, height: 40)
+                .background(Color.surfaceRaised, in: Circle())
+                .overlay(Circle().strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+                .accessibilityHidden(true)
         } else {
             Button { onOpenUser(event.user.id) } label: {
-                AvatarView(name: event.user.name, avatar: event.user.avatar, color: event.user.color, size: 44)
+                AvatarView(name: event.user.name, avatar: event.user.avatar, color: event.user.color, size: 40)
             }
             .buttonStyle(.pressable)
             .accessibilityLabel("Ver perfil de \(event.user.name)")
@@ -87,15 +108,28 @@ struct FeedEventCard: View {
     private var authorName: some View {
         if isSystemEvent {
             Text("Runna")
-                .font(Font.cardTitle)
+                .font(.subheadline.weight(.semibold))
         } else {
             Button { onOpenUser(event.user.id) } label: {
                 Text(isMine ? "Tú" : event.user.displayName)
-                    .font(Font.cardTitle)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    private var metaLine: some View {
+        HStack(spacing: 6) {
+            ActivityKindBadge(kind: kind)
+            Text("·")
+                .font(Font.meta)
+                .foregroundStyle(.tertiary)
+            Text(subtitle)
+                .font(Font.meta)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 
@@ -106,18 +140,17 @@ struct FeedEventCard: View {
             }
         } label: {
             Image(systemName: "ellipsis")
-                .font(.subheadline.weight(.bold))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 32, height: 32)
-                .background(Color.surfaceRaised, in: Circle())
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("Más opciones")
     }
 
     private var subtitle: String {
         let time = Format.relative(event.date)
-        if !hasRoute, event.eventType == "activity", let routeName = event.routeName, !routeName.isEmpty {
+        if event.eventType == "activity", let routeName = event.routeName, !routeName.isEmpty, !hasRoute {
             return "\(time) · \(routeName)"
         }
         return time
@@ -125,11 +158,25 @@ struct FeedEventCard: View {
 
     // MARK: Headline
 
+    @ViewBuilder
     private var headlineView: some View {
-        Text(headline)
-            .font(.system(.body, design: .rounded, weight: kind.isSpecial ? .bold : .semibold))
-            .foregroundStyle(kind == .steal || kind == .sentinel ? Color.steal : Color.primary)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 2) {
+            if hasRoute, event.eventType == "activity", let routeName = event.routeName, !routeName.isEmpty {
+                Text(routeName)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(headline)
+                .font(kind.isSpecial ? Font.body.weight(.medium) : Font.subheadline)
+                .foregroundStyle(headlineColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var headlineColor: Color {
+        if kind == .steal || kind == .sentinel { return Color.steal }
+        return kind.isSpecial ? Color.primary : Color.secondary
     }
 
     private var victimIsMe: Bool {
@@ -141,14 +188,14 @@ struct FeedEventCard: View {
         let meta = event.metadata
         switch event.eventType {
         case "treasure_found":
-            return isMine ? "¡Has encontrado un tesoro!" : "¡Ha encontrado un tesoro!"
+            return isMine ? "Has encontrado un tesoro" : "Ha encontrado un tesoro"
         case "treasure_spawned":
-            return "¡Ha aparecido un tesoro en el mapa! Corre a por él."
+            return "Ha aparecido un tesoro en el mapa."
         case "nickname_changed":
             let target = meta?.targetName ?? event.victim?.name ?? "un jugador"
-            if isMine { return "Has bautizado a \(target) con un apodo nuevo" }
-            if victimIsMe { return "¡Te ha puesto un apodo!" }
-            return "Ha bautizado a \(target) con un apodo nuevo"
+            if isMine { return "Has puesto un apodo a \(target)" }
+            if victimIsMe { return "Te ha puesto un apodo" }
+            return "Ha puesto un apodo a \(target)"
         case "sentinel_alert":
             if let message = meta?.alertMessage, !message.isEmpty { return message }
             let attacker = meta?.attackerName ?? "Alguien"
@@ -157,21 +204,21 @@ struct FeedEventCard: View {
             }
             return "\(attacker) ha entrado en tu territorio"
         case "personal_record":
-            return "¡Nuevo récord personal! \(Self.recordLabel(event.recordType ?? ""))"
+            return "Nuevo récord personal"
         case "territory_stolen":
             let area = Format.area(event.areaStolen ?? 0)
-            if victimIsMe { return "¡Te ha robado \(area)!" }
+            if victimIsMe { return "Te ha robado \(area)" }
             if isMine { return "Has robado \(area) a \(event.victim?.name ?? "alguien")" }
             return "Ha robado \(area) a \(event.victim?.name ?? "alguien")"
         case "ran_together":
-            return isMine ? "Has corrido en buena compañía" : "Ha corrido en buena compañía"
+            return isMine ? "Has corrido acompañado" : "Ha corrido acompañado"
         default:
             return runHeadline
         }
     }
 
     private var runHeadline: String {
-        guard let distance = event.distance, distance > 0 else { return "Ha salido a correr" }
+        guard let distance = event.distance, distance > 0 else { return isMine ? "Has salido a correr" : "Ha salido a correr" }
         let verb = isMine ? "Has corrido" : "Ha corrido"
         if let area = event.newArea, area > 0 {
             return "\(verb) \(Format.distance(distance)) y conquistado \(Format.area(area))"
@@ -208,60 +255,52 @@ struct FeedEventCard: View {
     // MARK: Route + stats
 
     private var routeHero: some View {
-        ActivityRouteMap(cacheKey: "feed-\(event.id)", coordinates: event.routeCoordinates, color: userColor)
-            .frame(height: 184)
-            .overlay(alignment: .topTrailing) { conquestBadge }
-            .overlay(alignment: .bottomLeading) { routeNameChip }
+        ActivityRouteMap(
+            cacheKey: "feed-\(event.id)",
+            coordinates: event.routeCoordinates,
+            color: userColor,
+            cornerRadius: 0,
+            bordered: false
+        )
+        .frame(height: 188)
+        .overlay(alignment: .topLeading) { conquestBadge }
     }
 
     @ViewBuilder
     private var conquestBadge: some View {
         if let area = event.newArea, area > 0 {
-            HStack(spacing: 4) {
-                Image(systemName: "flag.fill")
-                    .font(.caption.weight(.bold))
-                Text("+\(Format.area(area))")
-                    .font(.system(.footnote, design: .rounded, weight: .heavy))
-                    .monospacedDigit()
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.brandGradient, in: Capsule())
-            .shadow(color: Color.brand.opacity(0.4), radius: 6, x: 0, y: 3)
-            .padding(10)
-        }
-    }
-
-    @ViewBuilder
-    private var routeNameChip: some View {
-        if let routeName = event.routeName, !routeName.isEmpty {
             HStack(spacing: 5) {
-                Circle().fill(userColor).frame(width: 8, height: 8)
-                Text(routeName)
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .lineLimit(1)
+                Image(systemName: "flag")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.brand)
+                Text("+\(Format.area(area))")
+                    .font(.footnote.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .glassSurface(Capsule())
-            .padding(10)
+            .padding(DS.Spacing.m)
+            .accessibilityLabel("Conquistado \(Format.area(area))")
         }
     }
 
     private var stats: [ActivityStat] {
         var items: [ActivityStat] = []
         if let distance = event.distance, distance > 0 {
-            items.append(ActivityStat(systemImage: "figure.run", value: Format.distance(distance), label: "Distancia", tint: Color.sky))
+            let parts = ActivityFormat.distanceParts(distance)
+            items.append(ActivityStat(systemImage: "figure.run", value: parts.value, label: "Distancia", tint: Color.primary, unit: parts.unit))
         }
         if let duration = event.duration, duration > 0 {
-            items.append(ActivityStat(systemImage: "stopwatch.fill", value: Format.duration(duration), label: "Tiempo", tint: Color.grape))
+            items.append(ActivityStat(systemImage: "stopwatch", value: Format.duration(duration), label: "Tiempo", tint: Color.primary))
         }
         if let pace = paceText {
-            items.append(ActivityStat(systemImage: "speedometer", value: pace, label: "Ritmo", tint: Color.gold))
+            items.append(ActivityStat(systemImage: "speedometer", value: pace, label: "Ritmo", tint: Color.primary, unit: "/km"))
         }
         if !hasRoute, let area = event.newArea, area > 0 {
-            items.append(ActivityStat(systemImage: "flag.fill", value: "+\(Format.area(area))", label: "Conquista", tint: Color.brand))
+            let parts = ActivityFormat.areaParts(area)
+            items.append(ActivityStat(systemImage: "flag", value: "+\(parts.value)", label: "Conquista", tint: Color.brand, unit: parts.unit))
         }
         return items
     }
@@ -304,13 +343,13 @@ struct FeedEventCard: View {
     // MARK: Actions and comments
 
     private var actionBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Spacing.l) {
             ActivityReactionPill(
-                systemImage: "flame",
-                activeImage: "flame.fill",
+                systemImage: "hand.thumbsup",
+                activeImage: "hand.thumbsup.fill",
                 count: event.likeCount,
                 isActive: event.userReaction == "like",
-                tint: Color.steal,
+                tint: Color.brand,
                 accessibilityLabel: "Me gusta, \(event.likeCount)"
             ) { onReact("like") }
             .disabled(isReacting)
@@ -320,7 +359,7 @@ struct FeedEventCard: View {
                 activeImage: "hand.thumbsdown.fill",
                 count: event.dislikeCount,
                 isActive: event.userReaction == "dislike",
-                tint: Color.grape,
+                tint: Color.primary,
                 accessibilityLabel: "No me gusta, \(event.dislikeCount)"
             ) { onReact("dislike") }
             .disabled(isReacting)
@@ -330,7 +369,7 @@ struct FeedEventCard: View {
                 activeImage: "bubble.left.fill",
                 count: event.commentCount,
                 isActive: false,
-                tint: Color.sky,
+                tint: Color.primary,
                 accessibilityLabel: "\(event.commentCount) comentarios"
             ) { onComments() }
 
@@ -339,27 +378,21 @@ struct FeedEventCard: View {
     }
 
     private var commentPreviews: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
             ForEach(previewComments.prefix(2)) { comment in
                 FeedCommentPreviewLine(comment: comment, people: people, onOpenUser: onOpenUser)
             }
             if event.commentCount > min(previewComments.count, 2) {
                 Button(action: onComments) {
-                    HStack(spacing: 4) {
-                        Text("Ver los \(event.commentCount) comentarios")
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.bold))
-                    }
-                    .font(.system(.footnote, design: .rounded, weight: .semibold))
-                    .foregroundStyle(Color.brand)
+                    Text("Ver los \(event.commentCount) comentarios")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .contentShape(Rectangle())
         .onTapGesture { onComments() }
     }
 }
@@ -372,15 +405,16 @@ private struct FeedCommentPreviewLine: View {
     let onOpenUser: (String) -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: DS.Spacing.s) {
             AvatarView(name: comment.user.name, avatar: comment.user.avatar, color: comment.user.color, size: 24)
             VStack(alignment: .leading, spacing: 1) {
                 Text(comment.user.name)
-                    .font(.system(.caption, design: .rounded, weight: .bold))
-                    .foregroundStyle(Color(hex: comment.user.color))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                 MentionText(text: comment.content, people: people, onOpenUser: onOpenUser)
                     .font(.footnote)
+                    .foregroundStyle(.primary)
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
@@ -388,96 +422,99 @@ private struct FeedCommentPreviewLine: View {
     }
 }
 
+/// Treasure: chest image, name, rarity and zone on a neutral nested tile.
 private struct FeedTreasureBlock: View {
     let rarity: String
     let name: String
     let emoji: String?
     let zone: String?
 
+    private var title: String {
+        if let emoji, !emoji.isEmpty { return "\(emoji) \(name)" }
+        return name
+    }
+
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(Rarity.color(rarity).opacity(0.22))
-                    .frame(width: 76, height: 76)
-                    .blur(radius: 6)
-                Image(Rarity.chestImage(rarity))
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 64, height: 64)
-            }
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("\(emoji ?? "🎁") \(name)")
+        HStack(spacing: DS.Spacing.m) {
+            Image(Rarity.chestImage(rarity))
+                .resizable()
+                .scaledToFit()
+                .frame(width: 44, height: 44)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
                     .font(Font.cardTitle)
                     .fixedSize(horizontal: false, vertical: true)
-                RarityPill(rarity: rarity)
-                if let zone, !zone.isEmpty {
-                    Label(zone, systemImage: "mappin.and.ellipse")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Rarity.color(rarity))
+                        .frame(width: 6, height: 6)
+                    Text(Rarity.label(rarity))
+                        .statLabelStyle()
+                    if let zone, !zone.isEmpty {
+                        Text("·")
+                            .font(Font.meta)
+                            .foregroundStyle(.tertiary)
+                        Text(zone)
+                            .font(Font.meta)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .background(Rarity.color(rarity).opacity(0.10), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
-                .strokeBorder(Rarity.color(rarity).opacity(0.35), lineWidth: 1)
-        )
+        .padding(DS.Spacing.m)
+        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
     }
 }
 
+/// Nickname: the new nickname set in large type, with its duration.
 private struct FeedNicknameBlock: View {
     let nickname: String
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "theatermasks.fill")
-                .font(.title2)
-                .foregroundStyle(.white)
-                .frame(width: 48, height: 48)
-                .background(.grapeGradient, in: Circle())
+        VStack(alignment: .leading, spacing: 4) {
             Text("“\(nickname)”")
-                .font(Font.stat(26, weight: .heavy))
-                .foregroundStyle(Color.grape)
-                .multilineTextAlignment(.center)
-            Label("Durará 48 horas", systemImage: "clock")
-                .font(.caption.weight(.semibold))
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Label("Durante 48 horas", systemImage: "clock")
+                .font(Font.meta)
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(Color.grape.opacity(0.10), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(DS.Spacing.m)
+        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
     }
 }
 
+/// Personal record: the value as a condensed hero figure with its label.
 private struct FeedRecordBlock: View {
     let label: String
     let value: String
 
+    private var parts: (value: String, unit: String?) {
+        guard let space = value.lastIndex(of: " ") else { return (value, nil) }
+        return (String(value[..<space]), String(value[value.index(after: space)...]))
+    }
+
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "medal.fill")
-                .font(.title2)
-                .foregroundStyle(.white)
-                .frame(width: 52, height: 52)
-                .background(.goldGradient, in: Circle())
-                .shadow(color: Color.gold.opacity(0.4), radius: 8, x: 0, y: 4)
+        HStack(alignment: .center, spacing: DS.Spacing.m) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(Font.stat(28, weight: .heavy))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
+                StatValue(value: parts.value, unit: parts.unit, font: Font.stat(34, weight: .bold))
                 Text(label)
                     .statLabelStyle()
             }
             Spacer(minLength: 0)
+            Image(systemName: "medal")
+                .font(.system(size: 22, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
-        .padding(14)
-        .background(Color.gold.opacity(0.10), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .padding(DS.Spacing.m)
+        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
     }
 }
 
@@ -501,31 +538,36 @@ private struct FeedEventEmblems: View {
 
     var body: some View {
         if !isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 if !victims.isEmpty {
-                    FeedStealList(victims: victims, currentUserId: currentUserId, onOpenUser: onOpenUser)
+                    FeedStealList(
+                        victims: victims,
+                        isMine: event.userId == currentUserId,
+                        currentUserId: currentUserId,
+                        onOpenUser: onOpenUser
+                    )
                 }
                 if !companions.isEmpty {
                     companionsRow
                 }
                 ForEach(Array(records.enumerated()), id: \.offset) { _, record in
-                    ActivityEmblemRow(systemImage: "medal.fill", text: recordText(record), tint: Color.gold)
+                    ActivityEmblemRow(systemImage: "medal", text: recordText(record), tint: Color.secondary)
                 }
                 ForEach(Array(treasures.enumerated()), id: \.offset) { _, treasure in
-                    treasureRow(treasure)
+                    ActivityEmblemRow(systemImage: "shippingbox", text: treasureText(treasure), tint: Color.secondary)
                 }
                 if destroyed > 0 {
                     ActivityEmblemRow(
-                        systemImage: "hammer.fill",
+                        systemImage: "hammer",
                         text: destroyed == 1 ? "Ha derribado 1 fortaleza" : "Ha derribado \(destroyed) fortalezas",
-                        tint: Color.steal
+                        tint: Color.secondary
                     )
                 }
                 if layers > 0 {
                     ActivityEmblemRow(
                         systemImage: "shield.lefthalf.filled",
                         text: "Ha reforzado \(Format.area(meta?.fortificationArea ?? 0)) (+\(layers) \(layers == 1 ? "capa" : "capas"))",
-                        tint: Color.sky
+                        tint: Color.secondary
                     )
                 }
             }
@@ -538,23 +580,25 @@ private struct FeedEventEmblems: View {
         return "Récord: \(label) · \(FeedEventCard.recordValue(type: record.type, value: value))"
     }
 
-    private func treasureRow(_ treasure: FeedMetadata.TreasureRef) -> some View {
-        HStack(spacing: 8) {
-            ActivityEmblemRow(systemImage: "gift.fill", text: treasure.treasureName ?? "Tesoro", tint: Color.gold)
-            if let rarity = treasure.rarity {
-                RarityPill(rarity: rarity)
-            }
-        }
+    private func treasureText(_ treasure: FeedMetadata.TreasureRef) -> String {
+        let name: String = treasure.treasureName ?? "Tesoro"
+        guard let rarity = treasure.rarity else { return name }
+        return "\(name) · \(Rarity.label(rarity))"
     }
 
     private var companionsRow: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Corrieron juntos")
-                .statLabelStyle()
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "person.2")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            Text("Con")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(Array(companions.enumerated()), id: \.offset) { _, companion in
-                        companionChip(companion)
+                HStack(spacing: 4) {
+                    ForEach(Array(companions.enumerated()), id: \.offset) { index, companion in
+                        companionName(companion, isLast: index == companions.count - 1)
                     }
                 }
             }
@@ -562,74 +606,56 @@ private struct FeedEventEmblems: View {
     }
 
     @ViewBuilder
-    private func companionChip(_ companion: FeedMetadata.NameRef) -> some View {
+    private func companionName(_ companion: FeedMetadata.NameRef, isLast: Bool) -> some View {
         let isYou: Bool = companion.id != nil && companion.id == currentUserId
-        let chip = HStack(spacing: 5) {
-            Image(systemName: "figure.run")
-                .font(.caption2.weight(.bold))
-            Text(isYou ? "Tú" : companion.name)
-                .font(.system(.caption, design: .rounded, weight: .semibold))
-                .lineLimit(1)
-        }
-        .foregroundStyle(Color.sky)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.sky.opacity(0.14), in: Capsule())
+        let text = Text((isYou ? "ti" : companion.name) + (isLast ? "" : ","))
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
 
         if let id = companion.id {
-            Button { onOpenUser(id) } label: { chip }
-                .buttonStyle(.pressable)
+            Button { onOpenUser(id) } label: { text }
+                .buttonStyle(.plain)
         } else {
-            chip
+            text
         }
     }
 }
 
-/// Coral block listing who lost territory in this run.
+/// Who lost territory in this run, as simple coral text lines.
 private struct FeedStealList: View {
     let victims: [Victim]
+    let isMine: Bool
     let currentUserId: String?
     let onOpenUser: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "bolt.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 22, height: 22)
-                    .background(.stealGradient, in: Circle())
-                Text("Territorio robado")
-                    .font(.system(.footnote, design: .rounded, weight: .bold))
-                    .foregroundStyle(Color.steal)
-            }
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(victims) { victim in
                 row(victim)
             }
         }
-        .padding(12)
-        .background(Color.steal.opacity(0.09), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
-                .strokeBorder(Color.steal.opacity(0.25), lineWidth: 1)
-        )
+    }
+
+    private func text(for victim: Victim) -> String {
+        let area: String = Format.area(victim.stolenArea)
+        if victim.userId == currentUserId { return "Te ha robado \(area)" }
+        return isMine ? "Has robado \(area) a \(victim.userName)" : "Ha robado \(area) a \(victim.userName)"
     }
 
     private func row(_ victim: Victim) -> some View {
-        let isYou: Bool = victim.userId == currentUserId
-        return Button { onOpenUser(victim.userId) } label: {
-            HStack(spacing: 10) {
-                AvatarView(name: victim.userName, avatar: nil, color: victim.userColor, size: 26)
-                Text(isYou ? "A ti" : "a \(victim.userName)")
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text("-\(Format.area(victim.stolenArea))")
-                    .font(.system(.subheadline, design: .rounded, weight: .heavy))
+        Button { onOpenUser(victim.userId) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "bolt")
+                    .font(.footnote.weight(.medium))
+                    .frame(width: 18)
+                Text(text(for: victim))
+                    .font(.footnote.weight(.medium))
                     .monospacedDigit()
-                    .foregroundStyle(Color.steal)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
+            .foregroundStyle(Color.steal)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
