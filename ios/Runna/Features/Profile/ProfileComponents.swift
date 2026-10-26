@@ -3,7 +3,8 @@ import PhotosUI
 
 // MARK: - Own profile building blocks (prefixed `Profile` to avoid clashes)
 
-/// Hero header of your own profile: big avatar (tap to change), name, @username, colour and actions.
+/// Header of your own profile: avatar (tap to change photo), name, @username, colour and
+/// an "Editar perfil" button. Flat, on the canvas — no tinted hero.
 struct ProfileHeroCard: View {
     let user: AppUser
     @Binding var avatarItem: PhotosPickerItem?
@@ -11,33 +12,22 @@ struct ProfileHeroCard: View {
     let onEdit: () -> Void
     let onRemoveAvatar: () -> Void
 
-    private var tint: Color { Color(hex: user.color) }
-
     var body: some View {
-        VStack(spacing: DS.Spacing.m) {
-            avatarPicker
-            identity
-            chips
+        VStack(alignment: .leading, spacing: DS.Spacing.l) {
+            HStack(alignment: .center, spacing: DS.Spacing.l) {
+                avatarPicker
+                identity
+                Spacer(minLength: 0)
+            }
             actions
-                .padding(.top, 4)
         }
-        .padding(.horizontal, DS.Spacing.xl)
-        .padding(.top, DS.Spacing.xxl)
-        .padding(.bottom, DS.Spacing.xl)
-        .frame(maxWidth: .infinity)
-        .background { SocialHeroBackdrop(color: tint) }
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(Color.hairline, lineWidth: 1)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var avatarPicker: some View {
         PhotosPicker(selection: $avatarItem, matching: .images) {
             ZStack(alignment: .bottomTrailing) {
-                AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 116)
-                    .shadow(color: tint.opacity(0.45), radius: 16, x: 0, y: 8)
+                AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 76)
                 cameraBadge
             }
         }
@@ -48,60 +38,54 @@ struct ProfileHeroCard: View {
 
     private var cameraBadge: some View {
         ZStack {
-            Circle().fill(.brandGradient)
+            Circle().fill(Color.surface)
+            Circle().strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
             if isUploadingAvatar {
                 ProgressView()
-                    .controlSize(.small)
-                    .tint(Color.white)
+                    .controlSize(.mini)
             } else {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.white)
+                Image(systemName: "camera")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.primary)
             }
         }
-        .frame(width: 36, height: 36)
-        .overlay(Circle().stroke(Color.surface, lineWidth: 3))
+        .frame(width: 26, height: 26)
         .offset(x: 2, y: 2)
     }
 
     private var identity: some View {
-        VStack(spacing: 3) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(user.name)
-                .font(.system(.title, design: .rounded, weight: .heavy))
-                .multilineTextAlignment(.center)
+                .font(.title2.weight(.bold))
+                .tracking(DS.Tracking.title)
                 .lineLimit(2)
+                .minimumScaleFactor(0.8)
             if !user.username.isEmpty {
                 Text("@\(user.username)")
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                    .foregroundStyle(tint)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            SocialColorChip(color: user.color)
+                .padding(.top, 2)
             if let email = user.email {
                 Text(email)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Font.meta)
+                    .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
         }
     }
 
-    private var chips: some View {
-        HStack(spacing: 8) {
-            SocialColorChip(color: user.color)
-            if let rank = user.rank {
-                StatPill(value: "#\(rank)", label: "en tu crew", systemImage: "trophy.fill", tint: .gold)
-            }
-        }
-    }
-
     private var actions: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DS.Spacing.s) {
             Button(action: onEdit) {
-                SocialPillLabel(title: "Editar perfil", systemImage: "pencil", tint: .brand, kind: .filled)
+                SocialPillLabel(title: "Editar perfil", tint: .primary, kind: .soft, expand: true)
             }
             .buttonStyle(.borderless)
             if user.avatar != nil {
                 Button(action: onRemoveAvatar) {
-                    SocialPillLabel(title: "Quitar foto", systemImage: "trash", tint: .steal, kind: .soft)
+                    SocialPillLabel(title: "Quitar foto", tint: .primary, kind: .soft, expand: true)
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Quitar foto de perfil")
@@ -111,6 +95,7 @@ struct ProfileHeroCard: View {
 }
 
 /// Stat grid: territory, rank and friends; and, when there is conquest data, stolen / lost / balance.
+/// Condensed figures, hairline dividers, labels under values.
 struct ProfileStatsCard: View {
     let user: AppUser
     let conquest: ConquestStats?
@@ -119,23 +104,23 @@ struct ProfileStatsCard: View {
         VStack(spacing: DS.Spacing.l) {
             mainRow
             if let conquest {
-                Rectangle()
-                    .fill(Color.hairline)
-                    .frame(height: 1)
+                HairlineDivider()
+                    .padding(.horizontal, DS.Spacing.s)
                 conquestRow(conquest)
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, DS.Spacing.s)
     }
 
     private var mainRow: some View {
         let area = Format.areaParts(user.totalArea)
+        let rankTint: Color = user.rank == 1 ? Color.gold : Color.primary
         return HStack(spacing: 0) {
             StatTile(value: area.value, label: "Territorio", unit: area.unit, tint: .brand)
-            separator
-            StatTile(value: user.rank.map { "#\($0)" } ?? "–", label: "Ranking", tint: .gold)
-            separator
-            StatTile(value: "\(user.friendCount ?? 0)", label: "Amigos", tint: .sky)
+            StatDivider()
+            StatTile(value: user.rank.map { "#\($0)" } ?? "–", label: "Ranking", tint: rankTint)
+            StatDivider()
+            StatTile(value: "\(user.friendCount ?? 0)", label: "Amigos")
         }
     }
 
@@ -144,24 +129,18 @@ struct ProfileStatsCard: View {
         let lost = Format.areaParts(conquest.totalLost)
         let net = conquest.totalStolen - conquest.totalLost
         let balance = Format.areaParts(net)
-        let balanceTint: Color = net > 0 ? Color.brand : (net < 0 ? Color.steal : Color.secondary)
+        let balanceTint: Color = net < 0 ? Color.steal : Color.primary
         return HStack(spacing: 0) {
-            StatTile(value: stolen.value, label: "Has robado", unit: stolen.unit, tint: .brand)
-            separator
-            StatTile(value: lost.value, label: "Te han robado", unit: lost.unit, tint: .steal)
-            separator
+            StatTile(value: stolen.value, label: "Robado", unit: stolen.unit)
+            StatDivider()
+            StatTile(value: lost.value, label: "Perdido", unit: lost.unit, tint: .steal)
+            StatDivider()
             StatTile(value: (net > 0 ? "+" : "") + balance.value, label: "Balance", unit: balance.unit, tint: balanceTint)
         }
     }
-
-    private var separator: some View {
-        Rectangle()
-            .fill(Color.hairline)
-            .frame(width: 1, height: 38)
-    }
 }
 
-/// "Rivalidades": your nemesis (who steals the most from you), your favourite victim and the top 3 lists.
+/// "Rivalidades": who steals the most from you, who you steal the most from, and the top 3 lists.
 struct ProfileRivalriesContent: View {
     let conquest: ConquestStats
 
@@ -179,96 +158,61 @@ struct ProfileRivalriesContent: View {
         } else {
             VStack(alignment: .leading, spacing: DS.Spacing.m) {
                 if let nemesis = attackers.first {
-                    ProfileRivalCard(
-                        title: "Tu némesis",
-                        caption: "Te ha robado",
-                        entry: nemesis,
-                        systemImage: "flame.fill",
-                        tint: .steal
-                    )
+                    ProfileRivalCard(title: "Quien más te roba", entry: nemesis, amountTint: .steal)
+                }
+                if attackers.first != nil && victims.first != nil {
+                    HairlineDivider()
                 }
                 if let victim = victims.first {
-                    ProfileRivalCard(
-                        title: "Tu víctima favorita",
-                        caption: "Le has robado",
-                        entry: victim,
-                        systemImage: "crown.fill",
-                        tint: .brand
-                    )
+                    ProfileRivalCard(title: "A quien más robas", entry: victim, amountTint: .primary)
                 }
                 if attackers.count > 1 {
-                    ProfileTopList(title: "Quién te roba más", entries: attackers, tint: .steal)
+                    HairlineDivider()
+                    ProfileTopList(title: "Te roban", entries: attackers, tint: .steal)
                 }
                 if victims.count > 1 {
-                    ProfileTopList(title: "Tus víctimas", entries: victims, tint: .brand)
+                    HairlineDivider()
+                    ProfileTopList(title: "Les robas", entries: victims, tint: .primary)
                 }
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, DS.Spacing.xs)
         }
     }
 
     private var emptyState: some View {
-        HStack(spacing: 12) {
-            SocialIconTile(systemImage: "figure.fencing", tint: .steal, size: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Aún no hay piques")
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
-                Text("Corre por el territorio de un amigo para robárselo y que empiece la guerra.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Sin rivalidades todavía")
+                .font(.subheadline.weight(.semibold))
+            Text("Corre por el territorio de un amigo para robárselo.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, DS.Spacing.xs)
     }
 }
 
-/// Highlighted rival: their colour avatar, a role badge and the amount.
+/// Highlighted rival: avatar with their colour, a small label, the name and the amount right-aligned.
 private struct ProfileRivalCard: View {
     let title: String
-    let caption: String
     let entry: ConquestStats.Entry
-    let systemImage: String
-    let tint: Color
+    let amountTint: Color
 
     private var name: String { entry.userName.isEmpty ? "Usuario" : entry.userName }
 
     var body: some View {
-        HStack(spacing: 14) {
-            AvatarView(name: name, avatar: nil, color: entry.userColor, size: 54)
-                .overlay(alignment: .bottomTrailing) {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Color.white)
-                        .frame(width: 22, height: 22)
-                        .background(tint.gradient, in: Circle())
-                        .overlay(Circle().stroke(Color.surface, lineWidth: 2))
-                        .offset(x: 3, y: 3)
-                }
+        let parts = Format.areaParts(entry.amount)
+        return HStack(spacing: DS.Spacing.m) {
+            AvatarView(name: name, avatar: nil, color: entry.userColor, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(Font.statLabel)
-                    .textCase(.uppercase)
-                    .tracking(0.6)
-                    .foregroundStyle(tint)
+                    .statLabelStyle()
                 Text(name)
-                    .font(.system(.headline, design: .rounded, weight: .bold))
+                    .font(.body.weight(.semibold))
                     .lineLimit(1)
-                Text("\(caption) \(Format.area(entry.amount))")
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background {
-            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
-                .fill(tint.opacity(0.10))
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
-                .strokeBorder(tint.opacity(0.25), lineWidth: 1)
+            Spacer(minLength: DS.Spacing.s)
+            StatValue(value: parts.value, unit: parts.unit, font: Font.stat(19, weight: .semibold), tint: amountTint)
         }
         .accessibilityElement(children: .combine)
     }
@@ -281,10 +225,9 @@ private struct ProfileTopList: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
             Text(title)
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
-                .padding(.top, 4)
+                .statLabelStyle()
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                 row(index: index, entry: entry)
             }
@@ -294,20 +237,19 @@ private struct ProfileTopList: View {
     private func row(index: Int, entry: ConquestStats.Entry) -> some View {
         HStack(spacing: 10) {
             Text("\(index + 1)")
-                .font(.system(.caption, design: .rounded, weight: .heavy))
+                .font(.footnote.weight(.semibold))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
-                .background(Color.surfaceRaised, in: Circle())
+                .foregroundStyle(.tertiary)
+                .frame(width: 16, alignment: .leading)
             Circle()
                 .fill(Color(hex: entry.userColor))
-                .frame(width: 10, height: 10)
+                .frame(width: 8, height: 8)
             Text(entry.userName.isEmpty ? "Usuario" : entry.userName)
                 .font(.subheadline)
                 .lineLimit(1)
             Spacer(minLength: 8)
             Text(Format.area(entry.amount))
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .font(.subheadline.weight(.medium))
                 .monospacedDigit()
                 .foregroundStyle(tint)
         }

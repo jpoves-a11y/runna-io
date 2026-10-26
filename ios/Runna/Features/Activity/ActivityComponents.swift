@@ -4,7 +4,7 @@ import UIKit
 
 // MARK: - Event kinds
 
-/// Visual identity of each feed event type (tint, icon and badge label).
+/// Identity of each feed event type (icon and label shown quietly in the card's meta line).
 enum ActivityEventKind {
     case run, steal, together, treasureFound, treasureSpawned, nickname, sentinel, record
 
@@ -21,25 +21,23 @@ enum ActivityEventKind {
         }
     }
 
+    /// Restrained accent: coral for losses, neutral for everything else.
     var tint: Color {
         switch self {
-        case .run: return Color.brand
         case .steal, .sentinel: return Color.steal
-        case .together: return Color.sky
-        case .treasureFound, .treasureSpawned, .record: return Color.gold
-        case .nickname: return Color.grape
+        default: return Color.secondary
         }
     }
 
     var icon: String {
         switch self {
         case .run: return "figure.run"
-        case .steal: return "bolt.fill"
-        case .together: return "person.2.fill"
-        case .treasureFound, .treasureSpawned: return "gift.fill"
-        case .nickname: return "theatermasks.fill"
+        case .steal: return "bolt"
+        case .together: return "person.2"
+        case .treasureFound, .treasureSpawned: return "shippingbox"
+        case .nickname: return "textformat"
         case .sentinel: return "shield.lefthalf.filled"
-        case .record: return "medal.fill"
+        case .record: return "medal"
         }
     }
 
@@ -56,7 +54,7 @@ enum ActivityEventKind {
         }
     }
 
-    /// Special events get a tinted card instead of the plain surface.
+    /// Events that aren't a plain run (shown as a quiet variant of the same card).
     var isSpecial: Bool {
         switch self {
         case .run, .together: return false
@@ -67,37 +65,46 @@ enum ActivityEventKind {
 
 // MARK: - Card background
 
-/// Feed card surface: like `.card()`, with an optional soft tint wash for special events.
+/// Feed card surface: the flat `.card()` surface. `tint` is kept for API compatibility and ignored
+/// (special events are a typographic variant, not a coloured block).
 struct ActivityCardBackground: ViewModifier {
     var tint: Color? = nil
     var padding: CGFloat = DS.Spacing.l
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-        content
-            .padding(padding)
-            .background {
-                ZStack {
-                    shape.fill(Color.surface)
-                    if let tint {
-                        shape.fill(
-                            LinearGradient(
-                                colors: [tint.opacity(0.16), tint.opacity(0.0)],
-                                startPoint: .top,
-                                endPoint: .center
-                            )
-                        )
-                    }
-                }
-            }
-            .overlay(shape.strokeBorder(tint.map { $0.opacity(0.35) } ?? Color.hairline, lineWidth: 1))
-            .shadow(color: Color.black.opacity(0.06), radius: 12, x: 0, y: 4)
+        content.card(padding: padding)
     }
 }
 
 extension View {
     func activityCard(tint: Color? = nil, padding: CGFloat = DS.Spacing.l) -> some View {
         modifier(ActivityCardBackground(tint: tint, padding: padding))
+    }
+}
+
+/// Splits formatted values ("2,38 km", "5:32 /km") into number and unit for `StatValue`.
+enum ActivityFormat {
+    static func distanceParts(_ meters: Double) -> (value: String, unit: String) {
+        split(Format.distance(meters))
+    }
+
+    static func areaParts(_ squareMeters: Double) -> (value: String, unit: String) {
+        let parts = Format.areaParts(squareMeters)
+        return (parts.value, parts.unit)
+    }
+
+    /// "5:32" (min/km) or nil when the pace isn't meaningful.
+    static func paceValue(distanceMeters: Double, seconds: Int) -> String? {
+        let text: String = Format.pace(distanceMeters: distanceMeters, seconds: seconds)
+        guard text != "--" else { return nil }
+        return text.replacingOccurrences(of: " /km", with: "")
+    }
+
+    private static func split(_ text: String) -> (value: String, unit: String) {
+        guard let space = text.lastIndex(of: " ") else { return (text, "") }
+        let value = String(text[..<space])
+        let unit = String(text[text.index(after: space)...])
+        return (value, unit)
     }
 }
 
@@ -246,9 +253,9 @@ enum ActivityMapSnapshots {
             path.lineCapStyle = .round
             path.lineJoinStyle = .round
 
-            // Soft white halo under the route so it pops on any map
-            UIColor.white.withAlphaComponent(0.85).setStroke()
-            path.lineWidth = lineWidth + 4
+            // Thin light casing under the route keeps it legible on any map
+            UIColor.white.withAlphaComponent(0.7).setStroke()
+            path.lineWidth = lineWidth + 2.5
             path.stroke()
 
             color.setStroke()
@@ -270,7 +277,7 @@ enum ActivityMapSnapshots {
         fill.setFill()
         circle.fill()
         stroke.setStroke()
-        circle.lineWidth = 2.5
+        circle.lineWidth = 2
         circle.stroke()
     }
 }
@@ -281,7 +288,9 @@ struct ActivityRouteMap: View {
     let coordinates: [[Double]]
     let color: Color
     var cornerRadius: CGFloat = DS.Radius.tile
-    var lineWidth: CGFloat = 4
+    var lineWidth: CGFloat = 3.5
+    /// Hairline outline (off when the map sits edge to edge inside a card).
+    var bordered: Bool = true
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.displayScale) private var displayScale
@@ -292,7 +301,12 @@ struct ActivityRouteMap: View {
             content(size: proxy.size)
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).strokeBorder(Color.hairline, lineWidth: 1))
+        .overlay {
+            if bordered {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+            }
+        }
         .accessibilityHidden(true)
     }
 
@@ -315,15 +329,10 @@ struct ActivityRouteMap: View {
 
     private var placeholder: some View {
         ZStack {
-            LinearGradient(
-                colors: [color.opacity(0.20), color.opacity(0.06)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            Color.surfaceRaised
             RouteShape(coordinates: coordinates)
-                .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                .stroke(color.opacity(0.5), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 .padding(24)
-                .opacity(0.8)
         }
     }
 
@@ -348,7 +357,7 @@ struct ActivityRouteMap: View {
             key: key
         )
         guard !Task.isCancelled else { return }
-        withAnimation(.easeOut(duration: 0.3)) {
+        withAnimation(.easeOut(duration: 0.2)) {
             image = rendered
         }
     }
@@ -356,28 +365,25 @@ struct ActivityRouteMap: View {
 
 // MARK: - Stats
 
-/// One value of a stats strip: coloured icon + tiny label above, rounded bold value below.
+/// One figure of a stats row: condensed value (+ unit) over an uppercase label.
+/// `systemImage` and `tint` are kept for API compatibility; the value uses `tint` only for brand / steal.
 struct ActivityStatItem: View {
     let systemImage: String
     let value: String
     let label: String
     let tint: Color
+    var unit: String? = nil
+
+    private var valueTint: Color {
+        (tint == Color.brand || tint == Color.steal) ? tint : Color.primary
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: systemImage)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint)
-                Text(label)
-                    .statLabelStyle()
-                    .lineLimit(1)
-            }
-            Text(value)
-                .font(.system(.headline, design: .rounded, weight: .bold))
-                .monospacedDigit()
+        VStack(alignment: .leading, spacing: 3) {
+            StatValue(value: value, unit: unit, font: Font.stat(22, weight: .semibold), tint: valueTint)
+            Text(label)
+                .statLabelStyle()
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -389,28 +395,29 @@ struct ActivityStat: Identifiable {
     let value: String
     let label: String
     let tint: Color
+    var unit: String? = nil
     var id: String { label }
 }
 
-/// Row of stats on a soft inner tile.
+/// Row of condensed figures separated by hairline dividers (no background).
 struct ActivityStatsStrip: View {
     let stats: [ActivityStat]
 
     var body: some View {
-        HStack(spacing: DS.Spacing.m) {
-            ForEach(stats) { stat in
-                ActivityStatItem(systemImage: stat.systemImage, value: stat.value, label: stat.label, tint: stat.tint)
+        HStack(alignment: .center, spacing: DS.Spacing.m) {
+            ForEach(Array(stats.enumerated()), id: \.element.id) { index, stat in
+                if index > 0 {
+                    StatDivider(height: 30)
+                }
+                ActivityStatItem(systemImage: stat.systemImage, value: stat.value, label: stat.label, tint: stat.tint, unit: stat.unit)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
     }
 }
 
 // MARK: - Reactions
 
-/// Expressive capsule button with an icon and an animated count (reactions, comments).
+/// Quiet action button: icon + count, no fill. Active state colours the icon only.
 struct ActivityReactionPill: View {
     let systemImage: String
     let activeImage: String
@@ -432,24 +439,23 @@ struct ActivityReactionPill: View {
         .buttonStyle(.pressable)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 
     private var label: some View {
         HStack(spacing: 6) {
             Image(systemName: isActive ? activeImage : systemImage)
-                .font(.subheadline.weight(.semibold))
-                .symbolEffect(.bounce, value: taps)
+                .font(.system(size: 17, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(isActive ? tint : Color.secondary)
             Text("\(count)")
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .font(.subheadline.weight(.medium))
                 .monospacedDigit()
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
                 .contentTransition(.numericText(value: Double(count)))
         }
-        .foregroundStyle(isActive ? tint : Color.secondary)
-        .padding(.horizontal, 14)
-        .frame(height: 36)
-        .background(isActive ? tint.opacity(0.15) : Color.surfaceRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(isActive ? tint.opacity(0.45) : Color.clear, lineWidth: 1))
-        .contentShape(Capsule())
+        .frame(minWidth: 44, minHeight: 36, alignment: .leading)
+        .contentShape(Rectangle())
         .animation(.snappy, value: count)
         .animation(.snappy, value: isActive)
     }
@@ -457,127 +463,94 @@ struct ActivityReactionPill: View {
 
 // MARK: - Small pieces
 
-/// Icon in a tinted circle + text, for the extra achievements of a run.
+/// Glyph + text line for the extra achievements of a run. Only brand / steal / gold keep their colour.
 struct ActivityEmblemRow: View {
     let systemImage: String
     let text: String
     let tint: Color
 
+    private var iconColor: Color {
+        (tint == Color.brand || tint == Color.steal) ? tint : Color.secondary
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-                .background(tint.opacity(0.15), in: Circle())
+                .font(.footnote.weight(.medium))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(iconColor)
+                .frame(width: 18)
             Text(text)
-                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                .font(.footnote)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
     }
 }
 
-/// Small capsule badge with the event type (icon + label) in its tint.
+/// Event type as quiet meta text (glyph + label).
 struct ActivityKindBadge: View {
     let kind: ActivityEventKind
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: kind.icon)
-                .font(.caption2.weight(.bold))
+                .font(.caption2.weight(.medium))
             Text(kind.label)
-                .font(.system(.caption2, design: .rounded, weight: .bold))
+                .font(Font.meta)
                 .lineLimit(1)
         }
         .foregroundStyle(kind.tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(kind.tint.opacity(0.14), in: Capsule())
         .accessibilityHidden(true)
     }
 }
 
-/// Capsule section switcher with a sliding gradient pill.
+/// Segmented switch between the friends feed and your runs.
 struct ActivitySectionPicker: View {
     @Binding var selection: AppRouter.ActivitySection
-    @Namespace private var namespace
 
     var body: some View {
-        HStack(spacing: 4) {
-            segment(.feed, title: "Amigos", systemImage: "person.2.fill")
-            segment(.mine, title: "Mis carreras", systemImage: "figure.run")
+        Picker("Sección", selection: $selection) {
+            Text("Amigos").tag(AppRouter.ActivitySection.feed)
+            Text("Mis carreras").tag(AppRouter.ActivitySection.mine)
         }
-        .padding(4)
-        .background(Color.surface, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.hairline, lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 3)
+        .pickerStyle(.segmented)
+        .labelsHidden()
         .sensoryFeedback(.selection, trigger: selection)
-    }
-
-    private func segment(_ section: AppRouter.ActivitySection, title: String, systemImage: String) -> some View {
-        let selected: Bool = selection == section
-        return Button {
-            withAnimation(.snappy(duration: 0.3)) {
-                selection = section
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.subheadline.weight(.bold))
-                Text(title)
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(selected ? Color.white : Color.secondary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 40)
-            .background {
-                if selected {
-                    Capsule()
-                        .fill(.brandGradient)
-                        .shadow(color: Color.brand.opacity(0.35), radius: 6, x: 0, y: 3)
-                        .matchedGeometryEffect(id: "activity-section-pill", in: namespace)
-                }
-            }
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
-/// Pulsing placeholder card while the feed loads for the first time.
+/// Static placeholder card while the feed loads for the first time.
 struct ActivitySkeletonCard: View {
-    @State private var pulse = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                Circle().fill(Color.surfaceRaised).frame(width: 44, height: 44)
+                Circle().fill(Color.surfaceRaised).frame(width: 40, height: 40)
                 VStack(alignment: .leading, spacing: 6) {
-                    Capsule().fill(Color.surfaceRaised).frame(width: 130, height: 12)
-                    Capsule().fill(Color.surfaceRaised).frame(width: 70, height: 10)
+                    bar(width: 120, height: 11)
+                    bar(width: 80, height: 9)
                 }
                 Spacer()
             }
-            Capsule().fill(Color.surfaceRaised).frame(width: 200, height: 14)
-            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
+            bar(width: 210, height: 13)
+            Rectangle()
                 .fill(Color.surfaceRaised)
-                .frame(height: 170)
-            RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
-                .fill(Color.surfaceRaised)
-                .frame(height: 52)
-        }
-        .opacity(pulse ? 0.55 : 1)
-        .activityCard()
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                pulse = true
+                .frame(height: 180)
+                .padding(.horizontal, -DS.Spacing.l)
+            HStack(spacing: DS.Spacing.l) {
+                bar(width: 60, height: 22)
+                bar(width: 60, height: 22)
+                bar(width: 60, height: 22)
             }
         }
+        .activityCard()
         .accessibilityHidden(true)
+    }
+
+    private func bar(width: CGFloat, height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .fill(Color.surfaceRaised)
+            .frame(width: width, height: height)
     }
 }

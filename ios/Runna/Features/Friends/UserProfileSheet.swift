@@ -143,7 +143,7 @@ struct UserProfileContent: View {
                 }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
         }
         .disabled(isWorking)
         .accessibilityLabel("Más opciones")
@@ -154,14 +154,14 @@ struct UserProfileContent: View {
     private func content(_ stats: UserStats) -> some View {
         List {
             Section {
-                headerCard(stats)
-                    .listRowInsets(EdgeInsets())
+                headerView(stats)
+                    .listRowInsets(EdgeInsets(top: DS.Spacing.s, leading: DS.Spacing.l, bottom: DS.Spacing.s, trailing: DS.Spacing.l))
                     .listRowBackground(Color.clear)
             }
 
             Section {
                 statsGrid(stats)
-                    .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
+                    .listRowInsets(EdgeInsets(top: DS.Spacing.l, leading: DS.Spacing.s, bottom: DS.Spacing.l, trailing: DS.Spacing.s))
                     .listRowBackground(Color.surface)
                 NavigationLink {
                     UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
@@ -169,13 +169,12 @@ struct UserProfileContent: View {
                     SocialSettingsLabel(
                         title: "Todas sus actividades",
                         systemImage: "figure.run",
-                        tint: Color(hex: stats.user.color),
                         value: "\(max(stats.activitiesCount, routes.count))"
                     )
                 }
                 .listRowBackground(Color.surface)
             } header: {
-                SocialSectionHeader(title: "Estadísticas", systemImage: "chart.bar.fill")
+                SocialSectionHeader(title: "Estadísticas")
             }
 
             if !isMe && (stats.stolenFromViewer > 0 || stats.stolenByViewer > 0) {
@@ -183,7 +182,7 @@ struct UserProfileContent: View {
                     rivalryCard(stats)
                         .listRowBackground(Color.surface)
                 } header: {
-                    SocialSectionHeader(title: "Vuestro pique", systemImage: "flame.fill", tint: .steal)
+                    SocialSectionHeader(title: "Entre vosotros")
                 }
             }
 
@@ -197,21 +196,20 @@ struct UserProfileContent: View {
         .listSectionSpacing(DS.Spacing.l)
     }
 
-    private func headerCard(_ stats: UserStats) -> some View {
-        let tint = Color(hex: stats.user.color)
-        return VStack(spacing: DS.Spacing.m) {
+    /// Avatar, name, @username, territory colour and last activity; then the relationship action.
+    private func headerView(_ stats: UserStats) -> some View {
+        VStack(spacing: DS.Spacing.m) {
             Button {
                 if stats.user.avatar != nil { showFullAvatar = true }
             } label: {
-                AvatarView(name: stats.user.name, avatar: stats.user.avatar, color: stats.user.color, size: 112)
-                    .shadow(color: tint.opacity(0.45), radius: 16, x: 0, y: 8)
+                AvatarView(name: stats.user.name, avatar: stats.user.avatar, color: stats.user.color, size: 88)
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Ver foto de perfil")
 
             VStack(spacing: 4) {
                 Text(stats.user.displayName)
-                    .font(.system(.title2, design: .rounded, weight: .heavy))
+                    .font(.title2.weight(.bold))
                     .multilineTextAlignment(.center)
                 if !stats.user.username.isEmpty {
                     Text("@\(stats.user.username)")
@@ -220,98 +218,94 @@ struct UserProfileContent: View {
                 }
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 SocialColorChip(color: stats.user.color)
                 if let last = APIDate.parse(stats.lastActivity) {
-                    StatPill(value: Format.relative(last), systemImage: "clock.fill", tint: .sky)
+                    Text("·")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                    Text("Activo \(Format.relative(last))")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
 
             if !isMe {
                 relationshipControl
-                    .padding(.top, 4)
+                    .frame(maxWidth: 280)
+                    .padding(.top, DS.Spacing.xs)
             }
         }
-        .padding(.horizontal, DS.Spacing.xl)
-        .padding(.top, DS.Spacing.xxl)
-        .padding(.bottom, DS.Spacing.xl)
         .frame(maxWidth: .infinity)
-        .background { SocialHeroBackdrop(color: tint) }
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .strokeBorder(Color.hairline, lineWidth: 1)
-        }
     }
 
     private func statsGrid(_ stats: UserStats) -> some View {
         let area = Format.areaParts(stats.totalArea)
         let stolen = Format.areaParts(stats.totalStolen)
         let lost = Format.areaParts(stats.totalLost)
-        let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-        return LazyVGrid(columns: columns, spacing: 10) {
-            SocialStatCell(value: area.value, label: "Territorio", unit: area.unit, systemImage: "map.fill", tint: Color(hex: stats.user.color))
-            SocialStatCell(value: "\(max(stats.activitiesCount, routes.count))", label: "Actividades", systemImage: "figure.run", tint: .sky)
-            SocialStatCell(value: stolen.value, label: "Ha robado", unit: stolen.unit, systemImage: "bolt.fill", tint: .steal)
-            SocialStatCell(value: lost.value, label: "Le han robado", unit: lost.unit, systemImage: "shield.lefthalf.filled", tint: .grape)
+        let activities = "\(max(stats.activitiesCount, routes.count))"
+        return VStack(spacing: DS.Spacing.l) {
+            HStack(spacing: 0) {
+                StatTile(value: area.value, label: "Territorio", unit: area.unit)
+                StatDivider()
+                StatTile(value: activities, label: "Actividades")
+            }
+            HairlineDivider()
+                .padding(.horizontal, DS.Spacing.s)
+            HStack(spacing: 0) {
+                StatTile(value: stolen.value, label: "Ha robado", unit: stolen.unit)
+                StatDivider()
+                StatTile(value: lost.value, label: "Le han robado", unit: lost.unit, tint: .steal)
+            }
         }
     }
 
     private func rivalryCard(_ stats: UserStats) -> some View {
         let mine = stats.stolenByViewer
         let theirs = stats.stolenFromViewer
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center) {
+        return VStack(alignment: .leading, spacing: DS.Spacing.m) {
+            HStack(spacing: 0) {
                 rivalSide(title: "Le has robado", amount: mine, tint: .brand, alignment: .leading)
-                Spacer(minLength: 8)
-                Text("VS")
-                    .font(Font.stat(15, weight: .black))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
+                StatDivider()
                 rivalSide(title: "Te ha robado", amount: theirs, tint: .steal, alignment: .trailing)
             }
-            SocialDuelBar(left: mine, right: theirs, leftColor: .brand, rightColor: .steal)
+            SocialDuelBar(left: mine, right: theirs, leftColor: .brand)
             Text(rivalryVerdict(mine: mine, theirs: theirs, name: stats.user.name))
-                .font(.footnote.weight(.medium))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, DS.Spacing.xs)
     }
 
     private func rivalSide(title: String, amount: Double, tint: Color, alignment: HorizontalAlignment) -> some View {
-        VStack(alignment: alignment, spacing: 2) {
-            Text(Format.area(amount))
-                .font(Font.stat(20))
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+        let parts = Format.areaParts(amount)
+        return VStack(alignment: alignment, spacing: 4) {
+            StatValue(value: parts.value, unit: parts.unit, font: Font.statNumber, tint: tint)
             Text(title)
                 .statLabelStyle()
         }
+        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
         .accessibilityElement(children: .combine)
     }
 
     private func rivalryVerdict(mine: Double, theirs: Double, name: String) -> String {
         if mine > theirs * 1.2 {
-            return "Vas ganando. \(name) querrá venganza…"
+            return "Vas por delante en esta rivalidad."
         } else if theirs > mine * 1.2 {
-            return "\(name) te lleva ventaja. Toca salir a recuperar lo tuyo."
+            return "\(name) va por delante en esta rivalidad."
         }
-        return "Empate técnico. La próxima carrera decide."
+        return "Estáis igualados."
     }
 
     private func activitiesSection(_ stats: UserStats) -> some View {
         Section {
             if routes.isEmpty {
-                HStack(spacing: 12) {
-                    SocialIconTile(systemImage: "shoeprints.fill", tint: .secondary, size: 40)
-                    Text(isMe ? "Aún no has salido a correr" : "Todavía no ha salido a correr")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .listRowBackground(Color.surface)
+                Text(isMe ? "Aún no has registrado ninguna carrera." : "Todavía no ha registrado ninguna carrera.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.surface)
             }
             ForEach(routes.prefix(10)) { route in
                 NavigationLink {
@@ -326,13 +320,13 @@ struct UserProfileContent: View {
                     UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
                 } label: {
                     Text("Ver todas (\(routes.count))")
-                        .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(Color.brand)
                 }
                 .listRowBackground(Color.surface)
             }
         } header: {
-            SocialSectionHeader(title: "Actividades recientes", systemImage: "clock.arrow.circlepath", tint: .sky)
+            SocialSectionHeader(title: "Actividades recientes")
         }
     }
 
@@ -343,7 +337,7 @@ struct UserProfileContent: View {
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.surface)
             } else if theirFriends.isEmpty {
-                Text("Sin amigos aún. ¿Serás el primero?")
+                Text("Todavía no tiene amigos.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .listRowBackground(Color.surface)
@@ -352,23 +346,24 @@ struct UserProfileContent: View {
                 NavigationLink {
                     UserProfileContent(userId: friend.id, onClose: onClose)
                 } label: {
-                    HStack {
-                        PersonRow(name: friend.name, username: friend.username, avatar: friend.avatar, color: friend.color, size: 40)
-                        Spacer(minLength: 8)
-                        Text(Format.area(friend.totalArea))
-                            .font(.system(.subheadline, design: .rounded, weight: .bold))
-                            .foregroundStyle(Color(hex: friend.color))
-                            .monospacedDigit()
-                    }
+                    friendLabel(friend)
                 }
                 .listRowBackground(Color.surface)
             }
         } header: {
             SocialSectionHeader(
-                title: "Su crew",
-                systemImage: "person.2.fill",
+                title: "Amigos",
                 count: friendsLoaded ? theirFriends.count : nil
             )
+        }
+    }
+
+    private func friendLabel(_ friend: AppUser) -> some View {
+        let parts = Format.areaParts(friend.totalArea)
+        return HStack {
+            PersonRow(name: friend.name, username: friend.username, avatar: friend.avatar, color: friend.color, size: 40)
+            Spacer(minLength: 8)
+            StatValue(value: parts.value, unit: parts.unit, font: Font.stat(17, weight: .semibold))
         }
     }
 
@@ -376,13 +371,13 @@ struct UserProfileContent: View {
     private var relationshipControl: some View {
         if isBlocked {
             VStack(spacing: 8) {
-                Label("Has bloqueado a este usuario", systemImage: "hand.raised.fill")
+                Label("Has bloqueado a este usuario", systemImage: "hand.raised")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Button {
                     confirmUnblock = true
                 } label: {
-                    SocialPillLabel(title: "Desbloquear", systemImage: "hand.raised.slash", tint: .secondary, kind: .soft)
+                    SocialPillLabel(title: "Desbloquear", tint: .primary, kind: .soft, expand: true)
                 }
                 .buttonStyle(.borderless)
                 .disabled(isWorking)
@@ -395,7 +390,7 @@ struct UserProfileContent: View {
                     Label("Eliminar de amigos", systemImage: "person.badge.minus")
                 }
             } label: {
-                SocialPillLabel(title: "Sois amigos", systemImage: "person.2.fill", tint: .brand, kind: .soft)
+                SocialPillLabel(title: "Amigos", systemImage: "checkmark", tint: .primary, kind: .soft, expand: true)
             }
             .disabled(isWorking)
             .accessibilityHint("Abre opciones de amistad")
@@ -403,17 +398,17 @@ struct UserProfileContent: View {
             Button {
                 accept(incomingRequest)
             } label: {
-                pillOrProgress(SocialPillLabel(title: "Aceptar solicitud", systemImage: "person.badge.plus", tint: .brand, kind: .filled))
+                pillOrProgress(SocialPillLabel(title: "Aceptar solicitud", tint: .brand, kind: .filled, expand: true))
             }
             .buttonStyle(.borderless)
             .disabled(isWorking)
         } else if requestSent {
-            SocialPillLabel(title: "Solicitud enviada", systemImage: "checkmark", tint: .secondary, kind: .soft)
+            SocialPillLabel(title: "Solicitud enviada", systemImage: "clock", tint: .secondary, kind: .soft, expand: true)
         } else {
             Button {
                 sendFriendRequest()
             } label: {
-                pillOrProgress(SocialPillLabel(title: "Añadir amigo", systemImage: "person.badge.plus", tint: .brand, kind: .filled))
+                pillOrProgress(SocialPillLabel(title: "Añadir amigo", systemImage: "person.badge.plus", tint: .brand, kind: .filled, expand: true))
             }
             .buttonStyle(.borderless)
             .disabled(isWorking)
@@ -424,7 +419,7 @@ struct UserProfileContent: View {
     private func pillOrProgress(_ pill: SocialPillLabel) -> some View {
         if isWorking {
             ProgressView()
-                .frame(minWidth: 120, minHeight: 40)
+                .frame(maxWidth: .infinity, minHeight: 40)
         } else {
             pill
         }
@@ -596,9 +591,9 @@ struct UserRoutesList: View {
         .overlay {
             if routes.isEmpty {
                 EmptyStateView(
-                    systemImage: "shoeprints.fill",
-                    title: "Zapatillas sin estrenar",
-                    message: "Aún no hay rutas registradas. La primera carrera pinta el mapa."
+                    systemImage: "figure.run",
+                    title: "Sin actividades",
+                    message: "Todavía no hay carreras registradas."
                 )
             }
         }
@@ -664,51 +659,53 @@ struct RouteRow: View {
     var body: some View {
         HStack(spacing: 14) {
             thumbnail
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(route.name)
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                 Text(Format.dayAndTime(route.startDate))
-                    .font(.caption)
+                    .font(Font.meta)
                     .foregroundStyle(.secondary)
                 metrics
+                    .padding(.top, 2)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
     }
 
     private var thumbnail: some View {
         RouteShape(coordinates: route.coordinates)
-            .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-            .frame(width: 48, height: 48)
+            .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            .frame(width: 44, height: 44)
             .padding(6)
-            .background(
-                LinearGradient(colors: [color.opacity(0.18), color.opacity(0.06)], startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
+            .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+            .hairlineBorder(radius: DS.Radius.tile)
             .accessibilityHidden(true)
     }
 
     private var metrics: some View {
-        HStack(spacing: 10) {
-            metric(Format.distance(route.distance), systemImage: "figure.run")
-            metric(Format.duration(route.duration), systemImage: "stopwatch")
+        HStack(spacing: 6) {
+            metric(Format.distance(route.distance))
+            separator
+            metric(Format.duration(route.duration))
             if let area = route.territoryArea, area > 0 {
-                metric(Format.area(area), systemImage: "flag.fill", tint: color)
+                separator
+                metric(Format.area(area))
             }
         }
     }
 
-    private func metric(_ text: String, systemImage: String, tint: Color? = nil) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(tint ?? Color.secondary)
-            Text(text)
-                .font(.system(.caption, design: .rounded, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(tint ?? Color.secondary)
-                .lineLimit(1)
-        }
+    private var separator: some View {
+        Text("·")
+            .font(.footnote)
+            .foregroundStyle(.tertiary)
+    }
+
+    private func metric(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote.weight(.medium))
+            .monospacedDigit()
+            .foregroundStyle(Color.primary.opacity(0.8))
+            .lineLimit(1)
     }
 }

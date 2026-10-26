@@ -113,7 +113,7 @@ struct ProfileView: View {
                 onEdit: { showEdit = true },
                 onRemoveAvatar: { confirmRemoveAvatar = true }
             )
-            .listRowInsets(EdgeInsets())
+            .listRowInsets(EdgeInsets(top: DS.Spacing.xs, leading: DS.Spacing.xs, bottom: DS.Spacing.xs, trailing: DS.Spacing.xs))
             .listRowBackground(Color.clear)
         }
     }
@@ -123,9 +123,10 @@ struct ProfileView: View {
     private func statsSection(_ user: AppUser) -> some View {
         Section {
             ProfileStatsCard(user: user, conquest: conquest)
+                .listRowInsets(EdgeInsets(top: DS.Spacing.m, leading: DS.Spacing.s, bottom: DS.Spacing.m, trailing: DS.Spacing.s))
                 .listRowBackground(Color.surface)
         } header: {
-            SocialSectionHeader(title: "Tus números", systemImage: "chart.bar.fill")
+            SocialSectionHeader(title: "Estadísticas")
         }
     }
 
@@ -136,7 +137,7 @@ struct ProfileView: View {
                 ProfileRivalriesContent(conquest: conquest)
                     .listRowBackground(Color.surface)
             } header: {
-                SocialSectionHeader(title: "Rivalidades", systemImage: "flame.fill", tint: .steal)
+                SocialSectionHeader(title: "Rivalidades")
             }
         }
     }
@@ -148,17 +149,17 @@ struct ProfileView: View {
             switch notificationStatus {
             case .authorized, .provisional, .ephemeral:
                 HStack {
-                    SocialSettingsLabel(title: "Notificaciones activadas", systemImage: "bell.badge.fill", tint: .steal)
+                    SocialSettingsLabel(title: "Notificaciones", systemImage: "bell")
                     Spacer()
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.brand)
-                        .accessibilityHidden(true)
+                    Text("Activadas")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
                 Button {
                     sendTestNotification()
                 } label: {
                     HStack {
-                        SocialSettingsLabel(title: "Enviar notificación de prueba", systemImage: "paperplane.fill", tint: .sky)
+                        SocialSettingsLabel(title: "Enviar notificación de prueba", systemImage: "paperplane")
                         if isSendingTest {
                             Spacer()
                             ProgressView()
@@ -170,7 +171,7 @@ struct ProfileView: View {
                 Button {
                     if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                 } label: {
-                    SocialSettingsLabel(title: "Activar notificaciones en Ajustes", systemImage: "bell.slash.fill", tint: .secondary)
+                    SocialSettingsLabel(title: "Activar notificaciones en Ajustes", systemImage: "bell.slash")
                 }
             default:
                 Button {
@@ -179,13 +180,13 @@ struct ProfileView: View {
                         notificationStatus = await PushManager.shared.authorizationStatus()
                     }
                 } label: {
-                    SocialSettingsLabel(title: "Activar notificaciones", systemImage: "bell.fill", tint: .steal)
+                    SocialSettingsLabel(title: "Activar notificaciones", systemImage: "bell")
                 }
             }
         } header: {
-            SocialSectionHeader(title: "Notificaciones", systemImage: "bell.fill", tint: .steal)
+            SocialSectionHeader(title: "Notificaciones")
         } footer: {
-            Text("Te avisamos cuando te roban territorio, cuando un amigo corre o te comenta.")
+            Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta.")
         }
         .listRowBackground(Color.surface)
     }
@@ -200,7 +201,7 @@ struct ProfileView: View {
             .pickerStyle(.segmented)
             .padding(.vertical, 4)
         } header: {
-            SocialSectionHeader(title: "Apariencia", systemImage: "circle.lefthalf.filled", tint: .grape)
+            SocialSectionHeader(title: "Apariencia")
         }
         .listRowBackground(Color.surface)
     }
@@ -210,10 +211,10 @@ struct ProfileView: View {
             NavigationLink {
                 BlockedUsersView()
             } label: {
-                SocialSettingsLabel(title: "Usuarios bloqueados", systemImage: "hand.raised.fill", tint: .steal)
+                SocialSettingsLabel(title: "Usuarios bloqueados", systemImage: "hand.raised")
             }
         } header: {
-            SocialSectionHeader(title: "Privacidad y seguridad", systemImage: "lock.fill", tint: .sky)
+            SocialSectionHeader(title: "Privacidad y seguridad")
         } footer: {
             Text("Las personas que bloquees no podrán ver tu actividad ni comentarte, y tú no verás la suya.")
         }
@@ -223,22 +224,22 @@ struct ProfileView: View {
     private var aboutSection: some View {
         Section {
             Link(destination: AppConfig.privacyURL) {
-                SocialSettingsLabel(title: "Política de privacidad", systemImage: "hand.raised.fill", tint: .sky)
+                SocialSettingsLabel(title: "Política de privacidad", systemImage: "lock")
             }
             Link(destination: AppConfig.termsURL) {
-                SocialSettingsLabel(title: "Términos de uso", systemImage: "doc.text.fill", tint: .grape)
+                SocialSettingsLabel(title: "Términos de uso", systemImage: "doc.text")
             }
             Link(destination: AppConfig.supportURL) {
-                SocialSettingsLabel(title: "Ayuda y soporte", systemImage: "questionmark.circle.fill", tint: .brand)
+                SocialSettingsLabel(title: "Ayuda y soporte", systemImage: "questionmark.circle")
             }
             if let mail = AppConfig.supportMailURL {
                 Link(destination: mail) {
-                    SocialSettingsLabel(title: "Contactar con soporte", systemImage: "envelope.fill", tint: .gold, value: AppConfig.supportEmail)
+                    SocialSettingsLabel(title: "Contactar con soporte", systemImage: "envelope", value: AppConfig.supportEmail)
                 }
             }
-            SocialSettingsLabel(title: "Versión", systemImage: "info.circle.fill", tint: .secondary, value: Bundle.main.appVersion)
+            SocialSettingsLabel(title: "Versión", systemImage: "info.circle", value: Bundle.main.appVersion)
         } header: {
-            SocialSectionHeader(title: "Información", systemImage: "info.circle.fill", tint: .secondary)
+            SocialSectionHeader(title: "Información")
         }
         .listRowBackground(Color.surface)
     }
@@ -248,24 +249,24 @@ struct ProfileView: View {
             Button {
                 confirmLogout = true
             } label: {
-                SocialSettingsLabel(title: "Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right", tint: .secondary)
+                SocialSettingsLabel(title: "Cerrar sesión", systemImage: "rectangle.portrait.and.arrow.right")
             }
             Button(role: .destructive) {
                 confirmDelete = true
             } label: {
                 HStack(spacing: 12) {
-                    SocialIconTile(systemImage: "trash.fill", tint: .red)
+                    SocialIconTile(systemImage: "trash", tint: .steal, size: 28)
                     Text("Borrar cuenta")
-                        .foregroundStyle(Color.red)
+                        .foregroundStyle(Color.steal)
                 }
             }
         } header: {
-            SocialSectionHeader(title: "Cuenta", systemImage: "person.crop.circle.fill", tint: .secondary)
+            SocialSectionHeader(title: "Cuenta")
         } footer: {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Borrar la cuenta elimina todos tus datos de Runna.io de forma permanente.")
                 Text("Runna.io · Corre. Conquista. Repite.")
-                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 8)
@@ -372,18 +373,18 @@ struct EditProfileView: View {
                 Section {
                     TextField("Tu nombre", text: $name)
                         .textContentType(.name)
-                        .font(.system(.body, design: .rounded, weight: .semibold))
+                        .font(.body.weight(.medium))
                 } header: {
-                    SocialSectionHeader(title: "Nombre", systemImage: "person.fill")
+                    SocialSectionHeader(title: "Nombre")
                 }
                 .listRowBackground(Color.surface)
                 Section {
                     colorGrid
                         .padding(.vertical, 8)
                 } header: {
-                    SocialSectionHeader(title: "Color de tu territorio", systemImage: "paintpalette.fill", tint: Color(hex: color))
+                    SocialSectionHeader(title: "Color de tu territorio")
                 } footer: {
-                    Text("Tu color es tu identidad en el mapa. Los que tienen un icono ya los usa alguno de tus amigos.")
+                    Text("Tu color te identifica en el mapa. Los colores con un icono ya los usa alguno de tus amigos.")
                 }
                 .listRowBackground(Color.surface)
             }
@@ -416,12 +417,11 @@ struct EditProfileView: View {
                 name: name.isEmpty ? (session.user?.name ?? "?") : name,
                 avatar: session.user?.avatar,
                 color: color.isEmpty ? (session.user?.color ?? "#16A34A") : color,
-                size: 96
+                size: 88
             )
-            .shadow(color: Color(hex: color).opacity(0.4), radius: 14, x: 0, y: 6)
             .animation(.snappy, value: color)
             Text(name.isEmpty ? "Tu nombre" : name)
-                .font(.system(.title3, design: .rounded, weight: .bold))
+                .font(.title3.weight(.bold))
                 .lineLimit(1)
             if !color.isEmpty {
                 SocialColorChip(color: color)
@@ -446,10 +446,10 @@ struct EditProfileView: View {
             color = option
         } label: {
             ZStack {
-                Circle().fill(Color(hex: option).gradient)
+                Circle().fill(Color(hex: option))
                 if selected {
                     Image(systemName: "checkmark")
-                        .font(.headline.weight(.heavy))
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(Color.white)
                 } else if taken {
                     Image(systemName: "person.fill")
@@ -462,8 +462,7 @@ struct EditProfileView: View {
             .overlay {
                 Circle().strokeBorder(Color(hex: option), lineWidth: selected ? 2.5 : 0)
             }
-            .scaleEffect(selected ? 1.06 : 1)
-            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: selected)
+            .animation(.snappy, value: selected)
             .opacity(taken ? 0.35 : 1)
         }
         .buttonStyle(.plain)

@@ -208,42 +208,37 @@ private struct ConquestInboxView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: DS.Spacing.l) {
+                VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     RunCelebrationHeader(
-                        title: isLoading ? "Llega una conquista…" : "¡Conquista completada!",
+                        title: headerTitle,
                         subtitle: route?.name ?? "Actividad importada",
-                        systemImage: "flag.fill",
                         isWorking: isLoading
                     )
                     .padding(.top, DS.Spacing.s)
-                    if let route, route.locations.count >= 2 {
-                        RouteReplayView(
-                            coordinates: route.locations,
-                            color: Color(hex: session.user?.color ?? "#16A34A"),
-                            height: 220
-                        )
-                    }
                     if let route {
-                        RunStatsCard(distance: route.distance, duration: route.duration)
+                        VStack(spacing: DS.Spacing.m) {
+                            if route.locations.count >= 2 {
+                                RouteReplayView(
+                                    coordinates: route.locations,
+                                    color: Color.brand,
+                                    height: 220
+                                )
+                            }
+                            RunStatsCard(distance: route.distance, duration: route.duration)
+                        }
                     }
                     resultSection
-                    Button("¡Genial!", action: onDone)
-                        .buttonStyle(PrimaryButtonStyle())
-                        .padding(.top, DS.Spacing.s)
                 }
-                .padding(.horizontal, DS.Spacing.l)
+                .padding(.horizontal, DS.Spacing.screen)
                 .padding(.bottom, DS.Spacing.xxl)
                 .animation(.snappy, value: isLoading)
             }
             .screenBackground()
+            .safeAreaInset(edge: .bottom) {
+                doneButton
+            }
             .navigationTitle("Nueva actividad")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Hecho", action: onDone)
-                        .fontWeight(.bold)
-                }
-            }
             .sheet(item: $tauntVictim) { victim in
                 TauntComposerView(victim: victim) {
                     sentVictimIds.insert(victim.userId)
@@ -254,29 +249,46 @@ private struct ConquestInboxView: View {
         .task(id: routeId) { await load() }
     }
 
+    private var headerTitle: String {
+        if isLoading { return "Nueva actividad" }
+        if let result, result.newAreaConquered > 0 { return "Territorio conquistado" }
+        return "Actividad guardada"
+    }
+
+    private var doneButton: some View {
+        Button("Hecho", action: onDone)
+            .buttonStyle(PrimaryButtonStyle())
+            .padding(.horizontal, DS.Spacing.screen)
+            .padding(.top, DS.Spacing.m)
+            .padding(.bottom, DS.Spacing.s)
+            .background(Color.canvas.ignoresSafeArea(edges: .bottom))
+            .overlay(alignment: .top) {
+                HairlineDivider()
+            }
+    }
+
     @ViewBuilder
     private var resultSection: some View {
         if let result {
             ConquestCard(result: result, sentVictimIds: sentVictimIds) { victim in
                 tauntVictim = victim
             }
-            let treasures = TreasureLine.merge(live: [], server: result.treasuresCollected)
+            let treasures: [TreasureLine] = TreasureLine.merge(live: [], server: result.treasuresCollected)
             if !treasures.isEmpty {
                 TreasuresCard(treasures: treasures)
             }
         } else if isLoading {
             RunStatusCard(
                 systemImage: "map",
-                title: "Calculando tu conquista…",
-                message: "Estamos midiendo cuánto mapa has pintado con esta actividad.",
+                title: "Calculando el territorio",
+                message: "Medimos el área que has conquistado con esta actividad.",
                 isLoading: true
             )
         } else {
             RunStatusCard(
-                systemImage: "hourglass",
+                systemImage: "clock",
                 title: "Casi listo",
-                message: "El territorio de esta actividad todavía se está calculando. Aparecerá en el mapa en unos minutos.",
-                tint: Color.grape
+                message: "El territorio de esta actividad todavía se está calculando. Aparecerá en el mapa en unos minutos."
             )
         }
     }
