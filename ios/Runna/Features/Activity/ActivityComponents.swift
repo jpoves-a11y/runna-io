@@ -105,10 +105,54 @@ extension View {
 
 /// Renders (and caches) static map images of a route with the polyline drawn in the runner's colour.
 enum ActivityMapSnapshots {
-    private static let cache = NSCache<NSString, UIImage>()
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
+
+    /// Rendered snapshots are also kept in Caches/RouteSnapshots, so the feed and your runs don't
+    /// render them again after a relaunch (a route never changes; the key includes size, colour and theme).
+    private static let directory: URL? = {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let url = caches.appendingPathComponent("RouteSnapshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+    private static let ioQueue = DispatchQueue(label: "io.runna.route-snapshots", qos: .utility)
 
     static func cached(_ key: String) -> UIImage? {
         cache.object(forKey: key as NSString)
+    }
+
+    /// Logout: the snapshots show the account's routes.
+    static func removeAll() {
+        cache.removeAllObjects()
+        guard let directory else { return }
+        ioQueue.async {
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            for file in files {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
+    private static func fileURL(for key: String, color: UIColor, lineWidth: CGFloat) -> URL? {
+        guard let directory else { return nil }
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        let colorKey = String(format: "%02x%02x%02x%02x", Int(red * 255), Int(green * 255), Int(blue * 255), Int(alpha * 255))
+        let name = "\(key)-\(colorKey)-\(Int(lineWidth * 10))"
+        let safe = String(name.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" })
+        return directory.appendingPathComponent(safe + ".png", isDirectory: false)
+    }
+
+    private static func store(_ image: UIImage, key: String) {
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        cache.setObject(image, forKey: key as NSString, cost: cost)
     }
 
     @MainActor
@@ -122,6 +166,17 @@ enum ActivityMapSnapshots {
         key: String
     ) async -> UIImage? {
         if let hit = cached(key) { return hit }
+        let file = fileURL(for: key, color: color, lineWidth: lineWidth)
+        if let file {
+            let fromDisk: UIImage? = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let data = try? Data(contentsOf: file), let image = UIImage(data: data, scale: max(scale, 1)) else { return nil }
+                return image.preparingForDisplay() ?? image
+            }.value
+            if let fromDisk {
+                store(fromDisk, key: key)
+                return fromDisk
+            }
+        }
         let points: [CLLocationCoordinate2D] = coordinates.compactMap { pair in
             guard pair.count >= 2 else { return nil }
             return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
@@ -159,7 +214,14 @@ enum ActivityMapSnapshots {
         }
         withExtendedLifetime(snapshotter) {}
         if let image {
-            cache.setObject(image, forKey: key as NSString)
+            store(image, key: key)
+            if let file {
+                ioQueue.async {
+                    if let data = image.pngData() {
+                        try? data.write(to: file, options: [.atomic])
+                    }
+                }
+            }
         }
         return image
     }

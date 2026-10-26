@@ -375,9 +375,23 @@ final class CompetitionStore {
         return max(1, Int(weeks.rounded(.up)))
     }
 
+    private static let activePath = "/api/competition/active"
+
+    /// Shows the last known competition state (also after a cold start) before the first refresh answers.
+    func loadCachedIfNeeded() {
+        guard info == nil else { return }
+        info = APIClient.shared.cached(Self.activePath, as: CompetitionInfo.self)
+    }
+
+    /// The competition state was fetched recently (switching tabs doesn't refetch it).
+    var isFresh: Bool {
+        APIClient.shared.isCacheFresh(Self.activePath)
+    }
+
     func refresh() async {
+        loadCachedIfNeeded()
         do {
-            info = try await APIClient.shared.request("GET", "/api/competition/active", as: CompetitionInfo.self)
+            info = try await APIClient.shared.request("GET", Self.activePath, as: CompetitionInfo.self)
         } catch is CancellationError {
             return
         } catch {
@@ -385,12 +399,23 @@ final class CompetitionStore {
         }
     }
 
+    /// Refreshes only when the state isn't fresh (or `force`).
+    func refreshIfStale(force: Bool = false) async {
+        loadCachedIfNeeded()
+        guard force || !isFresh || info == nil else { return }
+        await refresh()
+    }
+
     func refreshPowers(userId: String) async {
         guard isActive else {
             availablePowerCount = 0
             return
         }
-        if let response = try? await APIClient.shared.request("GET", "/api/users/\(userId)/powers", as: UserPowersResponse.self) {
+        let path = "/api/users/\(userId)/powers"
+        if let cached = APIClient.shared.cached(path, as: UserPowersResponse.self) {
+            availablePowerCount = cached.powers.filter { $0.isAvailable }.count
+        }
+        if let response = try? await APIClient.shared.request("GET", path, as: UserPowersResponse.self) {
             availablePowerCount = response.powers.filter { $0.isAvailable }.count
         }
     }

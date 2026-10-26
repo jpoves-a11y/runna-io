@@ -9,7 +9,7 @@ struct ProfileView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var conquest: ConquestStats?
+    @State private var model = ProfileModel.shared
     @State private var showEdit = false
     @State private var avatarItem: PhotosPickerItem?
     @State private var isUploadingAvatar = false
@@ -24,12 +24,16 @@ struct ProfileView: View {
     @State private var avatarUploads = 0
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
 
+    private var conquest: ConquestStats? { model.conquest }
+
     var body: some View {
         NavigationStack {
             list
                 .navigationTitle("Perfil")
-                .refreshable { await reload() }
-                .task(id: router.reloadSignal) { await reload() }
+                .refreshable { await reload(force: true) }
+                .task(id: router.reloadSignal) {
+                    await reload(force: model.reloadTracker.consume(router.reloadSignal))
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { notificationStatus = await PushManager.shared.authorizationStatus() } }
                 }
@@ -272,12 +276,16 @@ struct ProfileView: View {
 
     // MARK: - Actions
 
-    private func reload() async {
-        await session.refreshUser()
+    /// Cached stats first; the account and the stats are refetched in parallel when they aren't fresh (or `force`).
+    private func reload(force: Bool = false) async {
+        guard let userId = session.userId else { return }
+        let account: SessionStore = session
+        let profile: ProfileModel = model
+        async let user: Void = account.refreshUser(force: force)
+        async let stats: Void = profile.load(userId: userId, force: force)
         notificationStatus = await PushManager.shared.authorizationStatus()
-        if let userId = session.userId {
-            conquest = try? await APIClient.shared.request("GET", "/api/conquest-stats/\(userId)", as: ConquestStats.self)
-        }
+        await user
+        await stats
     }
 
     private func sendTestNotification() {
@@ -509,6 +517,43 @@ extension UIImage {
         format.scale = scale
         return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
             draw(at: CGPoint(x: -origin.x, y: -origin.y))
+        }
+    }
+}
+
+/// Conquest stats of the Profile tab, kept across tab switches (stale-while-revalidate).
+@MainActor
+@Observable
+final class ProfileModel {
+    static let shared = ProfileModel()
+
+    private(set) var conquest: ConquestStats?
+    var reloadTracker = ReloadSignalTracker()
+
+    private var ownerId: String?
+    private var resource: CachedResource<ConquestStats>?
+
+    func reset() {
+        ownerId = nil
+        resource = nil
+        conquest = nil
+        reloadTracker = ReloadSignalTracker()
+    }
+
+    func load(userId: String, force: Bool) async {
+        if ownerId != userId {
+            reset()
+            ownerId = userId
+            resource = CachedResource("/api/conquest-stats/\(userId)")
+        }
+        guard let resource else { return }
+        if let cached = await resource.loadCached() {
+            conquest = cached
+        }
+        if !force && conquest != nil && resource.isFresh { return }
+        // On failure the last known stats stay on screen
+        if let loaded = try? await resource.fetch() {
+            conquest = loaded
         }
     }
 }

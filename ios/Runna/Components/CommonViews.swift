@@ -40,12 +40,8 @@ struct AvatarView: View {
                 .resizable()
                 .scaledToFill()
         } else if let avatar, avatar.hasPrefix("http"), let url = URL(string: avatar) {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    initials
-                }
+            CachedRemoteImage(url: url) {
+                initials
             }
         } else {
             initials
@@ -66,16 +62,104 @@ struct AvatarView: View {
 
 /// Decodes "data:image/...;base64," avatars once and keeps them in memory.
 enum AvatarImageCache {
-    private static let cache = NSCache<NSString, UIImage>()
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 300
+        return cache
+    }()
 
     static func image(for avatar: String?) -> UIImage? {
         guard let avatar, avatar.hasPrefix("data:image"), let comma = avatar.firstIndex(of: ",") else { return nil }
-        let key = "\(avatar.count)-\(avatar.hashValue)" as NSString
+        let key = "\(avatar.utf8.count)-\(avatar.hashValue)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
         guard let data = Data(base64Encoded: String(avatar[avatar.index(after: comma)...]), options: .ignoreUnknownCharacters),
               let image = UIImage(data: data) else { return nil }
         cache.setObject(image, forKey: key)
         return image
+    }
+}
+
+/// Remote images (http avatars) decoded once and kept in memory; the bytes also stay in the
+/// shared URLCache (sized in RunnaApp), so they survive relaunches.
+final class RemoteImageCache {
+    static let shared = RemoteImageCache()
+
+    private let cache: NSCache<NSURL, UIImage> = {
+        let cache = NSCache<NSURL, UIImage>()
+        cache.countLimit = 300
+        cache.totalCostLimit = 64 * 1024 * 1024
+        return cache
+    }()
+    private let lock = NSLock()
+    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
+
+    func cachedImage(for url: URL) -> UIImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    /// Downloads (or reads from URLCache) and decodes the image off the main thread; concurrent
+    /// requests for the same URL share one download.
+    func image(for url: URL) async -> UIImage? {
+        if let hit = cachedImage(for: url) { return hit }
+        let task = sharedDownload(url)
+        let image = await task.value
+        finishDownload(url)
+        if let image {
+            let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+            cache.setObject(image, forKey: url as NSURL, cost: cost)
+        }
+        return image
+    }
+
+    func removeAll() {
+        cache.removeAllObjects()
+    }
+
+    private func sharedDownload(_ url: URL) -> Task<UIImage?, Never> {
+        lock.lock()
+        defer { lock.unlock() }
+        if let running = inFlight[url] { return running }
+        let task = Task.detached(priority: .utility) { () -> UIImage? in
+            var request = URLRequest(url: url)
+            request.cachePolicy = .returnCacheDataElseLoad
+            guard let response = try? await URLSession.shared.data(for: request),
+                  let image = UIImage(data: response.0) else { return nil }
+            // Decode now (not on the main thread while scrolling)
+            return image.preparingForDisplay() ?? image
+        }
+        inFlight[url] = task
+        return task
+    }
+
+    private func finishDownload(_ url: URL) {
+        lock.lock()
+        inFlight[url] = nil
+        lock.unlock()
+    }
+}
+
+/// An http image from RemoteImageCache: shown immediately when cached, else the placeholder until it loads.
+struct CachedRemoteImage<Placeholder: View>: View {
+    let url: URL
+    let placeholder: () -> Placeholder
+    @State private var loaded: UIImage?
+
+    init(url: URL, @ViewBuilder placeholder: @escaping () -> Placeholder) {
+        self.url = url
+        self.placeholder = placeholder
+    }
+
+    var body: some View {
+        if let image = loaded ?? RemoteImageCache.shared.cachedImage(for: url) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+        } else {
+            placeholder()
+                .task(id: url) {
+                    loaded = await RemoteImageCache.shared.image(for: url)
+                }
+        }
     }
 }
 

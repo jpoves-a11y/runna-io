@@ -7,13 +7,15 @@ struct RankingsView: View {
     enum Board: Hashable { case friends, competition }
 
     @State private var board: Board = .friends
-    @State private var friends: [AppUser] = []
-    @State private var competitionEntries: [CompetitionEntry] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
+    @State private var model = RankingsModel.shared
     @State private var selectedUserId: String?
     @State private var showFinalResults = false
-    @State private var hasLoaded = false
+
+    private var friends: [AppUser] { model.friends }
+    private var competitionEntries: [CompetitionEntry] { model.competitionEntries }
+    private var isLoading: Bool { model.isLoading }
+    private var errorMessage: String? { model.errorMessage }
+    private var hasLoaded: Bool { model.hasLoaded }
 
     private var competition: CompetitionStore { CompetitionStore.shared }
     private var hasCompetitionBoard: Bool { competition.isActive || competition.isFinished }
@@ -35,8 +37,10 @@ struct RankingsView: View {
             .screenBackground()
             .navigationTitle("Ranking")
             .toolbar { toolbarContent }
-            .refreshable { await load() }
-            .task(id: router.reloadSignal) { await load() }
+            .refreshable { await load(force: true) }
+            .task(id: router.reloadSignal) {
+                await load(force: model.reloadTracker.consume(router.reloadSignal))
+            }
             .sheet(item: Binding(
                 get: { selectedUserId.map { RankedUser(id: $0) } },
                 set: { selectedUserId = $0?.id }
@@ -105,7 +109,7 @@ struct RankingsView: View {
     @ViewBuilder
     private var friendsBoard: some View {
         if let errorMessage, friends.isEmpty {
-            ErrorView(message: errorMessage) { Task { await load() } }
+            ErrorView(message: errorMessage) { Task { await load(force: true) } }
                 .padding(.top, 40)
         } else if friends.isEmpty && (isLoading || !hasLoaded) {
             RankingSkeleton()
@@ -185,32 +189,118 @@ struct RankingsView: View {
         }
     }
 
-    private func load() async {
+    /// Cached boards first; refetched in the background when they aren't fresh (or `force`).
+    private func load(force: Bool = false) async {
         guard let userId = session.userId else { return }
-        isLoading = true
+        await model.load(userId: userId, force: force)
+        if !hasCompetitionBoard {
+            board = .friends
+        }
+    }
+}
+
+/// Friends and competition leaderboards, kept across tab switches (stale-while-revalidate).
+@MainActor
+@Observable
+final class RankingsModel {
+    static let shared = RankingsModel()
+
+    private(set) var friends: [AppUser] = []
+    private(set) var competitionEntries: [CompetitionEntry] = []
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    private(set) var hasLoaded = false
+    var reloadTracker = ReloadSignalTracker()
+
+    private var ownerId: String?
+    private var friendsResource: CachedResource<[AppUser]>?
+    private let competitionResource = CachedResource<CompetitionLeaderboardResponse>("/api/competition/leaderboard")
+
+    private var competition: CompetitionStore { CompetitionStore.shared }
+    private var hasCompetitionBoard: Bool { competition.isActive || competition.isFinished }
+
+    func reset() {
+        ownerId = nil
+        friendsResource = nil
+        competitionResource.forget()
+        friends = []
+        competitionEntries = []
+        isLoading = false
+        errorMessage = nil
+        hasLoaded = false
+        reloadTracker = ReloadSignalTracker()
+    }
+
+    func load(userId: String, force: Bool) async {
+        if ownerId != userId {
+            reset()
+            ownerId = userId
+            friendsResource = CachedResource("/api/leaderboard/friends/\(userId)")
+        }
+        guard let friendsResource else { return }
+
+        // 1. Last known boards, instantly
+        competition.loadCachedIfNeeded()
+        if let cached = await friendsResource.loadCached() {
+            friends = cached
+            hasLoaded = true
+        }
+        if hasCompetitionBoard, let cached = await competitionResource.loadCached() {
+            competitionEntries = Self.sorted(cached)
+        }
+        let fresh = friendsResource.isFresh && competition.isFresh && (!hasCompetitionBoard || competitionResource.isFresh)
+        if !force && hasLoaded && fresh { return }
+
+        // 2. Refetch: friends board, competition state and (if known to exist) the competition board in parallel
+        isLoading = friends.isEmpty
         defer {
             isLoading = false
             hasLoaded = true
         }
+        let competitionKnown = hasCompetitionBoard
+        let store: CompetitionStore = competition
+        let boardResource: CachedResource<CompetitionLeaderboardResponse> = competitionResource
+        async let friendsResult: [AppUser]? = friendsResource.fetch()
+        async let competitionRefresh: Void = store.refresh()
+        async let competitionBoard: CompetitionLeaderboardResponse? = Self.fetchCompetitionBoard(boardResource, enabled: competitionKnown)
+
         do {
-            let loaded = try await APIClient.shared.request("GET", "/api/leaderboard/friends/\(userId)", as: [AppUser].self)
-            withAnimation(.snappy) { friends = loaded }
+            if let loaded = try await friendsResult {
+                withAnimation(.snappy) { friends = loaded }
+            }
             errorMessage = nil
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = error.localizedDescription
+            // With a cached board on screen the refresh fails silently (it's retried on the next visit)
+            errorMessage = friends.isEmpty ? error.localizedDescription : nil
         }
-        await competition.refresh()
+        await competitionRefresh
+        var board: CompetitionLeaderboardResponse? = await competitionBoard
         if hasCompetitionBoard {
-            if let response = try? await APIClient.shared.request("GET", "/api/competition/leaderboard", as: CompetitionLeaderboardResponse.self) {
-                let sorted = response.leaderboard.sorted { $0.totalArea > $1.totalArea }
+            if !competitionKnown {
+                // The competition just started: its board wasn't requested yet
+                board = try? await competitionResource.fetch()
+            }
+            if let board {
+                let sorted = Self.sorted(board)
                 withAnimation(.snappy) { competitionEntries = sorted }
             }
         } else {
             competitionEntries = []
-            board = .friends
+            // Drawn again in full if the competition comes back
+            competitionResource.forget()
         }
+    }
+
+    /// The competition board, when it is known to exist (nil when unchanged, failed or not requested).
+    private static func fetchCompetitionBoard(_ resource: CachedResource<CompetitionLeaderboardResponse>, enabled: Bool) async -> CompetitionLeaderboardResponse? {
+        guard enabled else { return nil }
+        return try? await resource.fetch()
+    }
+
+    private static func sorted(_ response: CompetitionLeaderboardResponse) -> [CompetitionEntry] {
+        response.leaderboard.sorted { $0.totalArea > $1.totalArea }
     }
 }
 

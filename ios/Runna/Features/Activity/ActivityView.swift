@@ -55,19 +55,137 @@ final class FeedModel {
     /// Rows received from the server (before filtering), used as the next page offset.
     private var serverOffset = 0
     private var loadingPreviews: Set<String> = []
+    /// The first page is being refetched in the background.
+    private var isRefreshing = false
 
-    func reload(userId: String) async {
+    // MARK: Cache (stale-while-revalidate)
+
+    /// Shared by the Activity tab across tab switches; reset on logout.
+    static let shared = FeedModel()
+
+    /// Query of the first page (also warmed by TabPrefetcher).
+    static let firstPageQuery: [String: String] = ["limit": "20", "offset": "0"]
+    static let previewQuery: [String: String] = ["limit": "2"]
+    nonisolated static func previewPath(_ eventId: String) -> String {
+        "/api/feed/events/\(eventId)/preview-comments"
+    }
+
+    private var ownerId: String?
+    private var firstPage: CachedResource<[FeedEvent]>?
+    private var friendsResource: CachedResource<[AppUser]>?
+    /// The first page was drawn (from the cache or the server).
+    private(set) var hasLoaded = false
+    var reloadTracker = ReloadSignalTracker()
+
+    func reset() {
+        ownerId = nil
+        firstPage = nil
+        friendsResource = nil
+        hasLoaded = false
+        reloadTracker = ReloadSignalTracker()
+        events = []
+        isLoading = false
         reachedEnd = false
-        await loadPage(userId: userId, offset: 0)
-        if friends.isEmpty {
-            let loaded = (try? await APIClient.shared.request("GET", "/api/friends/\(userId)", as: [AppUser].self)) ?? []
+        errorMessage = nil
+        previews = [:]
+        friends = []
+        reactingIds = []
+        actionError = nil
+        serverOffset = 0
+        loadingPreviews = []
+        isRefreshing = false
+    }
+
+    private func prepare(userId: String) {
+        guard ownerId != userId else { return }
+        reset()
+        ownerId = userId
+        firstPage = CachedResource("/api/feed/\(userId)", query: Self.firstPageQuery)
+        friendsResource = CachedResource("/api/friends/\(userId)")
+    }
+
+    /// Draws the last known first page right away.
+    func showCached(userId: String) async {
+        prepare(userId: userId)
+        if let page = await firstPage?.loadCached() {
+            applyFirstPage(page, userId: userId)
+            hasLoaded = true
+        }
+        if let loaded = await friendsResource?.loadCached() {
             friends = loaded.map { MentionCandidate($0) }
         }
     }
 
+    /// Cached first page first; then the first page and your friends refetched in parallel
+    /// (skipped while fresh, unless `force`).
+    func reload(userId: String, force: Bool = true) async {
+        await showCached(userId: userId)
+        guard let firstPage, let friendsResource else { return }
+        if !force && firstPage.isFresh && hasLoaded { return }
+        // Background refresh: the skeleton shows only when there is nothing to draw yet
+        isRefreshing = true
+        isLoading = events.isEmpty
+        defer {
+            isRefreshing = false
+            isLoading = false
+        }
+        async let pageResult: [FeedEvent]? = firstPage.fetch()
+        async let friendsResult: [AppUser]? = Self.fetchQuietly(friendsResource)
+        do {
+            // nil: same first page as shown, so the cards (and pages loaded below it) stay as they are
+            if let page = try await pageResult {
+                applyFirstPage(page, userId: userId)
+            }
+            errorMessage = nil
+            hasLoaded = true
+        } catch is CancellationError {
+            return
+        } catch {
+            // With cached cards on screen the refresh fails silently (it's retried on the next visit)
+            errorMessage = events.isEmpty ? error.localizedDescription : nil
+            hasLoaded = true
+        }
+        if let loaded = await friendsResult {
+            friends = loaded.map { MentionCandidate($0) }
+        }
+    }
+
+    /// New body of a resource, nil when unchanged or on failure.
+    private static func fetchQuietly<T: Decodable>(_ resource: CachedResource<T>) async -> T? {
+        try? await resource.fetch()
+    }
+
     func loadMore(userId: String) async {
-        guard !isLoading, !reachedEnd else { return }
+        guard !isLoading, !isRefreshing, !reachedEnd else { return }
         await loadPage(userId: userId, offset: serverOffset)
+    }
+
+    private func visible(_ page: [FeedEvent], userId: String) -> [FeedEvent] {
+        page.filter { event in
+            guard Self.knownEventTypes.contains(event.eventType) else { return false }
+            // Sentinel alerts are private to the defender
+            return event.eventType != "sentinel_alert" || event.userId == userId
+        }
+    }
+
+    /// Replaces the list with the first page. Comment previews of cards whose comment count didn't change are kept.
+    private func applyFirstPage(_ page: [FeedEvent], userId: String) {
+        let newEvents = visible(page, userId: userId)
+        var counts: [String: Int] = [:]
+        for event in events {
+            counts[event.id] = event.commentCount
+        }
+        var keptPreviews: [String: [FeedComment]] = [:]
+        for event in newEvents {
+            if let preview = previews[event.id], counts[event.id] == event.commentCount {
+                keptPreviews[event.id] = preview
+            }
+        }
+        events = newEvents
+        previews = keptPreviews
+        loadingPreviews = []
+        serverOffset = page.count
+        reachedEnd = page.count < pageSize
     }
 
     private func loadPage(userId: String, offset: Int) async {
@@ -79,21 +197,14 @@ final class FeedModel {
                 query: ["limit": "\(pageSize)", "offset": "\(offset)"],
                 as: [FeedEvent].self
             )
-            let visible = page.filter { event in
-                guard Self.knownEventTypes.contains(event.eventType) else { return false }
-                // Sentinel alerts are private to the defender
-                return event.eventType != "sentinel_alert" || event.userId == userId
-            }
             if offset == 0 {
-                events = visible
-                previews = [:]
-                loadingPreviews = []
+                applyFirstPage(page, userId: userId)
             } else {
                 let known = Set(events.map(\.id))
-                events += visible.filter { !known.contains($0.id) }
+                events += visible(page, userId: userId).filter { !known.contains($0.id) }
+                serverOffset = offset + page.count
+                reachedEnd = page.count < pageSize
             }
-            serverOffset = offset + page.count
-            reachedEnd = page.count < pageSize
             errorMessage = nil
         } catch is CancellationError {
             return
@@ -104,11 +215,17 @@ final class FeedModel {
 
     func loadPreviewIfNeeded(for event: FeedEvent) async {
         guard event.commentCount > 0, previews[event.id] == nil, !loadingPreviews.contains(event.id) else { return }
+        let path = Self.previewPath(event.id)
+        // Last known preview right away; refetched only when it isn't fresh
+        if let cached = APIClient.shared.cached(path, query: Self.previewQuery, as: [FeedComment].self) {
+            previews[event.id] = cached
+            if APIClient.shared.isCacheFresh(path, query: Self.previewQuery) { return }
+        }
         loadingPreviews.insert(event.id)
         defer { loadingPreviews.remove(event.id) }
         if let comments = try? await APIClient.shared.request(
-            "GET", "/api/feed/events/\(event.id)/preview-comments",
-            query: ["limit": "2"],
+            "GET", path,
+            query: Self.previewQuery,
             as: [FeedComment].self
         ) {
             previews[event.id] = comments
@@ -147,17 +264,16 @@ final class FeedModel {
 private struct FeedList: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
-    @State private var model = FeedModel()
+    @State private var model = FeedModel.shared
     @State private var commentsFor: FeedEvent?
     @State private var profileUserId: String?
     @State private var reportTarget: ReportTarget?
-    @State private var didLoad = false
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: DS.Spacing.l) {
                 if let message = model.errorMessage, !model.events.isEmpty {
-                    ErrorBanner(message: message, retry: { Task { await reload() } })
+                    ErrorBanner(message: message, retry: { Task { await reload(force: true) } })
                 }
                 if model.events.isEmpty {
                     emptyContent
@@ -172,8 +288,10 @@ private struct FeedList: View {
             .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
-        .refreshable { await reload() }
-        .task(id: router.reloadSignal) { await reload() }
+        .refreshable { await reload(force: true) }
+        .task(id: router.reloadSignal) {
+            await reload(force: model.reloadTracker.consume(router.reloadSignal))
+        }
         .sheet(item: $commentsFor) { event in
             CommentsSheet(event: event) { count in
                 model.updateCommentCount(eventId: event.id, count: count)
@@ -212,9 +330,9 @@ private struct FeedList: View {
     @ViewBuilder
     private var emptyContent: some View {
         if let message = model.errorMessage {
-            ErrorView(message: message) { Task { await reload() } }
+            ErrorView(message: message) { Task { await reload(force: true) } }
                 .padding(.top, 40)
-        } else if model.isLoading || !didLoad {
+        } else if model.isLoading || !model.hasLoaded {
             ActivitySkeletonCard()
             ActivitySkeletonCard()
         } else {
@@ -244,10 +362,10 @@ private struct FeedList: View {
         }
     }
 
-    private func reload() async {
+    /// Cached cards first; the server is asked again only when they aren't fresh (or `force`).
+    private func reload(force: Bool = false) async {
         guard let userId = session.userId else { return }
-        await model.reload(userId: userId)
-        didLoad = true
+        await model.reload(userId: userId, force: force)
     }
 }
 
@@ -257,13 +375,72 @@ private struct ProfileTarget: Identifiable {
 
 // MARK: - My routes
 
+/// Your runs (GET /api/routes/:userId, shared with the map's cache), kept across tab switches.
+@MainActor
+@Observable
+final class MyRoutesModel {
+    static let shared = MyRoutesModel()
+
+    private(set) var routes: [RunRoute] = []
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    private(set) var hasLoaded = false
+    var reloadTracker = ReloadSignalTracker()
+
+    private var ownerId: String?
+    private var resource: CachedResource<[RunRoute]>?
+
+    func reset() {
+        ownerId = nil
+        resource = nil
+        routes = []
+        isLoading = false
+        errorMessage = nil
+        hasLoaded = false
+        reloadTracker = ReloadSignalTracker()
+    }
+
+    /// Cached runs first; refetched when they aren't fresh (or `force`).
+    func load(userId: String, force: Bool) async {
+        if ownerId != userId {
+            reset()
+            ownerId = userId
+            resource = CachedResource("/api/routes/\(userId)")
+        }
+        guard let resource else { return }
+        if let cached = await resource.loadCached() {
+            routes = cached
+            hasLoaded = true
+        }
+        if !force && hasLoaded && resource.isFresh { return }
+        isLoading = routes.isEmpty
+        defer {
+            isLoading = false
+            hasLoaded = true
+        }
+        do {
+            if let loaded = try await resource.fetch() {
+                routes = loaded
+            }
+            errorMessage = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            // With cached runs on screen the refresh fails silently (it's retried on the next visit)
+            errorMessage = routes.isEmpty ? error.localizedDescription : nil
+        }
+    }
+}
+
 private struct MyRoutesList: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
-    @State private var routes: [RunRoute] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var didLoad = false
+    @State private var model = MyRoutesModel.shared
+
+    private var routes: [RunRoute] { model.routes }
+    private var isLoading: Bool { model.isLoading }
+    private var errorMessage: String? { model.errorMessage }
+    private var didLoad: Bool { model.hasLoaded }
 
     private var userColor: Color { Color(hex: session.user?.color ?? "#16A34A") }
     private var groups: [ActivityMonthGroup] { ActivityMonthGroup.group(routes) }
@@ -277,7 +454,7 @@ private struct MyRoutesList: View {
                     ActivityWeekCard(summary: ActivityWeekSummary(routes: routes))
                         .padding(.bottom, DS.Spacing.s)
                     if let errorMessage {
-                        ErrorBanner(message: errorMessage, retry: { Task { await load() } })
+                        ErrorBanner(message: errorMessage, retry: { Task { await load(force: true) } })
                     }
                     ForEach(groups) { group in
                         monthSection(group)
@@ -291,11 +468,13 @@ private struct MyRoutesList: View {
         .scrollIndicators(.hidden)
         .navigationDestination(for: RunRoute.self) { route in
             RouteDetailView(route: route) {
-                Task { await load() }
+                Task { await load(force: true) }
             }
         }
-        .refreshable { await load() }
-        .task(id: router.reloadSignal) { await load() }
+        .refreshable { await load(force: true) }
+        .task(id: router.reloadSignal) {
+            await load(force: model.reloadTracker.consume(router.reloadSignal))
+        }
     }
 
     @ViewBuilder
@@ -321,7 +500,7 @@ private struct MyRoutesList: View {
     @ViewBuilder
     private var emptyContent: some View {
         if let errorMessage {
-            ErrorView(message: errorMessage) { Task { await load() } }
+            ErrorView(message: errorMessage) { Task { await load(force: true) } }
                 .padding(.top, 40)
         } else if isLoading || !didLoad {
             ProgressView()
@@ -339,21 +518,9 @@ private struct MyRoutesList: View {
         }
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
         guard let userId = session.userId else { return }
-        isLoading = true
-        defer {
-            isLoading = false
-            didLoad = true
-        }
-        do {
-            routes = try await APIClient.shared.request("GET", "/api/routes/\(userId)", as: [RunRoute].self)
-            errorMessage = nil
-        } catch is CancellationError {
-            return
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        await model.load(userId: userId, force: force)
     }
 }
 

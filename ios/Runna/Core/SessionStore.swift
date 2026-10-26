@@ -77,6 +77,8 @@ final class SessionStore {
             return
         }
         api.sessionToken = token
+        // Cached API responses of another account are never shown
+        ResponseCache.shared.setOwner(userId)
         if let data = UserDefaults.standard.data(forKey: cachedUserKey),
            let cached = try? JSONDecoder().decode(AppUser.self, from: data), cached.id == userId {
             user = cached
@@ -171,9 +173,15 @@ final class SessionStore {
 
     // MARK: - Account
 
-    func refreshUser() async {
+    /// - Parameter force: false skips the request when the account was fetched moments ago
+    ///   (switching tabs) and nothing changed since.
+    func refreshUser(force: Bool = true) async {
         guard let userId else { return }
-        if let fresh: AppUser = try? await api.request("GET", "/api/current-user/\(userId)") {
+        let path = "/api/current-user/\(userId)"
+        if !force && api.isCacheFresh(path) { return }
+        if let fresh: AppUser = try? await api.request("GET", path) {
+            // The account may have changed while waiting
+            guard self.userId == userId else { return }
             setUser(fresh)
         }
     }
@@ -223,6 +231,7 @@ final class SessionStore {
     // MARK: - Internals
 
     private func startSession(user: AppUser, token: String) {
+        ResponseCache.shared.setOwner(user.id)
         KeychainStore.set(token, for: tokenKey)
         KeychainStore.set(user.id, for: userIdKey)
         api.sessionToken = token
@@ -241,6 +250,8 @@ final class SessionStore {
     private func setUser(_ user: AppUser) {
         var stored = user
         stored.token = nil
+        // Assigning an identical user would redraw every screen that shows it
+        guard self.user != stored else { return }
         self.user = stored
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: cachedUserKey)
@@ -262,6 +273,19 @@ final class SessionStore {
         if clearDeviceData {
             PendingRuns.forgetAll()
         }
+        // Cached screens and API responses belong to this account
+        ResponseCache.shared.removeAll()
+        ResponseCache.shared.clearOwner()
+        TabPrefetcher.reset()
+        MapModel.shared.reset()
+        RankingsModel.shared.reset()
+        FeedModel.shared.reset()
+        MyRoutesModel.shared.reset()
+        FriendsModel.shared.reset()
+        ProfileModel.shared.reset()
+        CompetitionStore.shared.clear()
+        ActivityMapSnapshots.removeAll()
+        RemoteImageCache.shared.removeAll()
         ConquestInbox.shared.reset()
         // Apple Health auto-import is a device setting: the next account must opt in again,
         // otherwise the device owner's workouts would be uploaded to it.

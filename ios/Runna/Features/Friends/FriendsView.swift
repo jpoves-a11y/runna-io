@@ -3,12 +3,7 @@ import SwiftUI
 struct FriendsView: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
-    @State private var friends: [AppUser] = []
-    @State private var incoming: [FriendRequest] = []
-    @State private var sent: [FriendRequest] = []
-    @State private var isLoading = false
-    @State private var hasLoaded = false
-    @State private var errorMessage: String?
+    @State private var model = FriendsModel.shared
     @State private var alertMessage: String?
     @State private var showSearch = false
     @State private var searchSeed = ""
@@ -22,6 +17,13 @@ struct FriendsView: View {
     @State private var inviteToConfirm: InviteToken?
     @State private var acceptedCount = 0
 
+    private var friends: [AppUser] { model.friends }
+    private var incoming: [FriendRequest] { model.incoming }
+    private var sent: [FriendRequest] { model.sent }
+    private var isLoading: Bool { model.isLoading }
+    private var hasLoaded: Bool { model.hasLoaded }
+    private var errorMessage: String? { model.errorMessage }
+
     /// Invites last 7 days on the server; a link older than this is regenerated before sharing.
     private static let inviteMaxAge: TimeInterval = 6 * 24 * 3600
 
@@ -30,8 +32,10 @@ struct FriendsView: View {
             list
                 .navigationTitle("Amigos")
                 .toolbar { toolbarContent }
-                .refreshable { await load() }
-                .task(id: router.reloadSignal) { await load() }
+                .refreshable { await load(force: true) }
+                .task(id: router.reloadSignal) {
+                    await load(force: model.reloadTracker.consume(router.reloadSignal))
+                }
                 .task(id: router.pendingInviteToken) { takePendingInvite() }
                 .sheet(isPresented: $showSearch, onDismiss: {
                     searchSeed = ""
@@ -113,7 +117,7 @@ struct FriendsView: View {
         .animation(.snappy, value: sent.map(\.id))
         .overlay {
             if let errorMessage, friends.isEmpty, incoming.isEmpty {
-                ErrorView(message: errorMessage) { Task { await load() } }
+                ErrorView(message: errorMessage) { Task { await load(force: true) } }
                     .background(Color.canvas)
             }
         }
@@ -361,27 +365,10 @@ struct FriendsView: View {
         showSearch = true
     }
 
-    private func load() async {
+    /// Cached lists first; refetched when they aren't fresh, after a change (or `force`).
+    private func load(force: Bool = false) async {
         guard let userId = session.userId else { return }
-        isLoading = true
-        defer {
-            isLoading = false
-            hasLoaded = true
-        }
-        do {
-            async let friendsRequest = APIClient.shared.request("GET", "/api/friends/\(userId)", as: [AppUser].self)
-            async let incomingRequest = APIClient.shared.request("GET", "/api/friends/requests/\(userId)", as: [FriendRequest].self)
-            async let sentRequest = APIClient.shared.request("GET", "/api/friends/requests/sent/\(userId)", as: [FriendRequest].self)
-            let (loadedFriends, loadedIncoming, loadedSent) = try await (friendsRequest, incomingRequest, sentRequest)
-            friends = loadedFriends.sorted { $0.totalArea > $1.totalArea }
-            incoming = loadedIncoming.filter { $0.status == "pending" }
-            sent = loadedSent.filter { $0.status == "pending" }
-            errorMessage = nil
-        } catch is CancellationError {
-            return
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        await model.load(userId: userId, force: force)
     }
 
     private func respond(to request: FriendRequest, accept: Bool) {
@@ -398,11 +385,11 @@ struct FriendsView: View {
                 } else {
                     Haptics.tap()
                 }
-                incoming.removeAll { $0.id == request.id }
-                await load()
+                model.removeIncoming(request.id)
+                await load(force: true)
             } catch {
                 alertMessage = error.localizedDescription
-                await load()
+                await load(force: true)
             }
             busyIds.remove(request.id)
         }
@@ -415,8 +402,8 @@ struct FriendsView: View {
             do {
                 try await APIClient.shared.send("DELETE", "/api/friends/requests/\(request.id)")
                 Haptics.tap()
-                sent.removeAll { $0.id == request.id }
-                await load()
+                model.removeSent(request.id)
+                await load(force: true)
             } catch {
                 alertMessage = error.localizedDescription
             }
@@ -431,8 +418,8 @@ struct FriendsView: View {
             do {
                 try await APIClient.shared.send("DELETE", "/api/friends/\(friend.id)", body: [:])
                 Haptics.tap()
-                friends.removeAll { $0.id == friend.id }
-                await load()
+                model.removeFriend(friend.id)
+                await load(force: true)
             } catch {
                 alertMessage = error.localizedDescription
             }
@@ -1031,5 +1018,107 @@ struct UserSearchView: View {
             }
             sending.remove(user.id)
         }
+    }
+}
+
+/// Your friends and pending requests, kept across tab switches (stale-while-revalidate).
+@MainActor
+@Observable
+final class FriendsModel {
+    static let shared = FriendsModel()
+
+    private(set) var friends: [AppUser] = []
+    private(set) var incoming: [FriendRequest] = []
+    private(set) var sent: [FriendRequest] = []
+    private(set) var isLoading = false
+    private(set) var hasLoaded = false
+    private(set) var errorMessage: String?
+    var reloadTracker = ReloadSignalTracker()
+
+    private var ownerId: String?
+    private var friendsResource: CachedResource<[AppUser]>?
+    private var incomingResource: CachedResource<[FriendRequest]>?
+    private var sentResource: CachedResource<[FriendRequest]>?
+
+    func reset() {
+        ownerId = nil
+        friendsResource = nil
+        incomingResource = nil
+        sentResource = nil
+        friends = []
+        incoming = []
+        sent = []
+        isLoading = false
+        hasLoaded = false
+        errorMessage = nil
+        reloadTracker = ReloadSignalTracker()
+    }
+
+    func removeIncoming(_ requestId: String) {
+        incoming.removeAll { $0.id == requestId }
+    }
+
+    func removeSent(_ requestId: String) {
+        sent.removeAll { $0.id == requestId }
+    }
+
+    func removeFriend(_ friendId: String) {
+        friends.removeAll { $0.id == friendId }
+    }
+
+    func load(userId: String, force: Bool) async {
+        if ownerId != userId {
+            reset()
+            ownerId = userId
+            friendsResource = CachedResource("/api/friends/\(userId)")
+            incomingResource = CachedResource("/api/friends/requests/\(userId)")
+            sentResource = CachedResource("/api/friends/requests/sent/\(userId)")
+        }
+        guard let friendsResource, let incomingResource, let sentResource else { return }
+
+        // 1. Last known lists, instantly
+        if let cached = await friendsResource.loadCached() {
+            friends = Self.sortedFriends(cached)
+            hasLoaded = true
+        }
+        if let cached = await incomingResource.loadCached() {
+            incoming = Self.pending(cached)
+        }
+        if let cached = await sentResource.loadCached() {
+            sent = Self.pending(cached)
+        }
+        let fresh = friendsResource.isFresh && incomingResource.isFresh && sentResource.isFresh
+        if !force && hasLoaded && fresh { return }
+
+        // 2. The three lists in parallel
+        isLoading = friends.isEmpty && incoming.isEmpty
+        defer {
+            isLoading = false
+            hasLoaded = true
+        }
+        do {
+            async let friendsRequest: [AppUser]? = friendsResource.fetch()
+            async let incomingRequest: [FriendRequest]? = incomingResource.fetch()
+            async let sentRequest: [FriendRequest]? = sentResource.fetch()
+            let (loadedFriends, loadedIncoming, loadedSent) = try await (friendsRequest, incomingRequest, sentRequest)
+            // A list identical to the one shown comes back as nil, but local removals must be undone/confirmed
+            if let list = loadedFriends ?? friendsResource.value { friends = Self.sortedFriends(list) }
+            if let list = loadedIncoming ?? incomingResource.value { incoming = Self.pending(list) }
+            if let list = loadedSent ?? sentResource.value { sent = Self.pending(list) }
+            errorMessage = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            // With cached lists on screen the refresh fails silently (it's retried on the next visit)
+            errorMessage = (friends.isEmpty && incoming.isEmpty) ? error.localizedDescription : nil
+        }
+    }
+
+    private static func sortedFriends(_ list: [AppUser]) -> [AppUser] {
+        list.sorted { $0.totalArea > $1.totalArea }
+    }
+
+    private static func pending(_ list: [FriendRequest]) -> [FriendRequest] {
+        list.filter { $0.status == "pending" }
     }
 }

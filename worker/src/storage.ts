@@ -148,6 +148,17 @@ export class WorkerStorage {
     );
   }
 
+  /** Users by id (drizzle-mapped rows, like getUser), keyed by id: one query instead of one per id. */
+  async getUsersMapByIds(ids: string[]): Promise<Map<string, User>> {
+    const map = new Map<string, User>();
+    const unique = [...new Set(ids)];
+    for (let start = 0; start < unique.length; start += 400) {
+      const rows = await this.db.select().from(users).where(inArray(users.id, unique.slice(start, start + 400)));
+      for (const row of rows) map.set(row.id, row);
+    }
+    return map;
+  }
+
   async getUserByUsername(username: string): Promise<User | undefined> {
     const [user] = await this.db.select().from(users).where(eq(users.username, username));
     return user || undefined;
@@ -248,6 +259,51 @@ export class WorkerStorage {
       PRIMARY KEY (blocker_id, blocked_id)
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+  }
+
+  // ===== Indexes for the per-user lookups of the app's main screens =====
+
+  private static indexesEnsured: Promise<void> | null = null;
+
+  /**
+   * Creates the indexes the hot read paths need (friends, territories, routes, feed, competition),
+   * once per isolate. Index.ts runs it in the background (ctx.waitUntil), so it never delays a request.
+   * Mirrors migrations/0009_read_path_indexes.sql.
+   */
+  ensureReadPathIndexes(): Promise<void> {
+    if (!WorkerStorage.indexesEnsured) {
+      WorkerStorage.indexesEnsured = this.applyReadPathIndexes().catch((error) => {
+        WorkerStorage.indexesEnsured = null;
+        console.error('[SCHEMA] Index creation failed:', error);
+      });
+    }
+    return WorkerStorage.indexesEnsured;
+  }
+
+  private async applyReadPathIndexes(): Promise<void> {
+    // Tables from the base schema: one round trip
+    await this.db.batch([
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_routes_user_completed ON routes(user_id, completed_at)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_territories_user ON territories(user_id)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_territories_route ON territories(route_id)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_friendships_user ON friendships(user_id)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_friendships_friend ON friendships(friend_id)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_friend_requests_recipient ON friend_requests(recipient_id, status)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_friend_requests_sender ON friend_requests(sender_id, status)`),
+    ]);
+    // Tables created lazily at runtime (feed, competition): may not exist yet on an old database
+    try {
+      await this.db.batch([
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_feed_events_user_created ON feed_events(user_id, created_at)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_feed_comments_event ON feed_comments(feed_event_id)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_feed_reactions_target ON feed_reactions(target_type, target_id)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_nicknames_target ON user_nicknames(target_user_id, expires_at)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_powers_user_competition ON user_powers(user_id, competition_id)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_treasures_competition_active ON treasures(competition_id, active)`),
+      ]);
+    } catch (error) {
+      console.warn('[SCHEMA] Feed/competition indexes skipped (tables missing?):', error);
+    }
   }
 
   // ===== Idempotent run uploads =====
@@ -531,12 +587,42 @@ export class WorkerStorage {
       .where(eq(routes.userId, userId))
       .orderBy(desc(routes.completedAt));
 
+    // Territories and ran-together names of every route in a few batched queries (was 1 + N per route)
+    const territoryByRoute = new Map<string, Territory>();
+    const routeIds = userRoutes.map((route) => route.id);
+    for (let start = 0; start < routeIds.length; start += 400) {
+      const rows = await this.db
+        .select()
+        .from(territories)
+        .where(inArray(territories.routeId, routeIds.slice(start, start + 400)))
+        .orderBy(sql`rowid`);
+      for (const row of rows) {
+        // Same row the per-route query returned: the first one in table order
+        if (row.routeId && !territoryByRoute.has(row.routeId)) territoryByRoute.set(row.routeId, row);
+      }
+    }
+
+    const parseUserIds = (value: unknown): unknown => (typeof value === 'string' ? JSON.parse(value) : value);
+    const ranTogetherIds = new Set<string>();
+    for (const route of userRoutes) {
+      if (!route.ranTogetherWith) continue;
+      try {
+        const ids = parseUserIds(route.ranTogetherWith);
+        if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') ranTogetherIds.add(id);
+      } catch (_) { /* logged below, per route */ }
+    }
+    const ranTogetherNames = new Map<string, { id: string; name: string }>();
+    if (ranTogetherIds.size > 0) {
+      const rows = await this.db
+        .select({ id: users.id, name: users.name })
+        .from(users)
+        .where(inArray(users.id, [...ranTogetherIds]));
+      for (const row of rows) ranTogetherNames.set(row.id, row);
+    }
+
     const routesWithTerritories: RouteWithTerritory[] = await Promise.all(
       userRoutes.map(async (route) => {
-        const [territory] = await this.db
-          .select()
-          .from(territories)
-          .where(eq(territories.routeId, route.id));
+        const territory = territoryByRoute.get(route.id);
 
         // Parse coordinates safely (SQLite stores as text)
         let parsedCoordinates: Array<[number, number]> = [];
@@ -565,12 +651,9 @@ export class WorkerStorage {
               : route.ranTogetherWith;
             
             if (Array.isArray(userIds) && userIds.length > 0) {
-              // Get user info for each user ID
+              // User info for each user ID (loaded above in one query)
               for (const userId of userIds) {
-                const [user] = await this.db
-                  .select({ id: users.id, name: users.name })
-                  .from(users)
-                  .where(eq(users.id, userId));
+                const user = ranTogetherNames.get(userId);
                 if (user) {
                   ranTogetherWithUsers.push(user);
                 }
@@ -1913,7 +1996,9 @@ export class WorkerStorage {
       .from(territories)
       .leftJoin(users, eq(territories.userId, users.id))
       .leftJoin(routes, eq(territories.routeId, routes.id))
-      .where(sql`${territories.userId} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`);
+      .where(sql`${territories.userId} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`)
+      // Table order (drawing order on the map), whatever index the query planner picks
+      .orderBy(sql`"territories"."rowid"`);
 
     return this._enrichTerritoriesWithCoRunnerColors(territoryData);
   }
@@ -2061,69 +2146,73 @@ export class WorkerStorage {
     stolenByUser: Array<{ userId: string; userName: string; userColor: string; amount: number }>;
     lostToUser: Array<{ userId: string; userName: string; userColor: string; amount: number }>;
   }> {
-    // Total area stolen by this user
-    const stolenResult = await this.db
-      .select({ total: sql<number>`COALESCE(SUM(${conquestMetrics.areaStolen}), 0)` })
-      .from(conquestMetrics)
-      .where(eq(conquestMetrics.attackerId, userId));
+    // The four aggregates are independent: run them in parallel (one round trip instead of four)
+    const [stolenResult, lostResult, stolenByUserResult, lostToUserResult] = await Promise.all([
+      // Total area stolen by this user
+      this.db
+        .select({ total: sql<number>`COALESCE(SUM(${conquestMetrics.areaStolen}), 0)` })
+        .from(conquestMetrics)
+        .where(eq(conquestMetrics.attackerId, userId)),
+      // Total area lost by this user
+      this.db
+        .select({ total: sql<number>`COALESCE(SUM(${conquestMetrics.areaStolen}), 0)` })
+        .from(conquestMetrics)
+        .where(eq(conquestMetrics.defenderId, userId)),
+      // Stolen grouped by victim
+      this.db
+        .select({
+          defenderId: conquestMetrics.defenderId,
+          total: sql<number>`SUM(${conquestMetrics.areaStolen})`,
+        })
+        .from(conquestMetrics)
+        .where(eq(conquestMetrics.attackerId, userId))
+        .groupBy(conquestMetrics.defenderId),
+      // Lost grouped by attacker
+      this.db
+        .select({
+          attackerId: conquestMetrics.attackerId,
+          total: sql<number>`SUM(${conquestMetrics.areaStolen})`,
+        })
+        .from(conquestMetrics)
+        .where(eq(conquestMetrics.defenderId, userId))
+        .groupBy(conquestMetrics.attackerId),
+    ]);
 
-    // Total area lost by this user
-    const lostResult = await this.db
-      .select({ total: sql<number>`COALESCE(SUM(${conquestMetrics.areaStolen}), 0)` })
-      .from(conquestMetrics)
-      .where(eq(conquestMetrics.defenderId, userId));
-
-    // Stolen grouped by victim
-    const stolenByUserResult = await this.db
-      .select({
-        defenderId: conquestMetrics.defenderId,
-        total: sql<number>`SUM(${conquestMetrics.areaStolen})`,
-      })
-      .from(conquestMetrics)
-      .where(eq(conquestMetrics.attackerId, userId))
-      .groupBy(conquestMetrics.defenderId);
-
-    // Lost grouped by attacker  
-    const lostToUserResult = await this.db
-      .select({
-        attackerId: conquestMetrics.attackerId,
-        total: sql<number>`SUM(${conquestMetrics.areaStolen})`,
-      })
-      .from(conquestMetrics)
-      .where(eq(conquestMetrics.defenderId, userId))
-      .groupBy(conquestMetrics.attackerId);
+    // Names and colours of every rival in one query (was one per rival)
+    const rivalIds = [...new Set([
+      ...stolenByUserResult.map((row) => row.defenderId),
+      ...lostToUserResult.map((row) => row.attackerId),
+    ])];
+    const rivals = new Map<string, { id: string; name: string; color: string }>();
+    if (rivalIds.length > 0) {
+      const rows = await this.db
+        .select({ id: users.id, name: users.name, color: users.color })
+        .from(users)
+        .where(inArray(users.id, rivalIds));
+      for (const row of rows) rivals.set(row.id, row);
+    }
 
     // Get user details for stolen
-    const stolenByUser = await Promise.all(
-      stolenByUserResult.map(async (row) => {
-        const [user] = await this.db
-          .select({ id: users.id, name: users.name, color: users.color })
-          .from(users)
-          .where(eq(users.id, row.defenderId));
-        return {
-          userId: row.defenderId,
-          userName: user?.name || 'Usuario desconocido',
-          userColor: user?.color || '#888888',
-          amount: row.total || 0,
-        };
-      })
-    );
+    const stolenByUser = stolenByUserResult.map((row) => {
+      const user = rivals.get(row.defenderId);
+      return {
+        userId: row.defenderId,
+        userName: user?.name || 'Usuario desconocido',
+        userColor: user?.color || '#888888',
+        amount: row.total || 0,
+      };
+    });
 
     // Get user details for lost
-    const lostToUser = await Promise.all(
-      lostToUserResult.map(async (row) => {
-        const [user] = await this.db
-          .select({ id: users.id, name: users.name, color: users.color })
-          .from(users)
-          .where(eq(users.id, row.attackerId));
-        return {
-          userId: row.attackerId,
-          userName: user?.name || 'Usuario desconocido',
-          userColor: user?.color || '#888888',
-          amount: row.total || 0,
-        };
-      })
-    );
+    const lostToUser = lostToUserResult.map((row) => {
+      const user = rivals.get(row.attackerId);
+      return {
+        userId: row.attackerId,
+        userName: user?.name || 'Usuario desconocido',
+        userColor: user?.color || '#888888',
+        amount: row.total || 0,
+      };
+    });
 
     return {
       totalStolen: stolenResult[0]?.total || 0,
@@ -2360,10 +2449,16 @@ export class WorkerStorage {
   async getFeedForUser(userId: string, limit: number = 30, offset: number = 0): Promise<FeedEventWithDetails[]> {
     await this.ensureFeedTables();
     
+    // Competition state, blocked users and friends are independent: load them in parallel
+    const [comp, blockedIds, friendIdsForFeed] = await Promise.all([
+      this.getActiveCompetition().catch(() => null),
+      this.getBlockedUserIds(userId),
+      this.getFriendIds(userId),
+    ]);
+
     // Check if competition is active — if so, show ALL users' events (global feed)
     let isCompetitionMode = false;
     try {
-      const comp = await this.getActiveCompetition();
       if (comp) {
         const now = Date.now();
         const start = new Date(comp.startsAt).getTime();
@@ -2376,7 +2471,6 @@ export class WorkerStorage {
 
     // Sentinel alerts are private to their owner (the defender); events by or against
     // blocked users (either direction) are hidden.
-    const blockedIds = await this.getBlockedUserIds(userId);
     const visibility = and(
       or(sql`${feedEvents.eventType} != 'sentinel_alert'`, eq(feedEvents.userId, userId)),
       blockedIds.length > 0 ? notInArray(feedEvents.userId, blockedIds) : undefined,
@@ -2394,8 +2488,7 @@ export class WorkerStorage {
         .limit(limit)
         .offset(offset);
     } else {
-      const friendIds = await this.getFriendIds(userId);
-      const allUserIds = [userId, ...friendIds];
+      const allUserIds = [userId, ...friendIdsForFeed];
       events = await this.db
         .select()
         .from(feedEvents)
@@ -2419,73 +2512,63 @@ export class WorkerStorage {
       eventIds.push(event.id);
     }
 
-    // Batch fetch all users in one query
-    const usersList = userIdsNeeded.size > 0
-      ? await this.db.select().from(users).where(inArray(users.id, [...userIdsNeeded]))
-      : [];
+    // The batched lookups below don't depend on each other: run them in parallel
+    const [usersList, routesList, commentCounts, reactionCounts, userReactions, nicknameMap] = await Promise.all([
+      // Batch fetch all users in one query
+      userIdsNeeded.size > 0
+        ? this.db.select().from(users).where(inArray(users.id, [...userIdsNeeded]))
+        : Promise.resolve([] as User[]),
+      // Batch fetch all routes in one query (only needed columns)
+      routeIdsNeeded.size > 0
+        ? this.db.select({
+            id: routes.id,
+            name: routes.name,
+            startedAt: routes.startedAt,
+            coordinates: routes.coordinates,
+          }).from(routes).where(inArray(routes.id, [...routeIdsNeeded]))
+        : Promise.resolve([] as Array<{ id: string; name: string; startedAt: string; coordinates: string }>),
+      // Batch fetch all comment counts in one query
+      this.db
+        .select({ feedEventId: feedComments.feedEventId, count: sql<number>`COUNT(*)` })
+        .from(feedComments)
+        .where(inArray(feedComments.feedEventId, eventIds))
+        .groupBy(feedComments.feedEventId),
+      // Batch fetch reaction counts for all events
+      this.db
+        .select({
+          targetId: feedReactions.targetId,
+          reactionType: feedReactions.reactionType,
+          count: sql<number>`COUNT(*)`,
+        })
+        .from(feedReactions)
+        .where(and(
+          eq(feedReactions.targetType, 'event'),
+          inArray(feedReactions.targetId, eventIds)
+        ))
+        .groupBy(feedReactions.targetId, feedReactions.reactionType),
+      // Batch fetch user's own reactions for all events
+      this.db
+        .select({ targetId: feedReactions.targetId, reactionType: feedReactions.reactionType })
+        .from(feedReactions)
+        .where(and(
+          eq(feedReactions.userId, userId),
+          eq(feedReactions.targetType, 'event'),
+          inArray(feedReactions.targetId, eventIds)
+        )),
+      // Batch fetch active nicknames for all involved users
+      this.getActiveNicknamesForUsers([...userIdsNeeded])
+        .catch(() => new Map<string, { nickname: string; expiresAt: string }>()),
+    ]);
     const userMap = new Map(usersList.map(u => [u.id, u]));
-
-    // Batch fetch all routes in one query (only needed columns)
-    const routesList = routeIdsNeeded.size > 0
-      ? await this.db.select({
-          id: routes.id,
-          name: routes.name,
-          startedAt: routes.startedAt,
-          coordinates: routes.coordinates,
-        }).from(routes).where(inArray(routes.id, [...routeIdsNeeded]))
-      : [];
     const routeMap = new Map(routesList.map(r => [r.id, r]));
-
-    // Batch fetch all comment counts in one query
-    const commentCounts = eventIds.length > 0
-      ? await this.db
-          .select({ feedEventId: feedComments.feedEventId, count: sql<number>`COUNT(*)` })
-          .from(feedComments)
-          .where(inArray(feedComments.feedEventId, eventIds))
-          .groupBy(feedComments.feedEventId)
-      : [];
     const commentCountMap = new Map(commentCounts.map(c => [c.feedEventId, c.count]));
-
-    // Batch fetch reaction counts for all events
-    const reactionCounts = eventIds.length > 0
-      ? await this.db
-          .select({
-            targetId: feedReactions.targetId,
-            reactionType: feedReactions.reactionType,
-            count: sql<number>`COUNT(*)`,
-          })
-          .from(feedReactions)
-          .where(and(
-            eq(feedReactions.targetType, 'event'),
-            inArray(feedReactions.targetId, eventIds)
-          ))
-          .groupBy(feedReactions.targetId, feedReactions.reactionType)
-      : [];
     const likeCountMap = new Map<string, number>();
     const dislikeCountMap = new Map<string, number>();
     for (const r of reactionCounts) {
       if (r.reactionType === 'like') likeCountMap.set(r.targetId, r.count);
       else if (r.reactionType === 'dislike') dislikeCountMap.set(r.targetId, r.count);
     }
-
-    // Batch fetch user's own reactions for all events
-    const userReactions = eventIds.length > 0
-      ? await this.db
-          .select({ targetId: feedReactions.targetId, reactionType: feedReactions.reactionType })
-          .from(feedReactions)
-          .where(and(
-            eq(feedReactions.userId, userId),
-            eq(feedReactions.targetType, 'event'),
-            inArray(feedReactions.targetId, eventIds)
-          ))
-      : [];
     const userReactionMap = new Map(userReactions.map(r => [r.targetId, r.reactionType as 'like' | 'dislike']));
-
-    // Batch fetch active nicknames for all involved users
-    let nicknameMap = new Map<string, { nickname: string; expiresAt: string }>();
-    try {
-      nicknameMap = await this.getActiveNicknamesForUsers([...userIdsNeeded]);
-    } catch (_) {}
 
     // Build result from cached data (no more individual queries)
     const result: FeedEventWithDetails[] = [];
@@ -3414,6 +3497,8 @@ export class WorkerStorage {
 
   async getActiveNicknamesForUsers(userIds: string[]): Promise<Map<string, { nickname: string; expiresAt: string }>> {
     await this.ensureCompetitionTables();
+    const map = new Map<string, { nickname: string; expiresAt: string }>();
+    if (userIds.length === 0) return map;
     const now = new Date().toISOString();
     const result = await this.db
       .select()
@@ -3422,11 +3507,12 @@ export class WorkerStorage {
         inArray(userNicknames.targetUserId, userIds),
         sql`${userNicknames.expiresAt} > ${now}`
       ));
-    // Build map: pick the most recent nickname per target user
-    const map = new Map<string, { nickname: string; expiresAt: string }>();
+    // Build map: pick the most recent nickname per target user (same one getActiveNickname returns)
+    const newest = new Map<string, string>();
     for (const nn of result) {
-      const existing = map.get(nn.targetUserId);
-      if (!existing || nn.createdAt > (existing as any).createdAt) {
+      const existingCreatedAt = newest.get(nn.targetUserId);
+      if (existingCreatedAt === undefined || nn.createdAt > existingCreatedAt) {
+        newest.set(nn.targetUserId, nn.createdAt);
         map.set(nn.targetUserId, { nickname: nn.nickname, expiresAt: nn.expiresAt });
       }
     }

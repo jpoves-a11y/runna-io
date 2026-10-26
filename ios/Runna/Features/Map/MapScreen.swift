@@ -7,7 +7,7 @@ struct MapScreen: View {
     @Environment(SessionStore.self) private var session
     @Environment(RunTracker.self) private var tracker
     @Environment(AppRouter.self) private var router
-    @State private var model = MapModel()
+    @State private var model = MapModel.shared
     @State private var camera: MapCameraPosition = .userLocation(fallback: MapScreen.fallbackPosition)
     /// Last camera reported by the map (for the north button).
     @State private var lastCamera: MapCamera?
@@ -66,16 +66,18 @@ struct MapScreen: View {
             Text("Se perderá el recorrido que quedó grabado.")
         }
         .conquestInbox()
-        .task(id: router.reloadSignal) { await reload() }
+        .task(id: router.reloadSignal) {
+            await reload(force: model.reloadTracker.consume(router.reloadSignal))
+        }
         .task(id: competition.competition?.id ?? "none") { await refreshOverlaysPeriodically() }
         .task(id: uploadedPendingRuns) { await autoHideUploadedNotice() }
         .onChange(of: tracker.isPresented) { _, presented in
             // Back from a run: the new territory may need a moment to be processed
             if !presented {
                 Task {
-                    await reload()
+                    await reload(force: true)
                     try? await Task.sleep(nanoseconds: 8_000_000_000)
-                    await reload()
+                    await reload(force: true)
                 }
             }
         }
@@ -207,16 +209,45 @@ struct MapScreen: View {
         withAnimation(.snappy) { uploadedPendingRuns = 0 }
     }
 
-    private func reload() async {
+    /// Draws the cached map instantly, then refreshes in the background. Coming back to the tab within
+    /// a few seconds doesn't refetch anything unless `force` (a notification, a finished run, retry).
+    private func reload(force: Bool = false) async {
+        guard let user = session.user else { return }
+        guard force || !model.isFresh(userId: user.id) else {
+            // Fresh: just make sure the cached data is drawn
+            await model.showCached(user: user)
+            syncTracker()
+            await presentAutomaticDialogs()
+            return
+        }
+        let mutationsBefore = ResponseCache.shared.mutationCount
+        await model.showCached(user: user)
+        syncTracker()
+        // New auto-imported routes are looked up at the same time (its GET /api/routes is shared with the map's)
+        let conquestInbox: ConquestInbox = ConquestInbox.shared
+        let userId: String = user.id
+        async let inbox: Void = conquestInbox.discoverNewRoutes(userId: userId)
+        await model.load(user: user, force: true)
+        syncTracker()
+
+        // Runs recorded offline and Apple Health imports, after the map is drawn
         uploadedPendingRuns = await PendingRuns.uploadAll()
         await HealthImporter.shared.autoImportIfEnabled()
-        guard let user = session.user else { return }
-        await model.load(user: user)
+        if ResponseCache.shared.mutationCount != mutationsBefore, let current = session.user {
+            // Something was uploaded meanwhile: redraw with it
+            await model.load(user: current, force: true)
+            syncTracker()
+        }
+        await session.refreshUser(force: force)
+        await inbox
+        await presentAutomaticDialogs()
+        // The other tabs' data, once per session, at low priority
+        TabPrefetcher.prefetchOnce(userId: user.id)
+    }
+
+    private func syncTracker() {
         tracker.territoryShapes = model.shapes
         tracker.activeTreasures = model.liveTreasures
-        await session.refreshUser()
-        await presentAutomaticDialogs()
-        await ConquestInbox.shared.discoverNewRoutes(userId: user.id)
     }
 
     /// Treasures and fortifications change during the day: refresh them every minute while the map is visible.
@@ -323,7 +354,7 @@ struct MapScreen: View {
                 .padding(.horizontal, -16)
             }
             if let error = model.errorMessage, !model.isLoading {
-                ErrorBanner(message: "No hemos podido cargar el mapa. \(error)", retry: { Task { await reload() } })
+                ErrorBanner(message: "No hemos podido cargar el mapa. \(error)", retry: { Task { await reload(force: true) } })
             }
         }
     }
