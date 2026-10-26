@@ -12,12 +12,14 @@ private extension Color {
         })
     }
 
-    /// Brand emerald (#12A85E light / #2FD27F dark).
-    static let liveBrand = Color.liveAdaptive(light: 0x12A85E, dark: 0x2FD27F)
-    /// Always the bright variant: the Dynamic Island is black in both modes.
-    static let liveBrandBright = Color(uiColor: UIColor(liveRGB: 0x2FD27F))
-    static let livePaused = Color(uiColor: UIColor(liveRGB: 0xF5A524))
-    static let liveBackground = Color.liveAdaptive(light: 0xF4FBF7, dark: 0x0E1512)
+    /// Brand emerald (same as `Color.brand` in the app).
+    static let liveBrand = Color.liveAdaptive(light: 0x0E8A5F, dark: 0x3CC98E)
+    /// Always the dark-mode variant: the Dynamic Island is black in both modes.
+    static let liveBrandBright = Color(uiColor: UIColor(liveRGB: 0x3CC98E))
+    /// Lock screen background: plain white / near black.
+    static let liveBackground = Color.liveAdaptive(light: 0xFFFFFF, dark: 0x111113)
+    /// Hairline separators.
+    static let liveHairline = Color(uiColor: .separator)
 }
 
 private extension UIColor {
@@ -31,6 +33,16 @@ private extension UIColor {
     }
 }
 
+private extension Font {
+    /// Condensed number (same recipe as the app's stat fonts).
+    static func liveStat(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+        Font.system(size: size, weight: weight).width(.condensed)
+    }
+
+    /// Small uppercase label.
+    static let liveLabel = Font.system(.caption2, weight: .semibold)
+}
+
 // MARK: - Widget
 
 struct RunLiveActivityWidget: Widget {
@@ -38,68 +50,43 @@ struct RunLiveActivityWidget: Widget {
         ActivityConfiguration(for: RunActivityAttributes.self) { context in
             RunLockScreenView(state: context.state, isStale: context.isStale)
                 .activityBackgroundTint(Color.liveBackground)
-                .activitySystemActionForegroundColor(Color.liveBrand)
+                .activitySystemActionForegroundColor(Color.primary)
         } dynamicIsland: { context in
             let state = context.state
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label {
-                            Text("Runna.io")
-                        } icon: {
-                            Image(systemName: "figure.run")
-                        }
-                        .font(.system(.caption, design: .rounded).weight(.bold))
-                        .foregroundStyle(Color.liveBrandBright)
-                        if state.isPaused && !state.isFinished {
-                            PausedBadge()
-                        }
-                    }
-                    .padding(.leading, 4)
+                    Text("Runna.io")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text(state.distanceKmText)
-                            .font(.system(.title2, design: .rounded).weight(.bold))
-                            .monospacedDigit()
-                        Text("km")
-                            .font(.system(.caption2, design: .rounded).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.trailing, 4)
+                    RunStatusText(state: state)
+                        .padding(.trailing, 6)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     RunTimerText(state: state)
-                        .font(.system(size: 34, weight: .heavy, design: .rounded))
-                        .foregroundStyle(state.isPaused ? Color.livePaused : Color.white)
+                        .font(Font.liveStat(40))
+                        .foregroundStyle(state.isPaused && !state.isFinished ? Color.secondary : Color.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        Label("\(state.paceText) /km", systemImage: "speedometer")
-                        Spacer()
-                        if let hint = state.conqueredHint {
-                            Text(hint)
-                        } else if state.isFinished {
-                            Text("Carrera terminada")
-                        }
-                    }
-                    .font(.system(.footnote, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
+                    RunMetricsRow(state: state, valueSize: 22)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 2)
                 }
             } compactLeading: {
                 Image(systemName: state.isPaused ? "pause.fill" : "figure.run")
-                    .foregroundStyle(state.isPaused ? Color.livePaused : Color.liveBrandBright)
+                    .foregroundStyle(state.isPaused ? Color.secondary : Color.liveBrandBright)
             } compactTrailing: {
                 RunTimerText(state: state)
-                    .font(.system(.footnote, design: .rounded).weight(.bold))
-                    .foregroundStyle(state.isPaused ? Color.livePaused : Color.liveBrandBright)
+                    .font(Font.liveStat(15))
+                    .foregroundStyle(state.isPaused ? Color.secondary : Color.white)
                     .frame(maxWidth: 56)
             } minimal: {
                 Image(systemName: state.isPaused ? "pause.fill" : "figure.run")
-                    .foregroundStyle(state.isPaused ? Color.livePaused : Color.liveBrandBright)
+                    .foregroundStyle(state.isPaused ? Color.secondary : Color.liveBrandBright)
             }
             .keylineTint(Color.liveBrandBright)
         }
@@ -125,14 +112,66 @@ private struct RunTimerText: View {
     }
 }
 
-private struct PausedBadge: View {
+/// "Pausa" / "Terminada" / "Rec" as a small uppercase text label.
+private struct RunStatusText: View {
+    let state: RunActivityAttributes.ContentState
+
     var body: some View {
-        Text("PAUSA")
-            .font(.system(.caption2, design: .rounded).weight(.heavy))
-            .foregroundStyle(Color.black)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(Color.livePaused, in: Capsule())
+        HStack(spacing: 5) {
+            if !state.isPaused && !state.isFinished {
+                Circle()
+                    .fill(Color.liveBrand)
+                    .frame(width: 6, height: 6)
+            }
+            Text(title)
+                .font(Font.liveLabel)
+                .textCase(.uppercase)
+                .tracking(0.8)
+                .foregroundStyle(.secondary)
+        }
+        .lineLimit(1)
+    }
+
+    private var title: String {
+        if state.isFinished { return "Terminada" }
+        if state.isPaused { return "Pausa" }
+        return "Rec"
+    }
+}
+
+/// Distance | pace with a hairline divider and labels under the values.
+private struct RunMetricsRow: View {
+    let state: RunActivityAttributes.ContentState
+    var valueSize: CGFloat = 26
+
+    var body: some View {
+        HStack(spacing: 0) {
+            metric(value: state.distanceKmText, unit: "km", label: "Distancia")
+            Rectangle()
+                .fill(Color.liveHairline)
+                .frame(width: 0.5, height: valueSize + 8)
+            metric(value: state.paceText, unit: "/km", label: "Ritmo")
+        }
+    }
+
+    private func metric(value: String, unit: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(Font.liveStat(valueSize))
+                    .monospacedDigit()
+                Text(unit)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            Text(label)
+                .font(Font.liveLabel)
+                .textCase(.uppercase)
+                .tracking(0.8)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -140,64 +179,38 @@ private struct RunLockScreenView: View {
     let state: RunActivityAttributes.ContentState
     let isStale: Bool
 
+    private var hint: String? {
+        state.conqueredHint ?? (isStale && !state.isFinished ? "Abre Runna.io para actualizar" : nil)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "figure.run")
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                    .foregroundStyle(Color.liveBrand)
+            HStack {
                 Text("Runna.io")
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                Spacer()
-                if state.isFinished {
-                    Text("Terminada")
-                        .font(.system(.caption, design: .rounded).weight(.bold))
-                        .foregroundStyle(Color.liveBrand)
-                } else if state.isPaused {
-                    PausedBadge()
-                } else {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.liveBrand)
-                            .frame(width: 7, height: 7)
-                        Text("Grabando")
-                    }
-                    .font(.system(.caption, design: .rounded).weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                }
+                Spacer()
+                RunStatusText(state: state)
             }
 
-            HStack(alignment: .lastTextBaseline, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 RunTimerText(state: state)
-                    .font(.system(size: 44, weight: .heavy, design: .rounded))
-                    .foregroundStyle(state.isPaused && !state.isFinished ? Color.livePaused : Color.primary)
+                    .font(Font.liveStat(52))
+                    .foregroundStyle(state.isPaused && !state.isFinished ? Color.secondary : Color.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                VStack(alignment: .trailing, spacing: 2) {
-                    HStack(alignment: .lastTextBaseline, spacing: 3) {
-                        Text(state.distanceKmText)
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                        Text("km")
-                            .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("\(state.paceText) /km")
-                        .font(.system(.footnote, design: .rounded).weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                .lineLimit(1)
-                .fixedSize()
+                RunMetricsRow(state: state, valueSize: 24)
+                    .frame(width: 168)
             }
 
-            if let hint = state.conqueredHint ?? (isStale && !state.isFinished ? "Abre Runna.io para actualizar" : nil) {
+            if let hint {
                 Text(hint)
-                    .font(.system(.caption, design: .rounded).weight(.semibold))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(16)
