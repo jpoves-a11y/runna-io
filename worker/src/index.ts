@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { registerRoutes } from './routes';
+import { registerSuuntoRoutes } from './suunto';
 import type { AppEnv } from './auth';
 import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 import { configurePush } from './pushHelper';
@@ -21,6 +22,11 @@ export interface Env {
   POLAR_CLIENT_SECRET?: string;
   COROS_CLIENT_ID?: string;
   COROS_CLIENT_SECRET?: string;
+  // Suunto Cloud API (apizone.suunto.com): OAuth client, API subscription key, optional webhook HMAC secret
+  SUUNTO_CLIENT_ID?: string;
+  SUUNTO_CLIENT_SECRET?: string;
+  SUUNTO_SUBSCRIPTION_KEY?: string;
+  SUUNTO_WEBHOOK_SECRET?: string;
   // Public base URL of this Worker (invite links, legal pages, email buttons)
   WORKER_URL?: string;
   FRONTEND_URL?: string;
@@ -78,6 +84,7 @@ app.use('*', cors({
 }));
 
 registerRoutes(app);
+registerSuuntoRoutes(app);
 registerPublicPages(app);
 
 app.get('/', (c) => {

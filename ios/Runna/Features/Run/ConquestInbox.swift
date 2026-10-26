@@ -4,7 +4,7 @@ import MapKit
 import CoreLocation
 import Observation
 
-/// Conquest results the user hasn't seen yet: activities imported from Strava, Polar or Apple Health,
+/// Conquest results the user hasn't seen yet: activities imported from Strava, Polar, Suunto or Apple Health,
 /// runs uploaded later from the offline queue, and pushes about auto-imports.
 /// Live runs show their own summary and are marked as shown.
 @MainActor

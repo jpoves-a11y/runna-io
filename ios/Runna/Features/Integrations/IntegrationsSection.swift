@@ -1,7 +1,7 @@
 import SwiftUI
 import AuthenticationServices
 
-/// Strava, Polar and Apple Health connections.
+/// Strava, Polar, Suunto and Apple Health connections.
 struct IntegrationsSection: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
@@ -9,6 +9,7 @@ struct IntegrationsSection: View {
 
     @State private var strava: StravaConnection?
     @State private var polar: PolarConnection?
+    @State private var suunto: SuuntoConnection?
     @State private var busyProvider: String?
     @State private var progressText: String?
     @State private var message: String?
@@ -43,6 +44,23 @@ struct IntegrationsSection: View {
                     activitiesLinkLabel(failed: polar?.failedActivities ?? 0)
                 }
             }
+            // Hidden until the server has the Suunto API keys (status says configured: false)
+            if showSuunto {
+                providerRow(
+                    name: "Suunto",
+                    mark: .suunto,
+                    connected: suunto?.connected == true,
+                    detail: suuntoDetail,
+                    provider: "suunto"
+                )
+                if suunto?.connected == true {
+                    NavigationLink {
+                        ImportedActivitiesView(provider: "suunto")
+                    } label: {
+                        activitiesLinkLabel(failed: suunto?.failedActivities ?? 0)
+                    }
+                }
+            }
             if HealthImporter.isAvailable {
                 healthRow
             }
@@ -50,7 +68,7 @@ struct IntegrationsSection: View {
             SocialSectionHeader(title: "Servicios conectados")
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Las carreras que registres en Strava, Polar o en el Apple Watch (Apple Salud) se convierten en territorio.")
+                Text(footerText)
                 if let url = URL(string: "https://www.strava.com") {
                     Link(destination: url) {
                         HStack(spacing: 4) {
@@ -210,6 +228,27 @@ struct IntegrationsSection: View {
         return "Conectado"
     }
 
+    private var footerText: String {
+        let services = showSuunto ? "Strava, Polar, Suunto" : "Strava, Polar"
+        return "Las carreras que registres en \(services) o en el Apple Watch (Apple Salud) se convierten en territorio."
+    }
+
+    private var showSuunto: Bool {
+        guard let suunto else { return false }
+        return suunto.configured || suunto.connected
+    }
+
+    private var suuntoDetail: String? {
+        guard let suunto, suunto.connected else { return nil }
+        if let last = APIDate.parse(suunto.lastSyncAt) {
+            return "Sincronizado \(Format.relative(last))"
+        }
+        if let username = suunto.username, !username.isEmpty {
+            return username
+        }
+        return "Conectado"
+    }
+
     private func activitiesLinkLabel(failed: Int) -> some View {
         HStack(spacing: 12) {
             Color.clear
@@ -322,8 +361,10 @@ struct IntegrationsSection: View {
         guard let userId = session.userId else { return }
         async let stravaStatus = try? APIClient.shared.request("GET", "/api/strava/status/\(userId)", as: StravaConnection.self)
         async let polarStatus = try? APIClient.shared.request("GET", "/api/polar/status/\(userId)", as: PolarConnection.self)
+        async let suuntoStatus = try? APIClient.shared.request("GET", "/api/suunto/status/\(userId)", as: SuuntoConnection.self)
         strava = await stravaStatus
         polar = await polarStatus
+        suunto = await suuntoStatus
     }
 
     private func connect(_ provider: String) async {
@@ -410,6 +451,7 @@ struct IntegrationsSection: View {
         switch provider {
         case "strava": return "Strava"
         case "polar": return "Polar"
+        case "suunto": return "Suunto"
         default: return provider.capitalized
         }
     }
@@ -421,6 +463,8 @@ struct IntegrationsSection: View {
         case "already_linked": return "Esa cuenta de \(name) ya está conectada a otro usuario de Runna.io."
         case "invalid_state": return "La conexión ha caducado. Inténtalo de nuevo."
         case "registration": return "Error al registrar tu usuario en Polar AccessLink. Inténtalo de nuevo."
+        case "token_exchange": return "\(name) no ha aceptado la autorización. Inténtalo de nuevo."
+        case "invalid_user": return "No se ha podido leer tu cuenta de \(name). Inténtalo de nuevo."
         default: return "No se ha podido conectar con \(name) (\(error))."
         }
     }
@@ -428,7 +472,7 @@ struct IntegrationsSection: View {
 
 // MARK: - Sync
 
-/// Strava/Polar import: /sync pulls new activities from the provider (in chunks, `hasMore`),
+/// Strava/Polar/Suunto import: /sync pulls new activities from the provider (in chunks, `hasMore`),
 /// /process turns them into territory one at a time (`remaining`).
 @MainActor
 enum ProviderSync {
@@ -497,7 +541,7 @@ enum ProviderSync {
 
 // MARK: - API shapes
 
-/// Response of POST /api/{strava|polar}/sync and /process.
+/// Response of POST /api/{strava|polar|suunto}/sync and /process.
 struct ProviderSyncResponse: Decodable {
     let imported: Int?
     let processed: Int?
@@ -600,10 +644,37 @@ struct PolarConnection: Decodable {
     }
 }
 
-/// A row of GET /api/{strava|polar}/activities/:userId.
+/// GET /api/suunto/status/:userId
+struct SuuntoConnection: Decodable {
+    /// The server has the Suunto API keys; when false the row is hidden.
+    let configured: Bool
+    let connected: Bool
+    let username: String?
+    let lastSyncAt: String?
+    let totalActivities: Int?
+    let pendingActivities: Int?
+    let failedActivities: Int
+
+    enum CodingKeys: String, CodingKey {
+        case configured, connected, suuntoUsername, lastSyncAt, totalActivities, pendingActivities, failedActivities
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        configured = c.bool(.configured) ?? false
+        connected = c.bool(.connected) ?? false
+        username = c.string(.suuntoUsername)
+        lastSyncAt = c.string(.lastSyncAt)
+        totalActivities = c.int(.totalActivities)
+        pendingActivities = c.int(.pendingActivities)
+        failedActivities = c.int(.failedActivities) ?? 0
+    }
+}
+
+/// A row of GET /api/{strava|polar|suunto}/activities/:userId.
 struct ProviderActivity: Decodable, Identifiable, Hashable {
     let id: String
-    /// Strava activity id / Polar exercise id.
+    /// Strava activity id / Polar exercise id / Suunto workout key.
     let externalId: String?
     let name: String
     let activityType: String?
@@ -630,19 +701,21 @@ struct ProviderActivity: Decodable, Identifiable, Hashable {
         case "duration_too_short": return "Duración demasiado corta"
         case "no_gps": return "Sin GPS"
         case "bad_date": return "Fecha no válida"
+        case "fit_unavailable", "fit_error": return "No se ha podido descargar el entrenamiento"
+        case "deleted_by_user": return "Eliminada por ti"
         case "": return status == .skipped ? "Sin ruta GPS o no válida" : nil
         default: return reason
         }
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, stravaActivityId, polarExerciseId, name, activityType, distance, duration, startDate, processed, skipReason, routeId
+        case id, stravaActivityId, polarExerciseId, workoutKey, name, activityType, distance, duration, startDate, processed, skipReason, routeId
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.string(.id) ?? UUID().uuidString
-        externalId = c.string(.stravaActivityId) ?? c.string(.polarExerciseId)
+        externalId = c.string(.stravaActivityId) ?? c.string(.polarExerciseId) ?? c.string(.workoutKey)
         let rawName = c.string(.name)?.trimmingCharacters(in: .whitespaces) ?? ""
         name = rawName.isEmpty ? "Actividad" : rawName
         activityType = c.string(.activityType)
@@ -667,7 +740,7 @@ struct ProviderActivity: Decodable, Identifiable, Hashable {
 
 // MARK: - Imported activities
 
-/// Activities imported from Strava or Polar, with their status, the reason when they gave no territory,
+/// Activities imported from Strava, Polar or Suunto, with their status, the reason when they gave no territory,
 /// and retry / delete.
 struct ImportedActivitiesView: View {
     let provider: String
@@ -789,7 +862,7 @@ struct ImportedActivitiesView: View {
         }
         .padding(.vertical, 2)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if provider == "polar" {
+            if canDelete(activity) {
                 Button("Eliminar", systemImage: "trash", role: .destructive) {
                     activityToDelete = activity
                 }
@@ -805,9 +878,18 @@ struct ImportedActivitiesView: View {
             if activity.status == .skipped {
                 Button("Reintentar", systemImage: "arrow.clockwise") { retry(activity) }
             }
-            if provider == "polar" {
+            if canDelete(activity) {
                 Button("Eliminar", systemImage: "trash", role: .destructive) { activityToDelete = activity }
             }
+        }
+    }
+
+    /// Polar and Suunto imports can be deleted here (Strava activities are managed in Strava).
+    private func canDelete(_ activity: ProviderActivity) -> Bool {
+        switch provider {
+        case "polar": return true
+        case "suunto": return activity.status == .imported
+        default: return false
         }
     }
 
@@ -883,8 +965,13 @@ struct ImportedActivitiesView: View {
         Task {
             defer { busyIds.remove(activity.id) }
             do {
-                try await APIClient.shared.send("DELETE", "/api/polar/activities/\(userId)/\(activity.id)")
-                activities.removeAll { $0.id == activity.id }
+                try await APIClient.shared.send("DELETE", "/api/\(provider)/activities/\(userId)/\(activity.id)")
+                if provider == "suunto" {
+                    // The workout stays in the list as skipped ("Reintentar" brings it back)
+                    await load()
+                } else {
+                    activities.removeAll { $0.id == activity.id }
+                }
                 router.reloadSignal += 1
             } catch {
                 errorMessage = error.localizedDescription
@@ -896,10 +983,10 @@ struct ImportedActivitiesView: View {
 // MARK: - Brand marks
 
 /// Third-party service marks for the connected-services rows: the brand's own colour tile with a
-/// white glyph (Strava peaks, Polar), or Apple Health's white tile with the pink heart.
+/// white glyph (Strava peaks, Polar, Suunto), or Apple Health's white tile with the pink heart.
 struct IntegrationBrandMark: View {
     enum Brand {
-        case strava, polar, appleHealth
+        case strava, polar, suunto, appleHealth
     }
 
     let brand: Brand
@@ -907,6 +994,7 @@ struct IntegrationBrandMark: View {
 
     static let stravaOrange = Color(hex: "#FC4C02")
     static let polarRed = Color(hex: "#D10027")
+    static let suuntoBlack = Color(hex: "#16181A")
     static let healthPink = Color(hex: "#FF2D55")
 
     private var shape: RoundedRectangle {
@@ -926,6 +1014,14 @@ struct IntegrationBrandMark: View {
                 Text("P")
                     .font(.system(size: size * 0.56, weight: .heavy))
                     .italic()
+                    .foregroundStyle(Color.white)
+            case .suunto:
+                shape.fill(Self.suuntoBlack)
+                // Hairline so the dark tile keeps its edge on dark backgrounds
+                shape.strokeBorder(Color.white.opacity(0.18), lineWidth: DS.Stroke.hairline)
+                Text("S")
+                    .font(.system(size: size * 0.54, weight: .bold))
+                    .tracking(size * 0.02)
                     .foregroundStyle(Color.white)
             case .appleHealth:
                 shape.fill(Color.white)

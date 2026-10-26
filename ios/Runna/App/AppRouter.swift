@@ -69,10 +69,13 @@ final class AppRouter {
         }
     }
 
+    /// Push types of activities imported automatically from a connected service (data.routeId is the new route).
+    static let autoImportTypes: Set<String> = ["strava_auto_import", "polar_auto_import", "suunto_auto_import"]
+
     /// The user tapped a push notification.
     /// - Parameters:
     ///   - type: the payload's "type".
-    ///   - routeId: data.routeId (Strava/Polar auto-imports), shown as a conquest result on the map.
+    ///   - routeId: data.routeId (Strava/Polar/Suunto auto-imports), shown as a conquest result on the map.
     func openNotification(type: String?, routeId: String? = nil) {
         switch type {
         case "friend_request", "friend_accepted":
@@ -86,7 +89,7 @@ final class AppRouter {
         case "weekly_summary":
             selectedTab = .rankings
             showWeeklySummary = true
-        case "strava_auto_import", "polar_auto_import":
+        case "strava_auto_import", "polar_auto_import", "suunto_auto_import":
             selectedTab = .map
             if let routeId, !routeId.isEmpty {
                 ConquestInbox.shared.enqueue(routeId: routeId)
@@ -101,7 +104,7 @@ final class AppRouter {
     /// A push notification arrived while the app is open: refresh what's on screen
     /// (e.g. a taunt photo is shown right away) and queue auto-import results.
     func receivedNotificationInForeground(type: String?, routeId: String? = nil) {
-        if type == "strava_auto_import" || type == "polar_auto_import", let routeId, !routeId.isEmpty {
+        if let type, Self.autoImportTypes.contains(type), let routeId, !routeId.isEmpty {
             ConquestInbox.shared.enqueue(routeId: routeId)
         }
         reloadSignal += 1
