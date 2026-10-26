@@ -79,6 +79,8 @@ final class RunTracker {
     @ObservationIgnored private var treasureRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
     @ObservationIgnored private var forgetObserver: NSObjectProtocol?
+    /// Lock screen / Dynamic Island tracker of the run.
+    private let liveActivity = RunLiveActivity()
 
     private let manager = CLLocationManager()
     private let delegate = LocationDelegate()
@@ -104,6 +106,8 @@ final class RunTracker {
         }
 
         hasRecoverableRun = RunPersistence.loadForCurrentUser() != nil
+        // Nothing is recorded at launch: a Live Activity still showing is from a run the app lost when it was closed
+        RunLiveActivity.endStaleActivities()
         forgetObserver = NotificationCenter.default.addObserver(
             forName: RunPersistence.didForgetNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -204,6 +208,9 @@ final class RunTracker {
         UIApplication.shared.isIdleTimerDisabled = true
         startTreasureRefresh()
         persist()
+        if let startDate {
+            liveActivity.start(startedAt: startDate, state: liveActivityState())
+        }
     }
 
     func pause() {
@@ -212,6 +219,7 @@ final class RunTracker {
         phase = .paused
         treasureRefreshTask?.cancel()
         persist()
+        liveActivity.update(liveActivityState())
     }
 
     func resume() {
@@ -227,6 +235,7 @@ final class RunTracker {
         UIApplication.shared.isIdleTimerDisabled = true
         startTreasureRefresh()
         persist()
+        liveActivity.update(liveActivityState())
     }
 
     /// Restores a run that was interrupted (e.g. the app was closed by iOS) and keeps recording.
@@ -257,6 +266,9 @@ final class RunTracker {
         beginBackgroundUpdates()
         UIApplication.shared.isIdleTimerDisabled = true
         persist()
+        if let startDate {
+            liveActivity.start(startedAt: startDate, state: liveActivityState())
+        }
         isPresented = true
     }
 
@@ -287,6 +299,7 @@ final class RunTracker {
             completedAt: end,
             treasures: collectedTreasures
         )
+        liveActivity.end(finalState: liveActivityState(at: end, finished: true), discarded: false)
         let queued = PendingRuns.add(PendingRuns.Entry(run: run))
         // If the queue couldn't be written, keep the recovery file: the run can still be resumed and finished
         reset(clearSavedRun: queued)
@@ -295,6 +308,7 @@ final class RunTracker {
 
     /// Throws the current run away.
     func cancel() {
+        liveActivity.end(finalState: nil, discarded: true)
         reset(clearSavedRun: true)
     }
 
@@ -342,6 +356,9 @@ final class RunTracker {
             currentLocation = location
             guard phase == .running else { continue }
             accept(location)
+        }
+        if isRecording, !locations.isEmpty {
+            liveActivity.updateIfNeeded(liveActivityState())
         }
     }
 
@@ -397,6 +414,7 @@ final class RunTracker {
                     showCollected(treasure)
                     Haptics.success()
                     persist()
+                    liveActivity.update(liveActivityState())
                 } catch {
                     // Collected by someone else or expired: don't retry during this run
                 }
@@ -428,6 +446,26 @@ final class RunTracker {
                 }
             }
         }
+    }
+
+    // MARK: - Live Activity
+
+    /// What the lock screen shows now. The timer anchor is the start date moved forward by the paused time,
+    /// so the widget's timer counts the moving time by itself.
+    private func liveActivityState(at date: Date = Date(), finished: Bool = false) -> RunLiveActivity.State {
+        let moving = elapsed(at: date)
+        let pace: Double? = distance >= 50 ? moving / (distance / 1000) : nil
+        let treasures = collectedTreasures.count
+        let hint: String? = treasures == 0 ? nil : (treasures == 1 ? "1 tesoro recogido" : "\(treasures) tesoros recogidos")
+        return RunLiveActivity.State(
+            timerStart: date.addingTimeInterval(-moving),
+            isPaused: phase == .paused || finished,
+            pausedElapsed: moving,
+            distanceMeters: distance,
+            paceSecondsPerKm: pace,
+            conqueredHint: hint,
+            isFinished: finished
+        )
     }
 
     // MARK: - Persistence

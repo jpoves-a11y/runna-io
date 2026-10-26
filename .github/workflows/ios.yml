@@ -58,6 +58,16 @@ jobs:
           for key in NSLocationWhenInUseUsageDescription NSHealthShareUsageDescription NSCameraUsageDescription UIBackgroundModes CFBundleURLTypes CFBundleDisplayName; do
             plutil -extract "$key" raw "$PLIST" > /dev/null 2>&1 || plutil -extract "$key" xml1 -o - "$PLIST" > /dev/null || { echo "Missing $key"; exit 1; }
           done
+          [ "$(plutil -extract NSSupportsLiveActivities raw "$PLIST")" = "true" ] || { echo "NSSupportsLiveActivities is not YES"; exit 1; }
+          # Live Activity widget extension embedded in the app, with the same version and build as the app
+          EXT=build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app/PlugIns/RunnaLive.appex
+          [ -d "$EXT" ] || { echo "RunnaLive.appex is not embedded in Runna.app/PlugIns"; ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app; exit 1; }
+          plutil -p "$EXT/Info.plist"
+          [ "$(plutil -extract NSExtension.NSExtensionPointIdentifier raw "$EXT/Info.plist")" = "com.apple.widgetkit-extension" ] || { echo "Wrong NSExtensionPointIdentifier"; exit 1; }
+          for key in CFBundleVersion CFBundleShortVersionString; do
+            APP_VALUE=$(plutil -extract "$key" raw "$PLIST"); EXT_VALUE=$(plutil -extract "$key" raw "$EXT/Info.plist")
+            [ "$APP_VALUE" = "$EXT_VALUE" ] || { echo "$key differs: app $APP_VALUE, extension $EXT_VALUE"; exit 1; }
+          done
 
       - name: Launch in simulator (smoke test)
         working-directory: ios
