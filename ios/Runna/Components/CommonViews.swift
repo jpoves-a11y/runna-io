@@ -12,18 +12,15 @@ struct AvatarView: View {
     var ring: Bool = true
 
     private var tint: Color { Color(hex: color) }
-    private var ringWidth: CGFloat { ring ? max(1.5, size / 18) : 0 }
-    private var gap: CGFloat { ring ? max(1, size / 28) : 0 }
+    private var ringWidth: CGFloat { ring ? max(1.5, size / 24) : 0 }
+    private var gap: CGFloat { ring ? max(1, size / 30) : 0 }
     private var innerSize: CGFloat { max(1, size - 2 * (ringWidth + gap)) }
 
     var body: some View {
         ZStack {
             if ring {
                 Circle()
-                    .strokeBorder(
-                        LinearGradient(colors: [tint, tint.opacity(0.65)], startPoint: .topLeading, endPoint: .bottomTrailing),
-                        lineWidth: ringWidth
-                    )
+                    .strokeBorder(tint, lineWidth: ringWidth)
             }
             picture
                 .frame(width: innerSize, height: innerSize)
@@ -50,12 +47,10 @@ struct AvatarView: View {
 
     private var initials: some View {
         ZStack {
-            Circle().fill(
-                LinearGradient(colors: [tint.opacity(0.85), tint], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
+            Circle().fill(tint)
             Text(String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased())
-                .font(.system(size: innerSize * 0.44, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white)
+                .font(.system(size: innerSize * 0.42, weight: .semibold))
+                .foregroundStyle(Color.white)
         }
     }
 }
@@ -163,7 +158,9 @@ struct CachedRemoteImage<Placeholder: View>: View {
     }
 }
 
-/// Number + label tile used on the map, profile and run screens (rounded, animated digits).
+/// Value (+ unit) over an uppercase label, centred in its column. Put `StatDivider()` between tiles.
+/// Legacy sky / grape tints render as `.primary`; use brand only for the user's own data,
+/// steal for lost values, gold for a #1 rank.
 struct StatTile: View {
     let value: String
     let label: String
@@ -172,20 +169,7 @@ struct StatTile: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(Font.statNumber)
-                    .monospacedDigit()
-                    .foregroundStyle(tint)
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                if let unit {
-                    Text(unit)
-                        .font(.system(.caption, design: .rounded, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
+            StatValue(value: value, unit: unit, font: Font.statNumber, tint: DS.restrainedTint(tint))
             Text(label)
                 .statLabelStyle()
                 .lineLimit(1)
@@ -227,7 +211,7 @@ struct RouteShape: Shape {
     }
 }
 
-/// Friendly empty state: big symbol on a soft halo, witty title, short message and an optional action.
+/// Calm empty state: a quiet symbol, short title, one-line message and an optional action.
 struct EmptyStateView: View {
     let systemImage: String
     let title: String
@@ -236,26 +220,16 @@ struct EmptyStateView: View {
     var action: (() -> Void)? = nil
     var tint: Color = .brand
 
-    @State private var appeared = false
-
     var body: some View {
         VStack(spacing: DS.Spacing.l) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.10))
-                    .frame(width: 128, height: 128)
-                Circle()
-                    .fill(tint.opacity(0.16))
-                    .frame(width: 92, height: 92)
-                Image(systemName: systemImage)
-                    .font(.system(size: 40, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(tint)
-                    .symbolEffect(.bounce, value: appeared)
-            }
+            Image(systemName: systemImage)
+                .font(.system(size: 34, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(height: 44)
             VStack(spacing: 6) {
                 Text(title)
-                    .font(.system(.title3, design: .rounded, weight: .bold))
+                    .font(.headline)
                     .multilineTextAlignment(.center)
                 Text(message)
                     .font(.subheadline)
@@ -265,13 +239,13 @@ struct EmptyStateView: View {
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
                     .buttonStyle(PrimaryButtonStyle(color: tint))
-                    .frame(maxWidth: 260)
+                    .frame(maxWidth: 240)
+                    .padding(.top, DS.Spacing.xs)
             }
         }
-        .padding(.horizontal, 32)
-        .padding(.vertical, 24)
+        .padding(.horizontal, DS.Spacing.xxxl)
+        .padding(.vertical, DS.Spacing.xxl)
         .frame(maxWidth: .infinity)
-        .onAppear { appeared = true }
     }
 }
 
@@ -283,40 +257,31 @@ struct ErrorView: View {
     var body: some View {
         EmptyStateView(
             systemImage: "wifi.exclamationmark",
-            title: "Vaya, no ha cargado",
+            title: "No se ha podido cargar",
             message: message,
             actionTitle: "Reintentar",
-            action: retry,
-            tint: .steal
+            action: retry
         )
     }
 }
 
-/// Primary call-to-action button style: full-width capsule, gradient for the brand colour.
+/// Primary call-to-action button style: full-width solid fill, 12pt continuous corners.
+/// Legacy accent colours (steal / gold / grape / sky) are normalised to the brand accent.
 struct PrimaryButtonStyle: ButtonStyle {
     var color: Color = .brand
     @Environment(\.isEnabled) private var isEnabled
 
+    private var fill: Color { DS.buttonFill(color) }
+    private var labelColor: Color { fill == Color.brand ? Color.onBrand : Color(uiColor: .systemBackground) }
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(.headline, design: .rounded, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, minHeight: 54)
-            .background { background }
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
-            .shadow(color: color.opacity(isEnabled ? 0.30 : 0), radius: 10, x: 0, y: 5)
-            .opacity(isEnabled ? (configuration.isPressed ? 0.9 : 1) : 0.45)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
-    }
-
-    @ViewBuilder
-    private var background: some View {
-        if color == Color.brand {
-            Capsule().fill(.brandGradient)
-        } else {
-            Capsule().fill(color.gradient)
-        }
+            .font(.body.weight(.semibold))
+            .foregroundStyle(labelColor)
+            .frame(maxWidth: .infinity, minHeight: DS.Size.button)
+            .background(fill, in: RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1) : 0.4)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 

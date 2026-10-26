@@ -1,8 +1,8 @@
 import SwiftUI
 import MapKit
 
-/// Home screen: full-bleed territory map with a glass header, friend chips,
-/// floating controls on the right and the big "Correr" button at the bottom.
+/// Home screen: full-bleed territory map with a compact header card, player filter chips,
+/// a column of small round controls on the right and the solid "Correr" button at the bottom.
 struct MapScreen: View {
     @Environment(SessionStore.self) private var session
     @Environment(RunTracker.self) private var tracker
@@ -318,7 +318,7 @@ struct MapScreen: View {
     /// One vertical stack inside the safe area (status bar and tab bar), so nothing can overlap:
     /// header + chips at the top, controls on the right, banners and "Correr" at the bottom.
     private var overlayLayout: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: DS.Spacing.m) {
             topArea
             Spacer(minLength: 0)
             HStack(alignment: .bottom) {
@@ -327,13 +327,13 @@ struct MapScreen: View {
             }
             bottomArea
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, DS.Spacing.l)
         .padding(.top, 6)
-        .padding(.bottom, 14)
+        .padding(.bottom, DS.Spacing.l)
     }
 
     private var topArea: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: DS.Spacing.s) {
             if !competition.isActive {
                 CompetitionBanner(store: competition) { showFinalResults = true }
             }
@@ -351,7 +351,7 @@ struct MapScreen: View {
                     toggle: { id in withAnimation(.snappy) { model.toggle(id) } },
                     onToggleAll: { withAnimation(.snappy) { toggleAllPlayers() } }
                 )
-                .padding(.horizontal, -16)
+                .padding(.horizontal, -DS.Spacing.l)
             }
             if let error = model.errorMessage, !model.isLoading {
                 ErrorBanner(message: "No hemos podido cargar el mapa. \(error)", retry: { Task { await reload(force: true) } })
@@ -379,14 +379,14 @@ struct MapScreen: View {
     // MARK: - Floating controls
 
     private var controlsColumn: some View {
-        GlassGroup(spacing: 10) {
-            VStack(spacing: 10) {
+        GlassGroup(spacing: DS.Spacing.s) {
+            VStack(spacing: DS.Spacing.s) {
                 if competition.isActive {
                     powersButton
                 }
                 layersMenu
                 if abs(heading) > 2 && abs(heading) < 358 {
-                    GlassCircleButton(systemImage: "location.north.line.fill", accessibilityLabel: "Orientar al norte", tint: .steal) {
+                    GlassCircleButton(systemImage: "location.north.line", accessibilityLabel: "Orientar al norte", tint: .steal) {
                         resetNorth()
                     }
                     .rotationEffect(.degrees(-heading))
@@ -400,7 +400,6 @@ struct MapScreen: View {
                 GlassCircleButton(
                     systemImage: isFollowingUser ? "location.fill" : "location",
                     accessibilityLabel: "Centrar en mi ubicación",
-                    tint: .sky,
                     isActive: isFollowingUser
                 ) {
                     centerOnUser()
@@ -410,14 +409,12 @@ struct MapScreen: View {
         .animation(.snappy, value: competition.isActive)
     }
 
-    /// ⚡ Powers won from treasures (only during an active competition).
+    /// Powers won from treasures (only during an active competition).
     private var powersButton: some View {
         GlassCircleButton(
-            systemImage: "bolt.fill",
+            systemImage: "bolt",
             accessibilityLabel: competition.availablePowerCount > 0 ? "Poderes, \(competition.availablePowerCount) disponibles" : "Poderes",
-            badge: competition.availablePowerCount,
-            tint: .gold,
-            isActive: true
+            badge: competition.availablePowerCount
         ) {
             router.showPowers = true
         }
@@ -456,7 +453,7 @@ struct MapScreen: View {
     // MARK: - Bottom
 
     private var bottomArea: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: DS.Spacing.s) {
             if tracker.hasRecoverableRun {
                 recoveredRunCard
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -465,7 +462,7 @@ struct MapScreen: View {
                 uploadedCard
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            PrimaryActionButton(title: "Correr", systemImage: "figure.run", pulse: true) {
+            PrimaryActionButton(title: "Correr", systemImage: "figure.run") {
                 tracker.isPresented = true
             }
             .accessibilityHint("Abre la pantalla para grabar una carrera")
@@ -475,15 +472,15 @@ struct MapScreen: View {
     }
 
     private var recoveredRunCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "figure.run.circle.fill")
-                .font(.system(size: 34))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(Color.white, Color.steal)
+        HStack(spacing: DS.Spacing.m) {
+            Image(systemName: "figure.run")
+                .font(.system(size: DS.Size.icon, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Carrera a medias")
-                    .font(Font.cardTitle)
-                Text("La dejaste sin terminar. ¿La rematamos?")
+                Text("Carrera sin terminar")
+                    .font(.subheadline.weight(.semibold))
+                Text("Puedes retomarla donde la dejaste.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -496,29 +493,30 @@ struct MapScreen: View {
             }
             .buttonStyle(SecondaryButtonStyle(tint: .steal))
             .accessibilityLabel("Descartar")
-            Button("Seguir") {
+            Button("Continuar") {
                 tracker.resumeRecoveredRun()
             }
             .buttonStyle(SecondaryButtonStyle(tint: .brand))
         }
-        .padding(12)
-        .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, 10)
+        .glassSurface(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
     }
 
     private var uploadedCard: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.icloud.fill")
-                .font(.headline)
+        HStack(spacing: DS.Spacing.s) {
+            Image(systemName: "checkmark.icloud")
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(Color.brand)
             Text(uploadedPendingRuns == 1
-                 ? "Subida 1 carrera que guardaste sin conexión"
-                 : "Subidas \(uploadedPendingRuns) carreras que guardaste sin conexión")
-                .font(.footnote.weight(.semibold))
+                 ? "Se ha subido 1 carrera guardada sin conexión"
+                 : "Se han subido \(uploadedPendingRuns) carreras guardadas sin conexión")
+                .font(.footnote.weight(.medium))
                 .lineLimit(2)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassSurface(Capsule())
+        .glassSurface(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
     }
 }
 
@@ -526,7 +524,8 @@ private struct SelectedUser: Identifiable {
     let id: String
 }
 
-/// Compact glass card at the top of the map: avatar, your territory, rank and competition day.
+/// Compact card at the top of the map: avatar, your territory, then rank and competition day
+/// as small stat columns separated by hairlines.
 struct MapHeaderCard: View {
     let user: AppUser?
     let isLoading: Bool
@@ -535,12 +534,12 @@ struct MapHeaderCard: View {
     let onCompetitionTap: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Spacing.m) {
             if let user {
-                AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 46)
+                AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 38)
                 territory(user)
-                Spacer(minLength: 8)
-                badges(user)
+                Spacer(minLength: DS.Spacing.s)
+                trailingStats(user)
             } else {
                 Spacer()
                 ProgressView()
@@ -548,9 +547,9 @@ struct MapHeaderCard: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frame(minHeight: 68)
-        .glassSurface(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .padding(.vertical, 10)
+        .frame(minHeight: 60)
+        .glassSurface(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
     }
 
     private func territory(_ user: AppUser) -> some View {
@@ -565,51 +564,69 @@ struct MapHeaderCard: View {
             }
             if user.totalArea > 0 {
                 let area = Format.areaParts(user.totalArea)
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(area.value)
-                        .font(Font.stat(28, weight: .heavy))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                    Text(area.unit)
-                        .font(.system(.subheadline, design: .rounded, weight: .bold))
-                        .foregroundStyle(.secondary)
-                }
-                .animation(.snappy, value: user.totalArea)
+                StatValue(value: area.value, unit: area.unit, font: Font.stat(26, weight: .semibold))
+                    .animation(.snappy, value: user.totalArea)
             } else {
-                Text("¡Sal a pintar el mapa!")
-                    .font(.system(.headline, design: .rounded, weight: .bold))
-                    .foregroundStyle(Color.brand)
+                Text("Aún sin territorio")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func badges(_ user: AppUser) -> some View {
-        VStack(alignment: .trailing, spacing: 6) {
+    @ViewBuilder
+    private func trailingStats(_ user: AppUser) -> some View {
+        HStack(spacing: DS.Spacing.m) {
             if let rank = user.rank {
                 Button(action: onRankTap) {
-                    StatPill(
-                        value: "#\(rank)",
-                        label: "entre amigos",
-                        systemImage: rank == 1 ? "crown.fill" : "trophy.fill",
-                        tint: rank <= 3 ? Color.gold : Color.brand
-                    )
+                    miniStat(value: "#\(rank)", label: "Ranking", tint: rank == 1 ? Color.gold : Color.primary)
                 }
                 .buttonStyle(.pressable)
                 .accessibilityLabel("Puesto \(rank) entre amigos")
             }
+            if user.rank != nil && competitionDay != nil {
+                StatDivider(height: 30)
+            }
             if let competitionDay {
                 Button(action: onCompetitionTap) {
-                    StatPill(value: competitionDay, systemImage: "flag.checkered", tint: .gold)
+                    miniStat(value: competitionDayValue(competitionDay), label: competitionDayLabel(competitionDay), tint: Color.primary)
                 }
                 .buttonStyle(.pressable)
                 .accessibilityLabel("Competición, \(competitionDay)")
             }
         }
     }
+
+    private func miniStat(value: String, label: String, tint: Color) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(value)
+                .font(Font.stat(20, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .contentTransition(.numericText())
+                .lineLimit(1)
+            Text(label)
+                .statLabelStyle()
+                .lineLimit(1)
+        }
+    }
+
+    /// "Día 11/29" → "11/29" (label "Día"); "En juego" stays as is (label "Liga").
+    private func competitionDayValue(_ text: String) -> String {
+        let prefix: String = "Día "
+        if text.hasPrefix(prefix) {
+            return String(text.dropFirst(prefix.count))
+        }
+        return text
+    }
+
+    private func competitionDayLabel(_ text: String) -> String {
+        text.hasPrefix("Día ") ? "Día" : "Liga"
+    }
 }
 
-/// Horizontally scrolling glass chips to show or hide each player's territory.
+/// Horizontally scrolling chips (material, hairline) to show or hide each player's territory.
 struct PlayerFilterBar: View {
     let players: [UserRef]
     let hidden: Set<String>
@@ -619,12 +636,12 @@ struct PlayerFilterBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 if let onToggleAll {
                     ChipToggle(
                         title: "Todos",
                         isOn: hidden.isEmpty,
-                        systemImage: hidden.isEmpty ? "eye.fill" : "eye.slash",
+                        systemImage: hidden.isEmpty ? "eye" : "eye.slash",
                         onGlass: true,
                         action: onToggleAll
                     )
