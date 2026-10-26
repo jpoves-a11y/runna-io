@@ -1080,7 +1080,7 @@ function safeUnion(geomA: any, geomB: any): any | null {
 // Rebuild territories for a user from all their remaining routes
 // Used after route deletion to recalculate territory accurately
 // SAFE: computes full geometry before deleting anything
-async function reprocessUserTerritories(
+export async function reprocessUserTerritories(
   storage: WorkerStorage,
   userId: string
 ): Promise<void> {
@@ -2099,6 +2099,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Remove any linked Polar/Strava activity records so they can be reimported
       await storage.deletePolarActivityByRouteId(routeId);
       await storage.deleteStravaActivityByRouteId(routeId);
+      // Suunto: keep the workout as skipped so the webhook / hourly poll doesn't import it again
+      await storage.markSuuntoActivityDeletedByRouteId(routeId);
 
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);

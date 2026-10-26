@@ -31,6 +31,7 @@ RESEND_FROM = "onboarding@resend.dev"
 #   - spawn-treasure: minute 0 of every hour (the task picks today's random spawn hour)
 #   - inactivity-check: 10:00 and 19:00
 #   - weekly-summary: Sundays 20:00
+#   - suunto-auto-sync: minute 30 of every hour (fallback poll; the Suunto webhook imports at once)
 # Upstash/QStash schedules are no longer needed (delete them). The /api/tasks/* endpoints still
 # accept "Authorization: Bearer <UPSTASH_CRON_SECRET>" or a QStash signature for manual runs.
 #

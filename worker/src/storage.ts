@@ -14,6 +14,8 @@ import {
   polarActivities,
   corosAccounts,
   corosActivities,
+  suuntoAccounts,
+  suuntoActivities,
   conquestMetrics,
   emailNotifications,
   emailPreferences,
@@ -59,6 +61,10 @@ import {
   type InsertCorosAccount,
   type CorosActivity,
   type InsertCorosActivity,
+  type SuuntoAccount,
+  type InsertSuuntoAccount,
+  type SuuntoActivity,
+  type InsertSuuntoActivity,
   type ConquestMetric,
   type InsertConquestMetric,
   type EmailNotification,
@@ -208,6 +214,7 @@ export class WorkerStorage {
     await this.db.delete(polarAccounts).where(eq(polarAccounts.userId, userId));
     await this.db.delete(stravaActivities).where(eq(stravaActivities.userId, userId));
     await this.db.delete(stravaAccounts).where(eq(stravaAccounts.userId, userId));
+    await this.deleteSuuntoDataByUserId(userId);
     await this.db.delete(friendRequests).where(eq(friendRequests.senderId, userId));
     await this.db.delete(friendRequests).where(eq(friendRequests.recipientId, userId));
     await this.db.delete(friendInvites).where(eq(friendInvites.userId, userId));
@@ -1813,6 +1820,180 @@ export class WorkerStorage {
       unprocessed: Number(aggregate?.unprocessed || 0),
       lastStartDate: aggregate?.lastStartDate || null,
     };
+  }
+
+  // ==================== SUUNTO ====================
+  // Tables are created at runtime on databases that predate them (see migrations/0010_suunto.sql).
+
+  private static suuntoTables: Promise<void> | null = null;
+
+  ensureSuuntoTables(): Promise<void> {
+    if (!WorkerStorage.suuntoTables) {
+      WorkerStorage.suuntoTables = this.db.batch([
+        this.db.run(sql`CREATE TABLE IF NOT EXISTS suunto_accounts (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+          suunto_username TEXT NOT NULL UNIQUE,
+          access_token TEXT NOT NULL,
+          refresh_token TEXT,
+          expires_at TEXT,
+          scope TEXT,
+          connected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_sync_at TEXT,
+          last_webhook_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        this.db.run(sql`CREATE TABLE IF NOT EXISTS suunto_activities (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          workout_key TEXT NOT NULL UNIQUE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          route_id TEXT REFERENCES routes(id) ON DELETE SET NULL,
+          name TEXT NOT NULL,
+          activity_type TEXT NOT NULL,
+          suunto_activity_id INTEGER,
+          distance REAL NOT NULL,
+          duration INTEGER NOT NULL,
+          start_date TEXT NOT NULL,
+          summary_polyline TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          processed INTEGER NOT NULL DEFAULT 0,
+          processed_at TEXT,
+          skip_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_suunto_activities_user_start ON suunto_activities(user_id, start_date)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_suunto_activities_route ON suunto_activities(route_id)`),
+      ]).then(() => undefined).catch((error) => {
+        WorkerStorage.suuntoTables = null; // retry on the next call
+        throw error;
+      });
+    }
+    return WorkerStorage.suuntoTables;
+  }
+
+  async getSuuntoAccountByUserId(userId: string): Promise<SuuntoAccount | undefined> {
+    await this.ensureSuuntoTables();
+    const [account] = await this.db.select().from(suuntoAccounts).where(eq(suuntoAccounts.userId, userId));
+    return account || undefined;
+  }
+
+  async getSuuntoAccountByUsername(username: string): Promise<SuuntoAccount | undefined> {
+    await this.ensureSuuntoTables();
+    const [account] = await this.db.select().from(suuntoAccounts).where(eq(suuntoAccounts.suuntoUsername, username));
+    return account || undefined;
+  }
+
+  async createSuuntoAccount(data: InsertSuuntoAccount): Promise<SuuntoAccount> {
+    await this.ensureSuuntoTables();
+    const [account] = await this.db.insert(suuntoAccounts).values(data).returning();
+    return account;
+  }
+
+  async updateSuuntoAccount(userId: string, data: Partial<InsertSuuntoAccount>): Promise<SuuntoAccount | undefined> {
+    await this.ensureSuuntoTables();
+    const [account] = await this.db.update(suuntoAccounts).set(data).where(eq(suuntoAccounts.userId, userId)).returning();
+    return account || undefined;
+  }
+
+  /** Accounts not synced since `before` (ISO), least recently synced first. */
+  async getSuuntoAccountsToPoll(before: string, limit: number): Promise<SuuntoAccount[]> {
+    await this.ensureSuuntoTables();
+    return await this.db
+      .select()
+      .from(suuntoAccounts)
+      .where(sql`${suuntoAccounts.lastSyncAt} IS NULL OR ${suuntoAccounts.lastSyncAt} < ${before}`)
+      .orderBy(sql`${suuntoAccounts.lastSyncAt} IS NOT NULL`, suuntoAccounts.lastSyncAt)
+      .limit(limit);
+  }
+
+  /** Disconnect: removes the account and its import records (routes and territory stay). */
+  async deleteSuuntoAccount(userId: string): Promise<void> {
+    await this.deleteSuuntoDataByUserId(userId);
+  }
+
+  async deleteSuuntoDataByUserId(userId: string): Promise<void> {
+    await this.ensureSuuntoTables();
+    await this.db.delete(suuntoActivities).where(eq(suuntoActivities.userId, userId));
+    await this.db.delete(suuntoAccounts).where(eq(suuntoAccounts.userId, userId));
+  }
+
+  async getSuuntoActivityByWorkoutKey(workoutKey: string): Promise<SuuntoActivity | undefined> {
+    await this.ensureSuuntoTables();
+    const [activity] = await this.db.select().from(suuntoActivities).where(eq(suuntoActivities.workoutKey, workoutKey));
+    return activity || undefined;
+  }
+
+  async getSuuntoActivityById(id: string): Promise<SuuntoActivity | undefined> {
+    await this.ensureSuuntoTables();
+    const [activity] = await this.db.select().from(suuntoActivities).where(eq(suuntoActivities.id, id));
+    return activity || undefined;
+  }
+
+  async createSuuntoActivity(data: InsertSuuntoActivity): Promise<SuuntoActivity> {
+    await this.ensureSuuntoTables();
+    const [activity] = await this.db.insert(suuntoActivities).values(data).returning();
+    return activity;
+  }
+
+  async updateSuuntoActivity(id: string, data: Partial<InsertSuuntoActivity>): Promise<SuuntoActivity | undefined> {
+    await this.ensureSuuntoTables();
+    const [activity] = await this.db.update(suuntoActivities).set(data).where(eq(suuntoActivities.id, id)).returning();
+    return activity || undefined;
+  }
+
+  async deleteSuuntoActivityById(id: string): Promise<void> {
+    await this.ensureSuuntoTables();
+    await this.db.delete(suuntoActivities).where(eq(suuntoActivities.id, id));
+  }
+
+  async deleteSuuntoActivityByRouteId(routeId: string): Promise<void> {
+    await this.ensureSuuntoTables();
+    await this.db.delete(suuntoActivities).where(eq(suuntoActivities.routeId, routeId));
+  }
+
+  /**
+   * The user deleted the route of an imported workout: keep the record as skipped so the webhook / poll
+   * doesn't import it again (the app's "Reintentar" brings it back).
+   */
+  async markSuuntoActivityDeletedByRouteId(routeId: string): Promise<void> {
+    await this.ensureSuuntoTables();
+    await this.db
+      .update(suuntoActivities)
+      .set({ routeId: null, status: 'skipped', processed: true, processedAt: new Date().toISOString(), skipReason: 'deleted_by_user' })
+      .where(eq(suuntoActivities.routeId, routeId));
+  }
+
+  async getSuuntoActivitiesByUserId(userId: string, limit = 200): Promise<SuuntoActivity[]> {
+    await this.ensureSuuntoTables();
+    return await this.db
+      .select()
+      .from(suuntoActivities)
+      .where(eq(suuntoActivities.userId, userId))
+      .orderBy(desc(suuntoActivities.startDate))
+      .limit(limit);
+  }
+
+  /** Imported workouts with a GPS track still waiting to become a route (oldest first). */
+  async getUnprocessedSuuntoActivities(userId: string): Promise<SuuntoActivity[]> {
+    await this.ensureSuuntoTables();
+    return await this.db
+      .select()
+      .from(suuntoActivities)
+      .where(and(eq(suuntoActivities.userId, userId), eq(suuntoActivities.processed, false), isNull(suuntoActivities.skipReason)))
+      .orderBy(suuntoActivities.startDate);
+  }
+
+  async getSuuntoActivityStats(userId: string): Promise<{ total: number; pending: number; failed: number }> {
+    await this.ensureSuuntoTables();
+    const [row] = await this.db
+      .select({
+        total: sql<number>`count(*)`,
+        pending: sql<number>`sum(case when ${suuntoActivities.processed} = 0 and ${suuntoActivities.skipReason} is null then 1 else 0 end)`,
+        failed: sql<number>`sum(case when ${suuntoActivities.routeId} is null and (${suuntoActivities.processed} = 1 or ${suuntoActivities.skipReason} is not null) then 1 else 0 end)`,
+      })
+      .from(suuntoActivities)
+      .where(eq(suuntoActivities.userId, userId));
+    return { total: Number(row?.total ?? 0), pending: Number(row?.pending ?? 0), failed: Number(row?.failed ?? 0) };
   }
 
   // ==================== COROS ====================

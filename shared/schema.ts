@@ -185,6 +185,42 @@ export const corosActivities = sqliteTable("coros_activities", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Suunto Integration Tables (Suunto Cloud API: OAuth2 + workout webhook + FIT export)
+export const suuntoAccounts = sqliteTable("suunto_accounts", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  // "user" claim of the Suunto JWT: identifies the account in webhook notifications
+  suuntoUsername: text("suunto_username").notNull().unique(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  expiresAt: text("expires_at"), // ISO timestamp of the access token expiry
+  scope: text("scope"),
+  connectedAt: text("connected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastSyncAt: text("last_sync_at"),
+  lastWebhookAt: text("last_webhook_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const suuntoActivities = sqliteTable("suunto_activities", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  workoutKey: text("workout_key").notNull().unique(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  name: text("name").notNull(),
+  activityType: text("activity_type").notNull(), // e.g. "running", "trail_running", "walking"
+  suuntoActivityId: integer("suunto_activity_id"), // Suunto App activity ID from the workout list
+  distance: real("distance").notNull(), // meters
+  duration: integer("duration").notNull(), // seconds (timer time)
+  startDate: text("start_date").notNull(), // ISO
+  summaryPolyline: text("summary_polyline"), // encoded GPS track from the FIT file
+  // pending (imported, waiting for /process) | imported (route created) | skipped | failed (retryable)
+  status: text("status").notNull().default('pending'),
+  processed: integer("processed", { mode: 'boolean' }).notNull().default(false),
+  processedAt: text("processed_at"),
+  skipReason: text("skip_reason"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Ephemeral photos (one-time viewable taunt photos)
 export const ephemeralPhotos = sqliteTable("ephemeral_photos", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
@@ -597,6 +633,16 @@ export const insertCorosActivitySchema = createInsertSchema(corosActivities).omi
   createdAt: true,
 });
 
+export const insertSuuntoAccountSchema = createInsertSchema(suuntoAccounts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertSuuntoActivitySchema = createInsertSchema(suuntoActivities).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({
   id: true,
   createdAt: true,
@@ -719,6 +765,12 @@ export type InsertCorosAccount = z.infer<typeof insertCorosAccountSchema>;
 
 export type CorosActivity = typeof corosActivities.$inferSelect;
 export type InsertCorosActivity = z.infer<typeof insertCorosActivitySchema>;
+
+export type SuuntoAccount = typeof suuntoAccounts.$inferSelect;
+export type InsertSuuntoAccount = z.infer<typeof insertSuuntoAccountSchema>;
+
+export type SuuntoActivity = typeof suuntoActivities.$inferSelect;
+export type InsertSuuntoActivity = z.infer<typeof insertSuuntoActivitySchema>;
 
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
