@@ -344,4 +344,41 @@ export class EmailService {
       return false;
     }
   }
+  /** "Forgot password" code. Throws if the email can't be sent. */
+  async sendPasswordResetCode(recipientEmail: string, recipientName: string, code: string): Promise<void> {
+    const esc = (value: string) =>
+      value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
+    await this.send(
+      recipientEmail,
+      `Tu código para cambiar la contraseña: ${code}`,
+      `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #1a1a1a; margin: 0;">🔑 Cambia tu contraseña</h1>
+          </div>
+
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; text-align: center;">
+            <p style="font-size: 16px; color: #555; margin: 0 0 15px 0;">
+              Hola <strong>${esc(recipientName)}</strong>, escribe este código en la app para elegir una contraseña nueva:
+            </p>
+            <div style="background: #1a1a1a; color: white; font-size: 32px; font-weight: bold; letter-spacing: 8px; padding: 20px 30px; border-radius: 12px; display: inline-block;">
+              ${code}
+            </div>
+            <p style="font-size: 14px; color: #888; margin: 15px 0 0 0;">
+              El código expira en 15 minutos
+            </p>
+          </div>
+
+          <p style="color: #666; font-size: 14px; text-align: center;">
+            Si no has pedido cambiar la contraseña, ignora este email: tu contraseña actual sigue funcionando.
+          </p>
+
+          <p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px;">
+            © 2026 Runna.io. Todos los derechos reservados.
+          </p>
+        </div>
+      `,
+    );
+    console.log('[EMAIL] Password reset code sent to', recipientEmail);
+  }
 }

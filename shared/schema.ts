@@ -94,6 +94,15 @@ export const authSessions = sqliteTable("auth_sessions", {
   expiresAt: text("expires_at").notNull(), // ISO timestamp, extended while the session is used
 });
 
+// "Forgot password": one pending 6-digit reset code per user, stored as a SHA-256 hash
+export const passwordResets = sqliteTable("password_resets", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  codeHash: text("code_hash").notNull(),
+  attempts: integer("attempts").notNull().default(0), // wrong codes entered; the code dies after 5
+  createdAt: text("created_at").notNull(), // ISO timestamp, used to throttle resends
+  expiresAt: text("expires_at").notNull(), // ISO timestamp
+});
+
 // Polar Integration Tables
 export const polarAccounts = sqliteTable("polar_accounts", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
@@ -724,6 +733,7 @@ export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;
 
 export type AuthSession = typeof authSessions.$inferSelect;
+export type PasswordReset = typeof passwordResets.$inferSelect;
 
 export type ConquestMetric = typeof conquestMetrics.$inferSelect;
 export type InsertConquestMetric = z.infer<typeof insertConquestMetricSchema>;

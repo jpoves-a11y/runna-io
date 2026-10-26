@@ -8,6 +8,7 @@ import {
   friendRequests,
   pushSubscriptions,
   authSessions,
+  passwordResets,
   stravaAccounts,
   stravaActivities,
   polarAccounts,
@@ -47,6 +48,7 @@ import {
   type PushSubscription,
   type InsertPushSubscription,
   type AuthSession,
+  type PasswordReset,
   type StravaAccount,
   type InsertStravaAccount,
   type StravaActivity,
@@ -192,6 +194,7 @@ export class WorkerStorage {
     // Delete from all child tables first to avoid FK constraint issues
     await this.deleteAuthSessionsByUserId(userId);
     await this.ensureSchemaUpgrades();
+    await this.db.delete(passwordResets).where(eq(passwordResets.userId, userId));
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
@@ -259,6 +262,13 @@ export class WorkerStorage {
       PRIMARY KEY (blocker_id, blocked_id)
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS password_resets (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    )`);
   }
 
   // ===== Indexes for the per-user lookups of the app's main screens =====
@@ -462,6 +472,36 @@ export class WorkerStorage {
     }));
 
     return usersWithStats;
+  }
+
+  // ===== Password resets =====
+
+  async getPasswordReset(userId: string): Promise<PasswordReset | undefined> {
+    await this.ensureSchemaUpgrades();
+    const [reset] = await this.db.select().from(passwordResets).where(eq(passwordResets.userId, userId)).limit(1);
+    return reset;
+  }
+
+  /** Stores a new reset code for the user, replacing any earlier one. */
+  async savePasswordReset(userId: string, codeHash: string, expiresAt: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const createdAt = new Date().toISOString();
+    await this.db
+      .insert(passwordResets)
+      .values({ userId, codeHash, attempts: 0, createdAt, expiresAt })
+      .onConflictDoUpdate({ target: passwordResets.userId, set: { codeHash, attempts: 0, createdAt, expiresAt } });
+  }
+
+  async incrementPasswordResetAttempts(userId: string): Promise<void> {
+    await this.db
+      .update(passwordResets)
+      .set({ attempts: sql`${passwordResets.attempts} + 1` })
+      .where(eq(passwordResets.userId, userId));
+  }
+
+  async deletePasswordReset(userId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.delete(passwordResets).where(eq(passwordResets.userId, userId));
   }
 
   async updateUserPassword(userId: string, passwordHash: string): Promise<void> {

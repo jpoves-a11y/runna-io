@@ -250,6 +250,7 @@ private struct LoginForm: View {
     @State private var password = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showingForgotPassword = false
 
     var body: some View {
         VStack(spacing: DS.Spacing.m) {
@@ -263,6 +264,12 @@ private struct LoginForm: View {
             AuthTextField(systemImage: "lock.fill") {
                 PasswordField(title: "Contraseña", text: $password, contentType: .password, onSubmit: submit)
             }
+            Button("¿Has olvidado tu contraseña?") {
+                showingForgotPassword = true
+            }
+            .font(.system(.footnote, design: .rounded, weight: .semibold))
+            .foregroundStyle(Color.brand)
+            .frame(maxWidth: .infinity, alignment: .trailing)
 
             Button(action: submit) {
                 if isLoading {
@@ -277,6 +284,9 @@ private struct LoginForm: View {
             .padding(.top, DS.Spacing.s)
         }
         .errorAlert($errorMessage)
+        .sheet(isPresented: $showingForgotPassword) {
+            ForgotPasswordView(initialEmail: identifier.contains("@") ? identifier : "")
+        }
     }
 
     private func submit() {
@@ -386,6 +396,145 @@ private struct RegisterForm: View {
         Task {
             do {
                 try await session.register(name: name, username: username, email: email, password: password)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+}
+
+// MARK: - Forgot password
+
+/// Two steps: ask for the email, then the emailed 6-digit code and the new password (which logs in).
+private struct ForgotPasswordView: View {
+    @Environment(SessionStore.self) private var session
+    @Environment(\.dismiss) private var dismiss
+    @State private var email: String
+    @State private var code = ""
+    @State private var newPassword = ""
+    @State private var codeSent = false
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var resendAvailableAt = Date()
+
+    init(initialEmail: String) {
+        _email = State(initialValue: initialEmail)
+    }
+
+    private var emailIsValid: Bool { email.contains("@") && email.contains(".") }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: DS.Spacing.l) {
+                    Image(systemName: codeSent ? "envelope.badge.fill" : "key.fill")
+                        .font(.system(size: 44, weight: .semibold))
+                        .foregroundStyle(.brandGradient)
+                        .contentTransition(.symbolEffect(.replace))
+                        .padding(.top, DS.Spacing.l)
+                    Text(codeSent
+                         ? LocalizedStringKey("Te hemos mandado un código de 6 dígitos a **\(email)** si tiene una cuenta. Escríbelo y elige tu nueva contraseña.")
+                         : LocalizedStringKey("Escribe el email de tu cuenta y te mandaremos un código para elegir una contraseña nueva."))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+
+                    if codeSent {
+                        resetFields
+                    } else {
+                        emailStep
+                    }
+                }
+                .padding(DS.Spacing.xl)
+                .frame(maxWidth: 520)
+                .frame(maxWidth: .infinity)
+                .animation(.snappy, value: codeSent)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Recuperar contraseña")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancelar") { dismiss() }
+                }
+            }
+        }
+        .errorAlert($errorMessage)
+    }
+
+    private var emailStep: some View {
+        VStack(spacing: DS.Spacing.m) {
+            AuthTextField(systemImage: "envelope.fill") {
+                TextField("Email", text: $email)
+                    .textContentType(.emailAddress)
+                    .keyboardType(.emailAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit(sendCode)
+            }
+            Button(action: sendCode) {
+                if isLoading { ProgressView().tint(.white) } else { Text("Enviar código") }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(!emailIsValid || isLoading)
+        }
+    }
+
+    private var resetFields: some View {
+        VStack(spacing: DS.Spacing.m) {
+            AuthTextField(systemImage: "number") {
+                TextField("Código de 6 dígitos", text: $code)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .onChange(of: code) { _, newValue in
+                        let digits = String(newValue.filter(\.isNumber).prefix(6))
+                        if digits != newValue { code = digits }
+                    }
+            }
+            AuthTextField(systemImage: "lock.fill") {
+                PasswordField(title: "Nueva contraseña (mín. 6 caracteres)", text: $newPassword, contentType: .newPassword, onSubmit: resetPassword)
+            }
+            Button(action: resetPassword) {
+                if isLoading { ProgressView().tint(.white) } else { Text("Cambiar contraseña") }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(code.count != 6 || newPassword.count < 6 || isLoading)
+
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let remaining = Int(resendAvailableAt.timeIntervalSince(context.date).rounded(.up))
+                Button(remaining > 0 ? "Reenviar código (\(remaining)s)" : "Reenviar código") {
+                    sendCode()
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(remaining > 0 || isLoading)
+                .opacity(remaining > 0 ? 0.6 : 1)
+            }
+        }
+    }
+
+    private func sendCode() {
+        guard emailIsValid, !isLoading else { return }
+        isLoading = true
+        Task {
+            do {
+                try await session.requestPasswordReset(email: email)
+                resendAvailableAt = Date().addingTimeInterval(60)
+                codeSent = true
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func resetPassword() {
+        guard code.count == 6, newPassword.count >= 6, !isLoading else { return }
+        isLoading = true
+        Task {
+            do {
+                try await session.resetPassword(email: email, code: code, newPassword: newPassword)
+                dismiss()
             } catch {
                 errorMessage = error.localizedDescription
             }

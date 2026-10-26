@@ -1546,6 +1546,104 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
+  // ===== Forgot password =====
+  // A 6-digit code is emailed (free: same Resend/SendGrid account as the verification emails),
+  // and the app sends it back with the new password.
+  const PASSWORD_RESET_TTL_MS = 15 * 60 * 1000;
+  const PASSWORD_RESET_RESEND_MS = 60 * 1000;
+  const PASSWORD_RESET_MAX_ATTEMPTS = 5;
+
+  const hashResetCode = async (code: string) => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code));
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  const findUserByEmail = async (storage: WorkerStorage, rawEmail: unknown) => {
+    const email = typeof rawEmail === 'string' ? rawEmail.trim() : '';
+    if (!email.includes('@')) return undefined;
+    return (await storage.getUserByEmail(email)) ?? (await storage.getUserByEmail(email.toLowerCase()));
+  };
+
+  // Always answers the same way, so it can't be used to find out which emails have an account
+  app.post('/api/auth/forgot-password', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const { email } = await c.req.json().catch(() => ({}));
+      if (typeof email !== 'string' || !email.includes('@')) {
+        return c.json({ error: "Email válido requerido" }, 400);
+      }
+
+      const user = await findUserByEmail(storage, email);
+      if (user) {
+        const previous = await storage.getPasswordReset(user.id);
+        const recentlySent = previous && Date.now() - new Date(previous.createdAt).getTime() < PASSWORD_RESET_RESEND_MS;
+        if (!recentlySent) {
+          const code = (100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000)).toString();
+          await storage.savePasswordReset(user.id, await hashResetCode(code), new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString());
+          try {
+            const provider = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+            const apiKey = provider === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+            const fromEmail = provider === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+            const emailService = new EmailService(apiKey!, fromEmail, provider as any, publicBaseUrl(c));
+            await emailService.sendPasswordResetCode(user.email, user.name, code);
+          } catch (err) {
+            console.error('[EMAIL] Failed to send password reset code:', err);
+            await storage.deletePasswordReset(user.id);
+            return c.json({ error: "No se pudo enviar el email. Inténtalo más tarde." }, 500);
+          }
+        }
+      }
+
+      return c.json({ success: true, message: "Si hay una cuenta con ese email, te hemos enviado un código" });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Sets the new password and logs in: revokes every other session and returns a fresh token
+  app.post('/api/auth/reset-password', async (c) => {
+    try {
+      const db = getDb(c.env);
+      const storage = new WorkerStorage(db);
+      const { email, code, password } = await c.req.json().catch(() => ({}));
+      if (typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
+        return c.json({ error: "Escribe el código de 6 dígitos" }, 400);
+      }
+      if (typeof password !== 'string' || password.length < 6) {
+        return c.json({ error: "La contraseña debe tener al menos 6 caracteres" }, 400);
+      }
+
+      const invalid = () => c.json({ error: "Código incorrecto o caducado. Pide uno nuevo." }, 400);
+      const user = await findUserByEmail(storage, email);
+      if (!user) return invalid();
+      const reset = await storage.getPasswordReset(user.id);
+      if (!reset) return invalid();
+      if (new Date(reset.expiresAt).getTime() <= Date.now() || reset.attempts >= PASSWORD_RESET_MAX_ATTEMPTS) {
+        await storage.deletePasswordReset(user.id);
+        return invalid();
+      }
+      if ((await hashResetCode(code.trim())) !== reset.codeHash) {
+        await storage.incrementPasswordResetAttempts(user.id);
+        return c.json({ error: "Código incorrecto" }, 400);
+      }
+
+      await storage.deletePasswordReset(user.id);
+      await storage.updateUserPassword(user.id, await hashPassword(password));
+      await storage.deleteAuthSessionsByUserId(user.id);
+      // The code arrived by email, so the address is proven
+      if (!user.emailVerified) {
+        await storage.updateUser(user.id, { emailVerified: true, verificationCode: null, verificationCodeExpiresAt: null } as any);
+      }
+
+      const token = await createSession(storage, user.id);
+      const updated = (await storage.getUser(user.id)) ?? user;
+      return c.json({ ...toSelfUser(updated), token });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   // Revoke the session token sent in the Authorization header
   app.post('/api/auth/logout', async (c) => {
     try {

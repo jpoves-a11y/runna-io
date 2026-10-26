@@ -156,6 +156,36 @@ final class SessionStore {
         try await api.send("POST", "/api/auth/resend-verification", body: [:], token: pending.token)
     }
 
+    // MARK: - Forgot password
+
+    /// Emails a 6-digit code to reset the password (the server answers the same whether or not the email has an account).
+    func requestPasswordReset(email: String) async throws {
+        try await api.send(
+            "POST", "/api/auth/forgot-password",
+            body: ["email": email.trimmingCharacters(in: .whitespaces)]
+        )
+    }
+
+    /// Sets the new password with the emailed code and logs in (the server revokes every other session).
+    func resetPassword(email: String, code: String, newPassword: String) async throws {
+        let response: AppUser = try await api.request(
+            "POST", "/api/auth/reset-password",
+            body: [
+                "email": email.trimmingCharacters(in: .whitespaces),
+                "code": code.trimmingCharacters(in: .whitespaces),
+                "password": newPassword,
+            ]
+        )
+        guard let token = response.token else {
+            throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inténtalo más tarde.")
+        }
+        if let pending = pendingVerification {
+            Self.revoke(token: pending.token)
+            clearPendingVerification()
+        }
+        startSession(user: response, token: token)
+    }
+
     /// "Usar otra cuenta": forgets the pending registration and revokes its token on the server.
     func cancelVerification() {
         if let pending = pendingVerification {
