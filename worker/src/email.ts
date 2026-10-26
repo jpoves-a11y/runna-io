@@ -1,7 +1,104 @@
 import { Resend } from 'resend';
 import type { WorkerStorage } from './storage';
+import type { Env } from './index';
 
-type EmailProvider = 'resend' | 'sendgrid';
+type EmailProvider = 'resend' | 'sendgrid' | 'gmail';
+
+/** OAuth client + refresh token of the Gmail account that sends the emails (scope gmail.send). */
+export interface GmailCredentials {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}
+
+const GMAIL_FROM_DEFAULT = 'runna.io.service@gmail.com';
+
+/** Picks the provider from env: EMAIL_PROVIDER, else Gmail / SendGrid / Resend, whichever has credentials. */
+function emailProvider(env: Env): EmailProvider {
+  if (env.EMAIL_PROVIDER) return env.EMAIL_PROVIDER;
+  if (env.GMAIL_REFRESH_TOKEN) return 'gmail';
+  return env.SENDGRID_API_KEY ? 'sendgrid' : 'resend';
+}
+
+/** True when the configured provider has its credentials (otherwise sends throw). */
+export function isEmailConfigured(env: Env): boolean {
+  switch (emailProvider(env)) {
+    case 'gmail': return Boolean(env.GMAIL_CLIENT_ID && env.GMAIL_CLIENT_SECRET && env.GMAIL_REFRESH_TOKEN);
+    case 'sendgrid': return Boolean(env.SENDGRID_API_KEY);
+    case 'resend': return Boolean(env.RESEND_API_KEY);
+  }
+}
+
+/** EmailService configured from the Worker environment. */
+export function createEmailService(env: Env, baseUrl?: string): EmailService {
+  const provider = emailProvider(env);
+  if (provider === 'gmail') {
+    return new EmailService('', env.GMAIL_FROM || GMAIL_FROM_DEFAULT, 'gmail', baseUrl, {
+      clientId: env.GMAIL_CLIENT_ID || '',
+      clientSecret: env.GMAIL_CLIENT_SECRET || '',
+      refreshToken: env.GMAIL_REFRESH_TOKEN || '',
+    });
+  }
+  if (provider === 'sendgrid') {
+    return new EmailService(env.SENDGRID_API_KEY || '', env.SENDGRID_FROM || env.RESEND_FROM, 'sendgrid', baseUrl);
+  }
+  return new EmailService(env.RESEND_API_KEY || '', env.RESEND_FROM, 'resend', baseUrl);
+}
+
+// Gmail access tokens last 1 hour: reuse one per isolate until shortly before it expires
+let gmailAccessToken: { value: string; expiresAt: number; refreshToken: string } | null = null;
+
+async function getGmailAccessToken(credentials: GmailCredentials): Promise<string> {
+  const now = Date.now();
+  if (gmailAccessToken && gmailAccessToken.refreshToken === credentials.refreshToken && gmailAccessToken.expiresAt - 60_000 > now) {
+    return gmailAccessToken.value;
+  }
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: credentials.clientId,
+      client_secret: credentials.clientSecret,
+      refresh_token: credentials.refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    console.error('[EMAIL] Gmail token refresh failed:', resp.status, text);
+    throw new Error(`Gmail token error ${resp.status}`);
+  }
+  const data = (await resp.json()) as { access_token: string; expires_in: number };
+  gmailAccessToken = { value: data.access_token, expiresAt: now + data.expires_in * 1000, refreshToken: credentials.refreshToken };
+  return data.access_token;
+}
+
+function base64Utf8(value: string): string {
+  let binary = '';
+  for (const b of new TextEncoder().encode(value)) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+/** RFC 2047 encoded header value (subjects and names with accents or emoji). */
+function encodeHeader(value: string): string {
+  return /^[\x20-\x7e]*$/.test(value) ? value : `=?UTF-8?B?${base64Utf8(value)}?=`;
+}
+
+/** MIME message for the Gmail API `raw` field (base64url). */
+function buildGmailRaw(fromName: string, fromEmail: string, to: string, subject: string, html: string): string {
+  const body = base64Utf8(html).replace(/.{76}/g, '$&\r\n');
+  const message = [
+    `From: ${encodeHeader(fromName)} <${fromEmail}>`,
+    `To: ${to}`,
+    `Subject: ${encodeHeader(subject)}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    body,
+  ].join('\r\n');
+  return base64Utf8(message).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
 
 // Public URL of the Worker: email buttons open its /open landing page, which launches the iOS app
 // (email clients don't reliably open custom URL schemes such as runnaio://).
@@ -14,9 +111,11 @@ export class EmailService {
   private fromEmail = 'onboarding@resend.dev';
   private fromName = 'Runna.io';
   private baseUrl: string;
+  private gmail?: GmailCredentials;
 
-  constructor(apiKey: string, fromEmail?: string, provider?: EmailProvider, baseUrl?: string) {
+  constructor(apiKey: string, fromEmail?: string, provider?: EmailProvider, baseUrl?: string, gmail?: GmailCredentials) {
     this.apiKey = apiKey;
+    this.gmail = gmail;
     this.baseUrl = (baseUrl || DEFAULT_WORKER_URL).replace(/\/+$/, '');
     this.provider = provider || 'resend';
     if (this.provider === 'resend') {
@@ -28,6 +127,24 @@ export class EmailService {
   }
 
   private async send(to: string, subject: string, html: string): Promise<void> {
+    if (this.provider === 'gmail') {
+      if (!this.gmail?.clientId || !this.gmail.clientSecret || !this.gmail.refreshToken) {
+        throw new Error('Gmail credentials not configured');
+      }
+      const accessToken = await getGmailAccessToken(this.gmail);
+      const resp = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw: buildGmailRaw(this.fromName, this.fromEmail, to, subject, html) }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error('[EMAIL] Gmail send failed:', resp.status, text);
+        throw new Error(`Gmail error ${resp.status}`);
+      }
+      return;
+    }
+
     if (this.provider === 'sendgrid') {
       const payload = {
         personalizations: [

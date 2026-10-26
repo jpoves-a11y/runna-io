@@ -87,6 +87,7 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 | `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, `APNS_PRIVATE_KEY` | Sí | Notificaciones push en el iPhone ([ver guía](ios/README.md#notificaciones-push-apns)) |
 | `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `STRAVA_WEBHOOK_VERIFY_TOKEN` | Para Strava | Conexión con Strava |
 | `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET` | Para Polar | Conexión con Polar |
+| `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` / `GMAIL_REFRESH_TOKEN` | Para emails (gratis) | Envío con la API de Gmail (`EMAIL_PROVIDER = "gmail"`); el token se obtiene con `node scripts/gmail-refresh-token.mjs` |
 | `SENDGRID_API_KEY` / `RESEND_API_KEY` | Para emails | Verificación de email, recuperar contraseña, avisos y denuncias (`EMAIL_PROVIDER` en `[vars]` elige el proveedor) |
 | `WORKER_URL` | No | URL pública del Worker para enlaces de invitación y botones de los emails. Por defecto, el origen de la petición |
 | `APP_DOWNLOAD_URL` | No | Enlace de App Store / TestFlight; si está, las páginas `/invite` y `/open` muestran "Descargar la app" |

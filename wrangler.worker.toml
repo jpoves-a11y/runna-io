@@ -18,6 +18,10 @@ SENDGRID_FROM = "runna.io.service@gmail.com"
 RESEND_FROM = "onboarding@resend.dev"
 
 # NOTA: Las API keys deben configurarse como secretos:
+# Gmail (EMAIL_PROVIDER = "gmail", gratis; el token se saca con scripts/gmail-refresh-token.mjs):
+# wrangler secret put GMAIL_CLIENT_ID -c wrangler.worker.toml
+# wrangler secret put GMAIL_CLIENT_SECRET -c wrangler.worker.toml
+# wrangler secret put GMAIL_REFRESH_TOKEN -c wrangler.worker.toml
 # wrangler secret put SENDGRID_API_KEY -c wrangler.worker.toml
 # wrangler secret put RESEND_API_KEY -c wrangler.worker.toml
 # wrangler secret put DATABASE_URL -c wrangler.worker.toml

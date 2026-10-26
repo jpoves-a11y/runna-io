@@ -30,7 +30,13 @@ export interface Env {
   INTERNAL_CRON?: boolean;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
-  EMAIL_PROVIDER?: 'resend' | 'sendgrid';
+  EMAIL_PROVIDER?: 'resend' | 'sendgrid' | 'gmail';
+  // Gmail API (free): OAuth client of a Google Cloud project + refresh token of the sending account
+  // (scripts/gmail-refresh-token.mjs). GMAIL_FROM defaults to runna.io.service@gmail.com
+  GMAIL_CLIENT_ID?: string;
+  GMAIL_CLIENT_SECRET?: string;
+  GMAIL_REFRESH_TOKEN?: string;
+  GMAIL_FROM?: string;
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM?: string;
   UPSTASH_CRON_SECRET?: string;

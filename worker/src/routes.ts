@@ -3,7 +3,7 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
-import { EmailService } from './email';
+import { createEmailService, isEmailConfigured } from './email';
 import { USER_COLORS } from '../../shared/colors';
 import type { Env } from './index';
 import {
@@ -862,10 +862,7 @@ export async function processTerritoryConquest(
 
       for (const notif of cappedNotifs) {
         try {
-          const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-          const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
-          const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
-          const emailService = new EmailService(apiKey!, fromEmail, provider as any, env.WORKER_URL);
+          const emailService = createEmailService(env, env.WORKER_URL);
           
           await emailService.sendTerritoryConqueredEmail(
             notif.victimEmail,
@@ -1582,10 +1579,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           const code = (100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000)).toString();
           await storage.savePasswordReset(user.id, await hashResetCode(code), new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString());
           try {
-            const provider = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-            const apiKey = provider === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-            const fromEmail = provider === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-            const emailService = new EmailService(apiKey!, fromEmail, provider as any, publicBaseUrl(c));
+            const emailService = createEmailService(c.env, publicBaseUrl(c));
             await emailService.sendPasswordResetCode(user.email, user.name, code);
           } catch (err) {
             console.error('[EMAIL] Failed to send password reset code:', err);
@@ -1691,10 +1685,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Enviar código de verificación por email
       try {
-        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
+        const emailService = createEmailService(c.env, publicBaseUrl(c));
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
       } catch (err) {
         console.error('[EMAIL] Failed to send verification code:', err);
@@ -1754,10 +1745,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Enviar email de bienvenida ahora que está verificado
       try {
-        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
+        const emailService = createEmailService(c.env, publicBaseUrl(c));
         await emailService.sendWelcomeEmail(user.email, user.name);
       } catch (err) {
         console.error('[EMAIL] Failed to send welcome email:', err);
@@ -1800,10 +1788,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Enviar código
       try {
-        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
+        const emailService = createEmailService(c.env, publicBaseUrl(c));
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
       } catch (err) {
         console.error('[EMAIL] Failed to resend verification code:', err);
@@ -3459,10 +3444,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       try {
         const sender = await storage.getUser(userId);
         const recipient = await storage.getUser(friendId);
-        const provider2 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey2 = provider2 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail2 = provider2 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any, publicBaseUrl(c));
+        const emailService = createEmailService(c.env, publicBaseUrl(c));
         
         if (sender && recipient && recipient.email) {
           const prefs = await storage.getEmailPreferences(friendId);
@@ -3627,10 +3609,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       try {
         const sender = await storage.getUser(request.senderId);
         const recipient = await storage.getUser(userId);
-        const provider3 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey3 = provider3 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail3 = provider3 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any, publicBaseUrl(c));
+        const emailService = createEmailService(c.env, publicBaseUrl(c));
         
         if (sender && sender.email && recipient) {
           const prefs = await storage.getEmailPreferences(request.senderId);
@@ -4026,16 +4005,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Email the app owner so reports get reviewed within 24 h (REPORTS_EMAIL, else the support address)
       const notify = async () => {
-        const provider = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey = provider === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        if (!apiKey) return;
-        const fromEmail = provider === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        if (!isEmailConfigured(c.env)) return;
         const describe = async (id: string | null) => {
           if (!id) return '-';
           const u = await storage.getUser(id);
           return u ? `${u.name} (@${u.username}, ${u.id})` : id;
         };
-        const emailService = new EmailService(apiKey, fromEmail, provider as any, publicBaseUrl(c));
+        const emailService = createEmailService(c.env, publicBaseUrl(c));
         await emailService.sendReportNotification((c.env as any).REPORTS_EMAIL || 'runna.io.service@gmail.com', {
           reporter: await describe(reporterId),
           reported: await describe(reportedUserId || null),
