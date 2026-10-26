@@ -1,79 +1,105 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Runna design system — quick guide
+// MARK: - Runna design system — quick guide (read before styling ANY screen)
 //
-// Read this before styling a screen. Everything here works on iOS 17+ and upgrades
-// to Liquid Glass on iOS 26 automatically (never call .glassEffect directly in a screen:
-// use `.glassSurface(...)` / `GlassCircleButton` so the iOS 17 fallback is kept).
+// DIRECTION: premium athletic / editorial (think Strava, Nike Run Club, Apple Fitness, Linear).
+// Calm neutral surfaces, ONE brand accent used sparingly, strong typographic hierarchy, flat
+// containers with hairlines. If something looks "playful", "glowing" or "candy", it is wrong.
 //
-// COLOURS (adaptive light/dark, always write them as `Color.xxx` — `.foregroundStyle(.brand)`
-// does NOT compile, `.foregroundStyle(Color.brand)` does):
-//   Color.brand        vivid emerald, main brand colour (buttons, selected states, own stats)
-//   Color.brandDeep    darker emerald (gradient start, text on light tints)
-//   Color.brandLime    lime (gradient end, highlights)
-//   Color.steal        coral/orange: stealing, attacks, "te han robado", destructive-but-playful
-//   Color.gold         competitions, treasures, podiums, rank #1
-//   Color.sky          info, distance, neutral highlights
-//   Color.grape        finished competitions, special/epic things
-//   Color.canvas       screen background (use `.screenBackground()`)
-//   Color.surface      card background (use `.card()`)
-//   Color.surfaceRaised  nested element inside a card (inputs, inner tiles)
-//   Color.hairline     1pt separators / card outlines
-//   Territory colours: `Color(hex: user.color)` — that colour IS the user's identity:
-//   use it for avatar rings (AvatarView does it), chips, accents next to their name.
+// HARD RULES
+//   • No gradients (the old gradient tokens now render SOLID — don't add new LinearGradients;
+//     the only exception is a very subtle legibility scrim over a map/photo).
+//   • No glow, halos, pulsing or bouncing decorations. No `.shadow` on cards. Motion is functional
+//     only: `.snappy` state changes, `.contentTransition(.numericText())` on counters.
+//   • No emoji in UI chrome (titles, labels, buttons, badges, copy we write). Emoji only inside
+//     user/API content (e.g. a power's emoji) and then small (≤ .body). Prefer SF Symbols.
+//   • NEVER `design: .rounded`. Use SF Pro (default design). Numbers use the condensed stat fonts.
+//   • Colour budget per screen: neutrals + brand. Coral (`Color.steal`) only as TEXT/ICON colour
+//     for stolen/lost/destructive values — never a filled block. Gold only for #1-rank details.
+//     Territory colours (`Color(hex: user.color)`) are identity: avatar ring, a small dot. Nothing else.
+//   • No filled/tinted capsule "pills" behind every number. Separate stats with hairline dividers
+//     (`StatDivider()`), put labels under values (`.statLabelStyle()`).
+//   • No coloured circle backgrounds behind icons (avatars are the only circles with fills).
+//   • Copy: concise, confident, adult Spanish (Spain). Sentence case. Avoid "¡...!" — one at most
+//     per screen, ideally none. No slang ("crew", "currado", "pique") in new copy.
 //
-// GRADIENTS (`ShapeStyle`, so `.fill(.brandGradient)` / `.background(.brandGradient, in: Capsule())`):
-//   .brandGradient  hero elements (Correr button, splash, big highlights)
-//   .stealGradient  steal / attack moments
-//   .goldGradient   competition / treasures / winners
-//   .grapeGradient  finished competition, special
+// COLOURS (adaptive; write them as `Color.xxx` — `.foregroundStyle(.brand)` does NOT compile):
+//   Color.brand         deep emerald — primary actions, selection, the user's OWN data. Sparingly.
+//   Color.onBrand       text/icon colour ON a brand fill (white in light, near-black in dark)
+//   Color.brandDeep     darker emerald (pressed states, text on very light backgrounds)
+//   Color.brandLime     legacy: now a quiet lighter emerald. Don't use in new code.
+//   Color.steal         coral/red — TEXT colour for "robado / perdido / destructive". Never a fill.
+//   Color.gold          muted gold — ONLY rank #1 details (crown glyph, "#1" text)
+//   Color.sky, .grape   legacy, now desaturated slate / indigo. Avoid in new code (use .secondary).
+//   Color.canvas        screen background = systemGroupedBackground (use `.screenBackground()`)
+//   Color.surface       card fill = secondarySystemGroupedBackground (use `.card()`)
+//   Color.surfaceRaised element nested in a card = tertiarySystemGroupedBackground / inputs
+//   Color.hairline      separator colour for 0.5pt strokes and dividers
+//   Text: `.primary` for content, `.secondary` for metadata, `.tertiary` for disabled/hints.
 //
-// TYPOGRAPHY (SF Pro Rounded for numbers and titles):
-//   Font.statNumber    big bold stat value (title2 rounded bold) — add .monospacedDigit()
-//   Font.statHero      hero number (largeTitle rounded heavy)
-//   Font.statLabel     tiny label under a stat; pair with `.statLabelStyle()` (uppercase + tracking)
-//   Font.sectionTitle  section headers (title3 rounded bold)
-//   Font.cardTitle     title inside a card (headline rounded)
-//   Font.stat(_ size:) custom-size rounded bold number
+// GRADIENT TOKENS (kept so old code compiles — they now render as a flat solid colour):
+//   .brandGradient = brand, .stealGradient = steal, .goldGradient = gold, .grapeGradient = grape.
+//   Don't use them for large blocks: a big coloured hero card is off-brand. Use `.card()` instead.
 //
-// SPACING / SHAPES:  DS.Spacing.s (8) .m (12) .l (16) .xl (20) .xxl (24)
-//                    DS.Radius.card (22) .tile (16) .small (12); chips & buttons are Capsules.
+// TYPOGRAPHY (SF Pro, default design):
+//   Font.screenTitle    34 bold, use with `.tracking(DS.Tracking.title)` — custom large titles
+//   Font.sectionTitle   title3 semibold — a big in-content heading (rare)
+//   Font.sectionLabel   caption semibold — section headers; use `.sectionLabelStyle()`
+//                       (UPPERCASE + tracking + secondary). This is the default section header.
+//   Font.cardTitle      headline (semibold) — title inside a card / list row
+//   Font.statHero       hero number (≈44 bold condensed) — summary screens
+//   Font.statNumber     standard stat value (≈24 semibold condensed)
+//   Font.stat(size, weight:)  condensed number of any size (heavy/black are clamped to bold)
+//   Font.statUnit       unit next to a number (subheadline medium) — colour `.secondary`
+//   Font.statLabel      label under a stat (caption2 semibold) — use `.statLabelStyle()`
+//   Font.meta           caption — metadata lines (dates, counts)
+//   Always add `.monospacedDigit()` to changing numbers. Use `StatValue(value:unit:)` for value+unit.
+//
+// SPACING / SHAPES:
+//   DS.Spacing.xs 4, .s 8, .m 12, .l 16 (card padding), .xl 20 (screen margin), .xxl 24, .xxxl 32
+//   DS.Radius.card 14 (cards), .tile 12 (nested tiles, thumbnails), .small 10, .control 12 (buttons)
+//   DS.Stroke.hairline 0.5 — card / control outlines.  DS.Size.mapControl 44, .icon 17.
+//   Chips are Capsules; buttons are 12pt rounded rects (the "Correr" button is a capsule).
+//
+// ICONS: SF Symbols only. `.symbolRenderingMode(.monochrome)` (or `.hierarchical` for multi-layer
+//   glyphs), weight .regular/.medium, colour `.secondary` (or `.primary` / brand when selected).
+//   Prefer outline glyphs in content; `.fill` only for selected states / tab bar.
 //
 // MODIFIERS:
-//   .card(padding:radius:)    rounded surface card with soft shadow (THE container for content)
-//   .cardStyle()              legacy name, same look as .card()
-//   .screenBackground()       grouped adaptive canvas behind a whole screen
-//   .listBackground()         for List/Form: hides the default background and uses the canvas
-//   .glassSurface(shape, interactive:)  floating control over a map: Liquid Glass on iOS 26,
-//                              ultraThinMaterial + hairline + shadow on iOS 17/18
-//   .statLabelStyle()         uppercase small label for stats
-//   .pressableScale()         springy scale-down while pressed (use as buttonStyle: .buttonStyle(.pressable))
+//   .card(padding:radius:)    flat surface card: surface fill, 14pt continuous corners, hairline,
+//                             no shadow. THE container for content.
+//   .cardStyle()              legacy name, same as .card()
+//   .screenBackground()       grouped canvas behind a whole screen
+//   .listBackground()         for List/Form (prefer `.listStyle(.insetGrouped)` lists)
+//   .glassSurface(shape, interactive:)  floating control over a map: subtle Liquid Glass on iOS 26,
+//                             .regularMaterial + hairline on iOS 17/18. Only over maps/photos.
+//   .statLabelStyle()         uppercase tiny label under stats
+//   .sectionLabelStyle()      uppercase section header label
+//   .hairlineBorder(radius:)  adds just the 0.5pt outline
+//   .buttonStyle(.pressable)  subtle press feedback (opacity + tiny scale)
 //
-// COMPONENTS (Components/DesignSystem.swift + Components/CommonViews.swift):
-//   GlassCircleButton(systemImage:accessibilityLabel:badge:tint:isActive:action:)
-//                             round floating map control (48pt), optional count badge
-//   GlassCircleLabel          the same visual without a Button (for Menu labels)
-//   GlassGroup { }            wraps several glass controls (GlassEffectContainer on iOS 26)
-//   PrimaryActionButton(title:systemImage:style:pulse:action:)
-//                             big gradient capsule for the screen's main action ("Correr")
-//   PrimaryButtonStyle(color:)  full-width capsule button style (forms, sheets)
-//   SecondaryButtonStyle(tint:) tinted soft capsule for secondary actions
-//   StatTile(value:label:unit:tint:)   value + label column (run screens, profile)
-//   StatPill(value:label:systemImage:tint:)  compact capsule with icon + value (+ label)
-//   AvatarView(name:avatar:color:size:ring:)  avatar with territory-colour ring
-//   SectionHeader(title:subtitle:systemImage:actionTitle:action:)
-//   ChipToggle(title:isOn:color:systemImage:onGlass:action:)  filter chips (horizontal rows)
-//   CountBadge(count:)        small red/coral count bubble
-//   EmptyStateView(systemImage:title:message:actionTitle:action:tint:)  friendly empty states
-//   ErrorView(message:retry:) full-screen-ish load error with retry
-//   ErrorBanner(message:retry:onDismiss:)  compact inline error card
-//   RouteShape(coordinates:)  route path drawing for list thumbnails
-//   Haptics.tap()/success()   or prefer `.sensoryFeedback(...)` on the view
-//
-// MOTION: springs (`.snappy`, `.spring(duration: 0.35)`), `.symbolEffect(.bounce, value:)` on icons,
-// `.contentTransition(.numericText())` on counters, sensory feedback on key actions.
-// Respect `accessibilityReduceMotion` for anything that loops.
+// COMPONENTS (DesignSystem.swift + CommonViews.swift):
+//   GlassCircleButton(systemImage:accessibilityLabel:badge:tint:isActive:size:action:)
+//                             44pt round map control. isActive → icon in tint/brand (no fill).
+//   GlassCircleLabel          same visual without a Button (Menu labels)
+//   GlassGroup { }            groups glass controls (GlassEffectContainer on iOS 26)
+//   PrimaryActionButton(title:systemImage:style:pulse:action:)  solid brand capsule ("Correr").
+//                             `pulse` and `style` are ignored visually (kept for API).
+//   PrimaryButtonStyle(color:)  full-width solid button, 12pt radius. Non-brand accent colours
+//                             (steal/gold/grape/sky) are normalised to brand — one accent.
+//   SecondaryButtonStyle(tint:) neutral fill (tertiarySystemFill), label in tint
+//   StatTile(value:label:unit:tint:)  value + unit + label column. Legacy sky/grape tints → primary.
+//   StatValue(value:unit:font:tint:)  number + smaller secondary unit, inline
+//   StatDivider(height:)      vertical hairline between stats;  HairlineDivider() horizontal
+//   StatPill(value:label:systemImage:tint:)  quiet neutral tag (no tinted capsule)
+//   SectionHeader(title:subtitle:systemImage:actionTitle:action:)  uppercase label header
+//   SectionLabel(_:)          just the uppercase label text
+//   ChipToggle(title:isOn:color:systemImage:onGlass:action:)  outline / inverted selection chips
+//   CountBadge(count:)        small coral count bubble
+//   AvatarView(name:avatar:color:size:ring:)  avatar with thin territory-colour ring
+//   EmptyStateView(...) / ErrorView(...) / ErrorBanner(...)  calm states, no halos
+//   RouteShape(coordinates:), Haptics.tap()/success()
 
 // MARK: - Tokens
 
@@ -85,12 +111,59 @@ enum DS {
         static let l: CGFloat = 16
         static let xl: CGFloat = 20
         static let xxl: CGFloat = 24
+        static let xxxl: CGFloat = 32
+        /// Horizontal screen margin.
+        static let screen: CGFloat = 20
+        /// Default inner padding of a card.
+        static let card: CGFloat = 16
     }
 
     enum Radius {
-        static let card: CGFloat = 22
-        static let tile: CGFloat = 16
-        static let small: CGFloat = 12
+        /// Cards and grouped containers.
+        static let card: CGFloat = 14
+        /// Nested tiles, thumbnails, inputs.
+        static let tile: CGFloat = 12
+        static let small: CGFloat = 10
+        /// Buttons.
+        static let control: CGFloat = 12
+    }
+
+    enum Stroke {
+        /// Card / control outline width.
+        static let hairline: CGFloat = 0.5
+    }
+
+    enum Size {
+        /// Round floating map control.
+        static let mapControl: CGFloat = 44
+        /// Default SF Symbol point size inside controls.
+        static let icon: CGFloat = 17
+        /// Primary button height.
+        static let button: CGFloat = 50
+    }
+
+    enum Tracking {
+        /// Large titles (slightly tight).
+        static let title: CGFloat = -0.4
+        /// Uppercase labels.
+        static let label: CGFloat = 0.8
+    }
+
+    /// Legacy accent colours (sky / grape / lime) collapse to `.primary` so numbers don't turn into a rainbow.
+    static func restrainedTint(_ color: Color) -> Color {
+        if color == Color.sky || color == Color.grape || color == Color.brandLime {
+            return Color.primary
+        }
+        return color
+    }
+
+    /// Fills for solid buttons: only the brand accent (or a neutral the caller chose explicitly).
+    static func buttonFill(_ color: Color) -> Color {
+        if color == Color.steal || color == Color.gold || color == Color.grape || color == Color.sky
+            || color == Color.brandLime || color == Color.brandDeep {
+            return Color.brand
+        }
+        return color
     }
 }
 
@@ -118,94 +191,101 @@ extension Color {
         })
     }
 
-    /// Vivid emerald, the brand colour.
-    static let brand = Color.adaptive(light: 0x12A85E, dark: 0x2FD27F)
-    /// Darker emerald (gradient start).
-    static let brandDeep = Color.adaptive(light: 0x07875A, dark: 0x17B26A)
-    /// Fresh lime (gradient end, highlights).
-    static let brandLime = Color.adaptive(light: 0x7CCB1E, dark: 0xA3E635)
-    /// Coral: stealing / attacks.
-    static let steal = Color.adaptive(light: 0xFF5F45, dark: 0xFF7A5C)
-    /// Gold: competitions, treasures, podiums.
-    static let gold = Color.adaptive(light: 0xF2A900, dark: 0xFFC53D)
-    /// Sky blue: info and neutral highlights.
-    static let sky = Color.adaptive(light: 0x2B8CFF, dark: 0x5AA9FF)
-    /// Grape: finished competitions, special items.
-    static let grape = Color.adaptive(light: 0x7C4DFF, dark: 0x9D7BFF)
+    /// Deep, slightly desaturated emerald — the single brand accent.
+    static let brand = Color.adaptive(light: 0x0E8A5F, dark: 0x3CC98E)
+    /// Text / icons placed on a brand fill.
+    static let onBrand = Color.adaptive(light: 0xFFFFFF, dark: 0x05170F)
+    /// Darker emerald (pressed states, text on light tints).
+    static let brandDeep = Color.adaptive(light: 0x0A6B4A, dark: 0x2AA874)
+    /// Legacy highlight; now a quiet lighter emerald.
+    static let brandLime = Color.adaptive(light: 0x3A9C76, dark: 0x6AD6A8)
+    /// Coral red: stolen / lost / destructive — as text colour.
+    static let steal = Color.adaptive(light: 0xD64531, dark: 0xFF7A66)
+    /// Muted gold: rank #1 details only.
+    static let gold = Color.adaptive(light: 0xB08415, dark: 0xE0B44A)
+    /// Legacy info colour, desaturated slate blue.
+    static let sky = Color.adaptive(light: 0x4F6B8A, dark: 0x92A9C4)
+    /// Legacy special colour, desaturated indigo.
+    static let grape = Color.adaptive(light: 0x5D5A93, dark: 0xA3A0D6)
 
-    /// Screen background (subtly green-tinted grouped background).
-    static let canvas = Color.adaptive(light: 0xF2F5F3, dark: 0x0A0E0C)
+    /// Screen background.
+    static let canvas = Color(uiColor: .systemGroupedBackground)
     /// Card background.
-    static let surface = Color.adaptive(light: 0xFFFFFF, dark: 0x161D19)
+    static let surface = Color(uiColor: .secondarySystemGroupedBackground)
     /// Element nested inside a card.
-    static let surfaceRaised = Color.adaptive(light: 0xF3F6F4, dark: 0x212A25)
+    static let surfaceRaised = Color(uiColor: .tertiarySystemGroupedBackground)
     /// Hairline outlines and separators.
-    static let hairline = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor.white.withAlphaComponent(0.08) : UIColor.black.withAlphaComponent(0.06)
-    })
+    static let hairline = Color(uiColor: .separator).opacity(0.6)
 }
 
 extension ShapeStyle where Self == LinearGradient {
-    /// Emerald → lime, for hero elements.
+    /// Legacy: renders as solid brand (no gradients in the new direction).
     static var brandGradient: LinearGradient {
-        LinearGradient(colors: [Color.brandDeep, Color.brand, Color.brandLime], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [Color.brand, Color.brand], startPoint: .top, endPoint: .bottom)
     }
 
-    /// Coral → orange, for steal / attack moments.
+    /// Legacy: renders as solid coral.
     static var stealGradient: LinearGradient {
-        LinearGradient(colors: [Color.steal, Color.adaptive(light: 0xFF9A2E, dark: 0xFFB14D)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [Color.steal, Color.steal], startPoint: .top, endPoint: .bottom)
     }
 
-    /// Amber → gold, for competitions and treasures.
+    /// Legacy: renders as solid gold.
     static var goldGradient: LinearGradient {
-        LinearGradient(colors: [Color.adaptive(light: 0xFF8A00, dark: 0xFFA733), Color.gold], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [Color.gold, Color.gold], startPoint: .top, endPoint: .bottom)
     }
 
-    /// Grape → indigo, for finished competitions and special things.
+    /// Legacy: renders as solid indigo.
     static var grapeGradient: LinearGradient {
-        LinearGradient(colors: [Color.grape, Color.adaptive(light: 0x4F46E5, dark: 0x6D68F0)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        LinearGradient(colors: [Color.grape, Color.grape], startPoint: .top, endPoint: .bottom)
     }
 }
 
 // MARK: - Typography
 
 extension Font {
-    /// Big bold stat value.
-    static let statNumber = Font.system(.title2, design: .rounded, weight: .bold)
+    /// Custom large title (34 bold). Pair with `.tracking(DS.Tracking.title)`.
+    static let screenTitle = Font.system(size: 34, weight: .bold)
+    /// Standard stat value: condensed semibold.
+    static let statNumber = Font.system(size: 24, weight: .semibold).width(.condensed)
     /// Hero number (summary screens).
-    static let statHero = Font.system(.largeTitle, design: .rounded, weight: .heavy)
+    static let statHero = Font.system(size: 44, weight: .bold).width(.condensed)
+    /// Unit next to a stat value (colour `.secondary`).
+    static let statUnit = Font.system(.subheadline, weight: .medium)
     /// Small label under a stat (use with `.statLabelStyle()`).
-    static let statLabel = Font.system(.caption2, design: .rounded, weight: .semibold)
-    /// Section header.
-    static let sectionTitle = Font.system(.title3, design: .rounded, weight: .bold)
-    /// Title inside a card.
-    static let cardTitle = Font.system(.headline, design: .rounded, weight: .bold)
+    static let statLabel = Font.system(.caption2, weight: .semibold)
+    /// Section header label (use with `.sectionLabelStyle()`).
+    static let sectionLabel = Font.system(.caption, weight: .semibold)
+    /// Larger in-content heading.
+    static let sectionTitle = Font.system(.title3, weight: .semibold)
+    /// Title inside a card or row.
+    static let cardTitle = Font.headline
+    /// Metadata line (dates, counts).
+    static let meta = Font.caption
 
-    /// Rounded bold number of a custom size.
+    /// Condensed number of a custom size. Heavy / black are clamped to bold.
     static func stat(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight, design: .rounded)
+        let clamped: Font.Weight = (weight == .heavy || weight == .black) ? .bold : weight
+        return Font.system(size: size, weight: clamped).width(.condensed)
     }
 }
 
 // MARK: - Modifiers
 
-/// Rounded surface card with a soft shadow.
+/// Flat surface card: fill, continuous corners and a hairline. No shadow.
 struct CardBackground: ViewModifier {
-    var padding: CGFloat = DS.Spacing.l
+    var padding: CGFloat = DS.Spacing.card
     var radius: CGFloat = DS.Radius.card
-    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         content
             .padding(padding)
             .background(Color.surface, in: shape)
-            .overlay(shape.strokeBorder(Color.hairline, lineWidth: 1))
-            .shadow(color: .black.opacity(colorScheme == .dark ? 0 : 0.06), radius: 12, x: 0, y: 4)
+            .overlay(shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
     }
 }
 
-/// Floating glass control background (Liquid Glass on iOS 26, material on iOS 17/18).
+/// Floating control background (subtle Liquid Glass on iOS 26, material + hairline on iOS 17/18).
 struct GlassSurface<S: Shape>: ViewModifier {
     let shape: S
     var interactive: Bool = false
@@ -217,25 +297,25 @@ struct GlassSurface<S: Shape>: ViewModifier {
                 .glassEffect(interactive ? Glass.regular.interactive() : Glass.regular, in: shape)
         } else {
             content
-                .background(.ultraThinMaterial, in: shape)
-                .overlay(shape.stroke(Color.white.opacity(0.22), lineWidth: 0.75))
-                .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 4)
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.stroke(Color.hairline, lineWidth: DS.Stroke.hairline))
+                .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: 1)
         }
     }
 }
 
 extension View {
-    /// Rounded surface card with a soft shadow — the default container for content.
-    func card(padding: CGFloat = DS.Spacing.l, radius: CGFloat = DS.Radius.card) -> some View {
+    /// Flat surface card — the default container for content.
+    func card(padding: CGFloat = DS.Spacing.card, radius: CGFloat = DS.Radius.card) -> some View {
         modifier(CardBackground(padding: padding, radius: radius))
     }
 
-    /// Floating glass background for controls drawn over a map or photo.
+    /// Floating background for controls drawn over a map or photo.
     func glassSurface<S: Shape>(_ shape: S, interactive: Bool = false) -> some View {
         modifier(GlassSurface(shape: shape, interactive: interactive))
     }
 
-    /// Adaptive grouped canvas behind the whole screen.
+    /// Grouped canvas behind the whole screen.
     func screenBackground() -> some View {
         background(Color.canvas.ignoresSafeArea())
     }
@@ -250,24 +330,41 @@ extension View {
     func statLabelStyle() -> some View {
         font(Font.statLabel)
             .textCase(.uppercase)
-            .tracking(0.6)
+            .tracking(DS.Tracking.label)
             .foregroundStyle(.secondary)
+    }
+
+    /// Uppercase, tracked, secondary — section header labels.
+    func sectionLabelStyle() -> some View {
+        font(Font.sectionLabel)
+            .textCase(.uppercase)
+            .tracking(DS.Tracking.label)
+            .foregroundStyle(.secondary)
+    }
+
+    /// Just the 0.5pt hairline outline in a continuous rounded rectangle.
+    func hairlineBorder(radius: CGFloat = DS.Radius.card) -> some View {
+        overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+        )
     }
 }
 
-/// Springy scale-down while pressed.
+/// Subtle press feedback (slight dim + scale), no spring bounce.
 struct PressableButtonStyle: ButtonStyle {
-    var scale: CGFloat = 0.95
+    var scale: CGFloat = 0.97
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? scale : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 
 extension ButtonStyle where Self == PressableButtonStyle {
-    /// Springy scale-down while pressed.
+    /// Subtle press feedback.
     static var pressable: PressableButtonStyle { PressableButtonStyle() }
 }
 
@@ -275,7 +372,7 @@ extension ButtonStyle where Self == PressableButtonStyle {
 
 /// Groups several glass controls so they blend together on iOS 26 (GlassEffectContainer).
 struct GlassGroup<Content: View>: View {
-    var spacing: CGFloat = 12
+    var spacing: CGFloat = 10
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -295,40 +392,40 @@ struct GlassCircleLabel: View {
     var badge: Int? = nil
     var tint: Color? = nil
     var isActive: Bool = false
-    var size: CGFloat = 48
+    var size: CGFloat = DS.Size.mapControl
+    /// Kept for API compatibility (no bounce in the new direction).
     var bounceTrigger: Int = 0
+
+    private var iconColor: Color {
+        if isActive { return tint ?? Color.brand }
+        return tint ?? Color.primary
+    }
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: size * 0.38, weight: .semibold))
-            .symbolRenderingMode(.hierarchical)
-            .foregroundStyle(isActive ? Color.white : (tint ?? Color.primary))
-            .symbolEffect(.bounce, value: bounceTrigger)
+            .font(.system(size: min(DS.Size.icon, size * 0.4), weight: .medium))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(iconColor)
             .frame(width: size, height: size)
-            .background {
-                if isActive {
-                    Circle().fill(tint ?? Color.brand)
-                }
-            }
             .glassSurface(Circle(), interactive: true)
             .contentShape(Circle())
             .overlay(alignment: .topTrailing) {
                 if let badge, badge > 0 {
                     CountBadge(count: badge)
-                        .offset(x: 4, y: -4)
+                        .offset(x: 3, y: -3)
                 }
             }
     }
 }
 
-/// Round floating map control: glass on iOS 26, material on older systems.
+/// Round floating map control.
 struct GlassCircleButton: View {
     let systemImage: String
     let accessibilityLabel: String
     var badge: Int? = nil
     var tint: Color? = nil
     var isActive: Bool = false
-    var size: CGFloat = 48
+    var size: CGFloat = DS.Size.mapControl
     let action: () -> Void
 
     @State private var taps = 0
@@ -343,35 +440,37 @@ struct GlassCircleButton: View {
         .buttonStyle(.pressable)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
         .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
     }
 }
 
-/// Small count bubble (coral, white outline).
+/// Small count bubble.
 struct CountBadge: View {
     let count: Int
     var color: Color = .steal
 
     var body: some View {
         Text(count > 99 ? "99+" : "\(count)")
-            .font(.system(size: 11, weight: .heavy, design: .rounded))
+            .font(.system(size: 11, weight: .semibold))
             .monospacedDigit()
-            .foregroundStyle(.white)
+            .foregroundStyle(Color.white)
             .contentTransition(.numericText())
             .padding(.horizontal, 5)
-            .frame(minWidth: 20, minHeight: 20)
+            .frame(minWidth: 18, minHeight: 18)
             .background(color, in: Capsule())
-            .overlay(Capsule().stroke(Color.white, lineWidth: 1.5))
+            .overlay(Capsule().stroke(Color(uiColor: .systemBackground), lineWidth: 1.5))
             .accessibilityHidden(true)
     }
 }
 
 // MARK: - Primary action
 
-/// Big gradient capsule for the screen's main action (e.g. "Correr").
+/// Solid brand capsule for the screen's main action (e.g. "Correr").
 struct PrimaryActionButton: View {
     enum Style {
         case brand, steal, gold
 
+        /// Legacy name; the accent colour of the style.
         var glow: Color {
             switch self {
             case .brand: return Color.brand
@@ -380,6 +479,7 @@ struct PrimaryActionButton: View {
             }
         }
 
+        /// Legacy name; now a flat fill.
         var gradient: LinearGradient {
             switch self {
             case .brand: return .brandGradient
@@ -391,14 +491,14 @@ struct PrimaryActionButton: View {
 
     let title: String
     var systemImage: String? = nil
+    /// Kept for API compatibility; always rendered as the brand fill.
     var style: Style = .brand
-    /// Soft halo that keeps expanding behind the button.
+    /// Kept for API compatibility; no halo is drawn.
     var pulse: Bool = false
     let action: () -> Void
 
     @State private var taps = 0
-    @State private var pulsing = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button {
@@ -407,100 +507,153 @@ struct PrimaryActionButton: View {
         } label: {
             label
         }
-        .buttonStyle(PressableButtonStyle(scale: 0.96))
+        .buttonStyle(PressableButtonStyle(scale: 0.98))
         .sensoryFeedback(.impact(weight: .medium), trigger: taps)
-        .onAppear {
-            guard pulse, !reduceMotion else { return }
-            withAnimation(.easeOut(duration: 1.8).repeatForever(autoreverses: false)) {
-                pulsing = true
-            }
-        }
     }
 
     private var label: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: 22, weight: .bold))
-                    .symbolEffect(.bounce, value: taps)
+                    .font(.system(size: 17, weight: .semibold))
             }
             Text(title)
-                .font(.system(size: 22, weight: .heavy, design: .rounded))
+                .font(.system(size: 17, weight: .semibold))
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 36)
-        .frame(minHeight: 62)
-        .background { halo }
-        .background(style.gradient, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
-        .shadow(color: style.glow.opacity(0.45), radius: 16, x: 0, y: 8)
+        .foregroundStyle(Color.onBrand)
+        .padding(.horizontal, 32)
+        .frame(minWidth: 160, minHeight: 52)
+        .background(Color.brand, in: Capsule())
+        .opacity(isEnabled ? 1 : 0.4)
         .contentShape(Capsule())
-    }
-
-    @ViewBuilder
-    private var halo: some View {
-        if pulse && !reduceMotion {
-            Capsule()
-                .fill(style.glow.opacity(0.45))
-                .scaleEffect(x: pulsing ? 1.14 : 1, y: pulsing ? 1.45 : 1)
-                .opacity(pulsing ? 0 : 0.9)
-        }
     }
 }
 
-/// Tinted soft capsule for secondary actions.
+/// Neutral filled button with a tinted label, for secondary actions.
 struct SecondaryButtonStyle: ButtonStyle {
     var tint: Color = .brand
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(.subheadline, design: .rounded, weight: .bold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 16)
-            .frame(minHeight: 40)
-            .background(tint.opacity(configuration.isPressed ? 0.24 : 0.14), in: Capsule())
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+        let shape = RoundedRectangle(cornerRadius: DS.Radius.small, style: .continuous)
+        let fill: UIColor = configuration.isPressed ? UIColor.secondarySystemFill : UIColor.tertiarySystemFill
+        return configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(DS.restrainedTint(tint))
+            .padding(.horizontal, 14)
+            .frame(minHeight: 36)
+            .background(Color(uiColor: fill), in: shape)
+            .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
     }
 }
 
 // MARK: - Stats
 
-/// Compact capsule: icon + value (+ small label).
+/// Number + smaller secondary unit, inline (e.g. "0,75 km²").
+struct StatValue: View {
+    let value: String
+    var unit: String? = nil
+    var font: Font = Font.statNumber
+    var tint: Color = .primary
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text(value)
+                .font(font)
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .contentTransition(.numericText())
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            if let unit {
+                Text(unit)
+                    .font(Font.statUnit)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Vertical hairline between stats in a row.
+struct StatDivider: View {
+    var height: CGFloat = 28
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.hairline)
+            .frame(width: 1, height: height)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Horizontal hairline (inside cards, between rows).
+struct HairlineDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.hairline)
+            .frame(height: DS.Stroke.hairline)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Quiet neutral tag: icon + value (+ label). No tinted capsule.
 struct StatPill: View {
     let value: String
     var label: String? = nil
     var systemImage: String? = nil
+    /// Only brand / steal / gold keep their colour (on the icon); others render secondary.
     var tint: Color = .brand
 
+    private var iconColor: Color {
+        let restrained = DS.restrainedTint(tint)
+        return restrained == Color.primary ? Color.secondary : restrained
+    }
+
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(iconColor)
             }
             Text(value)
-                .font(.system(.subheadline, design: .rounded, weight: .bold))
+                .font(.footnote.weight(.semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
             if let label {
                 Text(label)
-                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .lineLimit(1)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(tint.opacity(0.14), in: Capsule())
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }
 
 // MARK: - Headers and chips
 
-/// Section title with optional icon, subtitle and trailing action.
+/// Uppercase section label text.
+struct SectionLabel: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .sectionLabelStyle()
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Section header: small uppercase label, optional subtitle and trailing action.
+/// `systemImage` is accepted for API compatibility but not drawn (cleaner headers).
 struct SectionHeader: View {
     let title: String
     var subtitle: String? = nil
@@ -510,14 +663,8 @@ struct SectionHeader: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.headline)
-                    .foregroundStyle(Color.brand)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Font.sectionTitle)
+            VStack(alignment: .leading, spacing: 3) {
+                SectionLabel(title)
                 if let subtitle {
                     Text(subtitle)
                         .font(.footnote)
@@ -527,22 +674,24 @@ struct SectionHeader: View {
             Spacer(minLength: 8)
             if let actionTitle, let action {
                 Button(actionTitle, action: action)
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(Color.brand)
             }
         }
+        .padding(.horizontal, 4)
         .accessibilityElement(children: .contain)
     }
 }
 
-/// Filter chip (capsule) that toggles on/off, optionally with the user's colour dot.
+/// Filter chip (capsule). In lists: selected = inverted (primary fill); over a map (`onGlass`):
+/// material chip, selected = primary text + solid dot, unselected = dimmed + hollow dot.
 struct ChipToggle: View {
     let title: String
     let isOn: Bool
-    /// Dot and tint colour (e.g. a player's territory colour).
+    /// Dot colour (e.g. a player's territory colour).
     var color: Color? = nil
     var systemImage: String? = nil
-    /// Glass look for chips floating over a map.
+    /// Material look for chips floating over a map.
     var onGlass: Bool = false
     let action: () -> Void
 
@@ -556,48 +705,58 @@ struct ChipToggle: View {
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
-    private var tint: Color { color ?? Color.brand }
+    private var inverted: Bool { isOn && !onGlass }
+
+    private var textColor: Color {
+        if inverted { return Color(uiColor: .systemBackground) }
+        return isOn ? Color.primary : Color.secondary
+    }
 
     private var content: some View {
         HStack(spacing: 6) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.caption.weight(.bold))
+                    .font(.caption.weight(.medium))
             } else if let color {
-                Circle()
-                    .fill(color)
-                    .frame(width: 10, height: 10)
-                    .overlay(Circle().stroke(Color.white.opacity(0.8), lineWidth: isOn ? 1.5 : 0))
+                ZStack {
+                    if isOn {
+                        Circle().fill(color)
+                    } else {
+                        Circle().strokeBorder(color, lineWidth: 1.5)
+                    }
+                }
+                .frame(width: 8, height: 8)
             }
             Text(title)
-                .font(.system(.footnote, design: .rounded, weight: .semibold))
+                .font(.footnote.weight(.medium))
                 .lineLimit(1)
         }
-        .foregroundStyle(isOn ? Color.primary : Color.secondary)
+        .foregroundStyle(textColor)
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .frame(minHeight: 32)
         .background { chipBackground }
-        .overlay(Capsule().strokeBorder(isOn ? tint.opacity(0.9) : Color.clear, lineWidth: 1.5))
-        .opacity(isOn ? 1 : 0.7)
+        .overlay(Capsule().strokeBorder(inverted ? Color.clear : Color.hairline, lineWidth: DS.Stroke.hairline))
         .contentShape(Capsule())
+        .animation(.easeOut(duration: 0.15), value: isOn)
     }
 
     @ViewBuilder
     private var chipBackground: some View {
         if onGlass {
             Capsule()
-                .fill(isOn ? tint.opacity(0.22) : Color.clear)
-                .glassSurface(Capsule())
+                .fill(.regularMaterial)
+                .opacity(isOn ? 1 : 0.75)
+        } else if isOn {
+            Capsule().fill(Color.primary)
         } else {
-            Capsule()
-                .fill(isOn ? tint.opacity(0.16) : Color.surfaceRaised)
+            Capsule().fill(Color.surface)
         }
     }
 }
 
 // MARK: - Errors
 
-/// Compact inline error card (coral) with optional retry / dismiss.
+/// Compact inline error card with optional retry / dismiss.
 struct ErrorBanner: View {
     let message: String
     var retry: (() -> Void)? = nil
@@ -605,21 +764,21 @@ struct ErrorBanner: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.subheadline.weight(.bold))
+            Image(systemName: "exclamationmark.circle")
+                .font(.body.weight(.medium))
                 .foregroundStyle(Color.steal)
             Text(message)
-                .font(.footnote.weight(.medium))
+                .font(.footnote)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let retry {
                 Button("Reintentar", action: retry)
-                    .buttonStyle(SecondaryButtonStyle(tint: .steal))
+                    .buttonStyle(SecondaryButtonStyle(tint: .primary))
             }
             if let onDismiss {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
-                        .font(.caption.weight(.bold))
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 28, height: 28)
                 }
@@ -629,6 +788,6 @@ struct ErrorBanner: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous).strokeBorder(Color.steal.opacity(0.35), lineWidth: 1))
+        .hairlineBorder(radius: DS.Radius.tile)
     }
 }
