@@ -20,6 +20,8 @@ export interface Env {
   STRAVA_REDIRECT_URI?: string;
   POLAR_CLIENT_ID?: string;
   POLAR_CLIENT_SECRET?: string;
+  // signature_secret_key of the Polar AccessLink webhook (POST /api/admin/polar/webhook/register returns it)
+  POLAR_WEBHOOK_SECRET?: string;
   COROS_CLIENT_ID?: string;
   COROS_CLIENT_SECRET?: string;
   // Suunto Cloud API (apizone.suunto.com): OAuth client, API subscription key, optional webhook HMAC secret

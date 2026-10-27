@@ -10,6 +10,11 @@ main = "worker/src/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Smart Placement: Cloudflare runs the Worker close to the database (Turso) instead of close to
+# the user, so the several queries of each request don't each cross an ocean.
+[placement]
+mode = "smart"
+
 # Variables de entorno (NO secretas)
 [vars]
 ENVIRONMENT = "production"
@@ -24,10 +29,22 @@ RESEND_FROM = "onboarding@resend.dev"
 # wrangler secret put TURSO_AUTH_TOKEN -c wrangler.worker.toml
 # wrangler secret put UPSTASH_CRON_SECRET -c wrangler.worker.toml
 #
+# ===== Push notifications (iOS app) =====
+# Without these four secrets NO iPhone receives notifications (GET /api/push/status shows it):
+# wrangler secret put APNS_KEY_ID -c wrangler.worker.toml       # Key ID of the .p8 APNs key
+# wrangler secret put APNS_TEAM_ID -c wrangler.worker.toml      # Apple Developer Team ID
+# wrangler secret put APNS_PRIVATE_KEY -c wrangler.worker.toml  # full contents of AuthKey_XXXX.p8
+# wrangler secret put APNS_BUNDLE_ID -c wrangler.worker.toml    # com.jpoves.runnaio
+#
+# ===== Polar instant sync (webhook) =====
+# 1. curl -X POST -H "Authorization: Bearer $UPSTASH_CRON_SECRET" <worker>/api/admin/polar/webhook/register
+# 2. wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml   # signatureSecretKey from step 1
+# The 5-minute cron poll keeps running as a fallback.
+#
 # ===== Scheduled tasks =====
 # A single Cloudflare Cron Trigger (every 5 minutes) runs every task in-process, without HTTP
 # (see worker/src/cron.ts, times in Europe/Madrid):
-#   - polar-auto-sync: every run
+#   - polar-auto-sync: every run (fallback poll; the Polar webhook imports at once)
 #   - spawn-treasure: minute 0 of every hour (the task picks today's random spawn hour)
 #   - inactivity-check: 10:00 and 19:00
 #   - weekly-summary: Sundays 20:00

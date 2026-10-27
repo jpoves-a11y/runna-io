@@ -338,27 +338,63 @@ async function getApnsJwt(config: ApnsConfig): Promise<string> {
   return token;
 }
 
+/** True when the Worker has the four APNS_* secrets (without them no iPhone gets notifications). */
+export function isApnsConfigured(): boolean {
+  return apnsConfig !== null;
+}
+
+/** The apns-topic the Worker sends (APNS_BUNDLE_ID); it must equal the app's bundle identifier. */
+export function apnsTopic(): string | null {
+  return apnsConfig?.bundleId ?? null;
+}
+
+/** Outcome of one delivery attempt (reason: APNs "reason" such as BadDeviceToken, or our own code). */
+export interface PushSendResult {
+  ok: boolean;
+  status?: number;
+  reason?: string;
+  /** The device was removed because Apple says its token will never work again. */
+  removed?: boolean;
+  /** APNs environment the notification finally went to (it may differ from the registered one). */
+  environment?: ApnsEnvironment;
+}
+
+function apnsReason(responseText: string): string {
+  try {
+    const reason = JSON.parse(responseText)?.reason;
+    if (typeof reason === 'string' && reason) return reason;
+  } catch {
+    /* not JSON */
+  }
+  return responseText.slice(0, 120) || 'Unknown';
+}
+
 /**
  * APNs answers 410 (Unregistered) when the app was uninstalled or the token rotated, and 400
- * BadDeviceToken / DeviceTokenNotForTopic for tokens of another environment or app: those
- * device tokens will never work again.
+ * BadDeviceToken for tokens that are not valid in that environment: those device tokens will
+ * never work again. (DeviceTokenNotForTopic usually means APNS_BUNDLE_ID is wrong on the server,
+ * so the device is kept and the error is reported instead.)
  */
 export function isDeadApnsToken(status: number, responseText: string): boolean {
   if (status === 410) return true;
   if (status !== 400) return false;
-  let reason = '';
+  return apnsReason(responseText).includes('BadDeviceToken');
+}
+
+function storageForPush(): WorkerStorage | null {
+  if (!pushDatabase) return null;
   try {
-    reason = String(JSON.parse(responseText)?.reason ?? '');
-  } catch {
-    reason = responseText;
+    return new WorkerStorage(createDb(pushDatabase.url, pushDatabase.authToken));
+  } catch (error) {
+    console.error('[APNS] Could not open the database:', error);
+    return null;
   }
-  return reason.includes('BadDeviceToken') || reason.includes('DeviceTokenNotForTopic');
 }
 
 async function deleteDeadSubscription(endpoint: string): Promise<void> {
-  if (!pushDatabase) return;
+  const storage = storageForPush();
+  if (!storage) return;
   try {
-    const storage = new WorkerStorage(createDb(pushDatabase.url, pushDatabase.authToken));
     await storage.deletePushSubscriptionByEndpoint(endpoint);
     console.log(`[APNS] Removed dead device token ${endpoint.slice(0, 24)}...`);
   } catch (error) {
@@ -366,18 +402,43 @@ async function deleteDeadSubscription(endpoint: string): Promise<void> {
   }
 }
 
-async function sendApnsNotification(endpoint: string, payload: PushNotificationPayload): Promise<boolean> {
+/** Keeps the last APNs error of a device for GET /api/push/status (best effort). */
+async function recordDeliveryError(endpoint: string, status: number | null, reason: string): Promise<void> {
+  const storage = storageForPush();
+  if (!storage) return;
+  try {
+    await storage.recordPushError(endpoint, status, reason);
+  } catch (error) {
+    console.error('[APNS] Could not record the delivery error:', error);
+  }
+}
+
+async function postToApns(
+  config: ApnsConfig,
+  environment: ApnsEnvironment,
+  deviceToken: string,
+  headers: Record<string, string>,
+  body: string,
+): Promise<{ status: number; text: string }> {
+  const host = environment === 'sandbox' ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+  const response = await fetch(`https://${host}/3/device/${deviceToken}`, { method: 'POST', headers, body });
+  if (response.status === 200) return { status: 200, text: '' };
+  return { status: response.status, text: await response.text() };
+}
+
+async function sendApnsDetailed(endpoint: string, payload: PushNotificationPayload): Promise<PushSendResult> {
   if (!apnsConfig) {
     console.warn('[APNS] Not configured (APNS_KEY_ID / APNS_TEAM_ID / APNS_PRIVATE_KEY / APNS_BUNDLE_ID); skipping');
-    return false;
+    return { ok: false, reason: 'ApnsNotConfigured' };
   }
-  const [environment, deviceToken] = endpoint.slice(APNS_ENDPOINT_PREFIX.length).split(':');
-  if (!deviceToken) return false;
-  const host = environment === 'sandbox' ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+  const config = apnsConfig;
+  const [rawEnvironment, deviceToken] = endpoint.slice(APNS_ENDPOINT_PREFIX.length).split(':');
+  if (!deviceToken) return { ok: false, reason: 'InvalidEndpoint' };
+  const environment: ApnsEnvironment = rawEnvironment === 'sandbox' ? 'sandbox' : 'production';
 
   try {
-    const jwt = await getApnsJwt(apnsConfig);
-    const body = {
+    const jwt = await getApnsJwt(config);
+    const body = JSON.stringify({
       aps: {
         alert: { title: payload.title, body: payload.body },
         sound: 'default',
@@ -385,10 +446,10 @@ async function sendApnsNotification(endpoint: string, payload: PushNotificationP
       },
       type: payload.data?.type ?? null,
       data: payload.data ?? null,
-    };
+    });
     const headers: Record<string, string> = {
       authorization: `bearer ${jwt}`,
-      'apns-topic': apnsConfig.bundleId,
+      'apns-topic': config.bundleId,
       'apns-push-type': 'alert',
       'apns-priority': '10',
       'apns-expiration': String(Math.floor(Date.now() / 1000) + 24 * 60 * 60),
@@ -398,35 +459,61 @@ async function sendApnsNotification(endpoint: string, payload: PushNotificationP
       headers['apns-collapse-id'] = payload.tag;
     }
 
-    const response = await fetch(`https://${host}/3/device/${deviceToken}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (response.status === 200) return true;
-    const responseText = await response.text();
-    console.error(`[APNS] ❌ ${response.status} ${responseText} (${environment})`);
-    if (isDeadApnsToken(response.status, responseText)) {
-      await deleteDeadSubscription(endpoint);
+    const first = await postToApns(config, environment, deviceToken, headers, body);
+    if (first.status === 200) return { ok: true, status: 200, environment };
+    const reason = apnsReason(first.text);
+    console.error(`[APNS] ❌ ${first.status} ${first.text} (${environment})`);
+
+    // A token registered with the wrong environment (e.g. a TestFlight build that reported
+    // "sandbox"): Apple rejects it as BadDeviceToken. Try the other environment once and, if it
+    // works, move the device there so the next notifications go straight to it.
+    if (first.status === 400 && reason === 'BadDeviceToken') {
+      const other: ApnsEnvironment = environment === 'sandbox' ? 'production' : 'sandbox';
+      const second = await postToApns(config, other, deviceToken, headers, body);
+      if (second.status === 200) {
+        console.log(`[APNS] Device token works on ${other}: moving it from ${environment}`);
+        const storage = storageForPush();
+        if (storage) {
+          try {
+            await storage.movePushSubscriptionEndpoint(endpoint, apnsEndpoint(other, deviceToken));
+          } catch (error) {
+            console.error('[APNS] Could not move the device to the other environment:', error);
+          }
+        }
+        return { ok: true, status: 200, environment: other };
+      }
+      console.error(`[APNS] ❌ ${second.status} ${second.text} (${other})`);
     }
-    return false;
+
+    await recordDeliveryError(endpoint, first.status, reason);
+    if (isDeadApnsToken(first.status, first.text)) {
+      await deleteDeadSubscription(endpoint);
+      return { ok: false, status: first.status, reason, removed: true, environment };
+    }
+    return { ok: false, status: first.status, reason, environment };
   } catch (error) {
     console.error('[APNS] Error sending notification:', error);
-    return false;
+    const reason = `Network: ${String((error as Error)?.message ?? error).slice(0, 100)}`;
+    await recordDeliveryError(endpoint, null, reason);
+    return { ok: false, reason, environment };
   }
 }
 
 // ===== Main send function =====
 
-export async function sendPushNotification(
+/** Sends one notification and says why it failed, if it did (used by POST /api/push/test). */
+export async function sendPushNotificationDetailed(
   subscription: PushSubscriptionData,
   payload: PushNotificationPayload,
   vapidPublicKey: string,
   vapidPrivateKey: string,
   vapidSubject: string
-): Promise<boolean> {
+): Promise<PushSendResult> {
   if (subscription.endpoint.startsWith(APNS_ENDPOINT_PREFIX)) {
-    return sendApnsNotification(subscription.endpoint, payload);
+    return sendApnsDetailed(subscription.endpoint, payload);
+  }
+  if (!vapidPublicKey || !vapidPrivateKey) {
+    return { ok: false, reason: 'VapidNotConfigured' };
   }
   try {
     console.log(`[PUSH] Sending to endpoint: ${subscription.endpoint.substring(0, 80)}...`);
@@ -459,16 +546,27 @@ export async function sendPushNotification(
 
     if (response.status === 201 || response.status === 200) {
       console.log(`[PUSH] ✅ Success (${response.status})`);
-      return true;
+      return { ok: true, status: response.status };
     }
 
     const responseText = await response.text();
     console.error(`[PUSH] ❌ Failed: ${response.status} - ${responseText}`);
-    return false;
+    return { ok: false, status: response.status, reason: responseText.slice(0, 120) || `HTTP ${response.status}` };
   } catch (error) {
     console.error('[PUSH] Error sending notification:', error);
-    return false;
+    return { ok: false, reason: `Network: ${String((error as Error)?.message ?? error).slice(0, 100)}` };
   }
+}
+
+export async function sendPushNotification(
+  subscription: PushSubscriptionData,
+  payload: PushNotificationPayload,
+  vapidPublicKey: string,
+  vapidPrivateKey: string,
+  vapidSubject: string
+): Promise<boolean> {
+  const result = await sendPushNotificationDetailed(subscription, payload, vapidPublicKey, vapidPrivateKey, vapidSubject);
+  return result.ok;
 }
 
 // Helper to send to multiple subscriptions

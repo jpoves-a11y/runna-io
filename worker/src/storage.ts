@@ -1300,6 +1300,68 @@ export class WorkerStorage {
     );
   }
 
+  /**
+   * Moves a device to another endpoint (an APNs token registered with the wrong environment that
+   * Apple accepted on the other one). A subscription already at `to` is replaced.
+   */
+  async movePushSubscriptionEndpoint(from: string, to: string): Promise<void> {
+    if (from === to) return;
+    await this.db.batch([
+      this.db.delete(pushSubscriptions).where(eq(pushSubscriptions.endpoint, to)),
+      this.db.update(pushSubscriptions).set({ endpoint: to }).where(eq(pushSubscriptions.endpoint, from)),
+    ]);
+    await this.ensurePushErrorTable();
+    await this.db.run(sql`DELETE FROM push_delivery_errors WHERE endpoint = ${from}`);
+  }
+
+  // ===== Last delivery error per device (push diagnostics; table created at runtime) =====
+
+  private static pushErrorTable: Promise<void> | null = null;
+
+  ensurePushErrorTable(): Promise<void> {
+    if (!WorkerStorage.pushErrorTable) {
+      WorkerStorage.pushErrorTable = this.db.run(sql`CREATE TABLE IF NOT EXISTS push_delivery_errors (
+        endpoint TEXT PRIMARY KEY,
+        user_id TEXT,
+        status INTEGER,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`).then(() => undefined).catch((error) => {
+        WorkerStorage.pushErrorTable = null;
+        throw error;
+      });
+    }
+    return WorkerStorage.pushErrorTable;
+  }
+
+  /** Remembers why the last delivery to this device failed (the owner is read from push_subscriptions). */
+  async recordPushError(endpoint: string, status: number | null, reason: string): Promise<void> {
+    await this.ensurePushErrorTable();
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO push_delivery_errors (endpoint, user_id, status, reason, created_at)
+      VALUES (${endpoint}, (SELECT user_id FROM push_subscriptions WHERE endpoint = ${endpoint}), ${status}, ${reason.slice(0, 200)}, ${now})
+      ON CONFLICT(endpoint) DO UPDATE SET
+        user_id = COALESCE(excluded.user_id, push_delivery_errors.user_id),
+        status = excluded.status, reason = excluded.reason, created_at = excluded.created_at`);
+  }
+
+  async clearPushErrors(endpoints: string[]): Promise<void> {
+    if (endpoints.length === 0) return;
+    await this.ensurePushErrorTable();
+    for (const endpoint of endpoints) {
+      await this.db.run(sql`DELETE FROM push_delivery_errors WHERE endpoint = ${endpoint}`);
+    }
+  }
+
+  /** Last delivery errors of a user's devices (also of devices removed because Apple rejected them). */
+  async getPushErrorsForUser(userId: string): Promise<Array<{ endpoint: string; status: number | null; reason: string; createdAt: string }>> {
+    await this.ensurePushErrorTable();
+    const result = await this.db.all<{ endpoint: string; status: number | null; reason: string; created_at: string }>(
+      sql`SELECT endpoint, status, reason, created_at FROM push_delivery_errors WHERE user_id = ${userId} ORDER BY created_at DESC LIMIT 10`
+    );
+    return result.map((row) => ({ endpoint: row.endpoint, status: row.status ?? null, reason: row.reason, createdAt: row.created_at }));
+  }
+
   // ==================== STRAVA ====================
 
   async getStravaAccountByUserId(userId: string): Promise<StravaAccount | undefined> {
@@ -1570,6 +1632,12 @@ export class WorkerStorage {
 
   async updateRouteName(id: string, name: string): Promise<void> {
     await this.db.update(routes).set({ name }).where(eq(routes.id, id));
+  }
+
+  /** Renames a route only if it belongs to `userId`, in one statement. Returns whether a row changed. */
+  async renameOwnRoute(id: string, userId: string, name: string): Promise<boolean> {
+    const result = await this.db.update(routes).set({ name }).where(and(eq(routes.id, id), eq(routes.userId, userId)));
+    return (result.rowsAffected || 0) > 0;
   }
 
   async getRouteById(id: string): Promise<Route | null> {
@@ -2953,28 +3021,17 @@ export class WorkerStorage {
         eq(feedReactions.targetId, targetId)
       ));
 
-    if (existing) {
-      if (existing.reactionType === reactionType) {
-        // Same reaction — remove it (toggle off)
-        await this.db.delete(feedReactions).where(eq(feedReactions.id, existing.id));
-      } else {
-        // Different reaction — switch
-        await this.db.update(feedReactions)
-          .set({ reactionType })
-          .where(eq(feedReactions.id, existing.id));
-      }
-    } else {
-      // No existing reaction — create new
-      await this.db.insert(feedReactions).values({
-        userId,
-        targetType,
-        targetId,
-        reactionType,
-      });
-    }
+    // The write and the recount go to the database in one round trip (a batch runs in order)
+    // Same reaction: remove it (toggle off); another one: switch; none yet: create it
+    const removing = !!existing && existing.reactionType === reactionType;
+    const userReaction: 'like' | 'dislike' | null = removing ? null : reactionType;
+    const write = existing
+      ? (removing
+        ? this.db.delete(feedReactions).where(eq(feedReactions.id, existing.id))
+        : this.db.update(feedReactions).set({ reactionType }).where(eq(feedReactions.id, existing.id)))
+      : this.db.insert(feedReactions).values({ userId, targetType, targetId, reactionType });
 
-    // Fetch updated counts
-    const counts = await this.db
+    const countsQuery = this.db
       .select({
         reactionType: feedReactions.reactionType,
         count: sql<number>`COUNT(*)`,
@@ -2986,24 +3043,16 @@ export class WorkerStorage {
       ))
       .groupBy(feedReactions.reactionType);
 
+    const [, counts] = await this.db.batch([write, countsQuery]);
+
     let likeCount = 0;
     let dislikeCount = 0;
     for (const c of counts) {
-      if (c.reactionType === 'like') likeCount = c.count;
-      else if (c.reactionType === 'dislike') dislikeCount = c.count;
+      if (c.reactionType === 'like') likeCount = Number(c.count);
+      else if (c.reactionType === 'dislike') dislikeCount = Number(c.count);
     }
 
-    // Get user's current reaction
-    const [current] = await this.db
-      .select({ reactionType: feedReactions.reactionType })
-      .from(feedReactions)
-      .where(and(
-        eq(feedReactions.userId, userId),
-        eq(feedReactions.targetType, targetType),
-        eq(feedReactions.targetId, targetId)
-      ));
-
-    return { likeCount, dislikeCount, userReaction: (current?.reactionType as 'like' | 'dislike') || null };
+    return { likeCount, dislikeCount, userReaction };
   }
 
   async addFeedComment(data: InsertFeedComment): Promise<FeedComment> {

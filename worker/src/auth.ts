@@ -75,7 +75,32 @@ export async function createSession(storage: WorkerStorage, userId: string): Pro
 export async function revokeRequestSession(c: AppContext): Promise<void> {
   const token = getBearerToken(c);
   if (!token) return;
-  await getStorage(c.env).deleteAuthSessionByTokenHash(await hashSessionToken(token));
+  const tokenHash = await hashSessionToken(token);
+  sessionCache.delete(tokenHash);
+  await getStorage(c.env).deleteAuthSessionByTokenHash(tokenHash);
+}
+
+// Sessions resolved recently by this isolate, so back-to-back requests (a screen loading several
+// endpoints, a like right after the feed) skip one database round trip. Entries live a few seconds;
+// logout removes its own entry and account deletion calls forgetUserSessions().
+const SESSION_CACHE_TTL_MS = 30 * 1000;
+const SESSION_CACHE_MAX = 500;
+const sessionCache = new Map<string, { userId: string; expiresAt: number; cachedAt: number }>();
+
+/** Drops every cached session of a user (account deleted): the next request reads the database. */
+export function forgetUserSessions(userId: string): void {
+  for (const [hash, entry] of sessionCache) {
+    if (entry.userId === userId) sessionCache.delete(hash);
+  }
+}
+
+function runAfterResponse(c: AppContext, task: Promise<unknown>): void {
+  const safe = task.catch((e) => console.error('[AUTH] Background task failed:', e));
+  try {
+    c.executionCtx.waitUntil(safe);
+  } catch {
+    /* no execution context: the promise runs on its own */
+  }
 }
 
 /** Returns the user ID of a valid, unexpired session token, or null. */
@@ -83,22 +108,34 @@ async function resolveSessionUserId(c: AppContext): Promise<string | null> {
   const token = getBearerToken(c);
   if (!token) return null;
 
-  const storage = getStorage(c.env);
-  const session = await storage.getAuthSessionByTokenHash(await hashSessionToken(token));
-  if (!session) return null;
-
+  const tokenHash = await hashSessionToken(token);
   const now = Date.now();
-  const expiresAt = new Date(session.expiresAt).getTime();
+  const cached = sessionCache.get(tokenHash);
+  if (cached && now - cached.cachedAt < SESSION_CACHE_TTL_MS && cached.expiresAt > now) {
+    return cached.userId;
+  }
+
+  const storage = getStorage(c.env);
+  const session = await storage.getAuthSessionByTokenHash(tokenHash);
+  if (!session) {
+    sessionCache.delete(tokenHash);
+    return null;
+  }
+
+  let expiresAt = new Date(session.expiresAt).getTime();
   if (!Number.isFinite(expiresAt) || expiresAt <= now) return null;
 
   if (expiresAt - now < SESSION_RENEW_BELOW_MS) {
-    try {
-      await storage.extendAuthSession(session.id, new Date(now + SESSION_TTL_MS).toISOString());
-    } catch (e) {
-      console.error('[AUTH] Failed to extend session:', e);
-    }
+    // The renewal is a write the response doesn't need to wait for
+    expiresAt = now + SESSION_TTL_MS;
+    runAfterResponse(c, storage.extendAuthSession(session.id, new Date(expiresAt).toISOString()));
   }
 
+  if (sessionCache.size >= SESSION_CACHE_MAX) {
+    const oldest = sessionCache.keys().next();
+    if (!oldest.done) sessionCache.delete(oldest.value);
+  }
+  sessionCache.set(tokenHash, { userId: session.userId, expiresAt, cachedAt: now });
   return session.userId;
 }
 
