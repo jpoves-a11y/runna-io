@@ -110,6 +110,33 @@ enum ActivityFormat {
 
 // MARK: - Map snapshots
 
+/// Limits how many MapKit snapshots render at the same time.
+@MainActor
+final class ActivitySnapshotGate {
+    static let shared = ActivitySnapshotGate()
+    private let limit = 2
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if running < limit {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            running = max(0, running - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 /// Renders (and caches) static map images of a route with the polyline drawn in the runner's colour.
 enum ActivityMapSnapshots {
     private static let cache: NSCache<NSString, UIImage> = {
@@ -184,7 +211,11 @@ enum ActivityMapSnapshots {
                 return fromDisk
             }
         }
-        let points: [CLLocationCoordinate2D] = coordinates.compactMap { pair in
+        // At most two MapKit snapshots at a time (a long list otherwise starts dozens at once)
+        await ActivitySnapshotGate.shared.acquire()
+        defer { ActivitySnapshotGate.shared.release() }
+        if let hit = cached(key) { return hit }
+        let points: [CLLocationCoordinate2D] = RouteShape.thinned(coordinates, maxPoints: 400).compactMap { pair in
             guard pair.count >= 2 else { return nil }
             return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
         }
