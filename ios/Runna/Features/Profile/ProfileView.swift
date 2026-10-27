@@ -19,6 +19,9 @@ struct ProfileView: View {
     @State private var confirmRemoveAvatar = false
     @State private var isDeleting = false
     @State private var isSendingTest = false
+    /// What the server knows about notifications for this account (GET /api/push/status).
+    @State private var pushStatus: PushServerStatus?
+    @State private var isRetryingRegistration = false
     @State private var info: String?
     @State private var errorMessage: String?
     @State private var avatarUploads = 0
@@ -30,7 +33,7 @@ struct ProfileView: View {
         NavigationStack {
             list
                 .navigationTitle("Perfil")
-                .refreshable { await reload(force: true) }
+                .refreshable { await QuickRefresh.run { await reload(force: true) } }
                 .task(id: router.reloadSignal) {
                     await reload(force: model.reloadTracker.consume(router.reloadSignal))
                 }
@@ -148,13 +151,7 @@ struct ProfileView: View {
         Section {
             switch notificationStatus {
             case .authorized, .provisional, .ephemeral:
-                HStack {
-                    SocialSettingsLabel(title: "Notificaciones", systemImage: "bell")
-                    Spacer()
-                    Text("Activadas")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                notificationStatusRow
                 Button {
                     sendTestNotification()
                 } label: {
@@ -189,6 +186,64 @@ struct ProfileView: View {
             Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta.")
         }
         .listRowBackground(Color.surface)
+    }
+
+    /// "Activadas", or what is wrong: the server has no APNs keys, or this iPhone isn't registered.
+    @ViewBuilder
+    private var notificationStatusRow: some View {
+        let serverOff = pushStatus.map { !$0.apnsConfigured } ?? false
+        let notRegistered = pushStatus.map { $0.apnsConfigured && !PushManager.shared.isRegistered(in: $0) } ?? false
+        HStack {
+            SocialSettingsLabel(title: "Notificaciones", systemImage: serverOff || notRegistered ? "bell.badge" : "bell")
+            Spacer()
+            if serverOff {
+                Text("Notificaciones del servidor no configuradas")
+                    .font(.footnote)
+                    .foregroundStyle(Color.steal)
+                    .multilineTextAlignment(.trailing)
+            } else if notRegistered {
+                Text("Este iPhone no está registrado")
+                    .font(.footnote)
+                    .foregroundStyle(Color.steal)
+                    .multilineTextAlignment(.trailing)
+            } else {
+                Text("Activadas")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        if notRegistered && !serverOff {
+            Button {
+                retryRegistration()
+            } label: {
+                HStack {
+                    SocialSettingsLabel(title: "Reintentar registro", systemImage: "arrow.clockwise")
+                    if isRetryingRegistration {
+                        Spacer()
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(isRetryingRegistration)
+        }
+        if let problem = notificationProblem {
+            Text(problem)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The last error Apple returned for this account's devices, or why iOS / the server refused the registration.
+    private var notificationProblem: String? {
+        if let error = PushManager.shared.registrationError { return error }
+        guard let status = pushStatus, status.apnsConfigured else { return nil }
+        if let topic = status.apnsTopic, let bundleId = Bundle.main.bundleIdentifier, topic != bundleId {
+            return "El servidor envía las notificaciones para «\(topic)», pero esta app es «\(bundleId)» (APNS_BUNDLE_ID)."
+        }
+        if let error = status.lastError {
+            return "Último error de Apple: \(error)"
+        }
+        return nil
     }
 
     private var appearanceSection: some View {
@@ -285,8 +340,34 @@ struct ProfileView: View {
         async let user: Void = account.refreshUser(force: force)
         async let stats: Void = profile.load(userId: userId, force: force)
         notificationStatus = await PushManager.shared.authorizationStatus()
+        await refreshPushStatus()
         await user
         await stats
+    }
+
+    /// Asks the server whether it can send notifications and whether it knows this iPhone.
+    private func refreshPushStatus() async {
+        switch notificationStatus {
+        case .authorized, .provisional, .ephemeral:
+            if let status = try? await PushManager.shared.fetchStatus() {
+                pushStatus = status
+            }
+        default:
+            pushStatus = nil
+        }
+    }
+
+    private func retryRegistration() {
+        isRetryingRegistration = true
+        Task {
+            defer { isRetryingRegistration = false }
+            await PushManager.shared.retryRegistration()
+            await refreshPushStatus()
+            if let status = pushStatus, status.apnsConfigured, !PushManager.shared.isRegistered(in: status) {
+                errorMessage = PushManager.shared.registrationError
+                    ?? "Este iPhone sigue sin estar registrado. Comprueba la conexión y vuelve a intentarlo en unos segundos."
+            }
+        }
     }
 
     private func sendTestNotification() {
@@ -298,11 +379,12 @@ struct ProfileView: View {
             do {
                 try await PushManager.shared.sendTestNotification()
                 info = "Notificación enviada. Debería llegarte en unos segundos."
-            } catch let error as APIError where error.status == 404 {
-                info = "Este iPhone todavía no está registrado para recibir notificaciones. Inténtalo de nuevo en unos segundos."
             } catch {
+                // The server explains why nothing could be sent (APNs keys missing, iPhone not
+                // registered, Apple's rejection reason…)
                 errorMessage = error.localizedDescription
             }
+            await refreshPushStatus()
         }
     }
 

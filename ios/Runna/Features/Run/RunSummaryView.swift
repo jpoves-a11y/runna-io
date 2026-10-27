@@ -255,11 +255,19 @@ struct RunSummaryView: View {
     private func rename() {
         guard let routeId = submission.routeId else { return }
         let name = routeName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        // Optimistic: saved at once in "Mis carreras" and the feed; undone if the server refuses
+        let previous: String? = MyRoutesModel.shared.routes.first(where: { $0.id == routeId })?.name
+        MyRoutesModel.shared.applyRename(routeId: routeId, name: name)
+        renameSaved = true
         Task {
             do {
                 try await APIClient.shared.send("PATCH", "/api/routes/\(routeId)/name", body: ["name": name])
-                renameSaved = true
             } catch {
+                renameSaved = false
+                if let previous {
+                    MyRoutesModel.shared.applyRename(routeId: routeId, name: previous)
+                }
                 errorMessage = error.localizedDescription
             }
         }
