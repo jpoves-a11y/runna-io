@@ -16,6 +16,10 @@ compatibility_flags = ["nodejs_compat"]
 mode = "smart"
 
 # Variables de entorno (NO secretas)
+# Keep variables added in the Cloudflare dashboard when deploying from GitHub
+# (without this, `wrangler deploy` removes dashboard variables of type Text; Secrets are always kept)
+keep_vars = true
+
 [vars]
 ENVIRONMENT = "production"
 EMAIL_PROVIDER = "sendgrid"
