@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
+import { routePath } from 'hono/route';
 import { registerRoutes } from './routes';
 import { registerSuuntoRoutes } from './suunto';
 import type { AppEnv } from './auth';
@@ -10,6 +11,8 @@ import { runScheduledTasks } from './cron';
 import { registerPublicPages } from './pages';
 import { createDb } from './db';
 import { WorkerStorage } from './storage';
+import { configureDbMetrics, isDbMetricsEnabled, newDbUsage, recordDbUsage, withDbUsage } from './dbMetrics';
+import { registerDbUsageRoutes } from './dbUsageRoutes';
 
 export interface Env {
   DATABASE_URL: string;
@@ -57,6 +60,8 @@ export interface Env {
   APNS_BUNDLE_ID?: string;
   // Cloudflare Queue for async territory processing
   TERRITORY_QUEUE: Queue<TerritoryQueueMessage>;
+  // "1": count Turso rows read/written per endpoint into db_usage_daily (see dbMetrics.ts)
+  DB_METRICS?: string;
 }
 
 const app = new Hono<AppEnv>();
@@ -85,9 +90,19 @@ app.use('*', cors({
   maxAge: 86400,
 }));
 
+// While DB_METRICS is on: Turso rows read/written by each route (and cron task), per day
+app.use('*', async (c, next) => {
+  if (!isDbMetricsEnabled()) return next();
+  const usage = newDbUsage();
+  await withDbUsage(usage, () => next());
+  const label = `${c.env.INTERNAL_CRON ? 'CRON ' : ''}${c.req.method} ${routePath(c, -1)}`;
+  c.executionCtx.waitUntil(recordDbUsage(createDb(c.env.DATABASE_URL, c.env.TURSO_AUTH_TOKEN), label, usage));
+});
+
 registerRoutes(app);
 registerSuuntoRoutes(app);
 registerPublicPages(app);
+registerDbUsageRoutes(app);
 
 app.get('/', (c) => {
   return c.json({ message: 'Runna.io API - Cloudflare Workers' });
@@ -123,6 +138,7 @@ function needsDatabase(request: Request): boolean {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     configurePush(env);
+    configureDbMetrics(env);
     if (needsDatabase(request)) {
       await ensureSchema(env);
       ensureIndexesInBackground(env, ctx);
@@ -131,12 +147,17 @@ export default {
   },
   async queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
     configurePush(env);
+    configureDbMetrics(env);
     await ensureSchema(env);
-    return handleQueueBatch(batch, env);
+    if (!isDbMetricsEnabled()) return handleQueueBatch(batch, env);
+    const usage = newDbUsage();
+    await withDbUsage(usage, () => handleQueueBatch(batch, env));
+    await recordDbUsage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN), `QUEUE ${batch.queue}`, usage);
   },
   scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     // Cloudflare Cron Trigger ("*/5 * * * *"): runs the due /api/tasks/* in-process (see cron.ts)
     configurePush(env);
+    configureDbMetrics(env);
     ctx.waitUntil(
       ensureSchema(env)
         .then(() => runScheduledTasks(app, event.scheduledTime, env, ctx))

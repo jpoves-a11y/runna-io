@@ -59,6 +59,15 @@ RESEND_FROM = "onboarding@resend.dev"
 # Optional vars:
 #   WORKER_URL       public URL of this Worker (invite links, email buttons); default: request origin
 #   APP_DOWNLOAD_URL App Store / TestFlight link shown on the /invite and /open landing pages
+#   DB_METRICS       "1" = count Turso rows read/written per endpoint (table db_usage_daily).
+#                    Temporary: it switches the DB client to the JSON protocol and adds one
+#                    upsert per request. Turn it off (delete the variable) after measuring.
+#
+# ===== Database usage (Turso free plan: 500M rows read, 10M rows written, 5 GB per month) =====
+# curl -H "Authorization: Bearer $UPSTASH_CRON_SECRET" <worker>/api/admin/db-usage?days=7
+#   rows read/written per endpoint and monthly projection (needs DB_METRICS = "1")
+# curl -H "Authorization: Bearer $UPSTASH_CRON_SECRET" <worker>/api/admin/db-size
+#   rows and bytes per table (reads every row once: run it by hand)
 #
 # Public pages served by the Worker: /privacy, /terms, /support, /invite/<token>, /open
 
