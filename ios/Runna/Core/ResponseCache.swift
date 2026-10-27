@@ -149,6 +149,41 @@ final class ResponseCache {
         }
     }
 
+    /// Rewrites cached JSON bodies in place (optimistic updates: a like, a rename, a removed request),
+    /// so every screen that draws from the cache agrees with what the user just did before the server
+    /// answers. `transform` gets each matching body parsed with JSONSerialization and returns the new
+    /// object, or nil to leave that body unchanged. Only bodies already in memory are patched; their
+    /// timestamps are kept, so freshness rules (and the revalidation after a mutation) don't change.
+    func patchJSON(where matches: (String) -> Bool, _ transform: (Any) -> Any?) {
+        lock.lock()
+        let candidates: [(String, Entry)] = memory.filter { matches($0.key) }.map { ($0.key, $0.value) }
+        let generationAtRead = generationValue
+        lock.unlock()
+
+        var updates: [(String, Entry, Data)] = []
+        for (key, entry) in candidates {
+            guard let object = try? JSONSerialization.jsonObject(with: entry.data, options: [.fragmentsAllowed]),
+                  let changed = transform(object),
+                  JSONSerialization.isValidJSONObject(changed),
+                  let data = try? JSONSerialization.data(withJSONObject: changed, options: []) else { continue }
+            updates.append((key, entry, data))
+        }
+        guard !updates.isEmpty else { return }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard generationAtRead == generationValue else { return }
+        for (key, original, data) in updates {
+            // A newer body arrived meanwhile: it wins
+            guard let current = memory[key], current.data == original.data else { continue }
+            memory[key] = Entry(data: data, date: original.date, fromDisk: original.fromDisk)
+            guard data.count <= maxDiskBytes, let url = fileURL(for: key) else { continue }
+            ioQueue.async {
+                try? data.write(to: url, options: [.atomic])
+            }
+        }
+    }
+
     /// Forgets everything (logout, account deleted, session rejected).
     func removeAll() {
         lock.lock()
