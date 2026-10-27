@@ -137,9 +137,24 @@ enum APIDate {
         return formatter
     }()
 
+    // Lists parse the same timestamps on every redraw: remember them (date formatters are slow)
+    private static let memoLock = NSLock()
+    private static var memo: [String: Date] = [:]
+
     static func parse(_ text: String?) -> Date? {
         guard let text, !text.isEmpty else { return nil }
-        return isoWithFraction.date(from: text) ?? iso.date(from: text) ?? sqlite.date(from: text)
+        memoLock.lock()
+        let known: Date? = memo[text]
+        memoLock.unlock()
+        if let known { return known }
+        let parsed: Date? = isoWithFraction.date(from: text) ?? iso.date(from: text) ?? sqlite.date(from: text)
+        if let parsed {
+            memoLock.lock()
+            if memo.count > 4000 { memo.removeAll(keepingCapacity: true) }
+            memo[text] = parsed
+            memoLock.unlock()
+        }
+        return parsed
     }
 
     static func string(_ date: Date) -> String {

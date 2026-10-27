@@ -183,6 +183,17 @@ struct StatTile: View {
 struct RouteShape: Shape {
     let coordinates: [[Double]]
 
+    /// Long GPS tracks are thinned to at most `maxPoints`: the shape is tiny and redrawn often.
+    init(coordinates: [[Double]], maxPoints: Int = 80) {
+        self.coordinates = RouteShape.thinned(coordinates.filter { $0.count >= 2 }, maxPoints: maxPoints)
+    }
+
+    static func thinned(_ points: [[Double]], maxPoints: Int) -> [[Double]] {
+        guard points.count > maxPoints, maxPoints >= 2 else { return points }
+        let step = Double(points.count - 1) / Double(maxPoints - 1)
+        return (0..<maxPoints).map { points[min(points.count - 1, Int((Double($0) * step).rounded()))] }
+    }
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
         guard coordinates.count >= 2 else { return path }
