@@ -265,17 +265,20 @@ struct RouteDetailView: View {
             name = route.name
             return
         }
-        isWorking = true
+        // Optimistic: the new name shows everywhere at once and is put back if the server refuses
+        let previous = route.name
+        name = trimmed
+        MyRoutesModel.shared.applyRename(routeId: route.id, name: trimmed)
+        Haptics.success()
         Task {
             do {
                 try await APIClient.shared.send("PATCH", "/api/routes/\(route.id)/name", body: ["name": trimmed])
-                Haptics.success()
                 onChange()
             } catch {
-                name = route.name
-                errorMessage = error.localizedDescription
+                name = previous
+                MyRoutesModel.shared.applyRename(routeId: route.id, name: previous)
+                errorMessage = "No se ha podido cambiar el nombre. \(error.localizedDescription)"
             }
-            isWorking = false
         }
     }
 

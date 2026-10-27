@@ -37,7 +37,7 @@ struct RankingsView: View {
             .screenBackground()
             .navigationTitle("Ranking")
             .toolbar { toolbarContent }
-            .refreshable { await load(force: true) }
+            .refreshable { await QuickRefresh.run { await load(force: true) } }
             .task(id: router.reloadSignal) {
                 await load(force: model.reloadTracker.consume(router.reloadSignal))
             }

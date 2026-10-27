@@ -33,6 +33,55 @@ final class PowersModel {
         loaded = true
     }
 
+    /// Optimistic activation: the power moves to "active" (or "used") at once and this returns the
+    /// message to show; the request runs in the background and, if the server refuses, the power goes
+    /// back to "available" and `errorMessage` explains why.
+    func activateOptimistically(_ power: UserPower, userId: String, body: [String: Any]? = nil) -> String {
+        let previous = powers
+        let local = Self.locallyActivated(power)
+        if let index = powers.firstIndex(where: { $0.id == power.id }) {
+            powers[index] = local.power
+        }
+        CompetitionStore.shared.setAvailablePowerCount(available.count)
+        Haptics.success()
+        Task {
+            do {
+                _ = try await APIClient.shared.request("POST", "/api/powers/\(power.id)/activate", body: body ?? [:], as: PowerActivationResponse.self)
+                // The server's timers replace the local ones, without a spinner
+                await refreshQuietly(userId: userId)
+            } catch {
+                powers = previous
+                CompetitionStore.shared.setAvailablePowerCount(available.count)
+                let message = (error as? APIError)?.message ?? error.localizedDescription
+                errorMessage = "No se ha podido activar \(power.name): \(message)"
+            }
+        }
+        return local.message
+    }
+
+    private func refreshQuietly(userId: String) async {
+        guard let response = try? await APIClient.shared.request("GET", "/api/users/\(userId)/powers", as: UserPowersResponse.self) else { return }
+        powers = response.powers
+        CompetitionStore.shared.setAvailablePowerCount(available.count)
+    }
+
+    /// What the server does to each kind of power (POST /api/powers/:id/activate), applied locally.
+    private static func locallyActivated(_ power: UserPower) -> (power: UserPower, message: String) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let now = formatter.string(from: Date())
+        let in24h = formatter.string(from: Date().addingTimeInterval(24 * 3600))
+        switch power.powerType {
+        case "shield", "time_bomb", "invisibility", "wall", "sentinel":
+            return (power.with(status: "active", activatedAt: now, usedAt: nil, expiresAt: in24h), "Activado durante 24h")
+        case "nickname", "reveal":
+            let message = power.powerType == "reveal" ? "Recibirás la ubicación del próximo tesoro 1h antes" : "Apodo asignado durante 48h"
+            return (power.with(status: "used", activatedAt: now, usedAt: now, expiresAt: power.expiresAt), message)
+        default:
+            return (power.with(status: "active", activatedAt: now, usedAt: nil, expiresAt: power.expiresAt), "Se aplicará en tu siguiente ruta")
+        }
+    }
+
     /// Activates a power. Returns the server's message on success, or the error.
     func activate(_ power: UserPower, userId: String, body: [String: Any]? = nil) async -> Result<String, APIError> {
         activatingId = power.id
@@ -189,14 +238,8 @@ struct PowersSheet: View {
             return
         }
         guard let userId = session.userId else { return }
-        Task {
-            switch await model.activate(power, userId: userId) {
-            case .success(let message):
-                model.resultMessage = "\(power.name): \(message)"
-            case .failure(let error):
-                model.errorMessage = error.message
-            }
-        }
+        let message = model.activateOptimistically(power, userId: userId)
+        model.resultMessage = "\(power.name): \(message)"
     }
 }
 
@@ -490,18 +533,20 @@ private struct NicknamePowerSheet: View {
     private func assign() {
         guard let userId = session.userId, let targetId = selectedId, !trimmedNickname.isEmpty else { return }
         let body: [String: Any] = ["targetUserId": targetId, "nickname": String(trimmedNickname.prefix(Self.maxLength))]
-        isSending = true
-        Task {
-            let result = await model.activate(power, userId: userId, body: body)
-            isSending = false
-            switch result {
-            case .success:
-                let target = participants.first { $0.id == targetId }?.name ?? "el jugador"
-                model.pendingResultMessage = "Apodo «\(trimmedNickname)» asignado a \(target) durante 48 h."
-                dismiss()
-            case .failure(let error):
-                sendError = error.message
-            }
-        }
+        // Optimistic: the sheet closes at once; a refusal shows up in the powers sheet
+        _ = model.activateOptimistically(power, userId: userId, body: body)
+        let target = participants.first { $0.id == targetId }?.name ?? "el jugador"
+        model.pendingResultMessage = "Apodo «\(trimmedNickname)» asignado a \(target) durante 48 h."
+        dismiss()
+    }
+}
+
+private extension UserPower {
+    /// A copy with another status / timestamps (optimistic activation).
+    func with(status: String, activatedAt: String?, usedAt: String?, expiresAt: String?) -> UserPower {
+        UserPower(
+            id: id, powerType: powerType, status: status, activatedAt: activatedAt, usedAt: usedAt,
+            expiresAt: expiresAt, createdAt: createdAt, definition: definition
+        )
     }
 }

@@ -139,6 +139,7 @@ final class HealthImporter {
                 saveImported(imported, userId: userId)
                 // Show what this run conquered
                 ConquestInbox.shared.enqueue(routeId: response.route.id)
+                UploadedRuns.didUpload(response.route)
             } catch let error as APIError where error.status == 409 {
                 summary.duplicates += 1
                 imported.insert(workoutId)

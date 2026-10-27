@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         #if DEBUG
         print("Remote notification registration failed:", error)
         #endif
+        Task { @MainActor in
+            PushManager.shared.didFailToRegister(error)
+        }
     }
 
     // Show notifications while the app is open, and refresh the screens that depend on them

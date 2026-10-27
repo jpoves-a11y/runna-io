@@ -353,6 +353,8 @@ enum PendingRuns {
             let response: CreateRouteResponse = try await APIClient.shared.request("POST", "/api/routes", body: body(for: entry))
             recentlyUploaded[id] = response.route.id
             remove(id: id)
+            // Shown at once in "Mis carreras", the map and the feed (the next refresh confirms it)
+            UploadedRuns.didUpload(response.route)
             return .uploaded(routeId: response.route.id)
         } catch let error as APIError where error.status == 409 {
             // Duplicate: the server already has this run

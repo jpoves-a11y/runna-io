@@ -16,6 +16,8 @@ struct FriendsView: View {
     @State private var busyIds: Set<String> = []
     @State private var inviteToConfirm: InviteToken?
     @State private var acceptedCount = 0
+    /// Short message when an optimistic change had to be undone.
+    @State private var toastMessage: String?
 
     private var friends: [AppUser] { model.friends }
     private var incoming: [FriendRequest] { model.incoming }
@@ -32,7 +34,7 @@ struct FriendsView: View {
             list
                 .navigationTitle("Amigos")
                 .toolbar { toolbarContent }
-                .refreshable { await load(force: true) }
+                .refreshable { await QuickRefresh.run { await load(force: true) } }
                 .task(id: router.reloadSignal) {
                     await load(force: model.reloadTracker.consume(router.reloadSignal))
                 }
@@ -73,6 +75,7 @@ struct FriendsView: View {
                     Text(alertMessage ?? "")
                 }
                 .sensoryFeedback(.success, trigger: acceptedCount)
+                .errorToast($toastMessage)
         }
     }
 
@@ -370,41 +373,45 @@ struct FriendsView: View {
         await model.load(userId: userId, force: force)
     }
 
+    /// Optimistic: the request leaves the list at once; it comes back (with a short message) if the
+    /// server refuses. Accepting refreshes the friends list silently afterwards.
     private func respond(to request: FriendRequest, accept: Bool) {
         guard !busyIds.contains(request.id) else { return }
         busyIds.insert(request.id)
+        let position = model.hideIncoming(request)
+        Haptics.tap()
         Task {
             do {
                 let action = accept ? "accept" : "reject"
                 let result = try await APIClient.shared.request("POST", "/api/friends/requests/\(request.id)/\(action)", body: [:], as: AcceptInviteResponse.self)
                 if accept {
                     acceptedCount += 1
-                    await session.refreshUser()
                     alertMessage = FriendshipFeedback.message(for: result, myColor: session.user?.color)
-                } else {
-                    Haptics.tap()
+                    await session.refreshUser()
                 }
-                model.removeIncoming(request.id)
                 await load(force: true)
             } catch {
-                alertMessage = error.localizedDescription
+                model.restoreIncoming(request, at: position)
+                toastMessage = accept ? "No se ha podido aceptar la solicitud." : "No se ha podido rechazar la solicitud."
                 await load(force: true)
             }
             busyIds.remove(request.id)
         }
     }
 
+    /// Optimistic cancel of a request you sent (restored if the server refuses).
     private func cancel(_ request: FriendRequest) {
         guard !busyIds.contains(request.id) else { return }
         busyIds.insert(request.id)
+        let position = model.hideSent(request)
+        Haptics.tap()
         Task {
             do {
                 try await APIClient.shared.send("DELETE", "/api/friends/requests/\(request.id)")
-                Haptics.tap()
-                model.removeSent(request.id)
-                await load(force: true)
             } catch {
-                alertMessage = error.localizedDescription
+                model.restoreSent(request, at: position)
+                toastMessage = "No se ha podido cancelar la solicitud."
+                await load(force: true)
             }
             busyIds.remove(request.id)
         }
@@ -968,10 +975,55 @@ final class FriendsModel {
         hasLoaded = false
         errorMessage = nil
         reloadTracker = ReloadSignalTracker()
+        hiddenRequestIds = []
     }
 
     func removeIncoming(_ requestId: String) {
         incoming.removeAll { $0.id == requestId }
+    }
+
+    /// Requests answered / cancelled from this iPhone: never shown again, even if a refresh that
+    /// started before the change still lists them. Cleared on reset (logout).
+    private var hiddenRequestIds: Set<String> = []
+
+    /// Hides an incoming request at once (and from the cached lists). Returns its old position.
+    @discardableResult
+    func hideIncoming(_ request: FriendRequest) -> Int? {
+        hiddenRequestIds.insert(request.id)
+        let position = incoming.firstIndex(where: { $0.id == request.id })
+        withAnimation(.snappy) {
+            incoming.removeAll { $0.id == request.id }
+        }
+        OptimisticCache.removeElement(id: request.id, keyPrefix: "/api/friends/requests/")
+        return position
+    }
+
+    @discardableResult
+    func hideSent(_ request: FriendRequest) -> Int? {
+        hiddenRequestIds.insert(request.id)
+        let position = sent.firstIndex(where: { $0.id == request.id })
+        withAnimation(.snappy) {
+            sent.removeAll { $0.id == request.id }
+        }
+        OptimisticCache.removeElement(id: request.id, keyPrefix: "/api/friends/requests/")
+        return position
+    }
+
+    /// Undoes `hideIncoming` (the server refused the change).
+    func restoreIncoming(_ request: FriendRequest, at position: Int?) {
+        hiddenRequestIds.remove(request.id)
+        guard !incoming.contains(where: { $0.id == request.id }) else { return }
+        withAnimation(.snappy) {
+            incoming.insert(request, at: min(position ?? 0, incoming.count))
+        }
+    }
+
+    func restoreSent(_ request: FriendRequest, at position: Int?) {
+        hiddenRequestIds.remove(request.id)
+        guard !sent.contains(where: { $0.id == request.id }) else { return }
+        withAnimation(.snappy) {
+            sent.insert(request, at: min(position ?? 0, sent.count))
+        }
     }
 
     func removeSent(_ requestId: String) {
@@ -998,10 +1050,10 @@ final class FriendsModel {
             hasLoaded = true
         }
         if let cached = await incomingResource.loadCached() {
-            incoming = Self.pending(cached)
+            incoming = pending(cached)
         }
         if let cached = await sentResource.loadCached() {
-            sent = Self.pending(cached)
+            sent = pending(cached)
         }
         let fresh = friendsResource.isFresh && incomingResource.isFresh && sentResource.isFresh
         if !force && hasLoaded && fresh { return }
@@ -1019,8 +1071,8 @@ final class FriendsModel {
             let (loadedFriends, loadedIncoming, loadedSent) = try await (friendsRequest, incomingRequest, sentRequest)
             // A list identical to the one shown comes back as nil, but local removals must be undone/confirmed
             if let list = loadedFriends ?? friendsResource.value { friends = Self.sortedFriends(list) }
-            if let list = loadedIncoming ?? incomingResource.value { incoming = Self.pending(list) }
-            if let list = loadedSent ?? sentResource.value { sent = Self.pending(list) }
+            if let list = loadedIncoming ?? incomingResource.value { incoming = pending(list) }
+            if let list = loadedSent ?? sentResource.value { sent = pending(list) }
             errorMessage = nil
         } catch is CancellationError {
             return
@@ -1034,7 +1086,7 @@ final class FriendsModel {
         list.sorted { $0.totalArea > $1.totalArea }
     }
 
-    private static func pending(_ list: [FriendRequest]) -> [FriendRequest] {
-        list.filter { $0.status == "pending" }
+    private func pending(_ list: [FriendRequest]) -> [FriendRequest] {
+        list.filter { $0.status == "pending" && !hiddenRequestIds.contains($0.id) }
     }
 }

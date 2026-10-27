@@ -108,6 +108,17 @@ struct UserPower: Decodable, Identifiable, Hashable {
         definition = try? c.decodeIfPresent(PowerDefinition.self, forKey: .definition)
     }
 
+    init(id: String, powerType: String, status: String, activatedAt: String?, usedAt: String?, expiresAt: String?, createdAt: String?, definition: PowerDefinition?) {
+        self.id = id
+        self.powerType = powerType
+        self.status = status
+        self.activatedAt = activatedAt
+        self.usedAt = usedAt
+        self.expiresAt = expiresAt
+        self.createdAt = createdAt
+        self.definition = definition
+    }
+
     var expiresDate: Date? { APIDate.parse(expiresAt) }
     var name: String { definition?.name ?? powerType }
     var emoji: String { definition?.emoji ?? "✨" }

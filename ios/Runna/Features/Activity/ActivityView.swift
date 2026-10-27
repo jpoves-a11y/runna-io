@@ -47,9 +47,13 @@ final class FeedModel {
     private(set) var previews: [String: [FeedComment]] = [:]
     /// Your friends, to resolve @mentions in comment previews.
     private(set) var friends: [MentionCandidate] = []
-    /// Events with a reaction request in flight.
+    /// Kept for compatibility: reactions are optimistic now, so cards never wait for a request.
     private(set) var reactingIds: Set<String> = []
     var actionError: String?
+    /// Reactions shown before the server confirmed them, by event id: they survive a refresh that
+    /// returns the old counters while the request is still in flight.
+    private var optimisticReactions: [String: ReactionState] = [:]
+    private let reactionSync = ReactionSync()
 
     private let pageSize = 20
     /// Rows received from the server (before filtering), used as the next page offset.
@@ -91,6 +95,7 @@ final class FeedModel {
         friends = []
         reactingIds = []
         actionError = nil
+        optimisticReactions = [:]
         serverOffset = 0
         loadingPreviews = []
         isRefreshing = false
@@ -161,11 +166,28 @@ final class FeedModel {
     }
 
     private func visible(_ page: [FeedEvent], userId: String) -> [FeedEvent] {
-        page.filter { event in
+        let shown = page.filter { event in
             guard Self.knownEventTypes.contains(event.eventType) else { return false }
             // Sentinel alerts are private to the defender
             return event.eventType != "sentinel_alert" || event.userId == userId
         }
+        guard !optimisticReactions.isEmpty else { return shown }
+        return shown.map { event in
+            guard let state = optimisticReactions[event.id] else { return event }
+            var copy = event
+            copy.likeCount = state.likeCount
+            copy.dislikeCount = state.dislikeCount
+            copy.userReaction = state.userReaction
+            return copy
+        }
+    }
+
+    /// The card of a run you just uploaded, shown at the top before the server's feed is refetched.
+    func insertLocal(_ event: FeedEvent, userId: String) {
+        guard ownerId == userId || ownerId == nil else { return }
+        guard !events.contains(where: { $0.id == event.id || ($0.routeId != nil && $0.routeId == event.routeId) }) else { return }
+        events.insert(event, at: 0)
+        hasLoaded = true
     }
 
     /// Replaces the list with the first page. Comment previews of cards whose comment count didn't change are kept.
@@ -232,30 +254,50 @@ final class FeedModel {
         }
     }
 
+    /// Optimistic: the card changes at once, the request goes in the background, and the counters
+    /// are rolled back (with a short message) if it fails.
     func react(to event: FeedEvent, with reaction: String) async {
-        guard !reactingIds.contains(event.id) else { return }
-        reactingIds.insert(event.id)
-        defer { reactingIds.remove(event.id) }
-        do {
-            let result = try await APIClient.shared.request(
-                "POST", "/api/feed/reactions",
-                body: ["targetType": "event", "targetId": event.id, "reactionType": reaction],
-                as: ReactionResult.self
-            )
-            if let index = events.firstIndex(where: { $0.id == event.id }) {
-                events[index].likeCount = result.likeCount
-                events[index].dislikeCount = result.dislikeCount
-                events[index].userReaction = result.userReaction
+        guard !OptimisticCache.isLocal(event.id),
+              let index = events.firstIndex(where: { $0.id == event.id }) else { return }
+        let current = events[index]
+        let before = ReactionState(likeCount: current.likeCount, dislikeCount: current.dislikeCount, userReaction: current.userReaction)
+        let after = before.toggled(reaction)
+        let eventId = event.id
+        optimisticReactions[eventId] = after
+        showReaction(after, eventId: eventId)
+        reactionSync.send(
+            targetType: "event",
+            targetId: eventId,
+            before: before,
+            after: after,
+            onSettled: { [weak self] state in
+                guard let self else { return }
+                self.optimisticReactions[eventId] = nil
+                self.showReaction(state, eventId: eventId)
+            },
+            onFailed: { [weak self] state, message in
+                guard let self else { return }
+                self.optimisticReactions[eventId] = nil
+                self.showReaction(state, eventId: eventId)
+                self.actionError = message
             }
-        } catch {
-            actionError = error.localizedDescription
+        )
+    }
+
+    private func showReaction(_ state: ReactionState, eventId: String) {
+        if let index = events.firstIndex(where: { $0.id == eventId }) {
+            events[index].likeCount = state.likeCount
+            events[index].dislikeCount = state.dislikeCount
+            events[index].userReaction = state.userReaction
         }
+        OptimisticCache.setEventReaction(eventId: eventId, state: state)
     }
 
     func updateCommentCount(eventId: String, count: Int) {
         if let index = events.firstIndex(where: { $0.id == eventId }) {
             events[index].commentCount = count
         }
+        OptimisticCache.setCommentCount(eventId: eventId, count: count)
         // Reload the preview with the new comments next time the card shows
         previews[eventId] = nil
     }
@@ -288,7 +330,10 @@ private struct FeedList: View {
             .padding(.bottom, DS.Spacing.xxl)
         }
         .scrollIndicators(.hidden)
-        .refreshable { await reload(force: true) }
+        .refreshable {
+            // Cached cards stay on screen; new ones replace them in place when they arrive
+            await QuickRefresh.run { await reload(force: true) }
+        }
         .task(id: router.reloadSignal) {
             await reload(force: model.reloadTracker.consume(router.reloadSignal))
         }
@@ -304,7 +349,7 @@ private struct FeedList: View {
             UserProfileSheet(userId: target.id)
         }
         .reportSheet($reportTarget)
-        .errorAlert(Binding(get: { model.actionError }, set: { model.actionError = $0 }))
+        .errorToast(Binding(get: { model.actionError }, set: { model.actionError = $0 }))
     }
 
     private func card(for event: FeedEvent) -> some View {
@@ -313,9 +358,12 @@ private struct FeedList: View {
             currentUserId: session.userId,
             previewComments: model.previews[event.id] ?? [],
             people: model.friends,
-            isReacting: model.reactingIds.contains(event.id),
+            isReacting: false,
             onReact: { reaction in Task { await model.react(to: event, with: reaction) } },
-            onComments: { commentsFor = event },
+            onComments: {
+                // A run just uploaded: its card is local until the server's one replaces it
+                if !OptimisticCache.isLocal(event.id) { commentsFor = event }
+            },
             onOpenUser: { profileUserId = $0 },
             onReport: { reportTarget = .feedEvent(event) }
         )
@@ -400,6 +448,22 @@ final class MyRoutesModel {
         reloadTracker = ReloadSignalTracker()
     }
 
+    /// A run just uploaded from this iPhone, shown at once (the next refresh confirms it).
+    func insertUploaded(_ route: RunRoute) {
+        guard ownerId == nil || ownerId == route.userId else { return }
+        guard !routes.contains(where: { $0.id == route.id }) else { return }
+        routes.insert(route, at: 0)
+        hasLoaded = true
+    }
+
+    /// Optimistic rename (RouteDetailView); `name` is put back if the server refuses it.
+    func applyRename(routeId: String, name: String) {
+        if let index = routes.firstIndex(where: { $0.id == routeId }) {
+            routes[index].name = name
+        }
+        OptimisticCache.renameRoute(routeId: routeId, name: name)
+    }
+
     /// Cached runs first; refetched when they aren't fresh (or `force`).
     func load(userId: String, force: Bool) async {
         if ownerId != userId {
@@ -471,7 +535,7 @@ private struct MyRoutesList: View {
                 Task { await load(force: true) }
             }
         }
-        .refreshable { await load(force: true) }
+        .refreshable { await QuickRefresh.run { await load(force: true) } }
         .task(id: router.reloadSignal) {
             await load(force: model.reloadTracker.consume(router.reloadSignal))
         }

@@ -13,12 +13,15 @@ struct CommentsSheet: View {
     @State private var draft = ""
     @State private var replyingTo: FeedComment?
     @State private var isLoading = true
-    @State private var isSending = false
-    @State private var reactingIds: Set<String> = []
+    /// Server id of each local comment once the server accepted it (local id -> server id).
+    @State private var sentIds: [String: String] = [:]
     @State private var commentToDelete: FeedComment?
     @State private var reportTarget: ReportTarget?
     @State private var profileUserId: String?
     @State private var errorMessage: String?
+    /// Short message when an optimistic change had to be undone.
+    @State private var toastMessage: String?
+    @State private var reactionSync = ReactionSync()
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -71,6 +74,7 @@ struct CommentsSheet: View {
                 UserProfileSheet(userId: target.id)
             }
             .errorAlert($errorMessage)
+            .errorToast($toastMessage)
         }
         .presentationDragIndicator(.visible)
         .task { await initialLoad() }
@@ -82,7 +86,7 @@ struct CommentsSheet: View {
             isMine: comment.userId == session.userId,
             isReply: isReply,
             people: friends,
-            isReacting: reactingIds.contains(comment.id),
+            isReacting: OptimisticCache.isLocal(comment.id),
             onReply: { reply(to: thread) },
             onReact: { reaction in react(comment, reaction) },
             onDelete: { commentToDelete = comment },
@@ -102,7 +106,7 @@ struct CommentsSheet: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var composer: some View {
@@ -118,7 +122,6 @@ struct CommentsSheet: View {
                     .font(.subheadline)
                     .lineLimit(1...4)
                     .focused($inputFocused)
-                    .disabled(isSending)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -140,15 +143,10 @@ struct CommentsSheet: View {
         } label: {
             ZStack {
                 Circle()
-                    .fill(canSend || isSending ? Color.brand : Color(uiColor: .tertiarySystemFill))
-                if isSending {
-                    ProgressView()
-                        .tint(Color.onBrand)
-                } else {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(canSend ? Color.onBrand : Color.secondary)
-                }
+                    .fill(canSend ? Color.brand : Color(uiColor: .tertiarySystemFill))
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(canSend ? Color.onBrand : Color.secondary)
             }
             .frame(width: 40, height: 40)
             .frame(width: 44, height: 44)
@@ -228,27 +226,70 @@ struct CommentsSheet: View {
         comments.reduce(0) { $0 + 1 + $1.replies.count }
     }
 
+    private var commentsPath: String { "/api/feed/events/\(event.id)/comments" }
+
+    /// Last known thread and friends first (instant), then both refetched.
     private func initialLoad() async {
+        if let cached = APIClient.shared.cached(commentsPath, as: [FeedComment].self) {
+            comments = cached
+            isLoading = false
+        }
+        if let userId = session.userId,
+           let cachedFriends = APIClient.shared.cached("/api/friends/\(userId)", as: [AppUser].self) {
+            friends = cachedFriends.map { MentionCandidate($0) }
+        }
         await load()
         await loadFriends()
     }
 
     private func loadFriends() async {
         guard let userId = session.userId else { return }
-        let loaded = (try? await APIClient.shared.request("GET", "/api/friends/\(userId)", as: [AppUser].self)) ?? []
+        guard let loaded = try? await APIClient.shared.request("GET", "/api/friends/\(userId)", as: [AppUser].self) else { return }
         friends = loaded.map { MentionCandidate($0) }
     }
 
+    /// Refetches the thread in place (no spinner once something is shown). Comments still being
+    /// sent are kept at the end until the server returns them.
     private func load() async {
         defer { isLoading = false }
         do {
-            comments = try await APIClient.shared.request("GET", "/api/feed/events/\(event.id)/comments", as: [FeedComment].self)
+            let loaded = try await APIClient.shared.request("GET", commentsPath, as: [FeedComment].self)
+            comments = mergingLocal(into: loaded)
             onCountChange(totalCount)
         } catch is CancellationError {
             return
         } catch {
-            errorMessage = error.localizedDescription
+            // With comments on screen a failed refresh stays silent
+            if comments.isEmpty {
+                errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    /// `loaded` plus the local comments whose server version isn't in it yet (still being sent).
+    private func mergingLocal(into loaded: [FeedComment]) -> [FeedComment] {
+        var serverIds = Set<String>()
+        for comment in loaded {
+            serverIds.insert(comment.id)
+            for reply in comment.replies {
+                serverIds.insert(reply.id)
+            }
+        }
+        let pending: (FeedComment) -> Bool = { comment in
+            guard OptimisticCache.isLocal(comment.id) else { return false }
+            guard let serverId = sentIds[comment.id] else { return true }
+            return !serverIds.contains(serverId)
+        }
+        var result = loaded
+        for comment in comments where pending(comment) {
+            result.append(comment)
+        }
+        for thread in comments where !OptimisticCache.isLocal(thread.id) {
+            let localReplies = thread.replies.filter(pending)
+            guard !localReplies.isEmpty, let index = result.firstIndex(where: { $0.id == thread.id }) else { continue }
+            result[index].replies.append(contentsOf: localReplies)
+        }
+        return result
     }
 
     private func reply(to comment: FeedComment) {
@@ -261,74 +302,166 @@ struct CommentsSheet: View {
         profileUserId = userId
     }
 
+    /// A comment drawn before the server has it (id "local-…").
+    private func localComment(content: String, parentId: String?) -> FeedComment? {
+        guard let user = session.user else { return nil }
+        let object: [String: Any] = [
+            "id": OptimisticCache.localId(),
+            "userId": user.id,
+            "parentId": OptimisticCache.nullable(parentId),
+            "content": content,
+            "createdAt": OptimisticCache.nowString(),
+            "user": [
+                "id": user.id,
+                "username": user.username,
+                "name": user.name,
+                "color": user.color,
+                "avatar": OptimisticCache.nullable(user.avatar),
+            ] as [String: Any],
+            "replies": [Any](),
+            "likeCount": 0,
+            "dislikeCount": 0,
+            "userReaction": NSNull(),
+        ]
+        return OptimisticCache.decode(FeedComment.self, from: object)
+    }
+
+    /// Optimistic: the comment appears at once and the composer is cleared; if the server refuses
+    /// it, it's removed again and the text goes back to the composer.
     private func send() {
-        let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, !isSending else { return }
-        isSending = true
+        let content = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(500))
+        guard !content.isEmpty else { return }
+        let thread = replyingTo
+        let parentId: String? = thread.map { $0.parentId ?? $0.id }
+        var body: [String: Any] = ["content": content]
+        if let parentId { body["parentId"] = parentId }
+
+        let local = localComment(content: content, parentId: parentId)
+        if let local {
+            if let parentId, let index = comments.firstIndex(where: { $0.id == parentId }) {
+                comments[index].replies.append(local)
+            } else {
+                comments.append(local)
+            }
+            onCountChange(totalCount)
+        }
+        draft = ""
+        replyingTo = nil
+        Haptics.tap()
+
         Task {
             do {
-                var body: [String: Any] = ["content": String(content.prefix(500))]
-                if let parentId = replyingTo?.id { body["parentId"] = parentId }
-                try await APIClient.shared.send("POST", "/api/feed/events/\(event.id)/comments", body: body)
-                draft = ""
-                replyingTo = nil
-                Haptics.tap()
+                let created = try await APIClient.shared.request(
+                    "POST", "/api/feed/events/\(event.id)/comments", body: body, as: CreatedComment.self
+                )
+                // The local comment stays until the refetched thread contains the server's one
+                if let local { sentIds[local.id] = created.id }
                 await load()
             } catch {
-                errorMessage = error.localizedDescription
+                if let local {
+                    removeLocal(local.id)
+                    onCountChange(totalCount)
+                }
+                if draft.isEmpty {
+                    draft = content
+                    replyingTo = thread
+                }
+                toastMessage = "No se ha podido publicar el comentario. Inténtalo de nuevo."
             }
-            isSending = false
         }
     }
 
-    private func react(_ comment: FeedComment, _ reaction: String) {
-        guard !reactingIds.contains(comment.id) else { return }
-        reactingIds.insert(comment.id)
-        Haptics.tap()
-        Task {
-            do {
-                let result = try await APIClient.shared.request(
-                    "POST", "/api/feed/reactions",
-                    body: ["targetType": "comment", "targetId": comment.id, "reactionType": reaction],
-                    as: ReactionResult.self
-                )
-                apply(result, to: comment.id)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            reactingIds.remove(comment.id)
+    private func removeLocal(_ id: String) {
+        comments.removeAll { $0.id == id }
+        for index in comments.indices {
+            comments[index].replies.removeAll { $0.id == id }
         }
+    }
+
+    private func findReaction(_ commentId: String) -> ReactionState? {
+        for comment in comments {
+            if comment.id == commentId {
+                return ReactionState(likeCount: comment.likeCount, dislikeCount: comment.dislikeCount, userReaction: comment.userReaction)
+            }
+            if let reply = comment.replies.first(where: { $0.id == commentId }) {
+                return ReactionState(likeCount: reply.likeCount, dislikeCount: reply.dislikeCount, userReaction: reply.userReaction)
+            }
+        }
+        return nil
+    }
+
+    /// Optimistic like / dislike, rolled back with a short message if the server refuses it.
+    private func react(_ comment: FeedComment, _ reaction: String) {
+        guard !OptimisticCache.isLocal(comment.id), let before = findReaction(comment.id) else { return }
+        Haptics.tap()
+        let after = before.toggled(reaction)
+        let commentId = comment.id
+        let eventId = event.id
+        show(after, commentId: commentId, eventId: eventId)
+        reactionSync.send(
+            targetType: "comment",
+            targetId: commentId,
+            before: before,
+            after: after,
+            onSettled: { state in
+                show(state, commentId: commentId, eventId: eventId)
+            },
+            onFailed: { state, message in
+                show(state, commentId: commentId, eventId: eventId)
+                toastMessage = message
+            }
+        )
+    }
+
+    private func show(_ state: ReactionState, commentId: String, eventId: String) {
+        apply(state, to: commentId)
+        OptimisticCache.setCommentReaction(eventId: eventId, commentId: commentId, state: state)
     }
 
     /// Updates a comment's counters in place (top-level or reply) without reloading the thread.
-    private func apply(_ result: ReactionResult, to commentId: String) {
+    private func apply(_ state: ReactionState, to commentId: String) {
         for index in comments.indices {
             if comments[index].id == commentId {
-                comments[index].likeCount = result.likeCount
-                comments[index].dislikeCount = result.dislikeCount
-                comments[index].userReaction = result.userReaction
+                comments[index].likeCount = state.likeCount
+                comments[index].dislikeCount = state.dislikeCount
+                comments[index].userReaction = state.userReaction
                 return
             }
             if let replyIndex = comments[index].replies.firstIndex(where: { $0.id == commentId }) {
-                comments[index].replies[replyIndex].likeCount = result.likeCount
-                comments[index].replies[replyIndex].dislikeCount = result.dislikeCount
-                comments[index].replies[replyIndex].userReaction = result.userReaction
+                comments[index].replies[replyIndex].likeCount = state.likeCount
+                comments[index].replies[replyIndex].dislikeCount = state.dislikeCount
+                comments[index].replies[replyIndex].userReaction = state.userReaction
                 return
             }
         }
     }
 
+    /// Optimistic: the comment (and its replies) disappears at once; it comes back if the server refuses.
     private func delete(_ comment: FeedComment) {
+        guard !OptimisticCache.isLocal(comment.id) else { return }
+        let snapshot = comments
+        if replyingTo?.id == comment.id { replyingTo = nil }
+        withAnimation(.snappy) {
+            removeLocal(comment.id)
+        }
+        onCountChange(totalCount)
         Task {
             do {
                 try await APIClient.shared.send("DELETE", "/api/feed/comments/\(comment.id)", body: [:])
-                if replyingTo?.id == comment.id { replyingTo = nil }
-                await load()
             } catch {
-                errorMessage = error.localizedDescription
+                withAnimation(.snappy) {
+                    comments = snapshot
+                }
+                onCountChange(totalCount)
+                toastMessage = "No se ha podido borrar el comentario."
             }
         }
     }
+}
+
+/// Body of POST /api/feed/events/:id/comments (only the new comment's id is needed).
+private struct CreatedComment: Decodable {
+    let id: String
 }
 
 private struct CommentProfileTarget: Identifiable {
