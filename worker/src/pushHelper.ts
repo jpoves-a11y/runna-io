@@ -291,6 +291,7 @@ interface PushEnv {
 
 let apnsConfig: ApnsConfig | null = null;
 let apnsMissing: string[] = [];
+let apnsFormatProblems: string[] = [];
 let pushDatabase: { url: string; authToken?: string } | null = null;
 let apnsJwtCache: { token: string; issuedAt: number; keyId: string } | null = null;
 
@@ -300,12 +301,21 @@ export function configurePush(env: PushEnv): void {
   apnsMissing = (['APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_PRIVATE_KEY', 'APNS_BUNDLE_ID'] as const).filter(
     (name) => !(typeof env[name] === 'string' && (env[name] as string).trim().length > 0),
   );
+  // Pasted secrets often carry a trailing space or newline, which makes Apple reject the token
+  const clean = (value: string | undefined) => (value ?? '').replace(/[\s"']+/g, '');
+  apnsFormatProblems = [];
+  if (env.APNS_KEY_ID && !/^[A-Z0-9]{10}$/.test(clean(env.APNS_KEY_ID).toUpperCase())) {
+    apnsFormatProblems.push('APNS_KEY_ID debe tener 10 letras/números (el Key ID de la clave .p8)');
+  }
+  if (env.APNS_TEAM_ID && !/^[A-Z0-9]{10}$/.test(clean(env.APNS_TEAM_ID).toUpperCase())) {
+    apnsFormatProblems.push('APNS_TEAM_ID debe tener 10 letras/números (Membership → Team ID)');
+  }
   if (env.APNS_KEY_ID && env.APNS_TEAM_ID && env.APNS_PRIVATE_KEY && env.APNS_BUNDLE_ID) {
     apnsConfig = {
-      keyId: env.APNS_KEY_ID,
-      teamId: env.APNS_TEAM_ID,
+      keyId: clean(env.APNS_KEY_ID).toUpperCase(),
+      teamId: clean(env.APNS_TEAM_ID).toUpperCase(),
       privateKey: env.APNS_PRIVATE_KEY,
-      bundleId: env.APNS_BUNDLE_ID,
+      bundleId: clean(env.APNS_BUNDLE_ID),
     };
   } else {
     apnsConfig = null;
@@ -345,6 +355,11 @@ async function getApnsJwt(config: ApnsConfig): Promise<string> {
 /** True when the Worker has the four APNS_* secrets (without them no iPhone gets notifications). */
 export function isApnsConfigured(): boolean {
   return apnsConfig !== null;
+}
+
+/** Format problems found in APNS_KEY_ID / APNS_TEAM_ID (no values). */
+export function apnsSecretProblems(): string[] {
+  return apnsFormatProblems;
 }
 
 /** Names (never values) of the APNS_* secrets the Worker can't see. */

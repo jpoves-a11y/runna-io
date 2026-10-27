@@ -5,6 +5,7 @@ import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type Inser
 import * as turf from '@turf/turf';
 import { EmailService, DEFAULT_WORKER_URL } from './email';
 import { sql } from 'drizzle-orm';
+import { apnsSecretProblems } from './pushHelper';
 import { USER_COLORS } from '../../shared/colors';
 import type { Env } from './index';
 import {
@@ -1556,7 +1557,13 @@ export function pushFailureMessage(reason: string, status?: number): string {
     case 'InvalidProviderToken':
     case 'MissingProviderToken':
     case 'ExpiredProviderToken':
-      return `Apple ha rechazado las credenciales del servidor (${reason}): revisa APNS_KEY_ID, APNS_TEAM_ID y APNS_PRIVATE_KEY.`;
+      {
+        const problems = apnsSecretProblems();
+        const detail = problems.length
+          ? ` Problema detectado: ${problems.join('; ')}.`
+          : ' Comprueba que APNS_KEY_ID es el Key ID de esa misma clave .p8, que APNS_TEAM_ID es el Team ID de la cuenta que creó la clave, y que la clave tiene activado Apple Push Notifications service.';
+        return `Apple ha rechazado las credenciales del servidor (${reason}).${detail}`;
+      }
     case 'TooManyProviderTokenUpdates':
     case 'TooManyRequests':
       return `Apple está limitando los envíos (${reason}). Inténtalo de nuevo en unos minutos.`;
