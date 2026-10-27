@@ -254,6 +254,22 @@ export const userBlocks = sqliteTable("user_blocks", {
   pk: primaryKey({ columns: [table.blockerId, table.blockedId] }),
 }));
 
+// Failed login / code attempts per key ("login:account:<id>", "login:ip:<ip>", ...): see worker/src/rateLimit.ts
+export const authAttempts = sqliteTable("auth_attempts", {
+  key: text("key").primaryKey(),
+  failures: integer("failures").notNull().default(0),
+  windowStart: integer("window_start").notNull(), // ms since epoch
+  lockedUntil: integer("locked_until"), // ms since epoch
+});
+
+// "Forgot password" codes: one pending code per user, stored hashed
+export const passwordResets = sqliteTable("password_resets", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  codeHash: text("code_hash").notNull(),
+  expiresAt: integer("expires_at").notNull(), // ms since epoch
+  attempts: integer("attempts").notNull().default(0),
+});
+
 // Email notifications tables
 export const emailNotifications = sqliteTable("email_notifications", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),

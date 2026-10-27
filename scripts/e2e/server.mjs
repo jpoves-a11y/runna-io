@@ -2,7 +2,7 @@
 // (used by the iOS CI job). Territory queue messages are processed in-process.
 //
 //   npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
-//     --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --external:@libsql/client
+//     --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --alias:cloudflare:sockets=./scripts/e2e/cloudflare-sockets-stub.mjs --external:@libsql/client
 //   DATABASE_URL=file:scripts/e2e/.build/e2e.db npx drizzle-kit push --force
 //   node scripts/e2e/server.mjs
 //

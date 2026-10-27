@@ -100,6 +100,7 @@ private struct LoginForm: View {
     @State private var password = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showsPasswordReset = false
     @FocusState private var focus: Field?
 
     var body: some View {
@@ -132,8 +133,19 @@ private struct LoginForm: View {
             }
             .buttonStyle(PrimaryButtonStyle())
             .disabled(isLoading || identifier.isEmpty || password.isEmpty)
+
+            Button("¿Has olvidado tu contraseña?") {
+                focus = nil
+                showsPasswordReset = true
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(Color.brand)
+            .frame(minHeight: 44)
         }
         .errorAlert($errorMessage)
+        .sheet(isPresented: $showsPasswordReset) {
+            PasswordResetView(identifier: identifier)
+        }
     }
 
     private func submit() {
@@ -440,6 +452,174 @@ struct VerifyEmailView: View {
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+// MARK: - Forgot password
+
+/// Two steps: the email or username gets a 6-digit code by email, then the code and a new
+/// password sign the user in.
+private struct PasswordResetView: View {
+    private enum Field: Hashable {
+        case identifier, code, password
+    }
+
+    @Environment(SessionStore.self) private var session
+    @Environment(\.dismiss) private var dismiss
+    @State private var identifier: String
+    @State private var code = ""
+    @State private var newPassword = ""
+    @State private var codeSent = false
+    @State private var sentMessage = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var resendAvailableAt = Date()
+    @FocusState private var focus: Field?
+
+    init(identifier: String) {
+        _identifier = State(initialValue: identifier)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
+                    AuthHeader(
+                        title: codeSent ? "Revisa tu email" : "Cambia tu contraseña",
+                        subtitle: codeSent
+                            ? sentMessage
+                            : "Escribe tu email o tu usuario y te enviaremos un código para elegir una contraseña nueva."
+                    )
+                    if codeSent {
+                        codeStep
+                    } else {
+                        identifierStep
+                    }
+                }
+                .padding(.horizontal, DS.Spacing.xl)
+                .padding(.top, DS.Spacing.xl)
+                .padding(.bottom, DS.Spacing.xxl)
+                .frame(maxWidth: 480)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .scrollIndicators(.hidden)
+            .background(Color(uiColor: .systemBackground).ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancelar") { dismiss() }
+                }
+            }
+            .errorAlert($errorMessage)
+            .onAppear { focus = identifier.isEmpty ? Field.identifier : nil }
+        }
+    }
+
+    private var identifierStep: some View {
+        VStack(spacing: DS.Spacing.xl) {
+            AuthFieldGroup {
+                AuthFieldRow {
+                    TextField("Email o usuario", text: $identifier)
+                        .textContentType(.username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                        .submitLabel(.send)
+                        .focused($focus, equals: Field.identifier)
+                        .onSubmit(requestCode)
+                }
+            }
+            Button(action: requestCode) {
+                if isLoading {
+                    ProgressView().tint(Color.onBrand)
+                } else {
+                    Text("Enviar código")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isLoading || identifier.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private var codeStep: some View {
+        VStack(spacing: DS.Spacing.xl) {
+            AuthFieldGroup {
+                AuthFieldRow {
+                    TextField("Código de 6 dígitos", text: $code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                        .monospacedDigit()
+                        .focused($focus, equals: Field.code)
+                        .onChange(of: code) { _, newValue in
+                            let digits = String(newValue.filter(\.isNumber).prefix(6))
+                            if digits != newValue { code = digits }
+                            if digits.count == 6 { focus = Field.password }
+                        }
+                }
+                HairlineDivider()
+                    .padding(.leading, DS.Spacing.l)
+                AuthFieldRow {
+                    PasswordField(title: "Nueva contraseña (mín. 6 caracteres)", text: $newPassword, contentType: .newPassword, onSubmit: changePassword)
+                        .focused($focus, equals: Field.password)
+                }
+            }
+            Button(action: changePassword) {
+                if isLoading {
+                    ProgressView().tint(Color.onBrand)
+                } else {
+                    Text("Cambiar contraseña")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isLoading || code.count != 6 || newPassword.count < 6)
+
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let remaining: Int = Int(resendAvailableAt.timeIntervalSince(context.date).rounded(.up))
+                Button(remaining > 0 ? "Reenviar código en \(remaining) s" : "Reenviar código") {
+                    requestCode()
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(remaining > 0 ? Color.secondary : Color.brand)
+                .monospacedDigit()
+                .disabled(remaining > 0 || isLoading)
+                .frame(minHeight: 44)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func requestCode() {
+        let value = identifier.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, !isLoading else { return }
+        focus = nil
+        isLoading = true
+        Task {
+            do {
+                sentMessage = try await session.requestPasswordReset(identifier: value)
+                resendAvailableAt = Date().addingTimeInterval(60)
+                withAnimation(.snappy) { codeSent = true }
+                focus = Field.code
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func changePassword() {
+        guard code.count == 6, newPassword.count >= 6, !isLoading else { return }
+        focus = nil
+        isLoading = true
+        Task {
+            do {
+                try await session.resetPassword(identifier: identifier, code: code, newPassword: newPassword)
+                Haptics.success()
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
         }
     }
 }

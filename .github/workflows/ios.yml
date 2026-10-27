@@ -104,7 +104,7 @@ jobs:
           (cd worker && npm ci --no-audit --no-fund)
           mkdir -p scripts/e2e/.build
           npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
-            --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --external:@libsql/client --log-level=warning
+            --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --alias:cloudflare:sockets=./scripts/e2e/cloudflare-sockets-stub.mjs --external:@libsql/client --log-level=warning
           DATABASE_URL=file:scripts/e2e/.build/e2e.db npx drizzle-kit push --force
           nohup node scripts/e2e/server.mjs > scripts/e2e/.build/server.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/api/health > /dev/null && break; sleep 1; done

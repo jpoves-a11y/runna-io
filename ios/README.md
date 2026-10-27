@@ -4,7 +4,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 
 ## Qué incluye
 
-- **Cuenta**: inicio de sesión, registro con verificación por email (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez.
+- **Cuenta**: inicio de sesión, "He olvidado mi contraseña" (código por email), registro con verificación por email (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez.
 - **Mapa**: tu territorio y el de tus amigos (MapKit), filtro por amigo, toca un territorio para ver de quién es, tus recorridos, fortificaciones y castillos.
 - **Competiciones**: banner con la cuenta atrás, cofres en el mapa (común, raro, épico y legendario) que se recogen corriendo, **poderes** que se activan desde el botón ⚡, apodos, ranking de la competición, **resumen semanal** y podio final.
 - **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, **Live Activity** en la pantalla bloqueada y la Dynamic Island (tiempo que corre solo, distancia, ritmo y aviso de pausa), pausa/reanudar, aviso si la ubicación no es exacta, recuperación si iOS cierra la app a mitad de carrera, y cola sin conexión: la carrera se guarda en el móvil y se sube después (sin duplicados).

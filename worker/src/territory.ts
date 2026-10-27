@@ -72,6 +72,83 @@ export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimpl
   }
 }
 
+// ─── Anti-cheat ──────────────────────────────────────────────────────────────
+
+/** Average speeds above this aren't running (2:51 min/km is world-class pace even over 10 km). */
+export const MAX_RUN_SPEED_KMH = 21;
+/** Shorter runs are left alone: GPS noise dominates and a fast sprint is still running. */
+const MIN_CHECKED_DISTANCE_M = 1000;
+/** Moving time can't exceed the time between start and end (slack for clock differences). */
+const ELAPSED_SLACK_S = 300;
+
+export type ImplausibleRunReason = 'too_fast' | 'invalid_duration';
+
+export interface RunPlausibility {
+  ok: boolean;
+  reason?: ImplausibleRunReason;
+  /** Average speed used for the check, in km/h */
+  speedKmh: number;
+  /** Error shown to the runner when the run doesn't count */
+  message?: string;
+}
+
+/** Length in meters of a route given as [lat, lng] points. */
+export function pathLengthMeters(coords: Array<[number, number]>): number {
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const [lat1, lng1] = coords[i - 1];
+    const [lat2, lng2] = coords[i];
+    if (![lat1, lng1, lat2, lng2].every(Number.isFinite)) continue;
+    total += turf.distance([lng1, lat1], [lng2, lat2], { units: 'meters' });
+  }
+  return total;
+}
+
+/**
+ * Tells whether a run could have been done on foot, so it may conquer territory and collect
+ * treasures. The distance is the larger of the reported one and the length of the GPS track
+ * (a faked low distance doesn't hide a long track), and the duration can't be longer than the
+ * time between start and end (a faked long duration doesn't slow the pace down).
+ */
+export function checkRunPlausibility(run: {
+  distance: number;
+  duration: number;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  coordinates?: Array<[number, number]> | null;
+}): RunPlausibility {
+  const trackLength = run.coordinates && run.coordinates.length > 1 ? pathLengthMeters(run.coordinates) : 0;
+  const distance = Math.max(Number(run.distance) || 0, trackLength);
+  const duration = Number(run.duration) || 0;
+
+  if (distance < MIN_CHECKED_DISTANCE_M) return { ok: true, speedKmh: 0 };
+
+  if (duration <= 0) {
+    return {
+      ok: false, reason: 'invalid_duration', speedKmh: 0,
+      message: 'La carrera no tiene una duración válida, así que no cuenta para el territorio.',
+    };
+  }
+
+  const start = run.startedAt ? Date.parse(run.startedAt) : NaN;
+  const end = run.completedAt ? Date.parse(run.completedAt) : NaN;
+  if (Number.isFinite(start) && Number.isFinite(end) && duration > (end - start) / 1000 + ELAPSED_SLACK_S) {
+    return {
+      ok: false, reason: 'invalid_duration', speedKmh: 0,
+      message: 'La duración de la carrera es mayor que el tiempo entre su inicio y su final, así que no cuenta para el territorio.',
+    };
+  }
+
+  const speedKmh = (distance / 1000) / (duration / 3600);
+  if (speedKmh > MAX_RUN_SPEED_KMH) {
+    return {
+      ok: false, reason: 'too_fast', speedKmh,
+      message: `Ritmo medio de ${speedKmh.toFixed(1).replace('.', ',')} km/h: es demasiado rápido para correr, así que no cuenta para el territorio. ¿Ibas en bici o en coche?`,
+    };
+  }
+  return { ok: true, speedKmh };
+}
+
 /**
  * Check if two activities started at roughly the same time.
  * Only checks START dates with a 15-minute tolerance.
