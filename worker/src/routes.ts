@@ -3,7 +3,8 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
-import { EmailService } from './email';
+import { EmailService, DEFAULT_WORKER_URL } from './email';
+import { sql } from 'drizzle-orm';
 import { USER_COLORS } from '../../shared/colors';
 import type { Env } from './index';
 import {
@@ -41,6 +42,81 @@ import {
 // Helper function to get database instance
 function getDb(env: Env) {
   return createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN);
+}
+
+// Small key/value table for values the Worker manages itself (e.g. the Polar webhook signing key).
+let appSettingsReady = false;
+async function getAppSetting(env: Env, key: string): Promise<string | null> {
+  const db = getDb(env);
+  if (!appSettingsReady) {
+    await db.run(sql`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    appSettingsReady = true;
+  }
+  const rows: any[] = await db.all(sql`SELECT value FROM app_settings WHERE key = ${key}`);
+  const row = rows?.[0];
+  if (!row) return null;
+  return (row.value ?? (Array.isArray(row) ? row[0] : null)) ?? null;
+}
+async function setAppSetting(env: Env, key: string, value: string): Promise<void> {
+  await getAppSetting(env, key); // makes sure the table exists
+  await getDb(env).run(sql`INSERT INTO app_settings (key, value, updated_at) VALUES (${key}, ${value}, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`);
+}
+
+/** Creates (or re-creates) the Polar AccessLink webhook. Polar returns the signing key only now. */
+async function registerPolarWebhook(env: Env, url: string): Promise<{ ok: boolean; status: number; body: any; removed: string[] }> {
+  const headers = {
+    Authorization: `Basic ${btoa(`${env.POLAR_CLIENT_ID}:${env.POLAR_CLIENT_SECRET}`)}`,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+  const api = 'https://www.polaraccesslink.com/v3/webhooks';
+  // Only one webhook per client: remove the existing one(s) so the new key is returned
+  const removed: string[] = [];
+  const existing = await fetch(api, { headers });
+  if (existing.ok) {
+    const text = await existing.text();
+    let data: any = null;
+    try { data = text ? JSON.parse(text)?.data : null; } catch { data = null; }
+    const hooks: any[] = Array.isArray(data) ? data : data ? [data] : [];
+    for (const hook of hooks) {
+      if (!hook?.id) continue;
+      const del = await fetch(`${api}/${encodeURIComponent(String(hook.id))}`, { method: 'DELETE', headers });
+      if (del.ok || del.status === 404) removed.push(String(hook.id));
+      else console.warn(`[POLAR WEBHOOK] Could not delete webhook ${hook.id}: ${del.status}`);
+    }
+  }
+  const created = await fetch(api, { method: 'POST', headers, body: JSON.stringify({ events: ['EXERCISE'], url }) });
+  const createdText = await created.text();
+  let body: any = null;
+  try { body = JSON.parse(createdText); } catch { body = createdText.slice(0, 300); }
+  if (created.ok) {
+    const secret = (body?.data ?? body)?.signature_secret_key;
+    if (typeof secret === 'string' && secret) await setAppSetting(env, 'polar_webhook_secret', secret);
+    await setAppSetting(env, 'polar_webhook_url', url);
+  }
+  return { ok: created.ok, status: created.status, body, removed };
+}
+
+/** The key that signs Polar webhooks: POLAR_WEBHOOK_SECRET if set, else the one saved at registration. */
+async function polarWebhookSecret(env: Env): Promise<string | null> {
+  if (env.POLAR_WEBHOOK_SECRET) return env.POLAR_WEBHOOK_SECRET;
+  try { return await getAppSetting(env, 'polar_webhook_secret'); } catch { return null; }
+}
+
+/**
+ * Registers the Polar webhook automatically the first time the cron runs (and retries hourly if
+ * Polar refused), so instant imports need no manual setup.
+ */
+async function ensurePolarWebhook(env: Env): Promise<void> {
+  if (!env.POLAR_CLIENT_ID || !env.POLAR_CLIENT_SECRET) return;
+  const url = `${(env.WORKER_URL || DEFAULT_WORKER_URL).replace(/\/+$/, '')}/api/polar/webhook`;
+  if ((await getAppSetting(env, 'polar_webhook_url')) === url && (await polarWebhookSecret(env))) return;
+  const lastAttempt = Number(await getAppSetting(env, 'polar_webhook_last_attempt')) || 0;
+  if (Date.now() - lastAttempt < 60 * 60 * 1000) return;
+  await setAppSetting(env, 'polar_webhook_last_attempt', String(Date.now()));
+  const result = await registerPolarWebhook(env, url);
+  console.log(`[POLAR WEBHOOK] Auto-registration ${result.ok ? 'done' : `failed (${result.status})`}`, result.ok ? '' : JSON.stringify(result.body).slice(0, 300));
 }
 
 /**
@@ -5923,7 +5999,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ received: true });
       }
 
-      const secret = c.env.POLAR_WEBHOOK_SECRET;
+      const secret = await polarWebhookSecret(c.env);
       if (secret) {
         const signature = c.req.header('Polar-Webhook-Signature') || '';
         const { verifySuuntoSignature } = await import('./suunto');
@@ -5932,7 +6008,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           return c.json({ error: 'invalid signature' }, 401);
         }
       } else {
-        console.warn('[POLAR WEBHOOK] POLAR_WEBHOOK_SECRET not set: signature not checked');
+        console.warn('[POLAR WEBHOOK] No signing key yet: signature not checked');
       }
 
       const polarUserId = Number(payload?.user_id);
@@ -5964,47 +6040,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const body = await c.req.json().catch(() => ({}));
       const base = (c.env.WORKER_URL || new URL(c.req.url).origin).replace(/\/+$/, '');
       const url = typeof body?.url === 'string' && body.url.startsWith('https://') ? body.url : `${base}/api/polar/webhook`;
-      const headers = {
-        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      };
-      const api = 'https://www.polaraccesslink.com/v3/webhooks';
-
-      // Only one webhook per client: remove the existing one(s) so the new key is returned
-      const removed: string[] = [];
-      const existing = await fetch(api, { headers });
-      if (existing.ok) {
-        const text = await existing.text();
-        let data: any = null;
-        try { data = text ? JSON.parse(text)?.data : null; } catch { data = null; }
-        const hooks: any[] = Array.isArray(data) ? data : data ? [data] : [];
-        for (const hook of hooks) {
-          if (!hook?.id) continue;
-          const del = await fetch(`${api}/${encodeURIComponent(String(hook.id))}`, { method: 'DELETE', headers });
-          if (del.ok || del.status === 404) removed.push(String(hook.id));
-          else console.warn(`[POLAR WEBHOOK] Could not delete webhook ${hook.id}: ${del.status}`);
-        }
+      const result = await registerPolarWebhook(c.env, url);
+      if (!result.ok) {
+        return c.json({ error: `Polar rejected the webhook (${result.status})`, details: result.body, removed: result.removed }, 502);
       }
-
-      const created = await fetch(api, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ events: ['EXERCISE'], url }),
-      });
-      const createdText = await created.text();
-      let createdBody: any = null;
-      try { createdBody = JSON.parse(createdText); } catch { createdBody = null; }
-      if (!created.ok) {
-        return c.json({ error: `Polar rejected the webhook (${created.status})`, details: createdBody ?? createdText.slice(0, 300), removed }, 502);
-      }
-      const hook = createdBody?.data ?? createdBody ?? {};
+      const hook = result.body?.data ?? result.body ?? {};
       return c.json({
         success: true,
         webhook: { id: hook.id ?? null, url: hook.url ?? url, events: hook.events ?? ['EXERCISE'] },
         signatureSecretKey: hook.signature_secret_key ?? null,
-        removed,
-        next: 'Store signatureSecretKey as POLAR_WEBHOOK_SECRET: wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml',
+        signatureKeyStored: true,
+        removed: result.removed,
       });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -7641,6 +7687,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
     try {
       if (!(await isUpstashAuthorized(c))) {
         return c.json({ error: 'Unauthorized' }, 401);
+      }
+
+      try {
+        await ensurePolarWebhook(c.env);
+      } catch (error) {
+        console.error('[POLAR WEBHOOK] Auto-registration error:', error);
       }
 
       const cronStart = Date.now();
