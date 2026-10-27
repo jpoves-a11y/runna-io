@@ -20,6 +20,7 @@ import {
   verifyOAuthState,
   oauthFinish,
   isCronRequest,
+  forgetUserSessions,
 } from './auth';
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
@@ -40,6 +41,26 @@ import {
 // Helper function to get database instance
 function getDb(env: Env) {
   return createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN);
+}
+
+/**
+ * Runs slow side effects (push notifications, emails, queue messages) after the response is sent,
+ * so mutations answer at once. Errors are logged, never thrown. Without an execution context
+ * (should not happen in Workers) the task still runs, just unattached.
+ */
+function inBackground(c: { executionCtx: { waitUntil(promise: Promise<unknown>): void } }, label: string, task: () => Promise<unknown>): void {
+  const promise = (async () => {
+    try {
+      await task();
+    } catch (error) {
+      console.error(`[BACKGROUND] ${label} failed:`, error);
+    }
+  })();
+  try {
+    c.executionCtx.waitUntil(promise);
+  } catch {
+    /* no execution context: the promise keeps running on its own */
+  }
 }
 
 /**
@@ -1442,6 +1463,33 @@ function createRouteResponse(route: Route, coords?: [number, number][]) {
   };
 }
 
+/** Spanish explanation of why a notification could not be delivered (APNs reasons and our own codes). */
+export function pushFailureMessage(reason: string, status?: number): string {
+  switch (reason) {
+    case 'ApnsNotConfigured':
+      return 'Las notificaciones no están configuradas en el servidor (faltan las claves de Apple Push).';
+    case 'VapidNotConfigured':
+      return 'Las notificaciones web no están configuradas en el servidor.';
+    case 'BadDeviceToken':
+      return 'Apple ha rechazado el registro de este iPhone (BadDeviceToken). Se ha borrado: pulsa "Reintentar registro" y vuelve a probar.';
+    case 'Unregistered':
+      return 'Apple dice que este iPhone ya no acepta notificaciones de la app (Unregistered). Pulsa "Reintentar registro".';
+    case 'DeviceTokenNotForTopic':
+    case 'TopicDisallowed':
+      return `Apple ha rechazado la notificación (${reason}): el identificador de la app configurado en el servidor (APNS_BUNDLE_ID) no coincide con el de la app.`;
+    case 'InvalidProviderToken':
+    case 'MissingProviderToken':
+    case 'ExpiredProviderToken':
+      return `Apple ha rechazado las credenciales del servidor (${reason}): revisa APNS_KEY_ID, APNS_TEAM_ID y APNS_PRIVATE_KEY.`;
+    case 'TooManyProviderTokenUpdates':
+    case 'TooManyRequests':
+      return `Apple está limitando los envíos (${reason}). Inténtalo de nuevo en unos minutos.`;
+    default:
+      if (reason.startsWith('Network:')) return 'El servidor no ha podido conectar con Apple Push. Inténtalo de nuevo en unos minutos.';
+      return `Apple ha rechazado la notificación (${reason}${status ? `, ${status}` : ''}).`;
+  }
+}
+
 export function registerRoutes(app: Hono<AppEnv>) {
   // Maintenance endpoints: require the admin/cron secret (Authorization: Bearer <UPSTASH_CRON_SECRET>)
   app.use('/api/admin/*', requireAdmin);
@@ -1787,6 +1835,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: 'User not found' }, 404);
       }
       await storage.deleteUser(id);
+      forgetUserSessions(id);
       return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -2053,18 +2102,18 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const notSelf = rejectIfNotSelf(c, bodyUserId);
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
-      if (!name || !name.trim()) {
+      if (!name || typeof name !== 'string' || !name.trim()) {
         return c.json({ error: 'name is required' }, 400);
+      }
+      // One statement in the common case; the route is only read to tell 404 from 403
+      if (await storage.renameOwnRoute(routeId, userId, name.trim())) {
+        return c.json({ success: true });
       }
       const route = await storage.getRouteById(routeId);
       if (!route) {
         return c.json({ error: 'Route not found' }, 404);
       }
-      if (route.userId !== userId) {
-        return c.json({ error: 'Unauthorized' }, 403);
-      }
-      await storage.updateRouteName(routeId, name.trim());
-      return c.json({ success: true });
+      return c.json({ error: 'Unauthorized' }, 403);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -3233,9 +3282,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const storage = new WorkerStorage(db);
       const result = await storage.toggleReaction(userId, targetType, targetId, reactionType);
 
-      // Send push notification to the content owner (only for likes, not dislikes, and only if reaction was added)
+      // Push notification to the content owner (only if the reaction was added), after the response
       if (result.userReaction === reactionType) {
-        try {
+        inBackground(c, 'reaction notification', async () => {
           let ownerId: string | null = null;
           if (targetType === 'event') {
             const event = await storage.getFeedEvent(targetId);
@@ -3248,9 +3297,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             const { notifyReaction } = await import('./notifications');
             await notifyReaction(storage, userId, ownerId, reactionType, targetType, c.env);
           }
-        } catch (notifErr) {
-          console.error('[REACTION] Push notification error:', notifErr);
-        }
+        });
       }
 
       return c.json(result);
@@ -3342,8 +3389,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       // Check for color conflict - warn but don't block (they can change before accepting)
-      const sender = await storage.getUser(userId);
-      const recipient = await storage.getUser(friendId);
+      const [sender, recipient] = await Promise.all([storage.getUser(userId), storage.getUser(friendId)]);
       let colorWarning = false;
       if (sender && recipient && sender.color.toUpperCase() === recipient.color.toUpperCase()) {
         colorWarning = true;
@@ -3355,41 +3401,41 @@ export function registerRoutes(app: Hono<AppEnv>) {
         recipientId: friendId,
       });
 
-      // Send push notification to recipient
-      const { notifyFriendRequest } = await import('./notifications');
-      await notifyFriendRequest(storage, friendId, userId, c.env);
+      // Push + email to the recipient, after the response
+      inBackground(c, 'friend request notifications', async () => {
+        const { notifyFriendRequest } = await import('./notifications');
+        await notifyFriendRequest(storage, friendId, userId, c.env);
 
-      // Send email notification
-      try {
-        const sender = await storage.getUser(userId);
-        const recipient = await storage.getUser(friendId);
-        const provider2 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey2 = provider2 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail2 = provider2 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any, publicBaseUrl(c));
+        // Send email notification
+        try {
+          const provider2 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+          const apiKey2 = provider2 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+          const fromEmail2 = provider2 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+          const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any, publicBaseUrl(c));
         
-        if (sender && recipient && recipient.email) {
-          const prefs = await storage.getEmailPreferences(friendId);
-          if (!prefs || prefs.friendRequestNotifications) {
-            await emailService.sendFriendRequestEmail(
-              recipient.email,
-              sender.name,
-              sender.username
-            );
+          if (sender && recipient && recipient.email) {
+            const prefs = await storage.getEmailPreferences(friendId);
+            if (!prefs || prefs.friendRequestNotifications) {
+              await emailService.sendFriendRequestEmail(
+                recipient.email,
+                sender.name,
+                sender.username
+              );
             
-            await emailService.recordNotification(
-              storage,
-              friendId,
-              'friend_request',
-              userId,
-              `¡${sender.name} te envió una solicitud de amistad!`,
-              `${sender.name} (@${sender.username}) te ha enviado una solicitud de amistad en Runna.io.`
-            );
+              await emailService.recordNotification(
+                storage,
+                friendId,
+                'friend_request',
+                userId,
+                `¡${sender.name} te envió una solicitud de amistad!`,
+                `${sender.name} (@${sender.username}) te ha enviado una solicitud de amistad en Runna.io.`
+              );
+            }
           }
+        } catch (emailErr) {
+          console.error('[EMAIL] Failed to send friend request email:', emailErr);
         }
-      } catch (emailErr) {
-        console.error('[EMAIL] Failed to send friend request email:', emailErr);
-      }
+      });
 
       return c.json({ success: true, requestId: request.id, colorWarning });
     } catch (error: any) {
@@ -3523,55 +3569,57 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Update request status
       await storage.updateFriendRequestStatus(requestId, 'accepted');
 
-      // Send notification to sender
-      const { notifyFriendRequestAccepted } = await import('./notifications');
-      await notifyFriendRequestAccepted(storage, request.senderId, userId, c.env);
+      // Push, email and territory reprocess run after the response
+      inBackground(c, 'friend accepted side effects', async () => {
+        const { notifyFriendRequestAccepted } = await import('./notifications');
+        await notifyFriendRequestAccepted(storage, request.senderId, userId, c.env);
 
-      // Send email notification
-      try {
-        const sender = await storage.getUser(request.senderId);
-        const recipient = await storage.getUser(userId);
-        const provider3 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey3 = provider3 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail3 = provider3 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any, publicBaseUrl(c));
+        // Send email notification
+        try {
+          const sender = await storage.getUser(request.senderId);
+          const recipient = await storage.getUser(userId);
+          const provider3 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
+          const apiKey3 = provider3 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
+          const fromEmail3 = provider3 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+          const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any, publicBaseUrl(c));
         
-        if (sender && sender.email && recipient) {
-          const prefs = await storage.getEmailPreferences(request.senderId);
-          if (!prefs || prefs.friendAcceptedNotifications) {
-            await emailService.sendFriendAcceptedEmail(
-              sender.email,
-              recipient.name,
-              recipient.username
-            );
+          if (sender && sender.email && recipient) {
+            const prefs = await storage.getEmailPreferences(request.senderId);
+            if (!prefs || prefs.friendAcceptedNotifications) {
+              await emailService.sendFriendAcceptedEmail(
+                sender.email,
+                recipient.name,
+                recipient.username
+              );
             
-            await emailService.recordNotification(
-              storage,
-              request.senderId,
-              'friend_accepted',
-              userId,
-              `¡${recipient.name} aceptó tu solicitud de amistad!`,
-              `${recipient.name} (@${recipient.username}) aceptó tu solicitud de amistad. Ahora son amigos en Runna.io!`
-            );
+              await emailService.recordNotification(
+                storage,
+                request.senderId,
+                'friend_accepted',
+                userId,
+                `¡${recipient.name} aceptó tu solicitud de amistad!`,
+                `${recipient.name} (@${recipient.username}) aceptó tu solicitud de amistad. Ahora son amigos en Runna.io!`
+              );
+            }
           }
+        } catch (emailErr) {
+          console.error('[EMAIL] Failed to send friend accepted email:', emailErr);
         }
-      } catch (emailErr) {
-        console.error('[EMAIL] Failed to send friend accepted email:', emailErr);
-      }
 
-      // Reprocess territories for the new friend group via queue
-      // (Previously disabled due to CPU timeout - now offloaded to Cloudflare Queue)
-      try {
-        console.log(`[FRIEND ACCEPT] Enqueuing territory reprocess for new friends: ${request.senderId} <-> ${userId}`);
-        await (c.env as any).TERRITORY_QUEUE.send({
-          type: 'reprocess_friend_group',
-          userId: request.senderId,
-          friendUserId: userId,
-        });
-        console.log(`[FRIEND ACCEPT] Territory reprocess enqueued successfully`);
-      } catch (queueErr) {
-        console.error('[FRIEND ACCEPT] Failed to enqueue territory reprocess:', queueErr);
-      }
+        // Reprocess territories for the new friend group via queue
+        // (Previously disabled due to CPU timeout - now offloaded to Cloudflare Queue)
+        try {
+          console.log(`[FRIEND ACCEPT] Enqueuing territory reprocess for new friends: ${request.senderId} <-> ${userId}`);
+          await (c.env as any).TERRITORY_QUEUE.send({
+            type: 'reprocess_friend_group',
+            userId: request.senderId,
+            friendUserId: userId,
+          });
+          console.log(`[FRIEND ACCEPT] Territory reprocess enqueued successfully`);
+        } catch (queueErr) {
+          console.error('[FRIEND ACCEPT] Failed to enqueue territory reprocess:', queueErr);
+        }
+      });
 
       return c.json({ success: true, colorChanged: colorResult.changed, newColor: colorResult.newColor || null });
     } catch (error: any) {
@@ -4085,7 +4133,47 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // Test push notification endpoint
+  // Notification diagnostics for the logged-in user (no secrets): is APNs configured on the server,
+  // which devices are registered, and the last error Apple returned for them.
+  app.get('/api/push/status', requireAuth, async (c) => {
+    try {
+      const userId = c.get('authUserId');
+      const storage = new WorkerStorage(getDb(c.env));
+      const { isApnsConfigured, apnsTopic, APNS_ENDPOINT_PREFIX } = await import('./pushHelper');
+      const [subscriptions, errors] = await Promise.all([
+        storage.getPushSubscriptionsByUserId(userId),
+        storage.getPushErrorsForUser(userId).catch(() => []),
+      ]);
+      const errorByEndpoint = new Map(errors.map((e) => [e.endpoint, e]));
+      const devices = subscriptions
+        .filter((sub) => sub.endpoint.startsWith(APNS_ENDPOINT_PREFIX))
+        .map((sub) => {
+          const environment = sub.endpoint.slice(APNS_ENDPOINT_PREFIX.length).split(':')[0] === 'sandbox' ? 'sandbox' : 'production';
+          const error = errorByEndpoint.get(sub.endpoint);
+          return {
+            environment,
+            registeredAt: sub.createdAt || undefined,
+            // Last 6 characters only, so the app can tell whether this iPhone is the one listed
+            tokenSuffix: sub.endpoint.slice(-6),
+            ...(error ? { lastError: error.reason, lastErrorAt: error.createdAt } : {}),
+          };
+        });
+      const webSubscriptions = subscriptions.length - devices.length;
+      const lastError = errors[0];
+      return c.json({
+        apnsConfigured: isApnsConfigured(),
+        apnsTopic: apnsTopic(),
+        devices,
+        webSubscriptions,
+        ...(lastError ? { lastError: lastError.reason, lastErrorAt: lastError.createdAt } : {}),
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Test push notification endpoint. Answers 200 when at least one device got it; otherwise an
+  // error with a Spanish explanation (`error`) and a machine-readable `reason`.
   app.post('/api/push/test', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
@@ -4094,18 +4182,25 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const notSelf = rejectIfNotSelf(c, body.userId);
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
+      const { sendPushNotificationDetailed, isApnsConfigured, APNS_ENDPOINT_PREFIX } = await import('./pushHelper');
 
       const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-      if (subscriptions.length === 0) {
-        return c.json({ error: 'No push subscriptions found for this user', subscriptionCount: 0 }, 404);
+      const hasDevice = subscriptions.some((sub) => sub.endpoint.startsWith(APNS_ENDPOINT_PREFIX));
+      // Without the APNs keys no iPhone can be reached (registered or not): that is the cause to report
+      if (!isApnsConfigured() && (hasDevice || subscriptions.length === 0)) {
+        return c.json({
+          error: 'Las notificaciones no están configuradas en el servidor (faltan las claves de Apple Push: APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY y APNS_BUNDLE_ID).',
+          reason: 'ApnsNotConfigured',
+          subscriptionCount: subscriptions.length,
+        }, 503);
       }
-
-      const { sendPushNotification } = await import('./pushHelper');
-
-      const pushSubs = subscriptions.map((sub) => ({
-        endpoint: sub.endpoint,
-        keys: { p256dh: sub.p256dh, auth: sub.auth },
-      }));
+      if (subscriptions.length === 0) {
+        return c.json({
+          error: 'Este iPhone no está registrado para recibir notificaciones. Pulsa "Reintentar registro" y vuelve a probar.',
+          reason: 'NoDevice',
+          subscriptionCount: 0,
+        }, 404);
+      }
 
       const payload = {
         title: '🏃 Runna.io',
@@ -4114,23 +4209,40 @@ export function registerRoutes(app: Hono<AppEnv>) {
         data: { url: '/', type: 'test' },
       };
 
-      const results = [];
-      for (const sub of pushSubs) {
-        try {
-          const ok = await sendPushNotification(
-            sub,
-            payload,
-            c.env.VAPID_PUBLIC_KEY || '',
-            c.env.VAPID_PRIVATE_KEY || '',
-            c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-          );
-          results.push({ endpoint: sub.endpoint.slice(0, 60), success: ok });
-        } catch (err: any) {
-          results.push({ endpoint: sub.endpoint.slice(0, 60), success: false, error: err.message });
-        }
+      const results: Array<{ endpoint: string; success: boolean; reason?: string; status?: number; removed?: boolean; environment?: string }> = [];
+      for (const sub of subscriptions) {
+        const result = await sendPushNotificationDetailed(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          payload,
+          c.env.VAPID_PUBLIC_KEY || '',
+          c.env.VAPID_PRIVATE_KEY || '',
+          c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+        );
+        results.push({
+          endpoint: sub.endpoint.slice(0, 60),
+          success: result.ok,
+          reason: result.reason,
+          status: result.status,
+          removed: result.removed,
+          environment: result.environment,
+        });
       }
 
-      return c.json({ success: true, subscriptionCount: subscriptions.length, results });
+      const delivered = results.filter((r) => r.success);
+      if (delivered.length > 0) {
+        // A device that works again has no pending error to show
+        await storage.clearPushErrors(subscriptions.filter((_, i) => results[i].success).map((s) => s.endpoint)).catch(() => {});
+        return c.json({ success: true, subscriptionCount: subscriptions.length, delivered: delivered.length, results });
+      }
+
+      const failure = results.find((r) => r.endpoint.startsWith(APNS_ENDPOINT_PREFIX)) ?? results[0];
+      const reason = failure?.reason || 'Unknown';
+      return c.json({
+        error: pushFailureMessage(reason, failure?.status),
+        reason,
+        subscriptionCount: subscriptions.length,
+        results,
+      }, 502);
     } catch (error: any) {
       console.error('Error sending test push:', error);
       return c.json({ error: error.message }, 500);
@@ -5579,6 +5691,325 @@ export function registerRoutes(app: Hono<AppEnv>) {
       return { imported: 0, total: 0, message: `Direct sync error: ${error.message}` };
     }
   };
+
+  /**
+   * One Polar user: imports new exercises (GET /v3/exercises), turns up to 3 of them into routes
+   * (feed event + territory queue) and sends the "¡Carrera registrada!" push (polar_auto_import).
+   * Shared by the 5-minute cron and the Polar webhook.
+   */
+  const autoSyncPolarUser = async (
+    env: Env,
+    storage: WorkerStorage,
+    account: { userId: string; polarUserId: number; accessToken: string },
+    deadline: number,
+  ): Promise<{ imported: number; newActivities: number; processed: number }> => {
+    const userId = account.userId;
+    let processed = 0;
+    // 1. Sync new exercises from Polar API
+    const syncResult = await syncPolarExercisesDirect(account, userId, storage);
+    await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+    const afterUnprocessed = await storage.getUnprocessedPolarActivities(userId);
+    const newCount = afterUnprocessed.length;
+
+    console.log(`[POLAR AUTO-SYNC] User ${userId}: sync=${syncResult.imported} imported, ${newCount} unprocessed`);
+
+    if (newCount === 0) return { imported: syncResult.imported, newActivities: 0, processed: 0 };
+
+    // 2. Auto-process unprocessed activities (same logic as POST /api/polar/process)
+    const newActivities = afterUnprocessed.slice(0, 3); // Max 3 per user per cron
+
+    for (const activity of newActivities) {
+      if (Date.now() > deadline) break;
+
+      if (!activity.summaryPolyline) {
+        await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'no_gps' });
+        continue;
+      }
+
+      const startDate = coerceDate(activity.startDate);
+      if (!startDate) {
+        await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'bad_date' });
+        continue;
+      }
+
+      const COMP_PROCESS_MIN_DATE = new Date('2026-03-02T00:00:00Z');
+      if (startDate < COMP_PROCESS_MIN_DATE) {
+        await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'before_competition' });
+        continue;
+      }
+
+      const decoded = decodePolyline(activity.summaryPolyline);
+      const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
+
+      if (coordinates.length < 10) {
+        // Short activity - create route + basic feed event
+        try {
+          const startedAt = startDate.toISOString();
+          const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+          let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
+          if (!shortRoute) {
+            shortRoute = await storage.createRoute({
+              userId,
+              name: activity.name,
+              coordinates,
+              distance: activity.distance,
+              duration: activity.duration,
+              startedAt,
+              completedAt,
+            });
+          }
+          await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
+          await storage.updatePolarActivity(activity.id, { routeId: shortRoute.id, processed: 1 as any, processedAt: new Date().toISOString() });
+        } catch (_) {
+          await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString() });
+        }
+        continue;
+      }
+
+      // Full route with territory processing
+      try {
+        const startedAt = startDate.toISOString();
+        const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
+
+        let route = activity.routeId ? await storage.getRouteById(activity.routeId) : null;
+        if (!route) {
+          route = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
+        }
+        if (!route) {
+          route = await storage.createRoute({
+            userId,
+            name: activity.name,
+            coordinates,
+            distance: activity.distance,
+            duration: activity.duration,
+            startedAt,
+            completedAt,
+          });
+        }
+
+        await storage.updatePolarActivity(activity.id, { routeId: route.id });
+
+        // Create early feed event
+        let earlyFeedEventId: string | undefined;
+        try {
+          const existingFeed = await storage.getFeedEventByRouteId(route.id);
+          if (existingFeed) {
+            earlyFeedEventId = existingFeed.id;
+          } else {
+            const earlyFeedEvent = await storage.createFeedEvent({
+              userId,
+              eventType: 'activity',
+              routeId: route.id,
+              distance: activity.distance,
+              duration: activity.duration,
+              newArea: 0,
+              metadata: null,
+            });
+            earlyFeedEventId = earlyFeedEvent.id;
+          }
+        } catch (_) {}
+
+        // Enqueue territory processing
+        await env.TERRITORY_QUEUE.send({
+          type: 'process_route_territory',
+          userId,
+          routeId: route.id,
+          startedAt,
+          completedAt,
+          distance: activity.distance,
+          duration: activity.duration,
+          earlyFeedEventId,
+        });
+
+        await storage.updatePolarActivity(activity.id, {
+          routeId: route.id,
+          processed: 1 as any,
+          processedAt: new Date().toISOString(),
+        });
+
+        processed++;
+        console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
+
+        // 3. Send push notification to user about the new activity
+        try {
+          const { sendPushToUser } = await import('./pushHelper');
+          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
+          if (subscriptions.length > 0) {
+            const distKm = (activity.distance / 1000).toFixed(1);
+            const pushSubs = subscriptions.map((sub: any) => ({
+              endpoint: sub.endpoint,
+              keys: { p256dh: sub.p256dh, auth: sub.auth },
+            }));
+            await sendPushToUser(
+              pushSubs,
+              {
+                title: '🏃 ¡Carrera registrada!',
+                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
+                tag: `polar-auto-${activity.id}`,
+                data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
+              },
+              env.VAPID_PUBLIC_KEY || '',
+              env.VAPID_PRIVATE_KEY || '',
+              env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+            );
+          }
+        } catch (pushErr) {
+          console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
+        }
+      } catch (procErr) {
+        console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
+      }
+    }
+    return { imported: syncResult.imported, newActivities: newActivities.length, processed };
+  };
+
+  // ==================== POLAR WEBHOOK (instant import) ====================
+  // Polar AccessLink calls POST /api/polar/webhook when a user's watch syncs a new exercise
+  // ({event: "EXERCISE", user_id, entity_id, timestamp, url}), signed with "Polar-Webhook-Signature"
+  // = hex HMAC-SHA256 of the raw body with the webhook's signature_secret_key (POLAR_WEBHOOK_SECRET).
+  // We answer 200 at once and import that user's exercises in the background with the same code as
+  // the 5-minute cron (which stays as the fallback). The exercise data is always read from Polar's
+  // API with the user's token, never taken from the payload.
+
+  /** Users whose webhook import is running in this isolate (Polar may send the same event twice). */
+  const polarWebhookInFlight = new Map<string, Promise<void>>();
+
+  const processPolarWebhook = async (env: Env, polarUserId: number, entityId: string | null): Promise<void> => {
+    const storage = new WorkerStorage(getDb(env));
+    const account = await storage.getPolarAccountByPolarUserId(polarUserId);
+    if (!account) {
+      console.log(`[POLAR WEBHOOK] Unknown Polar user ${polarUserId}: ignored`);
+      return;
+    }
+    const running = polarWebhookInFlight.get(account.userId);
+    if (running) {
+      await running;
+      return;
+    }
+    const job = (async () => {
+      const deadline = Date.now() + 25000;
+      console.log(`[POLAR WEBHOOK] EXERCISE ${entityId ?? '-'} for user ${account.userId}`);
+      let outcome = await autoSyncPolarUser(env, storage, account, deadline);
+      // The exercise can take a moment to show up in the list: one more try a few seconds later
+      if (outcome.imported === 0 && outcome.processed === 0 && Date.now() + 9000 < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        outcome = await autoSyncPolarUser(env, storage, account, deadline);
+      }
+      console.log(`[POLAR WEBHOOK] User ${account.userId}: ${outcome.imported} imported, ${outcome.processed} processed`);
+    })();
+    polarWebhookInFlight.set(account.userId, job);
+    try {
+      await job;
+    } finally {
+      polarWebhookInFlight.delete(account.userId);
+    }
+  };
+
+  app.post('/api/polar/webhook', async (c) => {
+    try {
+      const rawBody = await c.req.text();
+      let payload: any = null;
+      try {
+        payload = JSON.parse(rawBody);
+      } catch {
+        payload = null;
+      }
+      const event = typeof payload?.event === 'string' ? payload.event : null;
+
+      // Polar sends PING when the webhook is created (signed with the new key, which the Worker
+      // cannot know yet): always answer 200, it carries no user data.
+      if (event === 'PING') {
+        console.log('[POLAR WEBHOOK] PING');
+        return c.json({ received: true });
+      }
+
+      const secret = c.env.POLAR_WEBHOOK_SECRET;
+      if (secret) {
+        const signature = c.req.header('Polar-Webhook-Signature') || '';
+        const { verifySuuntoSignature } = await import('./suunto');
+        if (!signature || !(await verifySuuntoSignature(secret, rawBody, signature))) {
+          console.warn('[POLAR WEBHOOK] Invalid or missing signature: rejected');
+          return c.json({ error: 'invalid signature' }, 401);
+        }
+      } else {
+        console.warn('[POLAR WEBHOOK] POLAR_WEBHOOK_SECRET not set: signature not checked');
+      }
+
+      const polarUserId = Number(payload?.user_id);
+      console.log(`[POLAR WEBHOOK] event=${event ?? '-'} user=${payload?.user_id ?? '-'} entity=${payload?.entity_id ?? '-'}`);
+      if (event !== 'EXERCISE' || !Number.isFinite(polarUserId)) {
+        return c.json({ received: true });
+      }
+      const entityId = payload?.entity_id != null ? String(payload.entity_id) : null;
+      inBackground(c, 'polar webhook import', () => processPolarWebhook(c.env, polarUserId, entityId));
+      return c.json({ received: true });
+    } catch (error) {
+      console.error('[POLAR WEBHOOK] Error:', error);
+      // Polar deactivates webhooks that keep failing: never answer with an error for our own bugs
+      return c.json({ received: true });
+    }
+  });
+
+  // Admin: create (or re-create) the Polar webhook pointing at this Worker. Returns the
+  // signature_secret_key, which Polar only shows at creation: store it with
+  //   wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml
+  // Body (optional): { "url": "https://.../api/polar/webhook" }
+  app.post('/api/admin/polar/webhook/register', requireAdmin, async (c) => {
+    try {
+      const clientId = c.env.POLAR_CLIENT_ID;
+      const clientSecret = c.env.POLAR_CLIENT_SECRET;
+      if (!clientId || !clientSecret) {
+        return c.json({ error: 'POLAR_CLIENT_ID / POLAR_CLIENT_SECRET not configured' }, 400);
+      }
+      const body = await c.req.json().catch(() => ({}));
+      const base = (c.env.WORKER_URL || new URL(c.req.url).origin).replace(/\/+$/, '');
+      const url = typeof body?.url === 'string' && body.url.startsWith('https://') ? body.url : `${base}/api/polar/webhook`;
+      const headers = {
+        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      };
+      const api = 'https://www.polaraccesslink.com/v3/webhooks';
+
+      // Only one webhook per client: remove the existing one(s) so the new key is returned
+      const removed: string[] = [];
+      const existing = await fetch(api, { headers });
+      if (existing.ok) {
+        const text = await existing.text();
+        let data: any = null;
+        try { data = text ? JSON.parse(text)?.data : null; } catch { data = null; }
+        const hooks: any[] = Array.isArray(data) ? data : data ? [data] : [];
+        for (const hook of hooks) {
+          if (!hook?.id) continue;
+          const del = await fetch(`${api}/${encodeURIComponent(String(hook.id))}`, { method: 'DELETE', headers });
+          if (del.ok || del.status === 404) removed.push(String(hook.id));
+          else console.warn(`[POLAR WEBHOOK] Could not delete webhook ${hook.id}: ${del.status}`);
+        }
+      }
+
+      const created = await fetch(api, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ events: ['EXERCISE'], url }),
+      });
+      const createdText = await created.text();
+      let createdBody: any = null;
+      try { createdBody = JSON.parse(createdText); } catch { createdBody = null; }
+      if (!created.ok) {
+        return c.json({ error: `Polar rejected the webhook (${created.status})`, details: createdBody ?? createdText.slice(0, 300), removed }, 502);
+      }
+      const hook = createdBody?.data ?? createdBody ?? {};
+      return c.json({
+        success: true,
+        webhook: { id: hook.id ?? null, url: hook.url ?? url, events: hook.events ?? ['EXERCISE'] },
+        signatureSecretKey: hook.signature_secret_key ?? null,
+        removed,
+        next: 'Store signatureSecretKey as POLAR_WEBHOOK_SECRET: wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml',
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
 
   app.post('/api/polar/sync/:userId', requireSelfOrAdmin('userId'), async (c) => {
     const userId = c.req.param('userId');
@@ -7049,8 +7480,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           await storage.usePower(powerId);
 
           // Get attacker and victim names for feed/notifications
-          const attacker = await storage.getUser(power.userId);
-          const target = await storage.getUser(targetUserId);
+          const [attacker, target] = await Promise.all([storage.getUser(power.userId), storage.getUser(targetUserId)]);
           const attackerName = attacker?.name || 'Alguien';
           const targetName = target?.name || 'un jugador';
 
@@ -7252,164 +7682,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
         const userId = account.userId;
         try {
-          // 1. Sync new exercises from Polar API
-          const beforeCount = (await storage.getUnprocessedPolarActivities(userId)).length;
-          const syncResult = await syncPolarExercisesDirect(account, userId, storage);
-          await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
-          const afterUnprocessed = await storage.getUnprocessedPolarActivities(userId);
-          const newCount = afterUnprocessed.length;
-
-          console.log(`[POLAR AUTO-SYNC] User ${userId}: sync=${syncResult.imported} imported, ${newCount} unprocessed`);
+          const outcome = await autoSyncPolarUser(c.env, storage, account, cronStart + MAX_CRON_TIME);
           syncedUsers++;
-
-          if (newCount === 0) continue;
-
-          // 2. Auto-process unprocessed activities (same logic as POST /api/polar/process)
-          const newActivities = afterUnprocessed.slice(0, 3); // Max 3 per user per cron
-          newActivitiesFound += newActivities.length;
-
-          for (const activity of newActivities) {
-            if (Date.now() - cronStart > MAX_CRON_TIME) break;
-
-            if (!activity.summaryPolyline) {
-              await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'no_gps' });
-              continue;
-            }
-
-            const startDate = coerceDate(activity.startDate);
-            if (!startDate) {
-              await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'bad_date' });
-              continue;
-            }
-
-            const COMP_PROCESS_MIN_DATE = new Date('2026-03-02T00:00:00Z');
-            if (startDate < COMP_PROCESS_MIN_DATE) {
-              await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString(), skipReason: 'before_competition' });
-              continue;
-            }
-
-            const decoded = decodePolyline(activity.summaryPolyline);
-            const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
-
-            if (coordinates.length < 10) {
-              // Short activity - create route + basic feed event
-              try {
-                const startedAt = startDate.toISOString();
-                const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
-                let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
-                if (!shortRoute) {
-                  shortRoute = await storage.createRoute({
-                    userId,
-                    name: activity.name,
-                    coordinates,
-                    distance: activity.distance,
-                    duration: activity.duration,
-                    startedAt,
-                    completedAt,
-                  });
-                }
-                await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
-                await storage.updatePolarActivity(activity.id, { routeId: shortRoute.id, processed: 1 as any, processedAt: new Date().toISOString() });
-              } catch (_) {
-                await storage.updatePolarActivity(activity.id, { processed: 1 as any, processedAt: new Date().toISOString() });
-              }
-              continue;
-            }
-
-            // Full route with territory processing
-            try {
-              const startedAt = startDate.toISOString();
-              const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
-
-              let route = activity.routeId ? await storage.getRouteById(activity.routeId) : null;
-              if (!route) {
-                route = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
-              }
-              if (!route) {
-                route = await storage.createRoute({
-                  userId,
-                  name: activity.name,
-                  coordinates,
-                  distance: activity.distance,
-                  duration: activity.duration,
-                  startedAt,
-                  completedAt,
-                });
-              }
-
-              await storage.updatePolarActivity(activity.id, { routeId: route.id });
-
-              // Create early feed event
-              let earlyFeedEventId: string | undefined;
-              try {
-                const existingFeed = await storage.getFeedEventByRouteId(route.id);
-                if (existingFeed) {
-                  earlyFeedEventId = existingFeed.id;
-                } else {
-                  const earlyFeedEvent = await storage.createFeedEvent({
-                    userId,
-                    eventType: 'activity',
-                    routeId: route.id,
-                    distance: activity.distance,
-                    duration: activity.duration,
-                    newArea: 0,
-                    metadata: null,
-                  });
-                  earlyFeedEventId = earlyFeedEvent.id;
-                }
-              } catch (_) {}
-
-              // Enqueue territory processing
-              await c.env.TERRITORY_QUEUE.send({
-                type: 'process_route_territory',
-                userId,
-                routeId: route.id,
-                startedAt,
-                completedAt,
-                distance: activity.distance,
-                duration: activity.duration,
-                earlyFeedEventId,
-              });
-
-              await storage.updatePolarActivity(activity.id, {
-                routeId: route.id,
-                processed: 1 as any,
-                processedAt: new Date().toISOString(),
-              });
-
-              activitiesProcessed++;
-              console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
-
-              // 3. Send push notification to user about the new activity
-              try {
-                const { sendPushToUser } = await import('./pushHelper');
-                const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-                if (subscriptions.length > 0) {
-                  const distKm = (activity.distance / 1000).toFixed(1);
-                  const pushSubs = subscriptions.map((sub: any) => ({
-                    endpoint: sub.endpoint,
-                    keys: { p256dh: sub.p256dh, auth: sub.auth },
-                  }));
-                  await sendPushToUser(
-                    pushSubs,
-                    {
-                      title: '🏃 ¡Carrera registrada!',
-                      body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                      tag: `polar-auto-${activity.id}`,
-                      data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-                    },
-                    (c.env as any).VAPID_PUBLIC_KEY || '',
-                    (c.env as any).VAPID_PRIVATE_KEY || '',
-                    (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                  );
-                }
-              } catch (pushErr) {
-                console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
-              }
-            } catch (procErr) {
-              console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
-            }
-          }
+          newActivitiesFound += outcome.newActivities;
+          activitiesProcessed += outcome.processed;
         } catch (userErr) {
           console.error(`[POLAR AUTO-SYNC] ❌ Error syncing user ${userId}:`, userErr);
         }
