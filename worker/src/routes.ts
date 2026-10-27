@@ -4215,7 +4215,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     try {
       const userId = c.get('authUserId');
       const storage = new WorkerStorage(getDb(c.env));
-      const { isApnsConfigured, apnsTopic, APNS_ENDPOINT_PREFIX } = await import('./pushHelper');
+      const { isApnsConfigured, missingApnsSecrets, apnsTopic, APNS_ENDPOINT_PREFIX } = await import('./pushHelper');
       const [subscriptions, errors] = await Promise.all([
         storage.getPushSubscriptionsByUserId(userId),
         storage.getPushErrorsForUser(userId).catch(() => []),
@@ -4238,6 +4238,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const lastError = errors[0];
       return c.json({
         apnsConfigured: isApnsConfigured(),
+        missingApnsSecrets: missingApnsSecrets(),
         apnsTopic: apnsTopic(),
         devices,
         webSubscriptions,
@@ -4258,14 +4259,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const notSelf = rejectIfNotSelf(c, body.userId);
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
-      const { sendPushNotificationDetailed, isApnsConfigured, APNS_ENDPOINT_PREFIX } = await import('./pushHelper');
+      const { sendPushNotificationDetailed, isApnsConfigured, missingApnsSecrets, APNS_ENDPOINT_PREFIX } = await import('./pushHelper');
 
       const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
       const hasDevice = subscriptions.some((sub) => sub.endpoint.startsWith(APNS_ENDPOINT_PREFIX));
       // Without the APNs keys no iPhone can be reached (registered or not): that is the cause to report
       if (!isApnsConfigured() && (hasDevice || subscriptions.length === 0)) {
         return c.json({
-          error: 'Las notificaciones no están configuradas en el servidor (faltan las claves de Apple Push: APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY y APNS_BUNDLE_ID).',
+          error: `Las notificaciones no están configuradas en el servidor. El servidor no encuentra: ${missingApnsSecrets().join(', ') || 'APNS_KEY_ID, APNS_TEAM_ID, APNS_PRIVATE_KEY, APNS_BUNDLE_ID'}.`,
           reason: 'ApnsNotConfigured',
           subscriptionCount: subscriptions.length,
         }, 503);

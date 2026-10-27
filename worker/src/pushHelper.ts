@@ -290,12 +290,16 @@ interface PushEnv {
 }
 
 let apnsConfig: ApnsConfig | null = null;
+let apnsMissing: string[] = [];
 let pushDatabase: { url: string; authToken?: string } | null = null;
 let apnsJwtCache: { token: string; issuedAt: number; keyId: string } | null = null;
 
 /** Reads the APNs credentials from the Worker environment. Called at the start of each request. */
 export function configurePush(env: PushEnv): void {
   pushDatabase = env.DATABASE_URL ? { url: env.DATABASE_URL, authToken: env.TURSO_AUTH_TOKEN } : null;
+  apnsMissing = (['APNS_KEY_ID', 'APNS_TEAM_ID', 'APNS_PRIVATE_KEY', 'APNS_BUNDLE_ID'] as const).filter(
+    (name) => !(typeof env[name] === 'string' && (env[name] as string).trim().length > 0),
+  );
   if (env.APNS_KEY_ID && env.APNS_TEAM_ID && env.APNS_PRIVATE_KEY && env.APNS_BUNDLE_ID) {
     apnsConfig = {
       keyId: env.APNS_KEY_ID,
@@ -341,6 +345,11 @@ async function getApnsJwt(config: ApnsConfig): Promise<string> {
 /** True when the Worker has the four APNS_* secrets (without them no iPhone gets notifications). */
 export function isApnsConfigured(): boolean {
   return apnsConfig !== null;
+}
+
+/** Names (never values) of the APNS_* secrets the Worker can't see. */
+export function missingApnsSecrets(): string[] {
+  return apnsMissing;
 }
 
 /** The apns-topic the Worker sends (APNS_BUNDLE_ID); it must equal the app's bundle identifier. */
