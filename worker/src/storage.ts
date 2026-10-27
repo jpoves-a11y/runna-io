@@ -198,6 +198,7 @@ export class WorkerStorage {
     // Delete from all child tables first to avoid FK constraint issues
     await this.deleteAuthSessionsByUserId(userId);
     await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
@@ -266,6 +267,69 @@ export class WorkerStorage {
       PRIMARY KEY (blocker_id, blocked_id)
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+    // migrations/0011_auth_attempts_password_resets.sql
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS auth_attempts (
+      key TEXT PRIMARY KEY,
+      failures INTEGER NOT NULL DEFAULT 0,
+      window_start INTEGER NOT NULL,
+      locked_until INTEGER
+    )`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS password_resets (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0
+    )`);
+  }
+
+  // ===== Login attempt limits (see worker/src/rateLimit.ts) =====
+
+  async getAuthAttempt(key: string): Promise<{ failures: number; windowStart: number; lockedUntil: number | null } | undefined> {
+    await this.ensureSchemaUpgrades();
+    const result = await this.db.all<{ failures: number; window_start: number; locked_until: number | null }>(
+      sql`SELECT failures, window_start, locked_until FROM auth_attempts WHERE key = ${key}`
+    );
+    const row = result[0];
+    return row ? { failures: Number(row.failures), windowStart: Number(row.window_start), lockedUntil: row.locked_until == null ? null : Number(row.locked_until) } : undefined;
+  }
+
+  async saveAuthAttempt(key: string, failures: number, windowStart: number, lockedUntil: number | null): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO auth_attempts (key, failures, window_start, locked_until)
+      VALUES (${key}, ${failures}, ${windowStart}, ${lockedUntil})
+      ON CONFLICT(key) DO UPDATE SET failures = excluded.failures, window_start = excluded.window_start, locked_until = excluded.locked_until`);
+  }
+
+  async deleteAuthAttempt(key: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM auth_attempts WHERE key = ${key}`);
+  }
+
+  // ===== Password resets =====
+
+  async savePasswordReset(userId: string, codeHash: string, expiresAt: number): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO password_resets (user_id, code_hash, expires_at, attempts)
+      VALUES (${userId}, ${codeHash}, ${expiresAt}, 0)
+      ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0`);
+  }
+
+  async getPasswordReset(userId: string): Promise<{ codeHash: string; expiresAt: number; attempts: number } | undefined> {
+    await this.ensureSchemaUpgrades();
+    const result = await this.db.all<{ code_hash: string; expires_at: number; attempts: number }>(
+      sql`SELECT code_hash, expires_at, attempts FROM password_resets WHERE user_id = ${userId}`
+    );
+    const row = result[0];
+    return row ? { codeHash: row.code_hash, expiresAt: Number(row.expires_at), attempts: Number(row.attempts) } : undefined;
+  }
+
+  async incrementPasswordResetAttempts(userId: string): Promise<void> {
+    await this.db.run(sql`UPDATE password_resets SET attempts = attempts + 1 WHERE user_id = ${userId}`);
+  }
+
+  async deletePasswordReset(userId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
   }
 
   // ===== Indexes for the per-user lookups of the app's main screens =====

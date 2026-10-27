@@ -3,7 +3,8 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
-import { EmailService, DEFAULT_WORKER_URL } from './email';
+import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES } from './email';
+import { LIMITS, clientIp, lockedForSeconds, recordAttempt, clearAttempts, tooManyAttempts } from './rateLimit';
 import { sql } from 'drizzle-orm';
 import { apnsSecretProblems } from './pushHelper';
 import { USER_COLORS } from '../../shared/colors';
@@ -23,6 +24,7 @@ import {
   oauthFinish,
   isCronRequest,
   forgetUserSessions,
+  timingSafeEqual as timingSafeEqualText,
 } from './auth';
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
@@ -37,12 +39,42 @@ import {
   encodePolyline,
   decodePolyline,
   formatAreaNotification,
+  checkRunPlausibility,
   type ConquestVictimInfo,
 } from './territory';
 
 // Helper function to get database instance
 function getDb(env: Env) {
   return createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN);
+}
+
+// ===== Sign-in helpers =====
+
+/** Wrong codes allowed for one "forgot password" email before it has to be requested again */
+const MAX_RESET_CODE_ATTEMPTS = 5;
+
+/** Finds an account by email (if the text has an @) or username. */
+async function findUserByIdentifier(storage: WorkerStorage, identifier: string) {
+  const value = identifier.trim();
+  if (!value) return undefined;
+  if (!value.includes('@')) return storage.getUserByUsername(value);
+  return (await storage.getUserByEmail(value)) ?? (await storage.getUserByEmail(value.toLowerCase()));
+}
+
+/** A real hash to check unknown accounts against, so they take as long as known ones. */
+let dummyHash: Promise<string> | null = null;
+function dummyPasswordHash(): Promise<string> {
+  if (!dummyHash) dummyHash = hashPassword(crypto.randomUUID());
+  return dummyHash;
+}
+
+function randomSixDigitCode(): string {
+  return String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+}
+
+async function hashResetCode(userId: string, code: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`password-reset:${userId}:${code}`));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // Small key/value table for values the Worker manages itself (e.g. the Polar webhook signing key).
@@ -960,10 +992,7 @@ export async function processTerritoryConquest(
 
       for (const notif of cappedNotifs) {
         try {
-          const provider = env.EMAIL_PROVIDER || (env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-          const apiKey = provider === 'sendgrid' ? env.SENDGRID_API_KEY : env.RESEND_API_KEY;
-          const fromEmail = provider === 'sendgrid' ? (env.SENDGRID_FROM || env.RESEND_FROM) : env.RESEND_FROM;
-          const emailService = new EmailService(apiKey!, fromEmail, provider as any, env.WORKER_URL);
+          const emailService = emailServiceFromEnv(env, env.WORKER_URL);
           
           await emailService.sendTerritoryConqueredEmail(
             notif.victimEmail,
@@ -1197,6 +1226,8 @@ export async function reprocessUserTerritories(
           : [];
 
       if (coords.length < 10) continue;
+      // Runs too fast to be on foot don't count (see checkRunPlausibility)
+      if (!checkRunPlausibility({ ...route, coordinates: coords }).ok) continue;
 
       const enclosedPoly = routeToEnclosedPolygon(coords, 150);
       if (!enclosedPoly) continue;
@@ -1295,6 +1326,8 @@ export async function reprocessFriendGroupTerritoriesChronologically(
           : [];
 
       if (coords.length < 10) continue;
+      // Runs too fast to be on foot don't count (see checkRunPlausibility)
+      if (!checkRunPlausibility({ ...route, coordinates: coords }).ok) continue;
 
       const enclosedPoly = routeToEnclosedPolygon(coords, 150);
       if (!enclosedPoly) continue;
@@ -1645,22 +1678,38 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const { username, email, password } = body;
       const identifier = username || email;
       
-      if (!identifier || !password) {
+      if (!identifier || !password || typeof identifier !== 'string' || typeof password !== 'string') {
         return c.json({ error: "Usuario o correo y password son requeridos" }, 400);
       }
-      
-      const user = identifier.includes('@')
-        ? await storage.getUserByEmail(identifier)
-        : await storage.getUserByUsername(identifier);
 
-      if (!user) {
-        return c.json({ error: "Usuario no encontrado" }, 401);
+      // Too many wrong passwords from this IP or for this account lock sign-in for a while
+      const ip = clientIp(c);
+      const ipKey = ip ? `login:ip:${ip}` : null;
+      if (ipKey) {
+        const wait = await lockedForSeconds(storage, ipKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
       }
 
-      const isValid = await verifyPassword(password, user.password);
-      if (!isValid) {
-        return c.json({ error: "Contraseña incorrecta" }, 401);
+      const user = await findUserByIdentifier(storage, identifier);
+      const accountKey = user ? `login:account:${user.id}` : null;
+      if (accountKey) {
+        const wait = await lockedForSeconds(storage, accountKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
       }
+
+      // An unknown account costs the same hashing time and gets the same answer as a wrong
+      // password, so the response doesn't tell which accounts exist
+      const isValid = user
+        ? await verifyPassword(password, user.password)
+        : (await verifyPassword(password, await dummyPasswordHash()), false);
+      if (!user || !isValid) {
+        await Promise.all([
+          ipKey ? recordAttempt(storage, ipKey, LIMITS.loginIp) : null,
+          accountKey ? recordAttempt(storage, accountKey, LIMITS.loginAccount) : null,
+        ]);
+        return c.json({ error: "Usuario, email o contraseña incorrectos" }, 401);
+      }
+      await clearAttempts(storage, accountKey!);
 
       if (needsRehash(user.password)) {
         try {
@@ -1674,6 +1723,136 @@ export function registerRoutes(app: Hono<AppEnv>) {
       return c.json({ ...toSelfUser(user), token });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // "Forgot password", step 1: emails a 6-digit code to the account's address.
+  // The answer is the same whether or not the account exists.
+  app.post('/api/auth/password-reset/request', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const body = await c.req.json().catch(() => ({}));
+      const identifier = typeof body?.email === 'string' ? body.email : body?.username;
+      if (!identifier || typeof identifier !== 'string' || !identifier.trim()) {
+        return c.json({ error: "Escribe tu email o tu usuario" }, 400);
+      }
+
+      const ip = clientIp(c);
+      const ipKey = ip ? `reset:ip:${ip}` : null;
+      if (ipKey) {
+        const wait = await lockedForSeconds(storage, ipKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
+        await recordAttempt(storage, ipKey, LIMITS.resetRequestIp);
+      }
+
+      const sent = c.json({
+        success: true,
+        message: "Si hay una cuenta con ese email o usuario, te hemos enviado un código. Revisa también la carpeta de spam.",
+      });
+
+      const user = await findUserByIdentifier(storage, identifier);
+      if (!user || !user.email || !user.password) return sent;
+
+      // A few emails per hour and account; later requests answer the same without sending
+      const accountKey = `reset:account:${user.id}`;
+      if (await lockedForSeconds(storage, accountKey) > 0) return sent;
+      await recordAttempt(storage, accountKey, LIMITS.resetRequestAccount);
+
+      const code = randomSixDigitCode();
+      await storage.savePasswordReset(user.id, await hashResetCode(user.id, code), Date.now() + PASSWORD_RESET_CODE_MINUTES * 60 * 1000);
+      try {
+        await emailServiceFromEnv(c.env, publicBaseUrl(c)).sendPasswordResetCode(user.email, user.name, code);
+      } catch (err) {
+        console.error('[EMAIL] Failed to send password reset code:', err);
+        return c.json({ error: "No hemos podido enviar el email. Inténtalo más tarde." }, 503);
+      }
+      return sent;
+    } catch (error: any) {
+      console.error('[AUTH] Password reset request failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // "Forgot password", step 2: the code from the email and the new password. Signs the user in
+  // (same response as /api/auth/login) and closes every other session of the account.
+  app.post('/api/auth/password-reset/confirm', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const body = await c.req.json().catch(() => ({}));
+      const identifier = typeof body?.email === 'string' ? body.email : body?.username;
+      const code = typeof body?.code === 'string' ? body.code.trim() : '';
+      const newPassword = body?.password;
+      if (!identifier || typeof identifier !== 'string' || !code) {
+        return c.json({ error: "Faltan el email o el código" }, 400);
+      }
+      if (typeof newPassword !== 'string' || newPassword.length < 6) {
+        return c.json({ error: "La contraseña debe tener al menos 6 caracteres." }, 400);
+      }
+
+      const ip = clientIp(c);
+      const ipKey = ip ? `reset-confirm:ip:${ip}` : null;
+      if (ipKey) {
+        const wait = await lockedForSeconds(storage, ipKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
+      }
+
+      const invalid = c.json({ error: "El código no es válido o ha caducado. Pide uno nuevo." }, 400);
+      const user = await findUserByIdentifier(storage, identifier);
+      const reset = user ? await storage.getPasswordReset(user.id) : undefined;
+      if (!user || !reset || reset.expiresAt <= Date.now() || reset.attempts >= MAX_RESET_CODE_ATTEMPTS) {
+        if (ipKey) await recordAttempt(storage, ipKey, LIMITS.loginIp);
+        if (user && reset) await storage.deletePasswordReset(user.id);
+        return invalid;
+      }
+
+      if (!timingSafeEqualText(await hashResetCode(user.id, code), reset.codeHash)) {
+        await storage.incrementPasswordResetAttempts(user.id);
+        if (ipKey) await recordAttempt(storage, ipKey, LIMITS.loginIp);
+        const left = MAX_RESET_CODE_ATTEMPTS - reset.attempts - 1;
+        if (left <= 0) {
+          await storage.deletePasswordReset(user.id);
+          return invalid;
+        }
+        return c.json({ error: `Código incorrecto. Te ${left === 1 ? 'queda 1 intento' : `quedan ${left} intentos`}.` }, 400);
+      }
+
+      await storage.updateUserPassword(user.id, await hashPassword(newPassword));
+      await storage.deletePasswordReset(user.id);
+      // Whoever knew the old password is signed out everywhere
+      await storage.deleteAuthSessionsByUserId(user.id);
+      forgetUserSessions(user.id);
+      await clearAttempts(storage, `login:account:${user.id}`);
+      // The code arrived at the account's email, which proves it belongs to the user
+      if (!(user as any).emailVerified) {
+        await storage.updateUser(user.id, { emailVerified: true, verificationCode: null, verificationCodeExpiresAt: null } as any);
+      }
+
+      const updated = (await storage.getUser(user.id)) ?? user;
+      const token = await createSession(storage, user.id);
+      return c.json({ ...toSelfUser(updated), token });
+    } catch (error: any) {
+      console.error('[AUTH] Password reset confirm failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // Email diagnostics: which provider and sender the Worker uses, what's wrong with them, and,
+  // with {"to": "<address>"}, the provider's answer to a test email
+  app.post('/api/admin/email/test', async (c) => {
+    const config = emailConfig(c.env);
+    const body = await c.req.json().catch(() => ({}));
+    const status = {
+      provider: config.provider,
+      from: config.from,
+      apiKeyConfigured: Boolean(config.apiKey),
+      problems: config.problems,
+    };
+    if (typeof body?.to !== 'string' || !body.to.includes('@')) return c.json(status);
+    try {
+      await emailServiceFromEnv(c.env, publicBaseUrl(c)).sendTestEmail(body.to);
+      return c.json({ ...status, sent: true });
+    } catch (error: any) {
+      return c.json({ ...status, sent: false, error: error?.message || String(error) });
     }
   });
 
@@ -1703,7 +1882,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       // Generar código de verificación de 6 dígitos
-      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const verificationCode = randomSixDigitCode();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutos
 
       const hashedPassword = await hashPassword(password);
@@ -1724,10 +1903,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Enviar código de verificación por email
       try {
-        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
+        const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
         await emailService.sendVerificationCode(user.email, user.name, verificationCode);
       } catch (err) {
         console.error('[EMAIL] Failed to send verification code:', err);
@@ -1774,9 +1950,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "El código ha expirado. Solicita uno nuevo." }, 400);
       }
 
-      if (userAny.verificationCode !== code) {
+      const verifyKey = `verify:account:${userId}`;
+      const wait = await lockedForSeconds(storage, verifyKey);
+      if (wait > 0) return tooManyAttempts(c, wait);
+
+      if (userAny.verificationCode !== String(code).trim()) {
+        await recordAttempt(storage, verifyKey, LIMITS.verifyCode);
         return c.json({ error: "Código incorrecto" }, 400);
       }
+      await clearAttempts(storage, verifyKey);
 
       // Verificar usuario
       await storage.updateUser(userId, {
@@ -1787,10 +1969,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Enviar email de bienvenida ahora que está verificado
       try {
-        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
+        const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
         await emailService.sendWelcomeEmail(user.email, user.name);
       } catch (err) {
         console.error('[EMAIL] Failed to send welcome email:', err);
@@ -1823,7 +2002,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       // Generar nuevo código
-      const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const verificationCode = randomSixDigitCode();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
       await storage.updateUser(userId, {
@@ -1833,14 +2012,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Enviar código
       try {
-        const provider1 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey1 = provider1 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        const fromEmail1 = provider1 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-        const emailService = new EmailService(apiKey1!, fromEmail1, provider1 as any, publicBaseUrl(c));
-        await emailService.sendVerificationCode(user.email, user.name, verificationCode);
+        const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
+        // sendVerificationCode returns false (it doesn't throw) when the provider refuses the email
+        if (!(await emailService.sendVerificationCode(user.email, user.name, verificationCode))) {
+          throw new Error('email provider refused the message');
+        }
       } catch (err) {
         console.error('[EMAIL] Failed to resend verification code:', err);
-        return c.json({ error: "No se pudo enviar el código" }, 500);
+        return c.json({ error: "No se pudo enviar el código. Inténtalo más tarde." }, 503);
       }
 
       return c.json({ success: true, message: "Código reenviado" });
@@ -2078,6 +2257,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
         if (!Array.isArray(points)) throw new Error('not an array');
       } catch {
         return c.json({ error: 'Coordenadas no válidas' }, 400);
+      }
+
+      // A run that couldn't have been done on foot is refused with a message the app shows
+      const plausibility = checkRunPlausibility({ ...routeData, coordinates: JSON.parse(routeData.coordinates) });
+      if (!plausibility.ok) {
+        return c.json({ error: plausibility.message, reason: plausibility.reason }, 422);
       }
 
       let route: Route;
@@ -2369,6 +2554,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
               ? JSON.parse(route.coordinates)
               : [];
           if (coords.length < 10) continue;
+          // Runs too fast to be on foot don't count (see checkRunPlausibility)
+          if (!checkRunPlausibility({ ...route, coordinates: coords }).ok) continue;
 
           const enclosedPoly = routeToEnclosedPolygon(coords, 150);
           if (!enclosedPoly) continue;
@@ -2503,6 +2690,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
               : [];
 
           if (coords.length < 10) continue;
+          // Runs too fast to be on foot don't count (see checkRunPlausibility)
+          if (!checkRunPlausibility({ ...route, coordinates: coords }).ok) continue;
 
           const enclosedPoly = routeToEnclosedPolygon(coords, 150);
           if (!enclosedPoly) continue;
@@ -3491,10 +3680,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
         // Send email notification
         try {
-          const provider2 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-          const apiKey2 = provider2 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-          const fromEmail2 = provider2 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-          const emailService = new EmailService(apiKey2!, fromEmail2, provider2 as any, publicBaseUrl(c));
+          const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
         
           if (sender && recipient && recipient.email) {
             const prefs = await storage.getEmailPreferences(friendId);
@@ -3661,10 +3847,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         try {
           const sender = await storage.getUser(request.senderId);
           const recipient = await storage.getUser(userId);
-          const provider3 = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-          const apiKey3 = provider3 === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-          const fromEmail3 = provider3 === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
-          const emailService = new EmailService(apiKey3!, fromEmail3, provider3 as any, publicBaseUrl(c));
+          const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
         
           if (sender && sender.email && recipient) {
             const prefs = await storage.getEmailPreferences(request.senderId);
@@ -4061,16 +4244,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Email the app owner so reports get reviewed within 24 h (REPORTS_EMAIL, else the support address)
       const notify = async () => {
-        const provider = c.env.EMAIL_PROVIDER || (c.env.SENDGRID_API_KEY ? 'sendgrid' : 'resend');
-        const apiKey = provider === 'sendgrid' ? c.env.SENDGRID_API_KEY : c.env.RESEND_API_KEY;
-        if (!apiKey) return;
-        const fromEmail = provider === 'sendgrid' ? (c.env.SENDGRID_FROM || c.env.RESEND_FROM) : c.env.RESEND_FROM;
+        if (!emailConfig(c.env).apiKey) return;
         const describe = async (id: string | null) => {
           if (!id) return '-';
           const u = await storage.getUser(id);
           return u ? `${u.name} (@${u.username}, ${u.id})` : id;
         };
-        const emailService = new EmailService(apiKey, fromEmail, provider as any, publicBaseUrl(c));
+        const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
         await emailService.sendReportNotification((c.env as any).REPORTS_EMAIL || 'runna.io.service@gmail.com', {
           reporter: await describe(reporterId),
           reported: await describe(reportedUserId || null),
@@ -4865,7 +5045,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
               console.error('[STRAVA] ❌ Early feed event creation failed:', earlyFeedErr);
             }
 
-            const enclosedPoly = routeToEnclosedPolygon(coordinates, 150);
+            const plausibility = checkRunPlausibility({ ...route, coordinates });
+            if (!plausibility.ok) {
+              console.warn(`[STRAVA PROCESS] Route ${route.id} doesn't count for territory: ${plausibility.reason} (${plausibility.speedKmh.toFixed(1)} km/h)`);
+            }
+            const enclosedPoly = plausibility.ok ? routeToEnclosedPolygon(coordinates, 150) : null;
 
             if (enclosedPoly) {
               // Pass env=undefined to skip inline notifications (saves subrequests)
@@ -6560,286 +6744,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
     return c.json({ error: error.message, stack: error.stack }, 500);
   }
 });
-
-  // ==================== COROS ====================
-  // NOTE: Implementation requires COROS API credentials and documentation
-  // Apply for API access at: https://coros.com/api
-  // Once approved, update env vars: COROS_CLIENT_ID, COROS_CLIENT_SECRET
-
-  app.get('/api/coros/status/:userId', requireSelf('userId'), async (c) => {
-    try {
-      const userId = c.req.param('userId');
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const corosAccount = await storage.getCorosAccountByUserId(userId);
-      
-      if (corosAccount) {
-        const stats = await storage.getCorosActivityStats(userId);
-        return c.json({
-          connected: true,
-          corosOpenId: corosAccount.corosOpenId,
-          lastSyncAt: corosAccount.lastSyncAt,
-          totalActivities: stats.total,
-          pendingActivities: stats.unprocessed,
-          lastActivityStart: stats.lastStartDate,
-        });
-      } else {
-        return c.json({ connected: false });
-      }
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  app.get('/api/coros/connect', requireAuth, async (c) => {
-    try {
-      const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
-      if (notSelf) return notSelf;
-      const userId = c.get('authUserId');
-      const COROS_CLIENT_ID = c.env.COROS_CLIENT_ID;
-      const COROS_REDIRECT_URI = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/coros/callback`;
-
-      if (!COROS_CLIENT_ID || !c.env.COROS_CLIENT_SECRET) {
-        return c.json({ error: "COROS not configured" }, 400);
-      }
-
-      const state = await createOAuthState(userId, c.env.COROS_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
-      
-      // TODO: Update with actual COROS OAuth URL from API documentation
-      const authUrl = `https://open.coros.com/oauth2/authorize?client_id=${COROS_CLIENT_ID}&redirect_uri=${encodeURIComponent(COROS_REDIRECT_URI)}&response_type=code&state=${state}`;
-      
-      return c.json({ authUrl });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  app.get('/api/coros/callback', async (c) => {
-    const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
-    // Flows started in the iOS app go back to it instead of the website
-    let appFlow = false;
-    const finish = (webUrl: string) => oauthFinish(c, appFlow, 'coros', webUrl);
-    
-    try {
-      const code = c.req.query('code');
-      const state = c.req.query('state');
-      const authError = c.req.query('error');
-      const COROS_CLIENT_ID = c.env.COROS_CLIENT_ID;
-      const COROS_CLIENT_SECRET = c.env.COROS_CLIENT_SECRET;
-      const verifiedState = state && COROS_CLIENT_SECRET ? await verifyOAuthState(state, COROS_CLIENT_SECRET) : null;
-      appFlow = verifiedState?.app === true;
-      
-      if (authError) {
-        return finish(`${FRONTEND_URL}/?coros_error=denied`);
-      }
-      
-      if (!code || !state || !COROS_CLIENT_ID || !COROS_CLIENT_SECRET) {
-        return finish(`${FRONTEND_URL}/?coros_error=invalid`);
-      }
-
-      const userId = verifiedState?.userId;
-      if (!userId) {
-        return finish(`${FRONTEND_URL}/?coros_error=invalid_state`);
-      }
-
-      // TODO: Update with actual COROS token exchange endpoint from API documentation
-      const tokenResponse = await fetch('https://open.coros.com/oauth2/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: COROS_CLIENT_ID,
-          client_secret: COROS_CLIENT_SECRET,
-          code: code,
-          grant_type: 'authorization_code',
-        }),
-      });
-
-      if (!tokenResponse.ok) {
-        console.error('COROS token exchange failed:', await tokenResponse.text());
-        return finish(`${FRONTEND_URL}/?coros_error=token_exchange`);
-      }
-
-      const tokenData: any = await tokenResponse.json();
-      // TODO: Update field names based on actual COROS API response
-      const { access_token, refresh_token, expires_in, openId } = tokenData;
-
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-
-      const existingAccount = await storage.getCorosAccountByOpenId(openId);
-      if (existingAccount && existingAccount.userId !== userId) {
-        return finish(`${FRONTEND_URL}/?coros_error=already_linked`);
-      }
-
-      const expiresAt = expires_in ? new Date(Date.now() + expires_in * 1000) : null;
-      const corosAccountData = {
-        userId,
-        corosOpenId: openId,
-        accessToken: access_token,
-        refreshToken: refresh_token,
-        expiresAt,
-        lastSyncAt: null,
-      };
-
-      if (existingAccount) {
-        await storage.updateCorosAccount(userId, corosAccountData);
-      } else {
-        await storage.createCorosAccount(corosAccountData);
-      }
-
-      return finish(`${FRONTEND_URL}/?coros_connected=true`);
-    } catch (error: any) {
-      console.error('COROS callback error:', error);
-      return finish(`${FRONTEND_URL}/?coros_error=server`);
-    }
-  });
-
-  app.post('/api/coros/disconnect', requireAuth, async (c) => {
-    try {
-      const body = await c.req.json().catch(() => ({}));
-      const notSelf = rejectIfNotSelf(c, body.userId);
-      if (notSelf) return notSelf;
-      const userId = c.get('authUserId');
-
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-
-      const corosAccount = await storage.getCorosAccountByUserId(userId);
-      if (!corosAccount) {
-        return c.json({ error: "COROS account not connected" }, 404);
-      }
-
-      await storage.deleteCorosAccount(userId);
-      return c.json({ success: true });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  app.post('/api/coros/webhook', async (c) => {
-    try {
-      const body = await c.req.json();
-      console.log('[COROS WEBHOOK] Received data:', JSON.stringify(body));
-      
-      // TODO: Implement based on COROS webhook format from API documentation
-      // Expected flow:
-      // 1. Validate webhook signature if required
-      // 2. Extract workout data (openId, workoutId, activity type, GPS data, etc.)
-      // 3. Look up user by corosOpenId
-      // 4. Create CorosActivity record with processed=0
-      // 5. Optionally trigger processing immediately or let manual process handle it
-      
-      return c.json({ received: true }, 200);
-    } catch (error: any) {
-      console.error('COROS webhook error:', error);
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  app.get('/api/coros/activities/:userId', requireSelf('userId'), async (c) => {
-    try {
-      const userId = c.req.param('userId');
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      
-      const activities = await storage.getCorosActivitiesByUserId(userId);
-      return c.json({ activities });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  app.delete('/api/coros/activities/:userId/:activityId', requireSelf('userId'), async (c) => {
-    try {
-      const userId = c.req.param('userId');
-      const activityId = c.req.param('activityId');
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-
-      const activity = await storage.getCorosActivityById(activityId);
-      if (!activity || activity.userId !== userId) {
-        return c.json({ error: "Activity not found or unauthorized" }, 404);
-      }
-
-      // Delete associated route and territory if exists
-      if (activity.routeId) {
-        await storage.deleteRoute(activity.routeId);
-      }
-      if (activity.territoryId) {
-        await storage.deleteTerritory(activity.territoryId);
-      }
-
-      await storage.deleteCorosActivity(activityId);
-      return c.json({ success: true });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
-  });
-
-  app.post('/api/coros/process/:userId', requireSelf('userId'), async (c) => {
-    try {
-      const userId = c.req.param('userId');
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-
-      // Get unprocessed activities
-      const activities = await storage.getUnprocessedCorosActivities(userId);
-      
-      let processed = 0;
-      let skipped = 0;
-      const errors: string[] = [];
-
-      for (const activity of activities) {
-        try {
-          if (!activity.summaryPolyline) {
-            await storage.markCorosActivityProcessed(activity.id, null, null, 'no_gps');
-            skipped++;
-            continue;
-          }
-
-          // Decode polyline and create route
-          const route = await storage.createRoute({
-            userId,
-            name: activity.name,
-            distance: activity.distance,
-            duration: activity.duration,
-            gpxData: activity.summaryPolyline,
-            sourceType: 'coros',
-            sourceId: activity.id,
-            createdAt: new Date(activity.startDate),
-          });
-
-          // Create territory from route (50m buffer)
-          const routeCoords = JSON.parse(route.gpxData);
-          const lineString = turf.lineString(routeCoords);
-          const buffered = turf.buffer(lineString, 0.05, { units: 'kilometers' });
-          
-          const territory = await storage.createTerritory({
-            userId,
-            routeId: route.id,
-            geometry: JSON.stringify(buffered.geometry),
-            area: turf.area(buffered),
-            createdAt: new Date(activity.startDate),
-          });
-
-          // Handle territory overlaps and stealing
-          await storage.handleTerritoryOverlaps(territory.id, userId);
-
-          // Mark activity as processed
-          await storage.markCorosActivityProcessed(activity.id, route.id, territory.id, null);
-          processed++;
-        } catch (err: any) {
-          console.error(`[COROS] Failed to process activity ${activity.id}:`, err);
-          await storage.markCorosActivityProcessed(activity.id, null, null, err.message);
-          errors.push(`${activity.name}: ${err.message}`);
-        }
-      }
-
-      return c.json({ processed, skipped, errors, total: activities.length });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
-  });
 
   // ==========================================
   // EPHEMERAL PHOTOS (one-time taunt photos)

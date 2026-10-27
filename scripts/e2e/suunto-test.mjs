@@ -2,7 +2,7 @@
 // (fetch to cloudapi-oauth.suunto.com / cloudapi.suunto.com / APNs is answered in-process).
 //
 //   npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
-//     --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --external:@libsql/client
+//     --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --alias:cloudflare:sockets=./scripts/e2e/cloudflare-sockets-stub.mjs --external:@libsql/client
 //   rm -f scripts/e2e/.build/suunto.db
 //   DATABASE_URL=file:scripts/e2e/.build/suunto.db npx drizzle-kit push --force
 //   node scripts/e2e/suunto-test.mjs <dir>/5bd6eb3252ce7b074fc4fa82.fit <dir>/5bd6eaff52ce7b074fc4fa28.fit <dir>/5bd6eb1952ce7b074fc4fa56.fit

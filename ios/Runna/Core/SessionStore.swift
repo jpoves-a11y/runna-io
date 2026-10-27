@@ -151,6 +151,38 @@ final class SessionStore {
         startSession(user: user, token: pending.token)
     }
 
+    // MARK: - Forgot password
+
+    /// Step 1: the server emails a 6-digit code to the account (email or username).
+    /// Returns the server's message, which doesn't tell whether the account exists.
+    func requestPasswordReset(identifier: String) async throws -> String {
+        let response: PasswordResetRequestResponse = try await api.request(
+            "POST", "/api/auth/password-reset/request",
+            body: ["email": identifier.trimmingCharacters(in: .whitespaces)]
+        )
+        return response.message ?? "Si hay una cuenta con ese email o usuario, te hemos enviado un código."
+    }
+
+    /// Step 2: the code and the new password. Signs in; the account's other sessions are closed.
+    func resetPassword(identifier: String, code: String, newPassword: String) async throws {
+        let response: AppUser = try await api.request(
+            "POST", "/api/auth/password-reset/confirm",
+            body: [
+                "email": identifier.trimmingCharacters(in: .whitespaces),
+                "code": code.trimmingCharacters(in: .whitespaces),
+                "password": newPassword,
+            ]
+        )
+        guard let token = response.token else {
+            throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inicia sesión con tu nueva contraseña.")
+        }
+        if let pending = pendingVerification {
+            Self.revoke(token: pending.token)
+            clearPendingVerification()
+        }
+        startSession(user: response, token: token)
+    }
+
     func resendVerificationCode() async throws {
         guard let pending = pendingVerification else { return }
         try await api.send("POST", "/api/auth/resend-verification", body: [:], token: pending.token)
@@ -306,4 +338,8 @@ final class SessionStore {
             try? await APIClient.shared.send("POST", "/api/auth/logout", token: token)
         }
     }
+}
+
+private struct PasswordResetRequestResponse: Decodable {
+    let message: String?
 }

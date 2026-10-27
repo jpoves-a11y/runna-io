@@ -13,6 +13,7 @@ import { WorkerStorage } from './storage';
 import {
   routeToEnclosedPolygon,
   isCompetitionActive,
+  checkRunPlausibility,
   type ConquestVictimInfo,
 } from './territory';
 import type { Env } from './index';
@@ -107,6 +108,16 @@ async function handleProcessRouteTerritory(
   if (coords.length < 10) {
     console.log(`[QUEUE] Route ${routeId} has < 10 coords, skipping territory processing`);
     // Still update feed event with basic info
+    await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
+      newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected: [],
+    }, earlyFeedEventId);
+    return;
+  }
+
+  // Runs too fast to be on foot (bike, car, faked tracks) conquer nothing and collect no treasures
+  const plausibility = checkRunPlausibility({ ...route, coordinates: coords });
+  if (!plausibility.ok) {
+    console.warn(`[QUEUE] Route ${routeId} doesn't count for territory: ${plausibility.reason} (${plausibility.speedKmh.toFixed(1)} km/h)`);
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected: [],
     }, earlyFeedEventId);

@@ -22,8 +22,6 @@ export interface Env {
   POLAR_CLIENT_SECRET?: string;
   // signature_secret_key of the Polar AccessLink webhook (POST /api/admin/polar/webhook/register returns it)
   POLAR_WEBHOOK_SECRET?: string;
-  COROS_CLIENT_ID?: string;
-  COROS_CLIENT_SECRET?: string;
   // Suunto Cloud API (apizone.suunto.com): OAuth client, API subscription key, optional webhook HMAC secret
   SUUNTO_CLIENT_ID?: string;
   SUUNTO_CLIENT_SECRET?: string;
@@ -38,7 +36,9 @@ export interface Env {
   INTERNAL_CRON?: boolean;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
-  EMAIL_PROVIDER?: 'resend' | 'sendgrid';
+  EMAIL_PROVIDER?: 'resend' | 'sendgrid' | 'gmail';
+  GMAIL_USER?: string;
+  GMAIL_APP_PASSWORD?: string;
   SENDGRID_API_KEY?: string;
   SENDGRID_FROM?: string;
   UPSTASH_CRON_SECRET?: string;

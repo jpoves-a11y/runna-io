@@ -22,11 +22,16 @@ keep_vars = true
 
 [vars]
 ENVIRONMENT = "production"
-EMAIL_PROVIDER = "sendgrid"
+# Emails (verification codes, "forgot password", friend requests...) go out through this Gmail
+# account's SMTP server, free and without an own domain. Needs the secret GMAIL_APP_PASSWORD:
+# an app password of that Google account (README → "Emails").
+EMAIL_PROVIDER = "gmail"
+GMAIL_USER = "runna.io.service@gmail.com"
 SENDGRID_FROM = "runna.io.service@gmail.com"
 RESEND_FROM = "onboarding@resend.dev"
 
 # NOTA: Las API keys deben configurarse como secretos:
+# wrangler secret put GMAIL_APP_PASSWORD -c wrangler.worker.toml
 # wrangler secret put SENDGRID_API_KEY -c wrangler.worker.toml
 # wrangler secret put RESEND_API_KEY -c wrangler.worker.toml
 # wrangler secret put DATABASE_URL -c wrangler.worker.toml
