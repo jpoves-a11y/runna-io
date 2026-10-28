@@ -17,6 +17,7 @@ runna-io/
 │       ├── cron.ts         Tareas programadas (se ejecutan dentro del Worker)
 │       ├── pages.ts        Páginas públicas: /privacy, /terms, /support, /invite, /open
 │       ├── garmin.ts       Garmin Connect (OAuth2 PKCE + Activity API push)
+│       ├── coros.ts        COROS (OAuth2 + push de entrenamientos + ficheros FIT)
 │       ├── auth.ts         Sesiones (Bearer token), admin, OAuth state, tareas
 │       ├── passwords.ts    Hash de contraseñas (PBKDF2)
 │       ├── pushHelper.ts   Notificaciones push APNs (iPhone)
@@ -92,6 +93,9 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 | `SENDGRID_API_KEY` / `RESEND_API_KEY` | No | Alternativas a Gmail (`EMAIL_PROVIDER` en `[vars]` elige el proveedor); las dos necesitan un dominio propio verificado |
 | `GARMIN_CLIENT_ID`, `GARMIN_CLIENT_SECRET` | Para Garmin | Consumer key y secret de la app en el portal de Garmin ([ver abajo](#garmin)) |
 | `GARMIN_WEBHOOK_SECRET` | No | Si está, la URL del webhook de Garmin debe llevar `?key=<secreto>` (Garmin no firma sus avisos) |
+| `COROS_CLIENT_ID`, `COROS_CLIENT_SECRET` | Para COROS | Application ID y key que da COROS al aprobar la integración ([ver abajo](#coros)) |
+| `COROS_WEBHOOK_SECRET` | No | Si está, la URL de push de COROS debe llevar `?key=<secreto>` |
+| `COROS_API_BASE` | No | Servidor de la API de COROS. Por defecto `https://open.coros.com`; `https://opentest.coros.com` mientras COROS prueba la integración |
 | `WORKER_URL` | No | URL pública del Worker para enlaces de invitación y botones de los emails. Por defecto, el origen de la petición |
 | `APP_DOWNLOAD_URL` | No | Enlace de App Store / TestFlight; si está, las páginas `/invite` y `/open` muestran "Descargar la app" |
 | `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` | No | Solo si aún llamas a `/api/tasks/*` desde QStash |
@@ -139,6 +143,34 @@ Prueba end-to-end con Garmin simulado: compila el Worker como en "API en local" 
 rm -f scripts/e2e/.build/garmin.db
 DATABASE_URL=file:scripts/e2e/.build/garmin.db npx drizzle-kit push --force
 node scripts/e2e/garmin-test.mjs
+```
+
+## COROS
+
+Integración con la API de partners de COROS, en `worker/src/coros.ts`. COROS **empuja** un resumen de cada entrenamiento al Worker unos 5 minutos después de que el usuario sincronice el reloj con la app COROS; el Worker descarga el fichero FIT, saca el recorrido GPS y lo convierte en territorio. Si un aviso se pierde, la tarea `coros-auto-sync` (cada hora, minuto 45) lo recoge, y «Sincronizar ahora» trae los últimos 30 días.
+
+1. Pide acceso a la API: formulario de [Submit an API Application](https://support.coros.com/hc/en-us/articles/17085887816340-Submit-an-API-Application) y email a api@coros.com con los datos de la empresa, un contacto técnico y estas URLs:
+   - Redirect URI de OAuth: `https://runna-io-api.runna-io-api.workers.dev/api/coros/callback`
+   - URL de push de entrenamientos: `https://runna-io-api.runna-io-api.workers.dev/api/coros/webhook?key=<COROS_WEBHOOK_SECRET>`
+2. Cuando COROS te dé el *application ID* y la *key*:
+
+   ```bash
+   npx wrangler secret put COROS_CLIENT_ID -c wrangler.worker.toml
+   npx wrangler secret put COROS_CLIENT_SECRET -c wrangler.worker.toml
+   npx wrangler secret put COROS_WEBHOOK_SECRET -c wrangler.worker.toml   # una cadena aleatoria larga
+   ```
+
+   Mientras COROS revisa la integración en su entorno de pruebas, añade `COROS_API_BASE = "https://opentest.coros.com"` en `[vars]` y quítalo al pasar a producción.
+3. La fila COROS aparece en la app (Perfil → Servicios conectados) en cuanto `/api/coros/status` dice `configured: true`.
+
+COROS no publica el formato de su API. El código sigue la referencia v2 que COROS entrega a los partners (`/oauth2/accesstoken`, `/oauth2/refresh-token`, `/v2/coros/sport/list`, push `sportDataList` con cabeceras `client`/`secret` y respuesta `{"result":"0000"}`). Si tu documentación difiere en algún nombre, el sitio a tocar es `parseCorosToken`, `parseCorosWorkout` y `parseCorosPush`. El deporte se decide con el fichero FIT; los `mode` de COROS solo se usan si el FIT no lo trae.
+
+Prueba end-to-end con COROS simulado: compila el Worker como en "API en local" y ejecuta
+
+```bash
+rm -f scripts/e2e/.build/coros.db
+DATABASE_URL=file:scripts/e2e/.build/coros.db npx drizzle-kit push --force
+node scripts/e2e/coros-test.mjs
 ```
 
 ## Páginas que sirve el Worker

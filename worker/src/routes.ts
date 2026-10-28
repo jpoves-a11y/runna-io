@@ -2261,6 +2261,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
         const { deleteGarminRegistration } = await import('./garmin');
         await deleteGarminRegistration(c.env, storage, garminAccount);
       }
+      // Revoke Runna.io's COROS access too (best effort)
+      const corosAccount = await storage.getCorosAccountByUserId(id);
+      if (corosAccount) {
+        const { deauthorizeCoros } = await import('./coros');
+        await deauthorizeCoros(c.env, corosAccount);
+      }
       await storage.deleteUser(id);
       forgetUserSessions(id);
       return c.json({ success: true });
@@ -2584,6 +2590,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Suunto: keep the workout as skipped so the webhook / hourly poll doesn't import it again
       await storage.markSuuntoActivityDeletedByRouteId(routeId);
       await storage.markGarminActivityDeletedByRouteId(routeId);
+      await storage.markCorosActivityDeletedByRouteId(routeId);
 
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);

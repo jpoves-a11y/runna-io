@@ -70,12 +70,12 @@ final class AppRouter {
     }
 
     /// Push types of activities imported automatically from a connected service (data.routeId is the new route).
-    static let autoImportTypes: Set<String> = ["strava_auto_import", "polar_auto_import", "suunto_auto_import", "garmin_auto_import"]
+    static let autoImportTypes: Set<String> = ["strava_auto_import", "polar_auto_import", "suunto_auto_import", "garmin_auto_import", "coros_auto_import"]
 
     /// The user tapped a push notification.
     /// - Parameters:
     ///   - type: the payload's "type".
-    ///   - routeId: data.routeId (Strava/Polar/Suunto/Garmin auto-imports), shown as a conquest result on the map.
+    ///   - routeId: data.routeId (Strava/Polar/Suunto/Garmin/COROS auto-imports), shown as a conquest result on the map.
     func openNotification(type: String?, routeId: String? = nil) {
         switch type {
         case "friend_request", "friend_accepted":
@@ -89,7 +89,7 @@ final class AppRouter {
         case "weekly_summary":
             selectedTab = .rankings
             showWeeklySummary = true
-        case "strava_auto_import", "polar_auto_import", "suunto_auto_import", "garmin_auto_import":
+        case "strava_auto_import", "polar_auto_import", "suunto_auto_import", "garmin_auto_import", "coros_auto_import":
             selectedTab = .map
             if let routeId, !routeId.isEmpty {
                 ConquestInbox.shared.enqueue(routeId: routeId)

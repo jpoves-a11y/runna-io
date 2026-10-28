@@ -1,7 +1,7 @@
 import SwiftUI
 import AuthenticationServices
 
-/// Strava, Polar, Suunto, Garmin and Apple Health connections.
+/// Strava, Polar, Suunto, Garmin, COROS and Apple Health connections.
 struct IntegrationsSection: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
@@ -11,6 +11,7 @@ struct IntegrationsSection: View {
     @State private var polar: PolarConnection?
     @State private var suunto: SuuntoConnection?
     @State private var garmin: GarminConnection?
+    @State private var coros: CorosConnection?
     @State private var busyProvider: String?
     @State private var progressText: String?
     @State private var message: String?
@@ -76,6 +77,23 @@ struct IntegrationsSection: View {
                         ImportedActivitiesView(provider: "garmin")
                     } label: {
                         activitiesLinkLabel(failed: garmin?.failedActivities ?? 0)
+                    }
+                }
+            }
+            // Hidden until the server has the COROS API keys (status says configured: false)
+            if showCoros {
+                providerRow(
+                    name: "COROS",
+                    mark: .coros,
+                    connected: coros?.connected == true,
+                    detail: corosDetail,
+                    provider: "coros"
+                )
+                if coros?.connected == true {
+                    NavigationLink {
+                        ImportedActivitiesView(provider: "coros")
+                    } label: {
+                        activitiesLinkLabel(failed: coros?.failedActivities ?? 0)
                     }
                 }
             }
@@ -250,6 +268,7 @@ struct IntegrationsSection: View {
         var names = ["Strava", "Polar"]
         if showSuunto { names.append("Suunto") }
         if showGarmin { names.append("Garmin") }
+        if showCoros { names.append("COROS") }
         let services = names.joined(separator: ", ")
         return "Las carreras que registres en \(services) o en el Apple Watch (Apple Salud) se convierten en territorio."
     }
@@ -282,6 +301,21 @@ struct IntegrationsSection: View {
         }
         if let last = APIDate.parse(garmin.lastWebhookAt) {
             return "Última carrera recibida \(Format.relative(last))"
+        }
+        return "Conectado"
+    }
+
+    private var showCoros: Bool {
+        guard let coros else { return false }
+        return coros.configured || coros.connected
+    }
+
+    private var corosDetail: String? {
+        guard let coros, coros.connected else { return nil }
+        // The newest of the last push and the last sync
+        let last = [APIDate.parse(coros.lastWebhookAt), APIDate.parse(coros.lastSyncAt)].compactMap { $0 }.max()
+        if let last {
+            return "Sincronizado \(Format.relative(last))"
         }
         return "Conectado"
     }
@@ -400,10 +434,12 @@ struct IntegrationsSection: View {
         async let polarStatus = try? APIClient.shared.request("GET", "/api/polar/status/\(userId)", as: PolarConnection.self)
         async let suuntoStatus = try? APIClient.shared.request("GET", "/api/suunto/status/\(userId)", as: SuuntoConnection.self)
         async let garminStatus = try? APIClient.shared.request("GET", "/api/garmin/status/\(userId)", as: GarminConnection.self)
+        async let corosStatus = try? APIClient.shared.request("GET", "/api/coros/status/\(userId)", as: CorosConnection.self)
         strava = await stravaStatus
         polar = await polarStatus
         suunto = await suuntoStatus
         garmin = await garminStatus
+        coros = await corosStatus
     }
 
     private func connect(_ provider: String) async {
@@ -494,6 +530,7 @@ struct IntegrationsSection: View {
         case "polar": return "Polar"
         case "suunto": return "Suunto"
         case "garmin": return "Garmin"
+        case "coros": return "COROS"
         default: return provider.capitalized
         }
     }
@@ -515,7 +552,7 @@ struct IntegrationsSection: View {
 
 // MARK: - Sync
 
-/// Strava/Polar/Suunto/Garmin import: /sync pulls new activities from the provider (in chunks, `hasMore`),
+/// Strava/Polar/Suunto/Garmin/COROS import: /sync pulls new activities from the provider (in chunks, `hasMore`),
 /// /process turns them into territory one at a time (`remaining`).
 @MainActor
 enum ProviderSync {
@@ -584,7 +621,7 @@ enum ProviderSync {
 
 // MARK: - API shapes
 
-/// Response of POST /api/{strava|polar|suunto|garmin}/sync and /process.
+/// Response of POST /api/{strava|polar|suunto|garmin|coros}/sync and /process.
 struct ProviderSyncResponse: Decodable {
     let imported: Int?
     let processed: Int?
@@ -713,6 +750,29 @@ struct GarminConnection: Decodable {
     }
 }
 
+/// GET /api/coros/status/:userId
+struct CorosConnection: Decodable {
+    /// The server has the COROS API keys; when false the row is hidden.
+    let configured: Bool
+    let connected: Bool
+    let lastSyncAt: String?
+    let lastWebhookAt: String?
+    let failedActivities: Int
+
+    enum CodingKeys: String, CodingKey {
+        case configured, connected, lastSyncAt, lastWebhookAt, failedActivities
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        configured = c.bool(.configured) ?? false
+        connected = c.bool(.connected) ?? false
+        lastSyncAt = c.string(.lastSyncAt)
+        lastWebhookAt = c.string(.lastWebhookAt)
+        failedActivities = c.int(.failedActivities) ?? 0
+    }
+}
+
 /// GET /api/suunto/status/:userId
 struct SuuntoConnection: Decodable {
     /// The server has the Suunto API keys; when false the row is hidden.
@@ -740,10 +800,10 @@ struct SuuntoConnection: Decodable {
     }
 }
 
-/// A row of GET /api/{strava|polar|suunto|garmin}/activities/:userId.
+/// A row of GET /api/{strava|polar|suunto|garmin|coros}/activities/:userId.
 struct ProviderActivity: Decodable, Identifiable, Hashable {
     let id: String
-    /// Strava activity id / Polar exercise id / Suunto workout key / Garmin summary id.
+    /// Strava activity id / Polar exercise id / Suunto workout key / Garmin summary id / COROS labelId.
     let externalId: String?
     let name: String
     let activityType: String?
@@ -778,13 +838,14 @@ struct ProviderActivity: Decodable, Identifiable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, stravaActivityId, polarExerciseId, workoutKey, summaryId, name, activityType, distance, duration, startDate, processed, skipReason, routeId
+        case id, stravaActivityId, polarExerciseId, workoutKey, summaryId, corosWorkoutId, name, activityType, distance, duration, startDate, processed, skipReason, routeId
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = c.string(.id) ?? UUID().uuidString
         externalId = c.string(.stravaActivityId) ?? c.string(.polarExerciseId) ?? c.string(.workoutKey) ?? c.string(.summaryId)
+            ?? c.string(.corosWorkoutId)
         let rawName = c.string(.name)?.trimmingCharacters(in: .whitespaces) ?? ""
         name = rawName.isEmpty ? "Actividad" : rawName
         activityType = c.string(.activityType)
@@ -809,7 +870,7 @@ struct ProviderActivity: Decodable, Identifiable, Hashable {
 
 // MARK: - Imported activities
 
-/// Activities imported from Strava, Polar, Suunto or Garmin, with their status, the reason when they gave no territory,
+/// Activities imported from Strava, Polar, Suunto, Garmin or COROS, with their status, the reason when they gave no territory,
 /// and retry / delete.
 struct ImportedActivitiesView: View {
     let provider: String
@@ -953,11 +1014,11 @@ struct ImportedActivitiesView: View {
         }
     }
 
-    /// Polar, Suunto and Garmin imports can be deleted here (Strava activities are managed in Strava).
+    /// Polar, Suunto, Garmin and COROS imports can be deleted here (Strava activities are managed in Strava).
     private func canDelete(_ activity: ProviderActivity) -> Bool {
         switch provider {
         case "polar": return true
-        case "suunto", "garmin": return activity.status == .imported
+        case "suunto", "garmin", "coros": return activity.status == .imported
         default: return false
         }
     }
@@ -1035,7 +1096,7 @@ struct ImportedActivitiesView: View {
             defer { busyIds.remove(activity.id) }
             do {
                 try await APIClient.shared.send("DELETE", "/api/\(provider)/activities/\(userId)/\(activity.id)")
-                if provider == "suunto" || provider == "garmin" {
+                if provider == "suunto" || provider == "garmin" || provider == "coros" {
                     // The workout stays in the list as skipped ("Reintentar" brings it back)
                     await load()
                 } else {
@@ -1052,10 +1113,10 @@ struct ImportedActivitiesView: View {
 // MARK: - Brand marks
 
 /// Third-party service marks for the connected-services rows: the brand's own colour tile with a
-/// white glyph (Strava peaks, Polar, Suunto, Garmin), or Apple Health's white tile with the pink heart.
+/// white glyph (Strava peaks, Polar, Suunto, Garmin, COROS), or Apple Health's white tile with the pink heart.
 struct IntegrationBrandMark: View {
     enum Brand {
-        case strava, polar, suunto, garmin, appleHealth
+        case strava, polar, suunto, garmin, coros, appleHealth
     }
 
     let brand: Brand
@@ -1065,6 +1126,7 @@ struct IntegrationBrandMark: View {
     static let polarRed = Color(hex: "#D10027")
     static let suuntoBlack = Color(hex: "#16181A")
     static let garminBlue = Color(hex: "#007CC3")
+    static let corosRed = Color(hex: "#E2231A")
     static let healthPink = Color(hex: "#FF2D55")
 
     private var shape: RoundedRectangle {
@@ -1097,6 +1159,11 @@ struct IntegrationBrandMark: View {
                 shape.fill(Self.garminBlue)
                 Text("G")
                     .font(.system(size: size * 0.54, weight: .bold))
+                    .foregroundStyle(Color.white)
+            case .coros:
+                shape.fill(Self.corosRed)
+                Text("C")
+                    .font(.system(size: size * 0.54, weight: .heavy))
                     .foregroundStyle(Color.white)
             case .appleHealth:
                 shape.fill(Color.white)

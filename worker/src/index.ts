@@ -4,6 +4,7 @@ import { logger } from 'hono/logger';
 import { registerRoutes } from './routes';
 import { registerSuuntoRoutes } from './suunto';
 import { registerGarminRoutes } from './garmin';
+import { registerCorosRoutes } from './coros';
 import type { AppEnv } from './auth';
 import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 import { configurePush } from './pushHelper';
@@ -32,6 +33,11 @@ export interface Env {
   GARMIN_CLIENT_ID?: string;
   GARMIN_CLIENT_SECRET?: string;
   GARMIN_WEBHOOK_SECRET?: string;
+  // COROS Partner API: application ID / key; optional ?key= for the push URL; optional API host (opentest.coros.com)
+  COROS_CLIENT_ID?: string;
+  COROS_CLIENT_SECRET?: string;
+  COROS_WEBHOOK_SECRET?: string;
+  COROS_API_BASE?: string;
   // Public base URL of this Worker (invite links, legal pages, email buttons)
   WORKER_URL?: string;
   FRONTEND_URL?: string;
@@ -93,6 +99,7 @@ app.use('*', cors({
 registerRoutes(app);
 registerSuuntoRoutes(app);
 registerGarminRoutes(app);
+registerCorosRoutes(app);
 registerPublicPages(app);
 
 app.get('/', (c) => {

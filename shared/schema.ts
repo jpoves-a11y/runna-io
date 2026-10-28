@@ -155,34 +155,43 @@ export const stravaActivities = sqliteTable("strava_activities", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-// COROS Integration Tables
+// COROS Integration Tables (COROS Partner API: OAuth2 + workout summary push + FIT download)
 export const corosAccounts = sqliteTable("coros_accounts", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
   userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  // COROS openId (token answer): identifies the account in push notifications and list calls
   corosOpenId: text("coros_open_id").notNull().unique(),
   accessToken: text("access_token").notNull(),
   refreshToken: text("refresh_token"),
-  expiresAt: text("expires_at"),
+  expiresAt: text("expires_at"), // ISO timestamp of the access token expiry (30 days, extended on refresh)
   lastSyncAt: text("last_sync_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  connectedAt: text("connected_at"),
+  lastWebhookAt: text("last_webhook_at"),
 });
 
 export const corosActivities = sqliteTable("coros_activities", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
-  corosWorkoutId: text("coros_workout_id").notNull().unique(),
+  corosWorkoutId: text("coros_workout_id").notNull().unique(), // COROS labelId
   userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
-  territoryId: text("territory_id").references(() => territories.id, { onDelete: 'set null' }),
+  territoryId: text("territory_id").references(() => territories.id, { onDelete: 'set null' }), // unused (territory comes from the route)
   name: text("name").notNull(),
-  activityType: text("activity_type").notNull(), // Run, Trail Run, etc.
+  activityType: text("activity_type").notNull(), // from the FIT sport: running, trail_running, walking, hiking...
   distance: real("distance").notNull(), // meters
   duration: integer("duration").notNull(), // seconds
   startDate: text("start_date").notNull(),
-  summaryPolyline: text("summary_polyline"), // GPS track
-  processed: integer("processed").notNull().default(0),
+  summaryPolyline: text("summary_polyline"), // encoded GPS track from the FIT file
+  processed: integer("processed", { mode: 'boolean' }).notNull().default(false),
   processedAt: text("processed_at"),
   skipReason: text("skip_reason"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // pending (waiting for /process) | imported (route created) | skipped | failed (FIT not downloaded)
+  status: text("status").notNull().default('pending'),
+  corosMode: integer("coros_mode"), // COROS sport mode / subMode, e.g. 8/1 outdoor run
+  corosSubMode: integer("coros_sub_mode"),
+  deviceName: text("device_name"),
+  fitUrl: text("fit_url"),
 });
 
 // Suunto Integration Tables (Suunto Cloud API: OAuth2 + workout webhook + FIT export)

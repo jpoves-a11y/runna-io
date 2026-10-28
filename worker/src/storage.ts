@@ -223,6 +223,7 @@ export class WorkerStorage {
     await this.db.delete(stravaAccounts).where(eq(stravaAccounts.userId, userId));
     await this.deleteSuuntoDataByUserId(userId);
     await this.deleteGarminDataByUserId(userId);
+    await this.deleteCorosDataByUserId(userId);
     await this.db.delete(friendRequests).where(eq(friendRequests.senderId, userId));
     await this.db.delete(friendRequests).where(eq(friendRequests.recipientId, userId));
     await this.db.delete(friendInvites).where(eq(friendInvites.userId, userId));
@@ -2360,109 +2361,196 @@ export class WorkerStorage {
   }
 
   // ==================== COROS ====================
+  // Tables are created at runtime on databases that predate them (see migrations/0014_coros.sql).
+  // Older databases may have the first version of these tables: the newer columns are added one by one.
+
+  private static corosTables: Promise<void> | null = null;
+
+  ensureCorosTables(): Promise<void> {
+    if (!WorkerStorage.corosTables) {
+      WorkerStorage.corosTables = this.createCorosTables().catch((error) => {
+        WorkerStorage.corosTables = null; // retry on the next call
+        throw error;
+      });
+    }
+    return WorkerStorage.corosTables;
+  }
+
+  private async createCorosTables(): Promise<void> {
+    await this.db.batch([
+      this.db.run(sql`CREATE TABLE IF NOT EXISTS coros_accounts (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        coros_open_id TEXT NOT NULL UNIQUE,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        expires_at TEXT,
+        last_sync_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        connected_at TEXT,
+        last_webhook_at TEXT
+      )`),
+      this.db.run(sql`CREATE TABLE IF NOT EXISTS coros_activities (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        coros_workout_id TEXT NOT NULL UNIQUE,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        route_id TEXT REFERENCES routes(id) ON DELETE SET NULL,
+        territory_id TEXT REFERENCES territories(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        activity_type TEXT NOT NULL,
+        distance REAL NOT NULL,
+        duration INTEGER NOT NULL,
+        start_date TEXT NOT NULL,
+        summary_polyline TEXT,
+        processed INTEGER NOT NULL DEFAULT 0,
+        processed_at TEXT,
+        skip_reason TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL DEFAULT 'pending',
+        coros_mode INTEGER,
+        coros_sub_mode INTEGER,
+        device_name TEXT,
+        fit_url TEXT
+      )`),
+    ]);
+    const added = [
+      sql`ALTER TABLE coros_accounts ADD COLUMN connected_at TEXT`,
+      sql`ALTER TABLE coros_accounts ADD COLUMN last_webhook_at TEXT`,
+      sql`ALTER TABLE coros_activities ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'`,
+      sql`ALTER TABLE coros_activities ADD COLUMN coros_mode INTEGER`,
+      sql`ALTER TABLE coros_activities ADD COLUMN coros_sub_mode INTEGER`,
+      sql`ALTER TABLE coros_activities ADD COLUMN device_name TEXT`,
+      sql`ALTER TABLE coros_activities ADD COLUMN fit_url TEXT`,
+    ];
+    for (const statement of added) {
+      try {
+        await this.db.run(statement);
+      } catch (_) { /* column already exists */ }
+    }
+    await this.db.batch([
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_coros_activities_user_start ON coros_activities(user_id, start_date)`),
+      this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_coros_activities_route ON coros_activities(route_id)`),
+    ]);
+  }
 
   async getCorosAccountByUserId(userId: string): Promise<CorosAccount | undefined> {
-    const [account] = await this.db.select().from(corosAccounts).where(eq(corosAccounts.userId,userId));
+    await this.ensureCorosTables();
+    const [account] = await this.db.select().from(corosAccounts).where(eq(corosAccounts.userId, userId));
     return account || undefined;
   }
 
   async getCorosAccountByOpenId(openId: string): Promise<CorosAccount | undefined> {
+    await this.ensureCorosTables();
     const [account] = await this.db.select().from(corosAccounts).where(eq(corosAccounts.corosOpenId, openId));
     return account || undefined;
   }
 
   async createCorosAccount(data: InsertCorosAccount): Promise<CorosAccount> {
+    await this.ensureCorosTables();
     const [account] = await this.db.insert(corosAccounts).values(data).returning();
     return account;
   }
 
-  async updateCorosAccount(userId: string, data: Partial<InsertCorosAccount>): Promise<CorosAccount> {
-    const [account] = await this.db
-      .update(corosAccounts)
-      .set(data)
-      .where(eq(corosAccounts.userId, userId))
-      .returning();
-    return account;
+  async updateCorosAccount(userId: string, data: Partial<InsertCorosAccount>): Promise<CorosAccount | undefined> {
+    await this.ensureCorosTables();
+    const [account] = await this.db.update(corosAccounts).set(data).where(eq(corosAccounts.userId, userId)).returning();
+    return account || undefined;
   }
 
+  /** Accounts not polled since `before` (never-polled first), for the hourly fallback sync. */
+  async getCorosAccountsToPoll(before: string, limit: number): Promise<CorosAccount[]> {
+    await this.ensureCorosTables();
+    return await this.db
+      .select()
+      .from(corosAccounts)
+      .where(sql`${corosAccounts.lastSyncAt} IS NULL OR ${corosAccounts.lastSyncAt} < ${before}`)
+      .orderBy(sql`${corosAccounts.lastSyncAt} IS NOT NULL`, corosAccounts.lastSyncAt)
+      .limit(limit);
+  }
+
+  /** Disconnect: removes the account and its import records (routes and territory stay). */
   async deleteCorosAccount(userId: string): Promise<void> {
+    await this.deleteCorosDataByUserId(userId);
+  }
+
+  async deleteCorosDataByUserId(userId: string): Promise<void> {
+    await this.ensureCorosTables();
+    await this.db.delete(corosActivities).where(eq(corosActivities.userId, userId));
     await this.db.delete(corosAccounts).where(eq(corosAccounts.userId, userId));
   }
 
   async getCorosActivityByWorkoutId(workoutId: string): Promise<CorosActivity | undefined> {
+    await this.ensureCorosTables();
     const [activity] = await this.db.select().from(corosActivities).where(eq(corosActivities.corosWorkoutId, workoutId));
     return activity || undefined;
   }
 
-  async createCorosActivity(data: InsertCorosActivity): Promise<CorosActivity> {
-    const [activity] = await this.db.insert(corosActivities).values(data).returning();
-    return activity;
-  }
-
-  async updateCorosActivity(id: string, data: Partial<InsertCorosActivity>): Promise<CorosActivity> {
-    const [activity] = await this.db
-      .update(corosActivities)
-      .set(data)
-      .where(eq(corosActivities.id, id))
-      .returning();
-    return activity;
-  }
-
-  async getUnprocessedCorosActivities(userId: string): Promise<CorosActivity[]> {
-    return await this.db
-      .select()
-      .from(corosActivities)
-      .where(sql`${corosActivities.userId} = ${userId} AND ${corosActivities.processed} = 0 AND ${corosActivities.skipReason} IS NULL`)
-      .orderBy(desc(corosActivities.startDate));
-  }
-
-  async getCorosActivitiesByUserId(userId: string): Promise<CorosActivity[]> {
-    return await this.db
-      .select()
-      .from(corosActivities)
-      .where(eq(corosActivities.userId, userId))
-      .orderBy(desc(corosActivities.startDate));
-  }
-
   async getCorosActivityById(id: string): Promise<CorosActivity | undefined> {
+    await this.ensureCorosTables();
     const [activity] = await this.db.select().from(corosActivities).where(eq(corosActivities.id, id));
     return activity || undefined;
   }
 
-  async deleteCorosActivity(id: string): Promise<void> {
-    await this.db.delete(corosActivities).where(eq(corosActivities.id, id));
-  }
-
-  async markCorosActivityProcessed(id: string, routeId: string | null, territoryId: string | null, skipReason: string | null): Promise<CorosActivity> {
-    const [activity] = await this.db
-      .update(corosActivities)
-      .set({
-        processed: true,
-        processedAt: new Date().toISOString(),
-        routeId,
-        territoryId,
-        skipReason,
-      })
-      .where(eq(corosActivities.id, id))
-      .returning();
+  async createCorosActivity(data: InsertCorosActivity): Promise<CorosActivity> {
+    await this.ensureCorosTables();
+    const [activity] = await this.db.insert(corosActivities).values(data).returning();
     return activity;
   }
 
-  async getCorosActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {
-    const [aggregate] = await this.db
+  async updateCorosActivity(id: string, data: Partial<InsertCorosActivity>): Promise<CorosActivity | undefined> {
+    await this.ensureCorosTables();
+    const [activity] = await this.db.update(corosActivities).set(data).where(eq(corosActivities.id, id)).returning();
+    return activity || undefined;
+  }
+
+  async deleteCorosActivityById(id: string): Promise<void> {
+    await this.ensureCorosTables();
+    await this.db.delete(corosActivities).where(eq(corosActivities.id, id));
+  }
+
+  /**
+   * The user deleted the route of an imported workout: keep the record as skipped so the next push / poll
+   * doesn't import it again (the app's "Reintentar" brings it back).
+   */
+  async markCorosActivityDeletedByRouteId(routeId: string): Promise<void> {
+    await this.ensureCorosTables();
+    await this.db
+      .update(corosActivities)
+      .set({ routeId: null, status: 'skipped', processed: true, processedAt: new Date().toISOString(), skipReason: 'deleted_by_user' })
+      .where(eq(corosActivities.routeId, routeId));
+  }
+
+  async getCorosActivitiesByUserId(userId: string, limit = 200): Promise<CorosActivity[]> {
+    await this.ensureCorosTables();
+    return await this.db
+      .select()
+      .from(corosActivities)
+      .where(eq(corosActivities.userId, userId))
+      .orderBy(desc(corosActivities.startDate))
+      .limit(limit);
+  }
+
+  /** Imported workouts with a GPS track still waiting to become a route (oldest first). */
+  async getUnprocessedCorosActivities(userId: string): Promise<CorosActivity[]> {
+    await this.ensureCorosTables();
+    return await this.db
+      .select()
+      .from(corosActivities)
+      .where(and(eq(corosActivities.userId, userId), eq(corosActivities.processed, false), isNull(corosActivities.skipReason)))
+      .orderBy(corosActivities.startDate);
+  }
+
+  async getCorosActivityStats(userId: string): Promise<{ total: number; pending: number; failed: number }> {
+    await this.ensureCorosTables();
+    const [row] = await this.db
       .select({
         total: sql<number>`count(*)`,
-        unprocessed: sql<number>`sum(case when ${corosActivities.processed} = false then 1 else 0 end)` as any,
-        lastStartDate: sql<Date | null>`max(${corosActivities.startDate})`,
+        pending: sql<number>`sum(case when ${corosActivities.processed} = 0 and ${corosActivities.skipReason} is null then 1 else 0 end)`,
+        failed: sql<number>`sum(case when ${corosActivities.routeId} is null and (${corosActivities.processed} = 1 or ${corosActivities.skipReason} is not null) then 1 else 0 end)`,
       })
       .from(corosActivities)
       .where(eq(corosActivities.userId, userId));
-
-    return {
-      total: Number(aggregate?.total || 0),
-      unprocessed: Number(aggregate?.unprocessed || 0),
-      lastStartDate: aggregate?.lastStartDate || null,
-    };
+    return { total: Number(row?.total ?? 0), pending: Number(row?.pending ?? 0), failed: Number(row?.failed ?? 0) };
   }
 
   // New friendship methods for friend-only competition

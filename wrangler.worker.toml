@@ -57,6 +57,13 @@ RESEND_FROM = "onboarding@resend.dev"
 # Endpoint Configuration (apis.garmin.com/tools/endpoints): <worker>/api/garmin/webhook?key=<secret>
 # for Activity Details, Deregistrations and User Permissions Change. No cron: Garmin pushes every activity.
 #
+# ===== COROS (Partner API: OAuth2 + workout summary push + FIT download) =====
+# wrangler secret put COROS_CLIENT_ID -c wrangler.worker.toml       # application ID from COROS
+# wrangler secret put COROS_CLIENT_SECRET -c wrangler.worker.toml   # application key from COROS
+# wrangler secret put COROS_WEBHOOK_SECRET -c wrangler.worker.toml  # optional; push URL then needs ?key=<secret>
+# Give COROS: redirect URI <worker>/api/coros/callback and push URL <worker>/api/coros/webhook?key=<secret>.
+# COROS_API_BASE (optional var) = https://opentest.coros.com while COROS tests the integration.
+#
 # ===== Scheduled tasks =====
 # A single Cloudflare Cron Trigger (every 5 minutes) runs every task in-process, without HTTP
 # (see worker/src/cron.ts, times in Europe/Madrid):
@@ -65,6 +72,7 @@ RESEND_FROM = "onboarding@resend.dev"
 #   - inactivity-check: 10:00 and 19:00
 #   - weekly-summary: Sundays 20:00
 #   - suunto-auto-sync: minute 30 of every hour (fallback poll; the Suunto webhook imports at once)
+#   - coros-auto-sync: minute 45 of every hour (fallback poll; the COROS push imports at once)
 # Upstash/QStash schedules are no longer needed (delete them). The /api/tasks/* endpoints still
 # accept "Authorization: Bearer <UPSTASH_CRON_SECRET>" or a QStash signature for manual runs.
 #
