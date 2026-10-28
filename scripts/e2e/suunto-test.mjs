@@ -15,6 +15,7 @@ import { generateKeyPairSync, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { pendingSignup } from './signup.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const databaseUrl = process.env.E2E_DATABASE_URL || `file:${path.join(here, '.build', 'suunto.db')}`;
@@ -246,9 +247,7 @@ const one = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args
 const all = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows;
 
 async function register(username) {
-  const r = await call('POST', '/api/users', { body: { username, name: username, email: `${username}@e2e.test`, password: 'e2e-password', color: '#377EB8', avatar: null } });
-  const { verification_code: code } = await one('select verification_code from users where id = ?', [r.data.id]);
-  await call('POST', '/api/auth/verify-email', { token: r.data.token, body: { code } });
+  const r = await call('POST', '/api/auth/register/confirm', { body: await pendingSignup(db, { username }) });
   return { id: r.data.id, token: r.data.token };
 }
 

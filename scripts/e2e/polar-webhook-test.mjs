@@ -11,6 +11,7 @@ import { createClient } from '@libsql/client';
 import { generateKeyPairSync, createHmac } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { pendingSignup } from './signup.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const databaseUrl = process.env.E2E_DATABASE_URL || `file:${path.join(here, '.build', 'polar.db')}`;
@@ -145,9 +146,7 @@ async function call(method, route, { token, body, raw, headers = {}, useEnv = en
 const one = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows[0];
 
 async function register(username) {
-  const r = await call('POST', '/api/users', { body: { username, name: username, email: `${username}@e2e.test`, password: 'e2e-password', color: '#377EB8', avatar: null } });
-  const { verification_code: code } = await one('select verification_code from users where id = ?', [r.data.id]);
-  await call('POST', '/api/auth/verify-email', { token: r.data.token, body: { code } });
+  const r = await call('POST', '/api/auth/register/confirm', { body: await pendingSignup(db, { username }) });
   await flush();
   return { id: r.data.id, token: r.data.token };
 }

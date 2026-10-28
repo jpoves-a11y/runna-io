@@ -4,6 +4,7 @@
 import { createClient } from '@libsql/client';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { pendingSignup } from './signup.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const api = process.env.E2E_API || 'http://127.0.0.1:8787';
@@ -24,11 +25,7 @@ async function call(method, route, { token, body } = {}) {
 }
 
 async function register(username, name, color) {
-  const user = await call('POST', '/api/users', {
-    body: { username, name, email: `${username}@e2e.test`, password: 'e2e-password', color, avatar: null },
-  });
-  const code = (await db.execute({ sql: 'select verification_code from users where id = ?', args: [user.id] })).rows[0].verification_code;
-  await call('POST', '/api/auth/verify-email', { token: user.token, body: { code } });
+  const user = await call('POST', '/api/auth/register/confirm', { body: await pendingSignup(db, { username, name, color }) });
   return { id: user.id, token: user.token, name };
 }
 

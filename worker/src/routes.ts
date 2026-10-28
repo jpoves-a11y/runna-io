@@ -3,7 +3,7 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
-import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES } from './email';
+import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES, SIGNUP_CODE_MINUTES } from './email';
 import { LIMITS, clientIp, lockedForSeconds, recordAttempt, clearAttempts, tooManyAttempts } from './rateLimit';
 import { sql } from 'drizzle-orm';
 import { apnsSecretProblems } from './pushHelper';
@@ -75,6 +75,47 @@ function randomSixDigitCode(): string {
 async function hashResetCode(userId: string, code: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`password-reset:${userId}:${code}`));
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Wrong codes allowed for one sign-up email before it has to be requested again */
+const MAX_SIGNUP_CODE_ATTEMPTS = 5;
+/** Sign-ups are forgotten this long after their code expired (they can resend the code until then) */
+const PENDING_SIGNUP_KEEP_MS = 24 * 60 * 60 * 1000;
+
+async function hashSignupCode(email: string, code: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`signup:${email}:${code}`));
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function normalizeEmail(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+/** Checks the sign-up form (same rules as the iOS app). Returns the cleaned values or the error to show. */
+function parseSignupForm(body: any): { error: string } | { name: string; username: string; email: string; password: string; color: string } {
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  const email = normalizeEmail(body?.email);
+  const password = body?.password;
+  if (!name) return { error: 'Escribe tu nombre.' };
+  if (name.length > 60) return { error: 'El nombre es demasiado largo.' };
+  if (username.length < 3) return { error: 'El usuario debe tener al menos 3 caracteres.' };
+  if (username.length > 30) return { error: 'El usuario no puede tener más de 30 caracteres.' };
+  if (/\s/.test(username)) return { error: 'El usuario no puede contener espacios.' };
+  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: 'Escribe un email válido.' };
+  if (typeof password !== 'string' || password.length < 6) return { error: 'La contraseña debe tener al menos 6 caracteres.' };
+  const color = typeof body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color)
+    ? body.color
+    : USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
+  return { name, username, email, password, color };
+}
+
+/** Error to show when the email or username already belongs to an account, or null. */
+async function signupConflict(storage: WorkerStorage, email: string, username: string): Promise<string | null> {
+  const [emailTaken, usernameTaken] = await Promise.all([storage.isEmailTaken(email), storage.isUsernameTaken(username)]);
+  if (emailTaken) return 'Ya hay una cuenta con este email. Inicia sesión o recupera tu contraseña.';
+  if (usernameTaken) return 'Ese nombre de usuario ya está en uso. Elige otro.';
+  return null;
 }
 
 // Small key/value table for values the Worker manages itself (e.g. the Polar webhook signing key).
@@ -1866,56 +1907,174 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  app.post('/api/users', async (c) => {
+  // Old app versions created the account here before the email was confirmed: the account is now
+  // only created once the code emailed to the address is confirmed (/api/auth/register/*)
+  app.post('/api/users', (c) =>
+    c.json({ error: 'Actualiza la app para crear tu cuenta: ahora tienes que confirmar tu email con un código.' }, 426)
+  );
+
+  // Sign-up, step 1: checks the form, that the email and username are free, and emails a 6-digit
+  // code to the address. Nothing is created until the code is confirmed.
+  app.post('/api/auth/register/start', async (c) => {
     try {
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const body = await c.req.json();
-      const { password, email, ...userData } = body;
-      
-      if (!email || !email.includes('@')) {
-        return c.json({ error: "Email válido requerido" }, 400);
+      const storage = new WorkerStorage(getDb(c.env));
+      const form = parseSignupForm(await c.req.json().catch(() => ({})));
+      if ('error' in form) return c.json({ error: form.error }, 400);
+
+      const ip = clientIp(c);
+      const ipKey = ip ? `signup:ip:${ip}` : null;
+      const emailKey = `signup:email:${form.email}`;
+      for (const key of [ipKey, emailKey]) {
+        if (!key) continue;
+        const wait = await lockedForSeconds(storage, key);
+        if (wait > 0) return tooManyAttempts(c, wait);
       }
-      
-      if (!password || password.length < 4) {
-        return c.json({ error: "La contraseña debe tener al menos 4 caracteres" }, 400);
-      }
 
-      // Generar código de verificación de 6 dígitos
-      const verificationCode = randomSixDigitCode();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutos
+      // Counted before the duplicate check, so the IP limit also slows down probing which emails have an account
+      if (ipKey) await recordAttempt(storage, ipKey, LIMITS.signupIp);
+      const conflict = await signupConflict(storage, form.email, form.username);
+      if (conflict) return c.json({ error: conflict }, 409);
 
-      const hashedPassword = await hashPassword(password);
-      const validatedData = insertUserSchema.parse({
-        ...userData,
-        email,
-        password: hashedPassword,
+      await Promise.all([
+        recordAttempt(storage, emailKey, LIMITS.signupEmail),
+        storage.deleteExpiredPendingSignups(Date.now() - PENDING_SIGNUP_KEEP_MS),
+      ]);
+
+      const code = randomSixDigitCode();
+      await storage.savePendingSignup({
+        email: form.email,
+        username: form.username,
+        name: form.name,
+        passwordHash: await hashPassword(form.password),
+        color: form.color,
+        codeHash: await hashSignupCode(form.email, code),
+        expiresAt: Date.now() + SIGNUP_CODE_MINUTES * 60 * 1000,
       });
-      const user = await storage.createUser({
-        ...validatedData,
-        emailVerified: false,
-        verificationCode,
-        verificationCodeExpiresAt: expiresAt,
-      });
-      
-      // Create email preferences for new user
-      await storage.createEmailPreferences(user.id);
-
-      // Enviar código de verificación por email
       try {
-        const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
-        await emailService.sendVerificationCode(user.email, user.name, verificationCode);
+        await emailServiceFromEnv(c.env, publicBaseUrl(c)).sendSignupCode(form.email, form.name, code);
       } catch (err) {
-        console.error('[EMAIL] Failed to send verification code:', err);
+        console.error('[EMAIL] Failed to send sign-up code:', err);
+        await storage.deletePendingSignup(form.email);
+        return c.json({ error: 'No hemos podido enviar el email. Comprueba la dirección o inténtalo más tarde.' }, 503);
       }
-      
-      const token = await createSession(storage, user.id);
-      return c.json({ ...toSelfUser(user), token, requiresVerification: true });
+      return c.json({
+        success: true,
+        email: form.email,
+        message: 'Te hemos enviado un código a tu email. Revisa también la carpeta de spam.',
+      });
     } catch (error: any) {
-      return c.json({ error: error.message }, 400);
+      console.error('[AUTH] Sign-up start failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
     }
   });
 
+  // Sign-up: a new code for a sign-up started with /start (the previous code stops working)
+  app.post('/api/auth/register/resend', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const body = await c.req.json().catch(() => ({}));
+      const email = normalizeEmail(body?.email);
+      if (!email) return c.json({ error: 'Falta el email' }, 400);
+
+      const emailKey = `signup:email:${email}`;
+      const wait = await lockedForSeconds(storage, emailKey);
+      if (wait > 0) return tooManyAttempts(c, wait);
+
+      const pending = await storage.getPendingSignup(email);
+      if (!pending) return c.json({ error: 'El registro ha caducado. Vuelve a crear la cuenta.' }, 404);
+      await recordAttempt(storage, emailKey, LIMITS.signupEmail);
+
+      const code = randomSixDigitCode();
+      await storage.renewPendingSignupCode(email, await hashSignupCode(email, code), Date.now() + SIGNUP_CODE_MINUTES * 60 * 1000);
+      try {
+        await emailServiceFromEnv(c.env, publicBaseUrl(c)).sendSignupCode(email, pending.name, code);
+      } catch (err) {
+        console.error('[EMAIL] Failed to resend sign-up code:', err);
+        return c.json({ error: 'No se pudo enviar el código. Inténtalo más tarde.' }, 503);
+      }
+      return c.json({ success: true, message: 'Código reenviado' });
+    } catch (error: any) {
+      console.error('[AUTH] Sign-up resend failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // Sign-up, step 2: the code from the email creates the account (email already verified) and
+  // signs the user in (same response as /api/auth/login)
+  app.post('/api/auth/register/confirm', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const body = await c.req.json().catch(() => ({}));
+      const email = normalizeEmail(body?.email);
+      const code = typeof body?.code === 'string' ? body.code.trim() : '';
+      if (!email || !code) return c.json({ error: 'Faltan el email o el código' }, 400);
+
+      const ip = clientIp(c);
+      const ipKey = ip ? `signup-confirm:ip:${ip}` : null;
+      if (ipKey) {
+        const wait = await lockedForSeconds(storage, ipKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
+      }
+
+      const pending = await storage.getPendingSignup(email);
+      if (!pending || pending.expiresAt <= Date.now() || pending.attempts >= MAX_SIGNUP_CODE_ATTEMPTS) {
+        if (ipKey) await recordAttempt(storage, ipKey, LIMITS.loginIp);
+        return c.json({ error: pending ? 'El código ha caducado. Pide uno nuevo.' : 'El registro ha caducado. Vuelve a crear la cuenta.' }, 400);
+      }
+
+      if (!timingSafeEqualText(await hashSignupCode(email, code), pending.codeHash)) {
+        await storage.incrementPendingSignupAttempts(email);
+        if (ipKey) await recordAttempt(storage, ipKey, LIMITS.loginIp);
+        const left = MAX_SIGNUP_CODE_ATTEMPTS - pending.attempts - 1;
+        if (left <= 0) return c.json({ error: 'Código incorrecto. Pide uno nuevo.' }, 400);
+        return c.json({ error: `Código incorrecto. Te ${left === 1 ? 'queda 1 intento' : `quedan ${left} intentos`}.` }, 400);
+      }
+
+      // Someone may have taken the email or username while this code was on its way
+      const conflict = await signupConflict(storage, email, pending.username);
+      if (conflict) {
+        await storage.deletePendingSignup(email);
+        return c.json({ error: conflict }, 409);
+      }
+
+      let user;
+      try {
+        user = await storage.createUser(insertUserSchema.parse({
+          username: pending.username,
+          email,
+          name: pending.name,
+          password: pending.passwordHash,
+          color: pending.color,
+          emailVerified: true,
+        }));
+      } catch (err) {
+        // UNIQUE constraint: another sign-up with the same username or email won the race
+        console.error('[AUTH] Sign-up create failed:', err);
+        return c.json({ error: 'Ese email o nombre de usuario ya está en uso. Vuelve a crear la cuenta.' }, 409);
+      }
+      await Promise.all([
+        storage.deletePendingSignup(email),
+        storage.createEmailPreferences(user.id),
+        clearAttempts(storage, `signup:email:${email}`),
+      ]);
+
+      try {
+        // sendWelcomeEmail never rejects; the response doesn't wait for it
+        const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(user.email, user.name);
+        try { c.executionCtx.waitUntil(welcome); } catch { /* no execution context: it runs on its own */ }
+      } catch (err) {
+        console.error('[EMAIL] Failed to send welcome email:', err);
+      }
+
+      const token = await createSession(storage, user.id);
+      return c.json({ ...toSelfUser(user), token });
+    } catch (error: any) {
+      console.error('[AUTH] Sign-up confirm failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // Accounts created by old app versions before their email was confirmed: verify it with a code
   // Endpoint para verificar código de email
   app.post('/api/auth/verify-email', requireAuth, async (c) => {
     try {

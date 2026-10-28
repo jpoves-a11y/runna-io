@@ -280,6 +280,17 @@ export class WorkerStorage {
       expires_at INTEGER NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0
     )`);
+    // migrations/0012_pending_signups.sql
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS pending_signups (
+      email TEXT PRIMARY KEY,
+      username TEXT NOT NULL,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      color TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0
+    )`);
   }
 
   // ===== Login attempt limits (see worker/src/rateLimit.ts) =====
@@ -330,6 +341,60 @@ export class WorkerStorage {
   async deletePasswordReset(userId: string): Promise<void> {
     await this.ensureSchemaUpgrades();
     await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
+  }
+
+  // ===== Sign-ups waiting for their email code =====
+
+  /** Whether an account already uses this email, whatever its letter case. */
+  async isEmailTaken(email: string): Promise<boolean> {
+    const result = await this.db.all(sql`SELECT 1 FROM users WHERE lower(email) = ${email.toLowerCase()} LIMIT 1`);
+    return result.length > 0;
+  }
+
+  /** Whether an account already uses this username, whatever its letter case. */
+  async isUsernameTaken(username: string): Promise<boolean> {
+    const result = await this.db.all(sql`SELECT 1 FROM users WHERE lower(username) = ${username.toLowerCase()} LIMIT 1`);
+    return result.length > 0;
+  }
+
+  /** Saves (or replaces) the sign-up waiting for the code sent to `email` (already lowercased). */
+  async savePendingSignup(signup: { email: string; username: string; name: string; passwordHash: string; color: string; codeHash: string; expiresAt: number }): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO pending_signups (email, username, name, password_hash, color, code_hash, expires_at, attempts)
+      VALUES (${signup.email}, ${signup.username}, ${signup.name}, ${signup.passwordHash}, ${signup.color}, ${signup.codeHash}, ${signup.expiresAt}, 0)
+      ON CONFLICT(email) DO UPDATE SET username = excluded.username, name = excluded.name, password_hash = excluded.password_hash,
+        color = excluded.color, code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0`);
+  }
+
+  async getPendingSignup(email: string): Promise<{ email: string; username: string; name: string; passwordHash: string; color: string; codeHash: string; expiresAt: number; attempts: number } | undefined> {
+    await this.ensureSchemaUpgrades();
+    const result = await this.db.all<{ email: string; username: string; name: string; password_hash: string; color: string; code_hash: string; expires_at: number; attempts: number }>(
+      sql`SELECT email, username, name, password_hash, color, code_hash, expires_at, attempts FROM pending_signups WHERE email = ${email}`
+    );
+    const row = result[0];
+    return row
+      ? { email: row.email, username: row.username, name: row.name, passwordHash: row.password_hash, color: row.color, codeHash: row.code_hash, expiresAt: Number(row.expires_at), attempts: Number(row.attempts) }
+      : undefined;
+  }
+
+  /** Gives the pending sign-up a new code, keeping the rest of its data. */
+  async renewPendingSignupCode(email: string, codeHash: string, expiresAt: number): Promise<void> {
+    await this.db.run(sql`UPDATE pending_signups SET code_hash = ${codeHash}, expires_at = ${expiresAt}, attempts = 0 WHERE email = ${email}`);
+  }
+
+  async incrementPendingSignupAttempts(email: string): Promise<void> {
+    await this.db.run(sql`UPDATE pending_signups SET attempts = attempts + 1 WHERE email = ${email}`);
+  }
+
+  async deletePendingSignup(email: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM pending_signups WHERE email = ${email}`);
+  }
+
+  /** Forgets sign-ups whose code expired long ago (they hold a password hash). */
+  async deleteExpiredPendingSignups(olderThan: number): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM pending_signups WHERE expires_at < ${olderThan}`);
   }
 
   // ===== Indexes for the per-user lookups of the app's main screens =====
