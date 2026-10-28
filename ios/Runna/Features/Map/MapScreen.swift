@@ -31,8 +31,6 @@ struct MapScreen: View {
     @State private var selectedTerritory: TerritoryShape?
     @State private var selectedRoute: RunRoute?
     @State private var isLoadingSelectedRoute = false
-    /// 0...1 while the selected run is being drawn.
-    @State private var selectedRouteProgress: Double = 1
     @State private var routeDetail: RunRoute?
     @State private var showLegend = false
 
@@ -114,7 +112,7 @@ struct MapScreen: View {
             guard showsFriendRoutes else { return }
             await model.loadFriendRoutes()
         }
-        .task(id: selectedRoute?.id) { await drawSelectedRoute() }
+
     }
 
     // MARK: - Map
@@ -221,23 +219,33 @@ struct MapScreen: View {
         }
     }
 
-    /// The run that conquered the selected territory, drawn from start to finish.
+    /// The selected territory outlined, and the run that conquered it with its start and finish.
+    /// Drawn as extra overlays so the rest of the map isn't restyled (MapKit would redraw every polygon).
     @MapContentBuilder
     private var selectionContent: some MapContent {
-        if let route = selectedRoute, let territory = selectedTerritory {
-            let coordinates = Self.prefix(route.locations, progress: selectedRouteProgress)
-            if coordinates.count >= 2 {
+        if let territory = selectedTerritory {
+            ForEach(selectedShapes) { shape in
+                MapPolygon(shape.polygon)
+                    .foregroundStyle(Color.clear)
+                    .stroke(Color.white.opacity(0.9), lineWidth: 7)
+                MapPolygon(shape.polygon)
+                    .foregroundStyle(Color.clear)
+                    .stroke(territory.color, lineWidth: 3.5)
+            }
+            if let coordinates = selectedRouteCoordinates {
                 MapPolyline(coordinates: coordinates)
                     .stroke(Color.white.opacity(0.85), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
                 MapPolyline(coordinates: coordinates)
                     .stroke(territory.color, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
-            }
-            if let head = coordinates.last, selectedRouteProgress < 1 {
-                Annotation("", coordinate: head) {
-                    Circle()
-                        .fill(territory.color)
-                        .frame(width: 14, height: 14)
-                        .overlay(Circle().strokeBorder(Color.white, lineWidth: 3))
+                if let start = coordinates.first {
+                    Annotation("", coordinate: start) {
+                        RouteEndDot(isFinish: false, tint: territory.color)
+                    }
+                }
+                if let end = coordinates.last {
+                    Annotation("", coordinate: end) {
+                        RouteEndDot(isFinish: true, tint: territory.color)
+                    }
                 }
             }
         }
@@ -266,11 +274,11 @@ struct MapScreen: View {
         shape.userId == session.userId
     }
 
-    /// Every visible territory with zoom, focus, age and selection applied.
+    /// Every visible territory with zoom, focus and age applied (the selection is drawn on top, see
+    /// `selectionContent`, so tapping doesn't restyle every polygon).
     private var territoryLooks: [TerritoryLook] {
         guard !onlyFortified else { return [] }
         let now = Date()
-        let selectedId = selectedTerritory?.territoryId
         return model.visibleShapes.map { shape in
             let mine = isMine(shape)
             let inFocus: Bool
@@ -279,14 +287,11 @@ struct MapScreen: View {
             case .mine: inFocus = mine
             case .rivals: inFocus = !mine
             }
-            let isSelected = selectedId == shape.territoryId
             var opacity = zoomStyle.fillOpacity(isMine: mine, isShared: shape.isShared) * TerritoryAge.fade(shape.conqueredAt, now: now)
             if !inFocus { opacity *= 0.6 }
-            if selectedId != nil && !isSelected { opacity *= 0.5 }
             var width = zoomStyle.strokeWidth(isMine: mine)
             let isRecent = inFocus && TerritoryAge.isRecent(shape.conqueredAt, now: now)
             if isRecent { width += 0.8 }
-            if isSelected { width += 2 }
             let color = inFocus ? shape.color : shape.mutedColor
             return TerritoryLook(
                 shape: shape,
@@ -294,7 +299,7 @@ struct MapScreen: View {
                 stroke: inFocus ? color : color.opacity(0.8),
                 // Shared (ran together) territories get a dashed outline
                 strokeStyle: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: shape.isShared ? [8, 5] : []),
-                haloWidth: isRecent || isSelected ? width + 7 : nil
+                haloWidth: isRecent ? width + 7 : nil
             )
         }
     }
@@ -325,20 +330,27 @@ struct MapScreen: View {
         showsFriendRoutes ? model.visibleRouteLines + model.visibleFriendRouteLines : model.visibleRouteLines
     }
 
-    private static func prefix(_ coordinates: [CLLocationCoordinate2D], progress: Double) -> [CLLocationCoordinate2D] {
-        guard progress < 1 else { return coordinates }
-        let count = max(2, Int((Double(coordinates.count) * progress).rounded()))
-        return Array(coordinates.prefix(count))
+    /// Every polygon of the selected territory.
+    private var selectedShapes: [TerritoryShape] {
+        guard let id = selectedTerritory?.territoryId else { return [] }
+        return model.shapes.filter { $0.territoryId == id }
+    }
+
+    /// The selected run, thinned out (a long run has thousands of GPS points).
+    private var selectedRouteCoordinates: [CLLocationCoordinate2D]? {
+        guard let route = selectedRoute else { return nil }
+        let coordinates = MapGeometry.simplified(route.locations, maxPoints: 400)
+        return coordinates.count >= 2 ? coordinates : nil
     }
 
     // MARK: - Selection
 
+    // No withAnimation here: it would make MapKit animate every overlay of the map.
     private func select(_ shape: TerritoryShape) {
         Haptics.tap()
-        withAnimation(.snappy) {
-            selectedTerritory = shape
-            selectedRoute = nil
-        }
+        selectedTerritory = shape
+        selectedRoute = nil
+        focusCamera(on: shape, route: nil)
         guard let routeId = shape.routeId else {
             isLoadingSelectedRoute = false
             return
@@ -349,31 +361,25 @@ struct MapScreen: View {
             // Another territory may have been tapped meanwhile
             guard selectedTerritory?.id == shape.id else { return }
             isLoadingSelectedRoute = false
-            withAnimation(.snappy) { selectedRoute = route }
+            selectedRoute = route
+            if route != nil { focusCamera(on: shape, route: route) }
         }
     }
 
     private func clearSelection() {
         guard selectedTerritory != nil else { return }
-        withAnimation(.snappy) {
-            selectedTerritory = nil
-            selectedRoute = nil
-        }
+        selectedTerritory = nil
+        selectedRoute = nil
         isLoadingSelectedRoute = false
     }
 
-    /// Draws the selected run from start to finish in about a second.
-    private func drawSelectedRoute() async {
-        guard selectedRoute != nil else {
-            selectedRouteProgress = 1
-            return
-        }
-        let steps = 24
-        selectedRouteProgress = 0
-        for step in 1...steps {
-            try? await Task.sleep(nanoseconds: 1_100_000_000 / UInt64(steps))
-            if Task.isCancelled { return }
-            selectedRouteProgress = Double(step) / Double(steps)
+    /// Fits the territory (and its run) above the card at the bottom.
+    private func focusCamera(on shape: TerritoryShape, route: RunRoute?) {
+        var points = model.shapes.filter { $0.territoryId == shape.territoryId }.flatMap { $0.rings.first ?? [] }
+        if let route { points += MapGeometry.simplified(route.locations, maxPoints: 400) }
+        guard let rect = MapGeometry.fittingRect(points, bottomShare: 0.42, topShare: 0.22) else { return }
+        withAnimation(.smooth(duration: 0.7)) {
+            camera = .rect(rect)
         }
     }
 
@@ -923,5 +929,18 @@ struct PlayerFilterBar: View {
             .padding(.vertical, 4)
         }
         .scrollClipDisabled()
+    }
+}
+
+/// Start (hollow) / finish (solid) dot of the selected run.
+private struct RouteEndDot: View {
+    let isFinish: Bool
+    let tint: Color
+
+    var body: some View {
+        Circle()
+            .fill(isFinish ? tint : Color.white)
+            .frame(width: 14, height: 14)
+            .overlay(Circle().strokeBorder(isFinish ? Color.white : tint, lineWidth: 3))
     }
 }

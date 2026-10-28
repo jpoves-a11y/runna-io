@@ -157,6 +157,44 @@ enum MapGeometry {
         }
     }
 
+    // MARK: Thinning and camera
+
+    /// At most `maxPoints` points, evenly picked (first and last kept).
+    static func simplified(_ coordinates: [CLLocationCoordinate2D], maxPoints: Int) -> [CLLocationCoordinate2D] {
+        guard coordinates.count > maxPoints, maxPoints >= 2 else { return coordinates }
+        let step = Double(coordinates.count - 1) / Double(maxPoints - 1)
+        return (0..<maxPoints).map { coordinates[min(coordinates.count - 1, Int((Double($0) * step).rounded()))] }
+    }
+
+    /// Map rect showing `points` with a margin, leaving `topShare` / `bottomShare` of the screen height free
+    /// (for the cards drawn over the map).
+    static func fittingRect(_ points: [CLLocationCoordinate2D], bottomShare: Double = 0, topShare: Double = 0) -> MKMapRect? {
+        guard !points.isEmpty else { return nil }
+        var minX = Double.greatestFiniteMagnitude
+        var minY = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude
+        var maxY = -Double.greatestFiniteMagnitude
+        for point in points {
+            let p = MKMapPoint(point)
+            minX = min(minX, p.x)
+            minY = min(minY, p.y)
+            maxX = max(maxX, p.x)
+            maxY = max(maxY, p.y)
+        }
+        // At least ~150 m across, plus 15 % on each side
+        let minimum = MKMapPointsPerMeterAtLatitude(points[0].latitude) * 150
+        var width = max(maxX - minX, minimum)
+        var height = max(maxY - minY, minimum)
+        let centerX = (minX + maxX) / 2
+        width *= 1.3
+        height *= 1.3
+        // Map y grows southwards: the free space at the bottom goes below the content
+        let free = min(max(topShare + bottomShare, 0), 0.8)
+        let totalHeight = height / (1 - free)
+        let top = (minY + maxY) / 2 - height / 2 - totalHeight * topShare
+        return MKMapRect(x: centerX - width / 2, y: top, width: width, height: totalHeight)
+    }
+
     // MARK: Hatching
 
     /// Diagonal (45°) lines clipped to a polygon (outer ring first, then holes), `spacing` metres apart.

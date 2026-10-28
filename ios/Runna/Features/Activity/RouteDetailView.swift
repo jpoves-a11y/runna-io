@@ -312,22 +312,36 @@ private struct RouteDetailMap: View {
     let color: Color
     let territories: [TerritoryShape]
 
+    /// Fits the route and its territory; reset before every replay so it plays centred.
+    @State private var position: MapCameraPosition = .automatic
     /// 0...1 of the line drawn.
     @State private var progress: Double = 1
     @State private var territoryOpacity: Double = 1
     /// Bumped by the button; 0 = no replay yet.
     @State private var replayToken = 0
 
+    /// The route thinned out for the replay (redrawing thousands of GPS points every frame stutters).
+    private var replayLocations: [CLLocationCoordinate2D] {
+        MapGeometry.simplified(locations, maxPoints: 300)
+    }
+
     private var drawnLocations: [CLLocationCoordinate2D] {
         guard progress < 1 else { return locations }
-        let count = max(2, Int((Double(locations.count) * progress).rounded()))
-        return Array(locations.prefix(count))
+        let thinned = replayLocations
+        let count = max(2, Int((Double(thinned.count) * progress).rounded()))
+        return Array(thinned.prefix(count))
+    }
+
+    private var fittedPosition: MapCameraPosition {
+        let points = locations + territories.flatMap { $0.rings.first ?? [] }
+        guard let rect = MapGeometry.fittingRect(points, bottomShare: 0.12) else { return .automatic }
+        return .rect(rect)
     }
 
     private var isReplaying: Bool { progress < 1 || territoryOpacity < 1 }
 
     var body: some View {
-        Map(initialPosition: .automatic) {
+        Map(position: $position) {
             ForEach(territories) { shape in
                 MapPolygon(shape.polygon)
                     .foregroundStyle(color.opacity(0.3 * territoryOpacity))
@@ -373,15 +387,17 @@ private struct RouteDetailMap: View {
             .opacity(isReplaying ? 0.5 : 1)
             .padding(DS.Spacing.m)
         }
+        .onAppear { position = fittedPosition }
         .task(id: replayToken) { await replay() }
     }
 
     private func replay() async {
         guard replayToken > 0 else { return }
         Haptics.tap()
+        withAnimation(.smooth(duration: 0.5)) { position = fittedPosition }
         territoryOpacity = 0
         progress = 0
-        let steps = 60
+        let steps = 45
         for step in 1...steps {
             try? await Task.sleep(nanoseconds: 2_400_000_000 / UInt64(steps))
             if Task.isCancelled {
