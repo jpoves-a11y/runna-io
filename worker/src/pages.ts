@@ -156,8 +156,16 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <li>Los datos de HealthKit <strong>nunca se usan para publicidad</strong> ni se comparten con terceros, salvo el proveedor de alojamiento que guarda las carreras importadas.</li>
 <li>Puedes retirar el permiso cuando quieras en Ajustes del iPhone → Salud → Acceso a datos y dispositivos → Runna.io.</li>
 </ul>
-<h3>2.4. Strava, Polar y Suunto (opcional)</h3>
-<p>Si conectas tu cuenta de Strava, Polar Flow o Suunto, importamos tus actividades de carrera (identificador, distancia, duración, fecha y ruta GPS) y guardamos los tokens de acceso que esos servicios nos dan. De Suunto guardamos además tu nombre de usuario de Suunto, que usamos solo para saber a quién pertenece cada aviso de entrenamiento nuevo que nos envía Suunto. Puedes desconectarlas desde tu perfil.</p>
+<h3>2.4. Strava, Polar, Suunto y Garmin (opcional)</h3>
+<p>Si conectas tu cuenta de Strava, Polar Flow, Suunto o Garmin Connect, importamos tus actividades de carrera (identificador, distancia, duración, fecha y ruta GPS) y guardamos los tokens de acceso que esos servicios nos dan. De Suunto guardamos además tu nombre de usuario de Suunto, que usamos solo para saber a quién pertenece cada aviso de entrenamiento nuevo que nos envía Suunto. De Garmin guardamos tu identificador de usuario de la API de Garmin, que usamos solo para saber a quién pertenece cada actividad que nos envía Garmin. Puedes desconectarlas desde tu perfil o desde Garmin Connect; al desconectar Garmin o borrar tu cuenta avisamos a Garmin para que deje de enviarnos tus datos.</p>
+<h4>Datos de Garmin</h4>
+<ul>
+<li><strong>Qué recibimos y para qué:</strong> solo tus actividades de carrera, caminata y senderismo (tipo, fecha, distancia, duración, modelo de reloj y ruta GPS). Las usamos únicamente para crear tus carreras en Runna.io, calcular tu territorio y rankings y mostrarlas a tus amigos. No recibimos datos de salud (sueño, frecuencia cardiaca diaria, etc.).</li>
+<li><strong>Quién los trata:</strong> solo los proveedores de la sección 5 que alojan el servicio: Cloudflare (servidor), Turso (base de datos) y Apple APNs (el aviso de «carrera registrada», sin la ruta). Ningún otro tercero recibe datos de Garmin.</li>
+<li><strong>No los vendemos</strong> ni los compartimos con terceros para fines propios de ellos.</li>
+<li><strong>Sin inteligencia artificial:</strong> ningún sistema de IA procesa tus datos de Garmin, y no se usan para entrenar, evaluar ni mejorar modelos de IA.</li>
+<li><strong>Tu control:</strong> puedes ver y borrar cada actividad importada en Perfil → Servicios conectados → Garmin → Actividades importadas; pedir una copia (JSON) o la corrección de tus datos escribiendo a <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>; y retirar tu consentimiento desconectando Garmin en la app o quitando Runna.io en Garmin Connect (Ajustes → Aplicaciones conectadas). Al borrar tu cuenta se eliminan todos tus datos de Garmin.</li>
+</ul>
 <h3>2.5. Fotos y cámara</h3>
 <ul>
 <li>Puedes enviar a un amigo una <strong>foto de un solo uso</strong> (para picarle cuando le robas territorio). Usamos la cámara o tu fototeca solo cuando tú eliges hacerlo. La foto se <strong>borra al verla</strong> y, si nadie la ve, a las 24 horas.</li>
@@ -177,7 +185,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <tbody>
 <tr><td>Gestionar tu cuenta</td><td>Ejecución del contrato (art. 6.1.b)</td></tr>
 <tr><td>Grabar carreras y calcular territorios y rankings</td><td>Ejecución del contrato (art. 6.1.b)</td></tr>
-<tr><td>Importar de Apple Health, Strava, Polar o Suunto</td><td>Consentimiento (art. 6.1.a)</td></tr>
+<tr><td>Importar de Apple Health, Strava, Polar, Suunto o Garmin</td><td>Consentimiento (art. 6.1.a)</td></tr>
 <tr><td>Enviar notificaciones push y emails</td><td>Consentimiento (art. 6.1.a)</td></tr>
 <tr><td>Moderar denuncias y evitar abusos</td><td>Interés legítimo (art. 6.1.f)</td></tr>
 </tbody>
@@ -211,6 +219,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <tr><td>Strava</td><td>Importación (opcional)</td><td>EE. UU.</td></tr>
 <tr><td>Polar Flow</td><td>Importación (opcional)</td><td>Finlandia (UE)</td></tr>
 <tr><td>Suunto</td><td>Importación (opcional)</td><td>Finlandia (UE)</td></tr>
+<tr><td>Garmin</td><td>Importación (opcional)</td><td>EE. UU. / UE</td></tr>
 </tbody>
 </table></div>
 <p class="muted">Las transferencias fuera de la UE se amparan en las cláusulas contractuales tipo de la Comisión Europea o en el Marco de Privacidad de Datos UE-EE. UU.</p>
@@ -220,7 +229,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <h2>6. Conservación y borrado de la cuenta</h2>
 <ul>
 <li>Guardamos tus datos mientras tengas la cuenta.</li>
-<li>Puedes borrar la cuenta desde la app: <strong>Perfil → Borrar cuenta</strong>. Se eliminan de inmediato y de forma irreversible tus datos: perfil, carreras, territorios, fotos, comentarios, amistades, tokens de notificaciones y conexiones con Strava, Polar y Suunto.</li>
+<li>Puedes borrar la cuenta desde la app: <strong>Perfil → Borrar cuenta</strong>. Se eliminan de inmediato y de forma irreversible tus datos: perfil, carreras, territorios, fotos, comentarios, amistades, tokens de notificaciones y conexiones con Strava, Polar, Suunto y Garmin.</li>
 </ul>
 </section>
 
@@ -286,7 +295,7 @@ const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
 <h2>2. El servicio</h2>
 <p>Runna.io es una app para iPhone que permite:</p>
 <ul>
-<li>Grabar tus carreras con el GPS del iPhone o importarlas desde Apple Health, Strava, Polar Flow o Suunto.</li>
+<li>Grabar tus carreras con el GPS del iPhone o importarlas desde Apple Health, Strava, Polar Flow, Suunto o Garmin Connect.</li>
 <li>Conquistar territorio virtual en el mapa a partir de tus rutas.</li>
 <li>Robar territorio a tus amigos y competir en rankings y competiciones con tesoros y poderes.</li>
 <li>Seguir a tus amigos en el feed, comentar, reaccionar y enviar fotos de un solo uso.</li>
@@ -338,7 +347,7 @@ const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
 
 <section>
 <h2>7. Servicios de terceros</h2>
-<p>Apple Health, Strava, Polar Flow y Suunto son opcionales y requieren tu permiso. Puedes desconectarlos cuando quieras. No somos responsables de cambios o caídas de esos servicios.</p>
+<p>Apple Health, Strava, Polar Flow, Suunto y Garmin Connect son opcionales y requieren tu permiso. Puedes desconectarlos cuando quieras. No somos responsables de cambios o caídas de esos servicios.</p>
 </section>
 
 <section>
@@ -363,7 +372,7 @@ const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
 <section>
 <h2>11. Baja</h2>
 <ul>
-<li>Puedes borrar tu cuenta cuando quieras en <strong>Perfil → Borrar cuenta</strong>. El borrado es inmediato e irreversible e incluye tus carreras, territorios, fotos, comentarios y conexiones con Strava, Polar y Suunto. Tu territorio queda libre para que otros lo conquisten.</li>
+<li>Puedes borrar tu cuenta cuando quieras en <strong>Perfil → Borrar cuenta</strong>. El borrado es inmediato e irreversible e incluye tus carreras, territorios, fotos, comentarios y conexiones con Strava, Polar, Suunto y Garmin. Tu territorio queda libre para que otros lo conquisten.</li>
 <li>Podemos cerrar cuentas por incumplir estos términos; en casos graves, de inmediato.</li>
 </ul>
 </section>
@@ -412,6 +421,8 @@ const SUPPORT_HTML = page('Soporte · Runna.io', `
 <p>Perfil → Conectar dispositivos → Conectar con Polar. Los ejercicios con GPS se sincronizan solos cada pocos minutos.</p>
 <h3>Suunto</h3>
 <p>Perfil → Conectar dispositivos → Conectar con Suunto e inicia sesión con tu cuenta de la app Suunto. Cuando sincronizas el reloj con la app Suunto, tus carreras, caminatas y rutas de senderismo con GPS se importan solas en unos minutos. También puedes usar «Sincronizar ahora» para traer los últimos 30 días. Los entrenamientos sin GPS (cinta, piscina…) y los de otros deportes no se importan.</p>
+<h3>Garmin</h3>
+<p>Perfil → Conectar dispositivos → Conectar con Garmin, inicia sesión con tu cuenta de Garmin Connect y deja activado el permiso «Actividades». Cuando sincronizas el reloj con Garmin Connect, tus carreras, caminatas y rutas de senderismo con GPS se importan solas en unos minutos. Las actividades anteriores a la conexión no se importan. Los entrenamientos sin GPS (cinta…) y los de otros deportes no se importan.</p>
 </section>
 
 <section>

@@ -16,6 +16,7 @@ runna-io/
 │       ├── routes.ts       Endpoints /api/*
 │       ├── cron.ts         Tareas programadas (se ejecutan dentro del Worker)
 │       ├── pages.ts        Páginas públicas: /privacy, /terms, /support, /invite, /open
+│       ├── garmin.ts       Garmin Connect (OAuth2 PKCE + Activity API push)
 │       ├── auth.ts         Sesiones (Bearer token), admin, OAuth state, tareas
 │       ├── passwords.ts    Hash de contraseñas (PBKDF2)
 │       ├── pushHelper.ts   Notificaciones push APNs (iPhone)
@@ -89,6 +90,8 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 | `POLAR_CLIENT_ID`, `POLAR_CLIENT_SECRET` | Para Polar | Conexión con Polar |
 | `GMAIL_APP_PASSWORD` | Para emails | Contraseña de aplicación de la cuenta de Gmail que envía los emails (`GMAIL_USER` en `[vars]`): códigos de verificación, "He olvidado mi contraseña", avisos y denuncias. Ver [Emails](#emails) |
 | `SENDGRID_API_KEY` / `RESEND_API_KEY` | No | Alternativas a Gmail (`EMAIL_PROVIDER` en `[vars]` elige el proveedor); las dos necesitan un dominio propio verificado |
+| `GARMIN_CLIENT_ID`, `GARMIN_CLIENT_SECRET` | Para Garmin | Consumer key y secret de la app en el portal de Garmin ([ver abajo](#garmin)) |
+| `GARMIN_WEBHOOK_SECRET` | No | Si está, la URL del webhook de Garmin debe llevar `?key=<secreto>` (Garmin no firma sus avisos) |
 | `WORKER_URL` | No | URL pública del Worker para enlaces de invitación y botones de los emails. Por defecto, el origen de la petición |
 | `APP_DOWNLOAD_URL` | No | Enlace de App Store / TestFlight; si está, las páginas `/invite` y `/open` muestran "Descargar la app" |
 | `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` | No | Solo si aún llamas a `/api/tasks/*` desde QStash |
@@ -113,6 +116,30 @@ Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`ru
 Si cambias la contraseña de esa cuenta de Google, sus contraseñas de aplicación dejan de valer y tienes que crear otra.
 
 Nunca subas credenciales al repositorio: `.env*` y `.dev.vars` están en `.gitignore` (hay una plantilla en `.env.example`).
+
+## Garmin
+
+Integración con el Garmin Connect Developer Program (Activity API), en `worker/src/garmin.ts`. Garmin **empuja** cada actividad (resumen + puntos GPS) al Worker unos minutos después de que el usuario sincronice el reloj con Garmin Connect; no hay sondeo. Con acceso Starter no hay histórico: solo llegan las actividades posteriores a la conexión.
+
+1. En el [portal de desarrolladores](https://developerportal.garmin.com) crea la app con el permiso **Activity API** y copia el *consumer key* y el *consumer secret*:
+
+   ```bash
+   npx wrangler secret put GARMIN_CLIENT_ID -c wrangler.worker.toml
+   npx wrangler secret put GARMIN_CLIENT_SECRET -c wrangler.worker.toml
+   npx wrangler secret put GARMIN_WEBHOOK_SECRET -c wrangler.worker.toml   # una cadena aleatoria larga
+   ```
+
+2. Redirect URL de OAuth: `https://runna-io-api.runna-io-api.workers.dev/api/garmin/callback`.
+3. En **Endpoint Configuration** (`https://apis.garmin.com/tools/endpoints`) apunta a `https://runna-io-api.runna-io-api.workers.dev/api/garmin/webhook?key=<GARMIN_WEBHOOK_SECRET>`, en modo **push** (también acepta ping), estos tipos: **Activity Details**, **Deregistrations** y **User Permissions Change**. Deja desactivados los demás.
+4. La fila Garmin aparece en la app (Perfil → Servicios conectados) en cuanto `/api/garmin/status` dice `configured: true`.
+
+Prueba end-to-end con Garmin simulado: compila el Worker como en "API en local" y ejecuta
+
+```bash
+rm -f scripts/e2e/.build/garmin.db
+DATABASE_URL=file:scripts/e2e/.build/garmin.db npx drizzle-kit push --force
+node scripts/e2e/garmin-test.mjs
+```
 
 ## Páginas que sirve el Worker
 
