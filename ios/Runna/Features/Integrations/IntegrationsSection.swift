@@ -88,13 +88,12 @@ struct IntegrationsSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(footerText)
                 if let url = URL(string: "https://www.strava.com") {
+                    // Official "Powered by Strava" artwork (developers.strava.com/guidelines), unaltered
                     Link(destination: url) {
-                        HStack(spacing: 4) {
-                            Text("Powered by")
-                                .foregroundStyle(.secondary)
-                            Text("STRAVA").fontWeight(.heavy).foregroundStyle(Self.stravaOrange)
-                        }
-                        .font(.caption)
+                        Image("StravaPoweredBy")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 14)
                     }
                     .accessibilityLabel("Powered by Strava")
                 }
@@ -159,7 +158,24 @@ struct IntegrationsSection: View {
                     }
                 }
                 Spacer(minLength: 8)
-                providerActions(name: "Strava", connected: strava?.connected == true, provider: "strava", tint: Self.stravaOrange)
+                if strava?.connected == true || busyProvider == "strava" {
+                    providerActions(name: "Strava", connected: strava?.connected == true, provider: "strava", tint: Self.stravaOrange)
+                }
+            }
+            if strava?.connected != true && busyProvider != "strava" {
+                // Official "Connect with Strava" button (48 pt high, unaltered), required look for Strava's OAuth link
+                Button {
+                    showStravaConsent = true
+                } label: {
+                    Image("StravaConnectButton")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 48)
+                }
+                .buttonStyle(.plain)
+                .disabled(busyProvider != nil)
+                .accessibilityLabel("Conectar con Strava")
+                .padding(.leading, Self.detailIndent)
             }
             if strava?.connected == true, let athleteId = strava?.athlete?.id,
                let url = URL(string: "https://www.strava.com/athletes/\(athleteId)") {
@@ -1051,8 +1067,9 @@ struct ImportedActivitiesView: View {
 
 // MARK: - Brand marks
 
-/// Third-party service marks for the connected-services rows: the brand's own colour tile with a
-/// white glyph (Strava peaks, Polar, Suunto, Garmin), or Apple Health's white tile with the pink heart.
+/// Third-party service marks for the connected-services rows: the official Garmin Connect tile and
+/// Apple Health icon, and the brand's colour tile with a white glyph for Strava, Polar and Suunto
+/// (they don't publish an icon for third-party apps).
 struct IntegrationBrandMark: View {
     enum Brand {
         case strava, polar, suunto, garmin, appleHealth
@@ -1065,7 +1082,7 @@ struct IntegrationBrandMark: View {
     static let polarRed = Color(hex: "#D10027")
     static let suuntoBlack = Color(hex: "#16181A")
     static let garminBlue = Color(hex: "#007CC3")
-    static let healthPink = Color(hex: "#FF2D55")
+    static let garminTileURL = URL(string: "https://static.garmincdn.com/com.garmin.connect/content/images/developer/gc-app-tile/xxhdpi/gc-app-tile_@360.png")
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
@@ -1094,16 +1111,27 @@ struct IntegrationBrandMark: View {
                     .tracking(size * 0.02)
                     .foregroundStyle(Color.white)
             case .garmin:
-                shape.fill(Self.garminBlue)
-                Text("G")
-                    .font(.system(size: size * 0.54, weight: .bold))
-                    .foregroundStyle(Color.white)
+                // Official Garmin Connect tile from the URL Garmin asks developers to use (it always
+                // serves the current artwork); the plain tile shows while it loads or offline
+                AsyncImage(url: Self.garminTileURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        ZStack {
+                            shape.fill(Self.garminBlue)
+                            Text("G")
+                                .font(.system(size: size * 0.54, weight: .bold))
+                                .foregroundStyle(Color.white)
+                        }
+                    }
+                }
             case .appleHealth:
-                shape.fill(Color.white)
+                // Official Apple Health icon (Apple Design Resources), with the hairline border Apple asks for on light backgrounds
+                Image("AppleHealthIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(shape)
                 shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
-                Image(systemName: "heart.fill")
-                    .font(.system(size: size * 0.5, weight: .regular))
-                    .foregroundStyle(Self.healthPink)
             }
         }
         .frame(width: size, height: size)
