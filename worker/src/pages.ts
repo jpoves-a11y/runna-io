@@ -158,6 +158,14 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 </ul>
 <h3>2.4. Strava, Polar, Suunto y Garmin (opcional)</h3>
 <p>Si conectas tu cuenta de Strava, Polar Flow, Suunto o Garmin Connect, importamos tus actividades de carrera (identificador, distancia, duración, fecha y ruta GPS) y guardamos los tokens de acceso que esos servicios nos dan. De Suunto guardamos además tu nombre de usuario de Suunto, que usamos solo para saber a quién pertenece cada aviso de entrenamiento nuevo que nos envía Suunto. De Garmin guardamos tu identificador de usuario de la API de Garmin, que usamos solo para saber a quién pertenece cada actividad que nos envía Garmin. Puedes desconectarlas desde tu perfil o desde Garmin Connect; al desconectar Garmin o borrar tu cuenta avisamos a Garmin para que deje de enviarnos tus datos.</p>
+<h4>Datos de Garmin</h4>
+<ul>
+<li><strong>Qué recibimos y para qué:</strong> solo tus actividades de carrera, caminata y senderismo (tipo, fecha, distancia, duración, modelo de reloj y ruta GPS). Las usamos únicamente para crear tus carreras en Runna.io, calcular tu territorio y rankings y mostrarlas a tus amigos. No recibimos datos de salud (sueño, frecuencia cardiaca diaria, etc.).</li>
+<li><strong>Quién los trata:</strong> solo los proveedores de la sección 5 que alojan el servicio: Cloudflare (servidor), Turso (base de datos) y Apple APNs (el aviso de «carrera registrada», sin la ruta). Ningún otro tercero recibe datos de Garmin.</li>
+<li><strong>No los vendemos</strong> ni los compartimos con terceros para fines propios de ellos.</li>
+<li><strong>Sin inteligencia artificial:</strong> ningún sistema de IA procesa tus datos de Garmin, y no se usan para entrenar, evaluar ni mejorar modelos de IA.</li>
+<li><strong>Tu control:</strong> puedes ver y borrar cada actividad importada en Perfil → Servicios conectados → Garmin → Actividades importadas; pedir una copia (JSON) o la corrección de tus datos escribiendo a <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>; y retirar tu consentimiento desconectando Garmin en la app o quitando Runna.io en Garmin Connect (Ajustes → Aplicaciones conectadas). Al borrar tu cuenta se eliminan todos tus datos de Garmin.</li>
+</ul>
 <h3>2.5. Fotos y cámara</h3>
 <ul>
 <li>Puedes enviar a un amigo una <strong>foto de un solo uso</strong> (para picarle cuando le robas territorio). Usamos la cámara o tu fototeca solo cuando tú eliges hacerlo. La foto se <strong>borra al verla</strong> y, si nadie la ve, a las 24 horas.</li>
