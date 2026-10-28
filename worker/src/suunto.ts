@@ -29,6 +29,7 @@ import { WorkerStorage } from './storage';
 import type { Env } from './index';
 import type { SuuntoAccount, SuuntoActivity, Route } from '../../shared/schema';
 import { parseFit, isFootSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPORT, type FitActivity } from './fit';
+import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
 import { sendPushToUser } from './pushHelper';
@@ -50,7 +51,7 @@ const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const TRACK_MIN_SPACING_M = 5;
 
 /** Skip reasons that a new sync must not re-evaluate (the app's "Reintentar" still can). */
-const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
+const PERMANENT_SKIP_REASONS = new Set(['before_competition', BEFORE_CONNECTION, 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
 
 /**
  * Suunto App activity IDs (workout list `activityId`) that are clearly not on foot: skipped without
@@ -398,6 +399,10 @@ export async function importSuuntoWorkout(
     await save({ status: 'skipped', reason: 'before_competition' });
     return { kind: 'skipped', reason: 'before_competition' };
   }
+  if (startedBeforeConnection(summary.startTime, account.connectedAt)) {
+    await save({ status: 'skipped', reason: BEFORE_CONNECTION });
+    return { kind: 'skipped', reason: BEFORE_CONNECTION };
+  }
   if (summary.activityId !== null && NON_FOOT_ACTIVITY_IDS.has(summary.activityId)) {
     await save({ status: 'skipped', reason: 'excluded_type' });
     return { kind: 'skipped', reason: 'excluded_type' };
@@ -459,6 +464,10 @@ export async function importSuuntoWorkout(
   if (startMs < COMPETITION_MIN_DATE.getTime()) {
     await save({ status: 'skipped', reason: 'before_competition', ...details });
     return { kind: 'skipped', reason: 'before_competition' };
+  }
+  if (startedBeforeConnection(startMs, account.connectedAt)) {
+    await save({ status: 'skipped', reason: BEFORE_CONNECTION, ...details });
+    return { kind: 'skipped', reason: BEFORE_CONNECTION };
   }
   if (distance < 100) {
     await save({ status: 'skipped', reason: 'distance_too_short', ...details });

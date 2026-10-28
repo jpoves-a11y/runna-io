@@ -831,6 +831,7 @@ struct ProviderActivity: Decodable, Identifiable, Hashable {
         let reason = skipReason ?? ""
         switch reason {
         case "before_competition": return "Anterior a la competición"
+        case "before_connection": return "Anterior a la conexión"
         case "excluded_type": return "Tipo de actividad excluido"
         case "distance_too_short": return "Distancia demasiado corta"
         case "duration_too_short": return "Duración demasiado corta"

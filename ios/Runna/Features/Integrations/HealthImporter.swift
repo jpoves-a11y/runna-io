@@ -47,6 +47,18 @@ final class HealthImporter {
     private init() {}
 
     private func importedKey(for userId: String) -> String { "healthImportedWorkouts.\(userId)" }
+    private func linkedAtKey(for userId: String) -> String { "healthLinkedAt.\(userId)" }
+
+    /// When this account first imported from Apple Health on this device: older workouts are never uploaded,
+    /// like the Strava / Polar / Suunto / Garmin imports, which start when the account is linked.
+    private func linkedAt(userId: String) -> Date {
+        let defaults = UserDefaults.standard
+        let stored = defaults.double(forKey: linkedAtKey(for: userId))
+        if stored > 0 { return Date(timeIntervalSince1970: stored) }
+        let now = Date()
+        defaults.set(now.timeIntervalSince1970, forKey: linkedAtKey(for: userId))
+        return now
+    }
 
     private func loadImported(userId: String) -> Set<String> {
         let defaults = UserDefaults.standard
@@ -76,7 +88,7 @@ final class HealthImporter {
         _ = try? await importRecentRuns(days: 14)
     }
 
-    /// Uploads running workouts of the last `days` days that haven't been imported yet.
+    /// Uploads running workouts of the last `days` days, done since the account linked Apple Health, that haven't been imported yet.
     func importRecentRuns(days: Int = 30) async throws -> Summary {
         guard Self.isAvailable else {
             throw APIError(status: 0, message: "Apple Salud no está disponible en este dispositivo.")
@@ -94,7 +106,8 @@ final class HealthImporter {
         var imported = loadImported(userId: userId)
         var summary = Summary()
 
-        for workout in try await runningWorkouts(days: days) where !imported.contains(workout.uuid.uuidString) {
+        let since = linkedAt(userId: userId)
+        for workout in try await runningWorkouts(days: days, notBefore: since) where !imported.contains(workout.uuid.uuidString) {
             // The account may have changed during a long import
             guard RunOwner.currentUserId == userId else { break }
             let workoutId = workout.uuid.uuidString
@@ -157,8 +170,9 @@ final class HealthImporter {
         return summary
     }
 
-    private func runningWorkouts(days: Int) async throws -> [HKWorkout] {
-        let start = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+    private func runningWorkouts(days: Int, notBefore: Date) async throws -> [HKWorkout] {
+        let windowStart = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+        let start = max(windowStart, notBefore)
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             HKQuery.predicateForWorkouts(with: .running),
             HKQuery.predicateForSamples(withStart: start, end: Date()),

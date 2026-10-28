@@ -28,6 +28,7 @@ import { WorkerStorage } from './storage';
 import type { Env } from './index';
 import type { GarminAccount, GarminActivity, Route } from '../../shared/schema';
 import { fitTrack, type FitPoint } from './fit';
+import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
 import { sendPushToUser } from './pushHelper';
@@ -51,10 +52,10 @@ const TRACK_MIN_SPACING_M = 5;
 const MAX_ROUTES_PER_NOTIFICATION = 3;
 
 /** Skip reasons a repeated notification must not re-evaluate (the app's "Reintentar" still can). */
-const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
+const PERMANENT_SKIP_REASONS = new Set(['before_competition', BEFORE_CONNECTION, 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
 
 /** Skip reasons from the competition rules, which "Reintentar" re-applies. */
-const RULE_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short']);
+const RULE_SKIP_REASONS = new Set(['before_competition', BEFORE_CONNECTION, 'excluded_type', 'distance_too_short', 'duration_too_short']);
 
 function getStorage(env: Env): WorkerStorage {
   return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
@@ -374,6 +375,7 @@ export async function importGarminActivity(storage: WorkerStorage, account: Garm
   if (!isGarminFootActivity(detail.activityType)) return skip('excluded_type');
   if (startMs === null || !Number.isFinite(startMs)) return skip('bad_date');
   if (startMs < COMPETITION_MIN_DATE.getTime()) return skip('before_competition');
+  if (startedBeforeConnection(startMs, account.connectedAt)) return skip(BEFORE_CONNECTION);
   if (distance < 100) return skip('distance_too_short');
   if (duration < 60) return skip('duration_too_short');
   if (track.length < 2) return skip('no_gps');

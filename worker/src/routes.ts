@@ -29,6 +29,7 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
+import { connectionTimeMs, startedBeforeConnection } from './importCutoff';
 import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
@@ -4955,7 +4956,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
             if (activityResponse.ok) {
               const activity: any = await activityResponse.json();
               
-              if (['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+              // Only activities done after linking Strava are imported
+              const beforeConnection = startedBeforeConnection(Date.parse(activity.start_date), stravaAccount.createdAt);
+              if (beforeConnection) {
+                console.log(`[STRAVA WEBHOOK] Activity ${activity.id} started before Strava was linked: ignored`);
+              }
+              if (!beforeConnection && ['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
                 await storage.createStravaActivity({
                   stravaActivityId: activity.id,
                   userId: stravaAccount.userId,
@@ -5355,8 +5361,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: 'La conexión con Strava ha caducado. Vuelve a conectar Strava.' }, 409);
       }
 
-      // Fetch recent activities from Strava (last 30 days) with pagination
-      const after = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      // Fetch recent activities from Strava (last 30 days, never before Strava was linked) with pagination
+      const connectedMs = connectionTimeMs(stravaAccount.createdAt);
+      const after = Math.floor(Math.max(Date.now() - 30 * 24 * 60 * 60 * 1000, connectedMs ?? 0) / 1000);
       const STRAVA_MAX_PAGES = 3; // Max pages to fetch per invocation
       const DETAIL_FETCH_BUDGET = 10; // Max detail fetches to stay under subrequest limits
       const STRAVA_SYNC_TIMEOUT = 20000; // 20s safety limit
@@ -5855,7 +5862,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // regardless of transaction commit state. Used to reimport deleted activities.
   // SAFETY: Bounded by MAX_EXERCISES and MAX_SYNC_TIME to prevent Cloudflare Worker timeout/subrequest saturation.
   const syncPolarExercisesDirect = async (
-    polarAccount: { polarUserId: number; accessToken: string },
+    polarAccount: { polarUserId: number; accessToken: string; createdAt?: string | null },
     userId: string,
     storage: WorkerStorage
   ) => {
@@ -5920,7 +5927,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             skipped++;
             continue;
           }
-          const permanentSkipReasons = ['before_competition', 'excluded_type'];
+          const permanentSkipReasons = ['before_competition', 'before_connection', 'excluded_type'];
           if (permanentSkipReasons.includes(existing.skipReason)) {
             // Permanently skipped — don't count against exercise limit
             skipped++;
@@ -5961,7 +5968,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             }
             // Only re-evaluate fixable skip reasons
             if (dupCheck && dupCheck.skipReason) {
-              const permanentSkipReasons = ['before_competition', 'excluded_type'];
+              const permanentSkipReasons = ['before_competition', 'before_connection', 'excluded_type'];
               if (permanentSkipReasons.includes(dupCheck.skipReason)) {
                 console.log(`[DIRECT SYNC]    ⏭️  Permanently skipped by attributes (${dupCheck.skipReason})`);
                 skipped++;
@@ -6012,6 +6019,21 @@ export function registerRoutes(app: Hono<AppEnv>) {
             if (activityDate < new Date(COMPETITION_MIN_DATE)) {
               console.log(`[DIRECT SYNC]    ❌ Activity before competition start (${startTime})`);
               await saveSkipped('before_competition');
+              skipped++;
+              continue;
+            }
+          }
+
+          // Only exercises done after linking Polar are imported (start_time is local time + utc offset)
+          if (startTime) {
+            const offsetMinutes = Number(exercise.start_time_utc_offset);
+            const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(String(startTime));
+            const startMs = !hasZone && Number.isFinite(offsetMinutes)
+              ? Date.parse(`${startTime}Z`) - offsetMinutes * 60 * 1000
+              : new Date(startTime).getTime();
+            if (startedBeforeConnection(startMs, polarAccount.createdAt)) {
+              console.log(`[DIRECT SYNC]    ❌ Activity before Polar was linked (${startTime})`);
+              await saveSkipped('before_connection');
               skipped++;
               continue;
             }
@@ -6134,7 +6156,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   const autoSyncPolarUser = async (
     env: Env,
     storage: WorkerStorage,
-    account: { userId: string; polarUserId: number; accessToken: string },
+    account: { userId: string; polarUserId: number; accessToken: string; createdAt?: string | null },
     deadline: number,
   ): Promise<{ imported: number; newActivities: number; processed: number }> => {
     const userId = account.userId;
