@@ -95,6 +95,7 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 | `GARMIN_WEBHOOK_SECRET` | No | Si está, la URL del webhook de Garmin debe llevar `?key=<secreto>` (Garmin no firma sus avisos) |
 | `COROS_CLIENT_ID`, `COROS_CLIENT_SECRET` | Para COROS | Application ID y key que da COROS al aprobar la integración ([ver abajo](#coros)) |
 | `COROS_WEBHOOK_SECRET` | No | Si está, la URL de push de COROS debe llevar `?key=<secreto>` |
+| `COROS_PUSH_CLIENT`, `COROS_PUSH_SECRET` | No | *client* y *secret* que COROS manda en las cabeceras del push, si son distintos del application ID / key |
 | `COROS_API_BASE` | No | Servidor de la API de COROS. Por defecto `https://open.coros.com`; `https://opentest.coros.com` mientras COROS prueba la integración |
 | `WORKER_URL` | No | URL pública del Worker para enlaces de invitación y botones de los emails. Por defecto, el origen de la petición |
 | `APP_DOWNLOAD_URL` | No | Enlace de App Store / TestFlight; si está, las páginas `/invite` y `/open` muestran "Descargar la app" |
@@ -149,21 +150,24 @@ node scripts/e2e/garmin-test.mjs
 
 Integración con la API de partners de COROS, en `worker/src/coros.ts`. COROS **empuja** un resumen de cada entrenamiento al Worker unos 5 minutos después de que el usuario sincronice el reloj con la app COROS; el Worker descarga el fichero FIT, saca el recorrido GPS y lo convierte en territorio. Si un aviso se pierde, la tarea `coros-auto-sync` (cada hora, minuto 45) lo recoge, y «Sincronizar ahora» trae los últimos 30 días.
 
-1. Pide acceso a la API: formulario de [Submit an API Application](https://support.coros.com/hc/en-us/articles/17085887816340-Submit-an-API-Application) y email a api@coros.com con los datos de la empresa, un contacto técnico y estas URLs:
-   - Redirect URI de OAuth: `https://runna-io-api.runna-io-api.workers.dev/api/coros/callback`
-   - URL de push de entrenamientos: `https://runna-io-api.runna-io-api.workers.dev/api/coros/webhook?key=<COROS_WEBHOOK_SECRET>`
-2. Cuando COROS te dé el *application ID* y la *key*:
+1. Pide acceso a la API con el formulario de COROS ([Submit an API Application](https://support.coros.com/hc/en-us/articles/17085887816340-Submit-an-API-Application)). Datos técnicos que pide:
+   - *Authorized Callback Domain*: `https://runna-io-api.runna-io-api.workers.dev` (la redirect URI completa es `.../api/coros/callback`)
+   - *Workout data receiving endpoint URL*: `https://runna-io-api.runna-io-api.workers.dev/api/coros/webhook?key=<COROS_WEBHOOK_SECRET>`
+   - *Service status check URL*: `https://runna-io-api.runna-io-api.workers.dev/api/coros/webhook` (un GET responde 200)
+   - Logos PNG de 144, 102, 120 y 300 px: `ios/AppStore/coros-logo-*.png`
+2. Cuando COROS te dé el *application ID* (clientId) y la *key* (clientSecret):
 
    ```bash
    npx wrangler secret put COROS_CLIENT_ID -c wrangler.worker.toml
    npx wrangler secret put COROS_CLIENT_SECRET -c wrangler.worker.toml
-   npx wrangler secret put COROS_WEBHOOK_SECRET -c wrangler.worker.toml   # una cadena aleatoria larga
+   npx wrangler secret put COROS_WEBHOOK_SECRET -c wrangler.worker.toml   # la misma cadena aleatoria que pusiste en la URL de push
    ```
 
-   Mientras COROS revisa la integración en su entorno de pruebas, añade `COROS_API_BASE = "https://opentest.coros.com"` en `[vars]` y quítalo al pasar a producción.
+   Si COROS te asigna un *client* y *secret* distintos para las cabeceras del push, guárdalos en `COROS_PUSH_CLIENT` y `COROS_PUSH_SECRET`. Mientras COROS revisa la integración en su entorno de pruebas, añade `COROS_API_BASE = "https://opentest.coros.com"` en `[vars]` y quítalo al pasar a producción.
 3. La fila COROS aparece en la app (Perfil → Servicios conectados) en cuanto `/api/coros/status` dice `configured: true`.
+4. Avisa a COROS (api@coros.com) una semana antes de publicarlo, como piden sus condiciones.
 
-COROS no publica el formato de su API. El código sigue la referencia v2 que COROS entrega a los partners (`/oauth2/accesstoken`, `/oauth2/refresh-token`, `/v2/coros/sport/list`, push `sportDataList` con cabeceras `client`/`secret` y respuesta `{"result":"0000"}`). Si tu documentación difiere en algún nombre, el sitio a tocar es `parseCorosToken`, `parseCorosWorkout` y `parseCorosPush`. El deporte se decide con el fichero FIT; los `mode` de COROS solo se usan si el FIT no lo trae.
+El código sigue la *COROS API Reference V2.1.1* (septiembre de 2026), que COROS enlaza desde el formulario de solicitud: OAuth2 (§3), lista de entrenamientos (§4.2), push de resúmenes con cabeceras `client`/`secret` y respuesta `{"result":"0000"}` (§5.3) y enlace al FIT cuando falta (§5.4). El deporte se decide con el fichero FIT; los `mode` de COROS descartan bici, natación, triatlón y esquí sin descargar nada, y deciden si el FIT no trae deporte.
 
 Prueba end-to-end con COROS simulado: compila el Worker como en "API en local" y ejecuta
 

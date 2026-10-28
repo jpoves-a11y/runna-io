@@ -11,14 +11,17 @@
 //   DELETE /api/coros/activities/:userId/:activityId, POST /api/coros/disconnect
 //   POST /api/tasks/coros-auto-sync    -> hourly fallback poll (cron), in case a push was missed
 //
-// COROS API (v2): authorize / accesstoken / refresh-token / deauthorize under /oauth2, workout list at
-// GET /v2/coros/sport/list?token&openId&startDate&endDate (yyyyMMdd, at most 30 days per call, 3 months back),
-// each workout with labelId, mode/subMode, startTime/endTime (s), distance (m), totalTime (s) and a fitUrl.
-// Every API answer carries result "0000" on success. Access tokens last 30 days; refresh-token extends them.
+// COROS API Reference V2.1.1 (Sept. 2026): authorize / accesstoken / refresh-token / deauthorize under /oauth2
+// (§3), workout list GET /v2/coros/sport/list?token&openId&startDate&endDate (yyyyMMdd, at most 30 days per
+// call, 3 months back, §4.2), FIT link GET /v2/coros/sport/detail/fit (§5.4) when a workout has none, and the
+// workout summary push (§5.3). Every answer carries result "0000" on success. Access tokens last 30 days;
+// refresh-token extends the same token (§3.3). If the user denies access, COROS redirects with only `state`.
+//   GET  /api/coros/webhook            -> 200: the "Service Status Check URL" COROS polls
 //
 // Secrets: COROS_CLIENT_ID, COROS_CLIENT_SECRET (application ID / key from COROS).
-// Optional: COROS_WEBHOOK_SECRET (the push URL registered with COROS must then carry ?key=<secret>),
-// COROS_API_BASE (e.g. https://opentest.coros.com while COROS reviews the integration).
+// Optional: COROS_PUSH_CLIENT / COROS_PUSH_SECRET (the client / secret COROS puts in the push headers, if it
+// assigns different ones; default: the application ID / key), COROS_WEBHOOK_SECRET (the push URL registered
+// with COROS must then carry ?key=<secret>), COROS_API_BASE (https://opentest.coros.com while testing).
 import type { Context, Hono } from 'hono';
 import {
   type AppEnv,
@@ -65,10 +68,15 @@ const MAX_ROUTES_PER_NOTIFICATION = 3;
 const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
 
 /**
- * COROS sport modes on foot (8 run, 15 trail run, 16 hike, 20 track run, 31 walk): only used when the
- * FIT file doesn't say its sport. The FIT file's sport always decides otherwise.
+ * COROS sport modes on foot (§4.2 workout types: 8 run, 15 trail run, 16 hike, 20 track run, 31 walk): only
+ * used when the FIT file doesn't say its sport. The FIT file's sport always decides otherwise.
  */
 const FOOT_MODES = new Set([8, 15, 16, 20, 31]);
+/**
+ * Modes skipped without downloading anything: 9 bike, 10 swim, 13 triathlon / multisport (its FIT files are
+ * per leg), 21 ski. Indoor run (8/2) is still downloaded: the FIT file says treadmill and it is skipped then.
+ */
+const NON_FOOT_MODES = new Set([9, 10, 13, 21]);
 
 function getStorage(env: Env): WorkerStorage {
   return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
@@ -217,7 +225,11 @@ export async function getValidCorosToken(account: CorosAccount, storage: WorkerS
 /** Revokes Runna.io's access on COROS (disconnect / account deletion). Best effort. */
 export async function deauthorizeCoros(env: Env, account: CorosAccount): Promise<boolean> {
   try {
-    const response = await fetch(`${apiBase(env)}/oauth2/deauthorize?token=${encodeURIComponent(account.accessToken)}`, { method: 'POST' });
+    // §3.4: the example passes the token in the URL, the table in a header; both are sent
+    const response = await fetch(`${apiBase(env)}/oauth2/deauthorize?token=${encodeURIComponent(account.accessToken)}`, {
+      method: 'POST',
+      headers: { token: account.accessToken },
+    });
     if (!response.ok) {
       console.error(`[COROS] Deauthorize failed for user ${account.userId}: ${response.status}`);
       return false;
@@ -312,6 +324,31 @@ async function listWorkouts(env: Env, account: CorosAccount, accessToken: string
   return { ok: true, workouts };
 }
 
+/** The FIT link of one workout (§5.4), for list / push items that come without one. */
+async function fetchFitUrl(env: Env, account: CorosAccount, accessToken: string, summary: CorosWorkoutSummary): Promise<string | null> {
+  if (summary.mode === null || summary.subMode === null) return null;
+  try {
+    const params = new URLSearchParams({
+      mode: String(summary.mode),
+      subMode: String(summary.subMode),
+      labelId: summary.labelId,
+      openId: account.corosOpenId,
+      token: accessToken,
+    });
+    const response = await fetch(`${apiBase(env)}/v2/coros/sport/detail/fit?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
+    const body = asObject(await response.json().catch(() => null));
+    if (!response.ok || !isCorosOk(body)) {
+      console.error(`[COROS] FIT link request failed for ${summary.labelId}: ${response.status} ${JSON.stringify(body)?.slice(0, 200)}`);
+      return null;
+    }
+    const fitUrl = asObject(body?.data)?.fitUrl;
+    return typeof fitUrl === 'string' && fitUrl.trim() ? fitUrl.trim() : null;
+  } catch (error) {
+    console.error(`[COROS] FIT link request error for ${summary.labelId}:`, error);
+    return null;
+  }
+}
+
 // ==================== Import (FIT -> coros_activities) ====================
 
 export type ImportOutcome =
@@ -347,8 +384,10 @@ export function isAllowedFitUrl(value: string): boolean {
  * failed with the reason). Returns 'exists' when it was already handled.
  */
 export async function importCorosWorkout(
+  env: Env,
   storage: WorkerStorage,
   account: CorosAccount,
+  accessToken: string | null,
   summary: CorosWorkoutSummary,
   options: { reevaluatePermanent?: boolean } = {},
 ): Promise<ImportOutcome> {
@@ -361,7 +400,7 @@ export async function importCorosWorkout(
     await storage.deleteCorosActivityById(existing.id);
   }
 
-  const base = {
+  const base: { corosWorkoutId: string; userId: string; routeId: null; corosMode: number | null; corosSubMode: number | null; deviceName: string | null; fitUrl: string | null } = {
     corosWorkoutId: summary.labelId,
     userId,
     routeId: null,
@@ -395,10 +434,18 @@ export async function importCorosWorkout(
     });
   };
 
-  // Cheap check from the summary, before downloading anything
+  // Cheap checks from the summary, before downloading anything
   if (summary.startTime !== null && summary.startTime < COMPETITION_MIN_DATE.getTime()) {
     await save({ status: 'skipped', reason: 'before_competition' });
     return { kind: 'skipped', reason: 'before_competition' };
+  }
+  if (summary.mode !== null && NON_FOOT_MODES.has(summary.mode)) {
+    await save({ status: 'skipped', reason: 'excluded_type' });
+    return { kind: 'skipped', reason: 'excluded_type' };
+  }
+  if (!summary.fitUrl && accessToken) {
+    summary = { ...summary, fitUrl: await fetchFitUrl(env, account, accessToken, summary) };
+    base.fitUrl = summary.fitUrl;
   }
   if (!summary.fitUrl || !isAllowedFitUrl(summary.fitUrl)) {
     await save({ status: 'failed', reason: 'fit_unavailable' });
@@ -619,6 +666,7 @@ async function importAndProcess(
   env: Env,
   storage: WorkerStorage,
   account: CorosAccount,
+  accessToken: string | null,
   workouts: CorosWorkoutSummary[],
   maxFitDownloads: number,
 ): Promise<{ imported: number; routes: string[] }> {
@@ -628,9 +676,10 @@ async function importAndProcess(
     if (downloads >= maxFitDownloads) break;
     const existing = await storage.getCorosActivityByWorkoutId(workout.labelId);
     if (existing && (existing.routeId || existing.userId !== account.userId || (existing.skipReason ? PERMANENT_SKIP_REASONS.has(existing.skipReason) : existing.status !== 'failed'))) continue;
-    // Workouts from before the competition are skipped without downloading anything
-    if (workout.startTime === null || workout.startTime >= COMPETITION_MIN_DATE.getTime()) downloads++;
-    const outcome = await importCorosWorkout(storage, account, workout);
+    // Workouts from before the competition or of other sports are skipped without downloading anything
+    const tooOld = workout.startTime !== null && workout.startTime < COMPETITION_MIN_DATE.getTime();
+    if (!tooOld && !(workout.mode !== null && NON_FOOT_MODES.has(workout.mode))) downloads++;
+    const outcome = await importCorosWorkout(env, storage, account, accessToken, workout);
     if (outcome.kind === 'imported') imported++;
   }
   const routes: string[] = [];
@@ -667,12 +716,15 @@ export function parseCorosPush(body: unknown): CorosWorkoutSummary[] {
 }
 
 /**
- * COROS sends the application's client ID and secret in the push headers ("client" / "secret").
+ * COROS sends a client and secret in the push headers (§5.3): the ones it assigned for the push service
+ * (COROS_PUSH_CLIENT / COROS_PUSH_SECRET), or else the application ID and key.
  * Returns true when they match, false when they don't, null when the request has none.
  */
 export function corosPushAuthenticated(env: Env, client: string | undefined, secret: string | undefined): boolean | null {
   if (!client && !secret) return null;
-  return constantTimeEqual(client || '', env.COROS_CLIENT_ID || '') && constantTimeEqual(secret || '', env.COROS_CLIENT_SECRET || '');
+  const expectedClient = env.COROS_PUSH_CLIENT || env.COROS_CLIENT_ID || '';
+  const expectedSecret = env.COROS_PUSH_SECRET || env.COROS_CLIENT_SECRET || '';
+  return !!expectedClient && constantTimeEqual(client || '', expectedClient) && constantTimeEqual(secret || '', expectedSecret);
 }
 
 async function handlePush(env: Env, workouts: CorosWorkoutSummary[], trustedFitUrls: boolean): Promise<void> {
@@ -712,7 +764,7 @@ async function handlePush(env: Env, workouts: CorosWorkoutSummary[], trustedFitU
     }
     workoutsToImport.sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
 
-    const result = await importAndProcess(env, storage, account, workoutsToImport, MAX_ROUTES_PER_NOTIFICATION);
+    const result = await importAndProcess(env, storage, account, accessToken, workoutsToImport, MAX_ROUTES_PER_NOTIFICATION);
     console.log(`[COROS WEBHOOK] User ${account.userId}: ${result.imported} imported, routes ${result.routes.join(', ') || 'none'}`);
   }
 }
@@ -774,7 +826,8 @@ export function registerCorosRoutes(app: Hono<AppEnv>): void {
     const finish = (query: string) => oauthFinish(c, verified?.app === true, 'coros', `${frontend}/profile?${query}`);
     try {
       const code = c.req.query('code');
-      if (c.req.query('error')) return finish('coros_error=denied');
+      // §3.1: when the user refuses, COROS redirects back with `state` only
+      if (c.req.query('error') || (!code && verified)) return finish('coros_error=denied');
       if (!code || !state || !secret || !isCorosConfigured(c.env)) return finish('coros_error=invalid');
       if (!verified) return finish('coros_error=invalid_state');
       const userId = verified.userId;
@@ -838,6 +891,9 @@ export function registerCorosRoutes(app: Hono<AppEnv>): void {
       return c.json({ error: error.message }, 500);
     }
   });
+
+  // "Service Status Check URL" (§5.2): COROS checks that the push endpoint is up with a GET (200 = working)
+  app.get('/api/coros/webhook', (c) => c.json({ status: 'ok', configured: isCorosConfigured(c.env) }));
 
   // COROS checks the answer: { result: "0000" } means received (anything else makes it retry)
   app.post('/api/coros/webhook', async (c) => {
@@ -907,12 +963,16 @@ export function registerCorosRoutes(app: Hono<AppEnv>): void {
         if (existing && (existing.routeId || existing.userId !== userId || (existing.skipReason ? PERMANENT_SKIP_REASONS.has(existing.skipReason) : existing.status !== 'failed'))) {
           continue;
         }
-        if (downloads >= FIT_FETCH_BUDGET) {
-          hasMore = true;
-          break;
+        const cheapSkip = (workout.startTime !== null && workout.startTime < COMPETITION_MIN_DATE.getTime())
+          || (workout.mode !== null && NON_FOOT_MODES.has(workout.mode));
+        if (!cheapSkip) {
+          if (downloads >= FIT_FETCH_BUDGET) {
+            hasMore = true;
+            break;
+          }
+          downloads++;
         }
-        downloads++;
-        const outcome = await importCorosWorkout(storage, account, workout);
+        const outcome = await importCorosWorkout(c.env, storage, account, accessToken, workout);
         if (outcome.kind === 'imported') imported++;
         else if (outcome.kind === 'skipped') skipped++;
         else if (outcome.kind === 'failed') failed++;
@@ -992,7 +1052,7 @@ export function registerCorosRoutes(app: Hono<AppEnv>): void {
         deviceName: activity.deviceName,
         fitUrl: activity.fitUrl,
       };
-      const outcome = await importCorosWorkout(storage, account, summary, { reevaluatePermanent: true });
+      const outcome = await importCorosWorkout(c.env, storage, account, accessToken, summary, { reevaluatePermanent: true });
       return c.json({ success: true, status: outcome.kind, reason: outcome.kind === 'skipped' || outcome.kind === 'failed' ? outcome.reason : null });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -1056,7 +1116,7 @@ export function registerCorosRoutes(app: Hono<AppEnv>): void {
           const since = Number.isFinite(lastSync) ? lastSync - 2 * 24 * 3600 * 1000 : Date.now() - 3 * 24 * 3600 * 1000;
           const list = await listWorkouts(c.env, account, accessToken, since);
           if (!list.ok) continue;
-          const result = await importAndProcess(c.env, storage, account, list.workouts, 3);
+          const result = await importAndProcess(c.env, storage, account, accessToken, list.workouts, 3);
           synced++;
           imported += result.imported;
           routes += result.routes.length;

@@ -111,7 +111,9 @@ const treadmill = workout({ labelId: '466217331458703362', subSport: 1, gps: fal
 const old = workout({ labelId: '466217331458703363', daysAgo: 400 });
 // FIT without a sport: decided by the COROS mode (31 walk)
 const walk = workout({ labelId: '466217331458703364', sport: 0, subSport: 0, mode: 31, daysAgo: 5, originLat: 40.43, originLng: -3.69 });
-const all = [run, bike, treadmill, old, walk];
+// Triathlon: skipped by its mode, its FIT files are per leg
+const triathlon = workout({ labelId: '466217331458703365', mode: 13, subMode: 1, daysAgo: 4 });
+const all = [run, bike, treadmill, old, walk, triathlon];
 /** Workouts COROS lists for the account (the walk only shows up in the list, never in a push). */
 const listed = [run, bike, treadmill, walk];
 
@@ -122,7 +124,7 @@ const CLIENT_SECRET = 'test-coros-secret';
 const WEBHOOK_SECRET = 'test-coros-webhook';
 
 let tokenCounter = 0;
-const calls = { token: [], refresh: [], deauthorize: [], list: [], fit: [], apns: [], other: [] };
+const calls = { token: [], refresh: [], deauthorize: [], list: [], detail: [], fit: [], apns: [], other: [] };
 const issuedTokens = new Set();
 
 const yyyymmdd = (ms) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
@@ -163,7 +165,16 @@ globalThis.fetch = async (input, init = {}) => {
       if (days > 30) return Response.json({ result: '1019', message: 'date range over 30 days' });
       const data = listed
         .filter((w) => yyyymmdd(w.startMs) >= q.startDate && yyyymmdd(w.startMs) <= q.endDate)
-        .map(({ summary }) => { const { openId, ...item } = summary; return item; });
+        // The walk comes without fitUrl: the Worker asks /v2/coros/sport/detail/fit for it
+        .map(({ summary }) => { const { openId, ...item } = summary; return item.labelId === walk.labelId ? { ...item, fitUrl: undefined } : item; });
+      return Response.json({ result: '0000', message: 'OK', data });
+    }
+    if (method === 'GET' && url.pathname === '/v2/coros/sport/detail/fit') {
+      const q = Object.fromEntries(url.searchParams);
+      calls.detail.push(q);
+      const w = all.find((x) => x.labelId === q.labelId);
+      if (!issuedTokens.has(q.token) || !w || Number(q.mode) !== w.summary.mode) return Response.json({ result: '5001', message: 'parameter error' });
+      const { openId, ...data } = w.summary;
       return Response.json({ result: '0000', message: 'OK', data });
     }
     calls.other.push(String(url));
@@ -271,8 +282,8 @@ check('COROS_API_BASE switches the host', testHost.data.authUrl?.startsWith('htt
 
 const forged = await call('GET', `/api/coros/callback?code=good-code&state=${encodeURIComponent(state.slice(0, -2) + 'xx')}`);
 check('callback with forged state: invalid_state', forged.status === 302 && forged.location.includes('coros_error=invalid_state'), forged.location);
-const denied = await call('GET', `/api/coros/callback?error=access_denied&state=${encodeURIComponent(state)}`);
-check('callback denied (app flow): runnaio://oauth/coros?coros_error=denied', denied.location === 'runnaio://oauth/coros?coros_error=denied', denied.location);
+const denied = await call('GET', `/api/coros/callback?state=${encodeURIComponent(state)}`);
+check('callback denied (COROS sends only state): runnaio://oauth/coros?coros_error=denied', denied.location === 'runnaio://oauth/coros?coros_error=denied', denied.location);
 const badCode = await call('GET', `/api/coros/callback?code=bad-code&state=${encodeURIComponent(state)}`);
 check('callback with rejected code (result != 0000): token_exchange', badCode.location?.includes('coros_error=token_exchange'), badCode.location);
 const callback = await call('GET', `/api/coros/callback?code=good-code&state=${encodeURIComponent(state)}`);
@@ -290,6 +301,12 @@ const status1 = await call('GET', `/api/coros/status/${user.id}`, { token: user.
 check('status connected', status1.data.connected === true && status1.data.totalActivities === 0, status1.data);
 
 // Push
+const statusCheck = await call('GET', '/api/coros/webhook');
+check('service status check URL answers 200 to a GET', statusCheck.status === 200 && statusCheck.data.status === 'ok', statusCheck);
+const pushEnv = { ...env, COROS_PUSH_CLIENT: 'push-client', COROS_PUSH_SECRET: 'push-secret' };
+const assignedHeaders = await call('POST', `/api/coros/webhook?key=${WEBHOOK_SECRET}`, { body: { sportDataList: [] }, headers: { client: 'push-client', secret: 'push-secret' }, useEnv: pushEnv });
+const appHeadersWhenAssigned = await call('POST', `/api/coros/webhook?key=${WEBHOOK_SECRET}`, { body: { sportDataList: [] }, headers: corosHeaders, useEnv: pushEnv });
+check('push headers checked against COROS_PUSH_CLIENT / SECRET when set', assignedHeaders.status === 200 && appHeadersWhenAssigned.status === 401, { assignedHeaders, appHeadersWhenAssigned });
 const noKey = await push([run], { key: null });
 const wrongHeaders = await push([run], { headers: { client: CLIENT_ID, secret: 'nope' } });
 await flush();
@@ -299,7 +316,7 @@ const unknown = await push([{ ...run.summary, openId: 'someone-else', labelId: '
 await flush();
 check('push for unknown openId: 0000, ignored', unknown.status === 200 && unknown.data.result === '0000' && await count('select count(*) n from coros_activities') === 0, unknown);
 
-const hook = await push([run, bike, treadmill, old]);
+const hook = await push([run, bike, treadmill, old, triathlon]);
 check('push answers {result:"0000"} at once', hook.status === 200 && hook.data.result === '0000', hook);
 await flush();
 const runActivity = await one('select * from coros_activities where coros_workout_id = ?', [run.labelId]);
@@ -316,7 +333,8 @@ check('territory processed by the queue', await count('select count(*) n from te
 const apns = calls.apns.find((p) => p.body?.type === 'coros_auto_import');
 check('APNs push coros_auto_import with routeId', !!apns && apns.body.data.routeId === runRoute?.id, calls.apns);
 const skipped = async (id) => (await one('select skip_reason from coros_activities where coros_workout_id = ?', [id]))?.skip_reason;
-check('bike skipped as excluded_type (FIT sport)', await skipped(bike.labelId) === 'excluded_type');
+check('bike / triathlon skipped by mode without downloading', await skipped(bike.labelId) === 'excluded_type' && await skipped(triathlon.labelId) === 'excluded_type'
+  && !calls.fit.includes(bike.labelId) && !calls.fit.includes(triathlon.labelId), calls.fit);
 check('treadmill skipped as excluded_type', await skipped(treadmill.labelId) === 'excluded_type');
 check('old run skipped as before_competition without downloading', await skipped(old.labelId) === 'before_competition' && !calls.fit.includes(old.labelId));
 check('push looked the workouts up in the list API', calls.list.some((q) => q.token === 'access-1' && q.openId === COROS_OPEN_ID));
@@ -337,6 +355,8 @@ check('sync imports the listed walk', sync.status === 200 && sync.data.imported 
 check('list range is at most 30 days', calls.list.every((q) => (Date.parse(`${q.endDate.slice(0, 4)}-${q.endDate.slice(4, 6)}-${q.endDate.slice(6)}`) - Date.parse(`${q.startDate.slice(0, 4)}-${q.startDate.slice(4, 6)}-${q.startDate.slice(6)}`)) / DAY + 1 <= 30), calls.list);
 const walkRow = await one('select * from coros_activities where coros_workout_id = ?', [walk.labelId]);
 check('FIT without sport decided by the COROS mode (31 walk)', walkRow?.status === 'pending' && walkRow.name.startsWith('Caminata COROS'), walkRow);
+check('missing fitUrl asked to /v2/coros/sport/detail/fit', calls.detail.some((q) => q.labelId === walk.labelId && q.mode === '31' && q.subMode === '1' && q.openId === COROS_OPEN_ID)
+  && walkRow?.fit_url === walk.summary.fitUrl, calls.detail);
 const processed = await call('POST', `/api/coros/process/${user.id}`, { token: user.token, body: {} });
 await flush();
 check('process turns it into a route', processed.status === 200 && processed.data.processed === 1 && processed.data.remaining === 0, processed.data);
@@ -345,7 +365,7 @@ check('second sync finds nothing new', resync.data.imported === 0, resync.data);
 
 // Activities list / retry / delete
 const list = await call('GET', `/api/coros/activities/${user.id}`, { token: user.token });
-check('activities list', list.status === 200 && list.data.length === 5 && list.data.every((a) => typeof a.corosWorkoutId === 'string' && typeof a.processed === 'boolean'), list.data);
+check('activities list', list.status === 200 && list.data.length === 6 && list.data.every((a) => typeof a.corosWorkoutId === 'string' && typeof a.processed === 'boolean'), list.data);
 const bikeRow = list.data.find((a) => a.corosWorkoutId === bike.labelId);
 const retryBike = await call('POST', `/api/coros/retry/${bikeRow.id}`, { token: user.token, body: {} });
 check('retry keeps a bike ride skipped', retryBike.status === 200 && retryBike.data.status === 'skipped' && await skipped(bike.labelId) === 'excluded_type', retryBike.data);

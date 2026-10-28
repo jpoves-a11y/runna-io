@@ -37,6 +37,8 @@ export interface Env {
   COROS_CLIENT_ID?: string;
   COROS_CLIENT_SECRET?: string;
   COROS_WEBHOOK_SECRET?: string;
+  COROS_PUSH_CLIENT?: string;
+  COROS_PUSH_SECRET?: string;
   COROS_API_BASE?: string;
   // Public base URL of this Worker (invite links, legal pages, email buttons)
   WORKER_URL?: string;
