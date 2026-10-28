@@ -221,6 +221,43 @@ export const suuntoActivities = sqliteTable("suunto_activities", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+// Garmin Integration Tables (Garmin Connect Developer Program: OAuth2 PKCE + Activity API push)
+export const garminAccounts = sqliteTable("garmin_accounts", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  // Garmin API user ID (GET /wellness-api/rest/user/id): identifies the account in push notifications
+  garminUserId: text("garmin_user_id").notNull().unique(),
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token"),
+  expiresAt: text("expires_at"), // ISO timestamp of the access token expiry
+  permissions: text("permissions"), // JSON array, e.g. ["ACTIVITY_EXPORT"]
+  connectedAt: text("connected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastSyncAt: text("last_sync_at"),
+  lastWebhookAt: text("last_webhook_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const garminActivities = sqliteTable("garmin_activities", {
+  id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
+  summaryId: text("summary_id").notNull().unique(), // Activity Details summaryId
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  garminActivityId: text("garmin_activity_id"),
+  name: text("name").notNull(),
+  activityType: text("activity_type").notNull(), // Garmin activityType, e.g. "RUNNING", "TRAIL_RUNNING"
+  deviceName: text("device_name"),
+  distance: real("distance").notNull(), // meters
+  duration: integer("duration").notNull(), // seconds
+  startDate: text("start_date").notNull(), // ISO
+  summaryPolyline: text("summary_polyline"), // encoded GPS track from the samples
+  // pending (waiting for /process) | imported (route created) | skipped
+  status: text("status").notNull().default('pending'),
+  processed: integer("processed", { mode: 'boolean' }).notNull().default(false),
+  processedAt: text("processed_at"),
+  skipReason: text("skip_reason"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 // Ephemeral photos (one-time viewable taunt photos)
 export const ephemeralPhotos = sqliteTable("ephemeral_photos", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
@@ -643,6 +680,16 @@ export const insertSuuntoActivitySchema = createInsertSchema(suuntoActivities).o
   createdAt: true,
 });
 
+export const insertGarminAccountSchema = createInsertSchema(garminAccounts).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertGarminActivitySchema = createInsertSchema(garminActivities).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertPushSubscriptionSchema = createInsertSchema(pushSubscriptions).omit({
   id: true,
   createdAt: true,
@@ -771,6 +818,12 @@ export type InsertSuuntoAccount = z.infer<typeof insertSuuntoAccountSchema>;
 
 export type SuuntoActivity = typeof suuntoActivities.$inferSelect;
 export type InsertSuuntoActivity = z.infer<typeof insertSuuntoActivitySchema>;
+
+export type GarminAccount = typeof garminAccounts.$inferSelect;
+export type InsertGarminAccount = z.infer<typeof insertGarminAccountSchema>;
+
+export type GarminActivity = typeof garminActivities.$inferSelect;
+export type InsertGarminActivity = z.infer<typeof insertGarminActivitySchema>;
 
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type InsertPushSubscription = z.infer<typeof insertPushSubscriptionSchema>;

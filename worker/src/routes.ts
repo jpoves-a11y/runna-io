@@ -1917,6 +1917,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (!user) {
         return c.json({ error: 'User not found' }, 404);
       }
+      // Garmin requires deleting the user's registration when they delete their account here
+      const garminAccount = await storage.getGarminAccountByUserId(id);
+      if (garminAccount) {
+        const { deleteGarminRegistration } = await import('./garmin');
+        await deleteGarminRegistration(c.env, storage, garminAccount);
+      }
       await storage.deleteUser(id);
       forgetUserSessions(id);
       return c.json({ success: true });
@@ -2233,6 +2239,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       await storage.deleteStravaActivityByRouteId(routeId);
       // Suunto: keep the workout as skipped so the webhook / hourly poll doesn't import it again
       await storage.markSuuntoActivityDeletedByRouteId(routeId);
+      await storage.markGarminActivityDeletedByRouteId(routeId);
 
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);
