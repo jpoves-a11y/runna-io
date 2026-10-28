@@ -363,6 +363,19 @@ final class MapModel {
 
     // MARK: - Runs of other players
 
+    /// Zones of the run's owner that the run passes through (what it conquered or reinforced).
+    func zones(crossedBy route: RunRoute) -> [TerritoryShape] {
+        let points = MapGeometry.simplified(route.locations, maxPoints: 300)
+        guard !points.isEmpty else { return [] }
+        return shapes.filter { shape in
+            guard shape.userId == route.userId, let outer = shape.rings.first else { return false }
+            let holes = shape.rings.dropFirst()
+            return points.contains { point in
+                Self.contains(outer, point) && !holes.contains { Self.contains($0, point) }
+            }
+        }
+    }
+
     /// The owner's most recent run that goes through this zone (the run that last conquered it).
     /// A user's territory is one multipolygon, so the territory's own routeId is just their latest run.
     func latestRoute(through shape: TerritoryShape) async -> RunRoute? {

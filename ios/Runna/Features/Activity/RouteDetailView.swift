@@ -88,8 +88,8 @@ struct RouteDetailView: View {
             RouteDetailMap(
                 locations: route.locations,
                 color: lineColor,
-                // The territory this run conquered (as drawn on the map), for the replay
-                territories: MapModel.shared.shapes.filter { $0.routeId == route.id }
+                // Only the zones this run goes through (a user's territory is one multipolygon)
+                territories: MapModel.shared.zones(crossedBy: route)
             )
                 .frame(height: 320)
                 .overlay(alignment: .bottom) { HairlineDivider() }
@@ -305,40 +305,29 @@ struct RouteDetailView: View {
 
 // MARK: - Pieces
 
-/// Interactive map of the route with start and finish markers, the territory it conquered and a button
-/// that replays the conquest: the line is drawn from start to finish and then the territory fills in.
+/// Interactive map of the route with start and finish markers and the zones it goes through, fitted to
+/// the route. "Reproducir" follows the run from behind like a car navigator (tilted camera heading
+/// forward), drawing the line as it goes, then pulls back to the whole route and fills the territory in.
 private struct RouteDetailMap: View {
     let locations: [CLLocationCoordinate2D]
     let color: Color
     let territories: [TerritoryShape]
 
-    /// Fits the route and its territory; reset before every replay so it plays centred.
     @State private var position: MapCameraPosition = .automatic
-    /// 0...1 of the line drawn.
-    @State private var progress: Double = 1
+    /// Points of the line drawn so far during a replay (nil: the whole route).
+    @State private var drawn: [CLLocationCoordinate2D]?
     @State private var territoryOpacity: Double = 1
     /// Bumped by the button; 0 = no replay yet.
     @State private var replayToken = 0
+    @State private var isReplaying = false
 
-    /// The route thinned out for the replay (redrawing thousands of GPS points every frame stutters).
-    private var replayLocations: [CLLocationCoordinate2D] {
-        MapGeometry.simplified(locations, maxPoints: 300)
-    }
+    private var line: [CLLocationCoordinate2D] { drawn ?? locations }
 
-    private var drawnLocations: [CLLocationCoordinate2D] {
-        guard progress < 1 else { return locations }
-        let thinned = replayLocations
-        let count = max(2, Int((Double(thinned.count) * progress).rounded()))
-        return Array(thinned.prefix(count))
-    }
-
-    private var fittedPosition: MapCameraPosition {
-        let points = locations + territories.flatMap { $0.rings.first ?? [] }
-        guard let rect = MapGeometry.fittingRect(points, bottomShare: 0.12) else { return .automatic }
+    /// The whole route, with a margin (the zones are not included: they can be much bigger).
+    private var overview: MapCameraPosition {
+        guard let rect = MapGeometry.fittingRect(locations) else { return .automatic }
         return .rect(rect)
     }
-
-    private var isReplaying: Bool { progress < 1 || territoryOpacity < 1 }
 
     var body: some View {
         Map(position: $position) {
@@ -347,31 +336,33 @@ private struct RouteDetailMap: View {
                     .foregroundStyle(color.opacity(0.3 * territoryOpacity))
                     .stroke(color.opacity(territoryOpacity), lineWidth: 2)
             }
-            MapPolyline(coordinates: drawnLocations)
-                .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
-            MapPolyline(coordinates: drawnLocations)
-                .stroke(color, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
+            if line.count >= 2 {
+                MapPolyline(coordinates: line)
+                    .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: line)
+                    .stroke(color, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
+            }
             if let start = locations.first {
                 Annotation("Salida", coordinate: start) {
                     RouteDetailPin(isFinish: false, tint: color)
                 }
             }
-            if progress >= 1, let end = locations.last {
+            if drawn == nil, let end = locations.last {
                 Annotation("Llegada", coordinate: end) {
                     RouteDetailPin(isFinish: true, tint: color)
                 }
             }
-            if progress < 1, let head = drawnLocations.last {
+            if let head = drawn?.last {
                 Annotation("", coordinate: head) {
                     Circle()
                         .fill(color)
-                        .frame(width: 16, height: 16)
+                        .frame(width: 18, height: 18)
                         .overlay(Circle().strokeBorder(Color.white, lineWidth: 3))
-                        .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+                        .shadow(color: Color.black.opacity(0.25), radius: 3, x: 0, y: 1)
                 }
             }
         }
-        .mapStyle(.standard(emphasis: .muted, pointsOfInterest: .excludingAll))
+        .mapStyle(.standard(elevation: .realistic, emphasis: .muted, pointsOfInterest: .excludingAll))
         .overlay(alignment: .bottomTrailing) {
             Button {
                 replayToken += 1
@@ -387,33 +378,63 @@ private struct RouteDetailMap: View {
             .opacity(isReplaying ? 0.5 : 1)
             .padding(DS.Spacing.m)
         }
-        .onAppear { position = fittedPosition }
+        .onAppear { position = overview }
         .task(id: replayToken) { await replay() }
     }
 
     private func replay() async {
-        guard replayToken > 0 else { return }
-        Haptics.tap()
-        withAnimation(.smooth(duration: 0.5)) { position = fittedPosition }
-        territoryOpacity = 0
-        progress = 0
-        let steps = 45
-        for step in 1...steps {
-            try? await Task.sleep(nanoseconds: 2_400_000_000 / UInt64(steps))
-            if Task.isCancelled {
-                progress = 1
-                territoryOpacity = 1
-                return
-            }
-            progress = Double(step) / Double(steps)
+        guard replayToken > 0, locations.count >= 2 else { return }
+        isReplaying = true
+        defer {
+            drawn = nil
+            territoryOpacity = 1
+            isReplaying = false
         }
-        // The territory fills in (stepped: map overlays don't animate)
+        Haptics.tap()
+
+        // Constant speed: 8–20 s depending on the distance, one camera move every 0.25 s
+        let distance = MapGeometry.length(locations)
+        let duration = min(max(distance / 1000 * 2.5, 8), 20)
+        let tick = 0.25
+        let steps = max(8, Int(duration / tick))
+        let path = MapGeometry.resampled(locations, count: 400)
+        let lookAhead = 10
+        let pov = { (index: Int, heading: Double) -> MapCamera in
+            MapCamera(centerCoordinate: path[index], distance: 450, heading: heading, pitch: 62)
+        }
+
+        territoryOpacity = 0
+        drawn = [path[0], path[0]]
+        var heading = MapGeometry.bearing(from: path[0], to: path[min(lookAhead, path.count - 1)])
+        // Swoop down behind the start
+        withAnimation(.easeInOut(duration: 1.2)) { position = .camera(pov(0, heading)) }
+        try? await Task.sleep(nanoseconds: 1_300_000_000)
+        if Task.isCancelled { return }
+
+        for step in 1...steps {
+            let index = min(path.count - 1, step * (path.count - 1) / steps)
+            let ahead = path[min(index + lookAhead, path.count - 1)]
+            if index + 1 < path.count {
+                // Turn smoothly towards where the run goes next (shortest way round)
+                let target = MapGeometry.bearing(from: path[index], to: ahead)
+                let delta = (target - heading + 540).truncatingRemainder(dividingBy: 360) - 180
+                heading = (heading + delta * 0.45 + 360).truncatingRemainder(dividingBy: 360)
+            }
+            drawn = Array(path[0...index])
+            withAnimation(.linear(duration: tick)) { position = .camera(pov(index, heading)) }
+            try? await Task.sleep(nanoseconds: UInt64(tick * 1_000_000_000))
+            if Task.isCancelled { return }
+        }
+
+        // Pull back to the whole route and fill the territory in
+        drawn = nil
+        withAnimation(.easeInOut(duration: 1.2)) { position = overview }
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
         for step in 1...12 {
             try? await Task.sleep(nanoseconds: 50_000_000)
-            if Task.isCancelled { break }
+            if Task.isCancelled { return }
             territoryOpacity = Double(step) / 12
         }
-        territoryOpacity = 1
         if !territories.isEmpty { Haptics.success() }
     }
 }

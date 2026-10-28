@@ -166,6 +166,50 @@ enum MapGeometry {
         return (0..<maxPoints).map { coordinates[min(coordinates.count - 1, Int((Double($0) * step).rounded()))] }
     }
 
+    /// `count` points evenly spaced along the line by distance (constant speed for the follow camera).
+    static func resampled(_ coordinates: [CLLocationCoordinate2D], count: Int) -> [CLLocationCoordinate2D] {
+        guard coordinates.count >= 2, count >= 2 else { return coordinates }
+        var cumulative: [Double] = [0]
+        for i in 1..<coordinates.count {
+            let a = MKMapPoint(coordinates[i - 1])
+            let b = MKMapPoint(coordinates[i])
+            cumulative.append(cumulative[i - 1] + a.distance(to: b))
+        }
+        guard let total = cumulative.last, total > 0 else { return coordinates }
+        var result: [CLLocationCoordinate2D] = []
+        var segment = 1
+        for k in 0..<count {
+            let target = total * Double(k) / Double(count - 1)
+            while segment < coordinates.count - 1 && cumulative[segment] < target { segment += 1 }
+            let start = cumulative[segment - 1]
+            let length = cumulative[segment] - start
+            let t = length > 0 ? min(max((target - start) / length, 0), 1) : 0
+            let a = coordinates[segment - 1]
+            let b = coordinates[segment]
+            result.append(CLLocationCoordinate2D(
+                latitude: a.latitude + (b.latitude - a.latitude) * t,
+                longitude: a.longitude + (b.longitude - a.longitude) * t
+            ))
+        }
+        return result
+    }
+
+    /// Compass bearing in degrees (0 = north) from `a` to `b`.
+    static func bearing(from a: CLLocationCoordinate2D, to b: CLLocationCoordinate2D) -> Double {
+        let lat1 = a.latitude * .pi / 180
+        let lat2 = b.latitude * .pi / 180
+        let dLng = (b.longitude - a.longitude) * .pi / 180
+        let y = sin(dLng) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng)
+        let degrees = atan2(y, x) * 180 / .pi
+        return degrees < 0 ? degrees + 360 : degrees
+    }
+
+    /// Length of a line in metres.
+    static func length(_ coordinates: [CLLocationCoordinate2D]) -> Double {
+        zip(coordinates, coordinates.dropFirst()).reduce(0) { $0 + MKMapPoint($1.0).distance(to: MKMapPoint($1.1)) }
+    }
+
     /// Map rect showing `points` with a margin, leaving `topShare` / `bottomShare` of the screen height free
     /// (for the cards drawn over the map).
     static func fittingRect(_ points: [CLLocationCoordinate2D], bottomShare: Double = 0, topShare: Double = 0) -> MKMapRect? {
