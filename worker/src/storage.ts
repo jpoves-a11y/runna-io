@@ -16,6 +16,8 @@ import {
   corosActivities,
   suuntoAccounts,
   suuntoActivities,
+  garminAccounts,
+  garminActivities,
   conquestMetrics,
   emailNotifications,
   emailPreferences,
@@ -65,6 +67,10 @@ import {
   type InsertSuuntoAccount,
   type SuuntoActivity,
   type InsertSuuntoActivity,
+  type GarminAccount,
+  type InsertGarminAccount,
+  type GarminActivity,
+  type InsertGarminActivity,
   type ConquestMetric,
   type InsertConquestMetric,
   type EmailNotification,
@@ -216,6 +222,7 @@ export class WorkerStorage {
     await this.db.delete(stravaActivities).where(eq(stravaActivities.userId, userId));
     await this.db.delete(stravaAccounts).where(eq(stravaAccounts.userId, userId));
     await this.deleteSuuntoDataByUserId(userId);
+    await this.deleteGarminDataByUserId(userId);
     await this.db.delete(friendRequests).where(eq(friendRequests.senderId, userId));
     await this.db.delete(friendRequests).where(eq(friendRequests.recipientId, userId));
     await this.db.delete(friendInvites).where(eq(friendInvites.userId, userId));
@@ -2190,6 +2197,165 @@ export class WorkerStorage {
       })
       .from(suuntoActivities)
       .where(eq(suuntoActivities.userId, userId));
+    return { total: Number(row?.total ?? 0), pending: Number(row?.pending ?? 0), failed: Number(row?.failed ?? 0) };
+  }
+
+  // ==================== GARMIN ====================
+  // Tables are created at runtime on databases that predate them (see migrations/0013_garmin.sql).
+
+  private static garminTables: Promise<void> | null = null;
+
+  ensureGarminTables(): Promise<void> {
+    if (!WorkerStorage.garminTables) {
+      WorkerStorage.garminTables = this.db.batch([
+        this.db.run(sql`CREATE TABLE IF NOT EXISTS garmin_accounts (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+          garmin_user_id TEXT NOT NULL UNIQUE,
+          access_token TEXT NOT NULL,
+          refresh_token TEXT,
+          expires_at TEXT,
+          permissions TEXT,
+          connected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          last_sync_at TEXT,
+          last_webhook_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        this.db.run(sql`CREATE TABLE IF NOT EXISTS garmin_activities (
+          id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+          summary_id TEXT NOT NULL UNIQUE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          route_id TEXT REFERENCES routes(id) ON DELETE SET NULL,
+          garmin_activity_id TEXT,
+          name TEXT NOT NULL,
+          activity_type TEXT NOT NULL,
+          device_name TEXT,
+          distance REAL NOT NULL,
+          duration INTEGER NOT NULL,
+          start_date TEXT NOT NULL,
+          summary_polyline TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          processed INTEGER NOT NULL DEFAULT 0,
+          processed_at TEXT,
+          skip_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_garmin_activities_user_start ON garmin_activities(user_id, start_date)`),
+        this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_garmin_activities_route ON garmin_activities(route_id)`),
+      ]).then(() => undefined).catch((error) => {
+        WorkerStorage.garminTables = null; // retry on the next call
+        throw error;
+      });
+    }
+    return WorkerStorage.garminTables;
+  }
+
+  async getGarminAccountByUserId(userId: string): Promise<GarminAccount | undefined> {
+    await this.ensureGarminTables();
+    const [account] = await this.db.select().from(garminAccounts).where(eq(garminAccounts.userId, userId));
+    return account || undefined;
+  }
+
+  async getGarminAccountByGarminUserId(garminUserId: string): Promise<GarminAccount | undefined> {
+    await this.ensureGarminTables();
+    const [account] = await this.db.select().from(garminAccounts).where(eq(garminAccounts.garminUserId, garminUserId));
+    return account || undefined;
+  }
+
+  async createGarminAccount(data: InsertGarminAccount): Promise<GarminAccount> {
+    await this.ensureGarminTables();
+    const [account] = await this.db.insert(garminAccounts).values(data).returning();
+    return account;
+  }
+
+  async updateGarminAccount(userId: string, data: Partial<InsertGarminAccount>): Promise<GarminAccount | undefined> {
+    await this.ensureGarminTables();
+    const [account] = await this.db.update(garminAccounts).set(data).where(eq(garminAccounts.userId, userId)).returning();
+    return account || undefined;
+  }
+
+  /** Disconnect: removes the account and its import records (routes and territory stay). */
+  async deleteGarminAccount(userId: string): Promise<void> {
+    await this.deleteGarminDataByUserId(userId);
+  }
+
+  async deleteGarminDataByUserId(userId: string): Promise<void> {
+    await this.ensureGarminTables();
+    await this.db.delete(garminActivities).where(eq(garminActivities.userId, userId));
+    await this.db.delete(garminAccounts).where(eq(garminAccounts.userId, userId));
+  }
+
+  async getGarminActivityBySummaryId(summaryId: string): Promise<GarminActivity | undefined> {
+    await this.ensureGarminTables();
+    const [activity] = await this.db.select().from(garminActivities).where(eq(garminActivities.summaryId, summaryId));
+    return activity || undefined;
+  }
+
+  async getGarminActivityById(id: string): Promise<GarminActivity | undefined> {
+    await this.ensureGarminTables();
+    const [activity] = await this.db.select().from(garminActivities).where(eq(garminActivities.id, id));
+    return activity || undefined;
+  }
+
+  async createGarminActivity(data: InsertGarminActivity): Promise<GarminActivity> {
+    await this.ensureGarminTables();
+    const [activity] = await this.db.insert(garminActivities).values(data).returning();
+    return activity;
+  }
+
+  async updateGarminActivity(id: string, data: Partial<InsertGarminActivity>): Promise<GarminActivity | undefined> {
+    await this.ensureGarminTables();
+    const [activity] = await this.db.update(garminActivities).set(data).where(eq(garminActivities.id, id)).returning();
+    return activity || undefined;
+  }
+
+  async deleteGarminActivityById(id: string): Promise<void> {
+    await this.ensureGarminTables();
+    await this.db.delete(garminActivities).where(eq(garminActivities.id, id));
+  }
+
+  /**
+   * The user deleted the route of an imported activity: keep the record as skipped so a repeated push
+   * doesn't import it again (the app's "Reintentar" brings it back).
+   */
+  async markGarminActivityDeletedByRouteId(routeId: string): Promise<void> {
+    await this.ensureGarminTables();
+    await this.db
+      .update(garminActivities)
+      .set({ routeId: null, status: 'skipped', processed: true, processedAt: new Date().toISOString(), skipReason: 'deleted_by_user' })
+      .where(eq(garminActivities.routeId, routeId));
+  }
+
+  async getGarminActivitiesByUserId(userId: string, limit = 200): Promise<GarminActivity[]> {
+    await this.ensureGarminTables();
+    return await this.db
+      .select()
+      .from(garminActivities)
+      .where(eq(garminActivities.userId, userId))
+      .orderBy(desc(garminActivities.startDate))
+      .limit(limit);
+  }
+
+  /** Imported activities with a GPS track still waiting to become a route (oldest first). */
+  async getUnprocessedGarminActivities(userId: string): Promise<GarminActivity[]> {
+    await this.ensureGarminTables();
+    return await this.db
+      .select()
+      .from(garminActivities)
+      .where(and(eq(garminActivities.userId, userId), eq(garminActivities.processed, false), isNull(garminActivities.skipReason)))
+      .orderBy(garminActivities.startDate);
+  }
+
+  async getGarminActivityStats(userId: string): Promise<{ total: number; pending: number; failed: number }> {
+    await this.ensureGarminTables();
+    const [row] = await this.db
+      .select({
+        total: sql<number>`count(*)`,
+        pending: sql<number>`sum(case when ${garminActivities.processed} = 0 and ${garminActivities.skipReason} is null then 1 else 0 end)`,
+        failed: sql<number>`sum(case when ${garminActivities.routeId} is null and (${garminActivities.processed} = 1 or ${garminActivities.skipReason} is not null) then 1 else 0 end)`,
+      })
+      .from(garminActivities)
+      .where(eq(garminActivities.userId, userId));
     return { total: Number(row?.total ?? 0), pending: Number(row?.pending ?? 0), failed: Number(row?.failed ?? 0) };
   }
 
