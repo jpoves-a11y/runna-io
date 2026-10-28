@@ -11,6 +11,8 @@ struct IntegrationsSection: View {
     @State private var polar: PolarConnection?
     @State private var suunto: SuuntoConnection?
     @State private var garmin: GarminConnection?
+    /// False until the first status load ends: the provider rows show as loading placeholders meanwhile
+    @State private var statusLoaded = false
     @State private var busyProvider: String?
     @State private var progressText: String?
     @State private var message: String?
@@ -23,61 +25,14 @@ struct IntegrationsSection: View {
 
     var body: some View {
         Section {
-            stravaRow
-            if strava?.connected == true {
-                NavigationLink {
-                    ImportedActivitiesView(provider: "strava")
-                } label: {
-                    activitiesLinkLabel(failed: strava?.failedActivities ?? 0)
-                }
-            }
-            providerRow(
-                name: "Polar",
-                mark: .polar,
-                connected: polar?.connected == true,
-                detail: polarDetail,
-                provider: "polar"
-            )
-            if polar?.connected == true {
-                NavigationLink {
-                    ImportedActivitiesView(provider: "polar")
-                } label: {
-                    activitiesLinkLabel(failed: polar?.failedActivities ?? 0)
-                }
-            }
-            // Hidden until the server has the Suunto API keys (status says configured: false)
-            if showSuunto {
-                providerRow(
-                    name: "Suunto",
-                    mark: .suunto,
-                    connected: suunto?.connected == true,
-                    detail: suuntoDetail,
-                    provider: "suunto"
-                )
-                if suunto?.connected == true {
-                    NavigationLink {
-                        ImportedActivitiesView(provider: "suunto")
-                    } label: {
-                        activitiesLinkLabel(failed: suunto?.failedActivities ?? 0)
-                    }
-                }
-            }
-            // Hidden until the server has the Garmin API keys (status says configured: false)
-            if showGarmin {
-                providerRow(
-                    name: "Garmin",
-                    mark: .garmin,
-                    connected: garmin?.connected == true,
-                    detail: garminDetail,
-                    provider: "garmin"
-                )
-                if garmin?.connected == true {
-                    NavigationLink {
-                        ImportedActivitiesView(provider: "garmin")
-                    } label: {
-                        activitiesLinkLabel(failed: garmin?.failedActivities ?? 0)
-                    }
-                }
+            if statusLoaded {
+                providerRows
+            } else {
+                // Greyed rows with a spinner while the server checks each connection
+                loadingRow(name: "Strava", mark: .strava)
+                loadingRow(name: "Polar", mark: .polar)
+                loadingRow(name: "Suunto", mark: .suunto)
+                loadingRow(name: "Garmin", mark: .garmin)
             }
             if HealthImporter.isAvailable {
                 healthRow
@@ -88,13 +43,12 @@ struct IntegrationsSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(footerText)
                 if let url = URL(string: "https://www.strava.com") {
+                    // Official "Powered by Strava" artwork (developers.strava.com/guidelines), unaltered
                     Link(destination: url) {
-                        HStack(spacing: 4) {
-                            Text("Powered by")
-                                .foregroundStyle(.secondary)
-                            Text("STRAVA").fontWeight(.heavy).foregroundStyle(Self.stravaOrange)
-                        }
-                        .font(.caption)
+                        Image("StravaPoweredBy")
+                            .resizable()
+                            .scaledToFit()
+                            .frame(height: 14)
                     }
                     .accessibilityLabel("Powered by Strava")
                 }
@@ -138,6 +92,67 @@ struct IntegrationsSection: View {
         }
     }
 
+    /// Strava, Polar, Suunto and Garmin with their "Actividades importadas" links, once the status is known.
+    @ViewBuilder
+    private var providerRows: some View {
+        stravaRow
+        if strava?.connected == true {
+            NavigationLink {
+                ImportedActivitiesView(provider: "strava")
+            } label: {
+                activitiesLinkLabel(failed: strava?.failedActivities ?? 0)
+            }
+        }
+        providerRow(
+            name: "Polar",
+            mark: .polar,
+            connected: polar?.connected == true,
+            detail: polarDetail,
+            provider: "polar"
+        )
+        if polar?.connected == true {
+            NavigationLink {
+                ImportedActivitiesView(provider: "polar")
+            } label: {
+                activitiesLinkLabel(failed: polar?.failedActivities ?? 0)
+            }
+        }
+        // Hidden when the server has no Suunto API keys (status says configured: false)
+        if showSuunto {
+            providerRow(
+                name: "Suunto",
+                mark: .suunto,
+                connected: suunto?.connected == true,
+                detail: suuntoDetail,
+                provider: "suunto"
+            )
+            if suunto?.connected == true {
+                NavigationLink {
+                    ImportedActivitiesView(provider: "suunto")
+                } label: {
+                    activitiesLinkLabel(failed: suunto?.failedActivities ?? 0)
+                }
+            }
+        }
+        // Hidden when the server has no Garmin API keys (status says configured: false)
+        if showGarmin {
+            providerRow(
+                name: "Garmin",
+                mark: .garmin,
+                connected: garmin?.connected == true,
+                detail: garminDetail,
+                provider: "garmin"
+            )
+            if garmin?.connected == true {
+                NavigationLink {
+                    ImportedActivitiesView(provider: "garmin")
+                } label: {
+                    activitiesLinkLabel(failed: garmin?.failedActivities ?? 0)
+                }
+            }
+        }
+    }
+
     // MARK: - Rows
 
     /// Width of the leading brand mark; detail lines below a row are indented by this plus the spacing.
@@ -159,7 +174,24 @@ struct IntegrationsSection: View {
                     }
                 }
                 Spacer(minLength: 8)
-                providerActions(name: "Strava", connected: strava?.connected == true, provider: "strava", tint: Self.stravaOrange)
+                if strava?.connected == true || busyProvider == "strava" {
+                    providerActions(name: "Strava", connected: strava?.connected == true, provider: "strava", tint: Self.stravaOrange)
+                }
+            }
+            if strava?.connected != true && busyProvider != "strava" {
+                // Official "Connect with Strava" button (48 pt high, unaltered), required look for Strava's OAuth link
+                Button {
+                    showStravaConsent = true
+                } label: {
+                    Image("StravaConnectButton")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(height: 48)
+                }
+                .buttonStyle(.plain)
+                .disabled(busyProvider != nil)
+                .accessibilityLabel("Conectar con Strava")
+                .padding(.leading, Self.detailIndent)
             }
             if strava?.connected == true, let athleteId = strava?.athlete?.id,
                let url = URL(string: "https://www.strava.com/athletes/\(athleteId)") {
@@ -303,6 +335,28 @@ struct IntegrationsSection: View {
         }
     }
 
+    /// Placeholder while the status loads: greyed mark and name, a redacted status line and a spinner.
+    private func loadingRow(name: String, mark: IntegrationBrandMark.Brand) -> some View {
+        HStack(spacing: 12) {
+            IntegrationBrandMark(brand: mark, size: Self.markSize)
+                .saturation(0)
+                .opacity(0.45)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                Text("Comprobando conexión")
+                    .font(.footnote)
+                    .redacted(reason: .placeholder)
+            }
+            Spacer(minLength: 8)
+            ProgressView()
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name), cargando")
+    }
+
     private func providerRow(name: String, mark: IntegrationBrandMark.Brand, connected: Bool, detail: String?, provider: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
@@ -313,7 +367,7 @@ struct IntegrationsSection: View {
                     statusLine(connected: connected, detail: detail)
                 }
                 Spacer(minLength: 8)
-                providerActions(name: name, connected: connected, provider: provider, tint: .brand)
+                providerActions(name: name, connected: connected, provider: provider, tint: Self.brandTint(provider))
             }
             progressLine(for: provider)
         }
@@ -335,7 +389,7 @@ struct IntegrationsSection: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(tint)
                     .frame(width: 36, height: 36)
                     .contentShape(Rectangle())
             }
@@ -373,7 +427,7 @@ struct IntegrationsSection: View {
                     Button("Importar") {
                         Task { await importFromHealth() }
                     }
-                    .buttonStyle(SecondaryButtonStyle(tint: .brand))
+                    .buttonStyle(SecondaryButtonStyle(tint: IntegrationBrandMark.healthPink))
                 }
             }
             Toggle("Importar automáticamente", isOn: $healthAutoImport)
@@ -404,6 +458,7 @@ struct IntegrationsSection: View {
         polar = await polarStatus
         suunto = await suuntoStatus
         garmin = await garminStatus
+        statusLoaded = true
     }
 
     private func connect(_ provider: String) async {
@@ -485,6 +540,17 @@ struct IntegrationsSection: View {
             message = summary.message
         } catch {
             message = error.localizedDescription
+        }
+    }
+
+    /// Text colour of each service's buttons: its own brand colour (Suunto's black flips to white in dark mode).
+    static func brandTint(_ provider: String) -> Color {
+        switch provider {
+        case "strava": return IntegrationBrandMark.stravaOrange
+        case "polar": return IntegrationBrandMark.polarRed
+        case "suunto": return Color.primary
+        case "garmin": return IntegrationBrandMark.garminBlue
+        default: return Color.brand
         }
     }
 
@@ -1051,8 +1117,9 @@ struct ImportedActivitiesView: View {
 
 // MARK: - Brand marks
 
-/// Third-party service marks for the connected-services rows: the brand's own colour tile with a
-/// white glyph (Strava peaks, Polar, Suunto, Garmin), or Apple Health's white tile with the pink heart.
+/// Third-party service marks for the connected-services rows: the official Garmin Connect tile and
+/// Apple Health icon, and the brand's colour tile with a white glyph for Strava, Polar and Suunto
+/// (they don't publish an icon for third-party apps).
 struct IntegrationBrandMark: View {
     enum Brand {
         case strava, polar, suunto, garmin, appleHealth
@@ -1066,6 +1133,7 @@ struct IntegrationBrandMark: View {
     static let suuntoBlack = Color(hex: "#16181A")
     static let garminBlue = Color(hex: "#007CC3")
     static let healthPink = Color(hex: "#FF2D55")
+    static let garminTileURL = URL(string: "https://static.garmincdn.com/com.garmin.connect/content/images/developer/gc-app-tile/xxhdpi/gc-app-tile_@360.png")
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
@@ -1094,16 +1162,27 @@ struct IntegrationBrandMark: View {
                     .tracking(size * 0.02)
                     .foregroundStyle(Color.white)
             case .garmin:
-                shape.fill(Self.garminBlue)
-                Text("G")
-                    .font(.system(size: size * 0.54, weight: .bold))
-                    .foregroundStyle(Color.white)
+                // Official Garmin Connect tile from the URL Garmin asks developers to use (it always
+                // serves the current artwork); the plain tile shows while it loads or offline
+                AsyncImage(url: Self.garminTileURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        ZStack {
+                            shape.fill(Self.garminBlue)
+                            Text("G")
+                                .font(.system(size: size * 0.54, weight: .bold))
+                                .foregroundStyle(Color.white)
+                        }
+                    }
+                }
             case .appleHealth:
-                shape.fill(Color.white)
+                // Official Apple Health icon (Apple Design Resources), with the hairline border Apple asks for on light backgrounds
+                Image("AppleHealthIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(shape)
                 shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
-                Image(systemName: "heart.fill")
-                    .font(.system(size: size * 0.5, weight: .regular))
-                    .foregroundStyle(Self.healthPink)
             }
         }
         .frame(width: size, height: size)
