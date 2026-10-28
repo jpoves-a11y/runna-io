@@ -80,7 +80,7 @@ const pingDetail = activityDetail({ summaryId: '1005-detail', daysAgo: 1, origin
 
 // ---------- Mocked Garmin / APNs ----------
 
-const CLIENT_ID = 'test-garmin-client';
+const CLIENT_ID = '600a2456-ab5f-4b1f-8eb3-8cc8dc86264d';
 const CLIENT_SECRET = 'test-garmin-secret';
 const WEBHOOK_SECRET = 'test-garmin-webhook';
 
@@ -153,7 +153,8 @@ const baseEnv = {
   APNS_BUNDLE_ID: 'io.runna.app',
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
-const env = { ...baseEnv, GARMIN_CLIENT_ID: CLIENT_ID, GARMIN_CLIENT_SECRET: CLIENT_SECRET, GARMIN_WEBHOOK_SECRET: WEBHOOK_SECRET };
+// Padded like secrets pasted in the Cloudflare dashboard: the Worker must trim them
+const env = { ...baseEnv, GARMIN_CLIENT_ID: ` ${CLIENT_ID}\n`, GARMIN_CLIENT_SECRET: `${CLIENT_SECRET} `, GARMIN_WEBHOOK_SECRET: `${WEBHOOK_SECRET}\n` };
 const ctx = { waitUntil: (p) => { pending.push(Promise.resolve(p)); }, passThroughOnException() {} };
 
 /** Waits for background work, then runs queued territory messages like the queue consumer. */
@@ -206,7 +207,7 @@ check('connect without secrets: 400', (await call('GET', '/api/garmin/connect', 
 
 // Connect (OAuth2 PKCE)
 const status0 = await call('GET', `/api/garmin/status/${user.id}`, { token: user.token });
-check('status configured, not connected', status0.data.configured === true && status0.data.connected === false, status0.data);
+check('status configured, not connected, client ID well formed', status0.data.configured === true && status0.data.clientIdFormatOk === true && status0.data.connected === false, status0.data);
 check('status of another user: 403', (await call('GET', `/api/garmin/status/${other.id}`, { token: user.token })).status === 403);
 check('connect without session: 401', (await call('GET', '/api/garmin/connect')).status === 401);
 const { res: connectRes, authUrl, state } = await connect(user);
