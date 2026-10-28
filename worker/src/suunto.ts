@@ -65,8 +65,22 @@ function getStorage(env: Env): WorkerStorage {
   return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
 }
 
+// Secrets pasted in the Cloudflare dashboard often carry a trailing space or newline, which makes
+// Suunto reject the token exchange ("Suunto no ha aceptado la autorización").
+function clientId(env: Env): string {
+  return (env.SUUNTO_CLIENT_ID || '').trim();
+}
+
+function clientSecret(env: Env): string {
+  return (env.SUUNTO_CLIENT_SECRET || '').trim();
+}
+
+function subscriptionKey(env: Env): string {
+  return (env.SUUNTO_SUBSCRIPTION_KEY || '').trim();
+}
+
 export function isSuuntoConfigured(env: Env): boolean {
-  return !!(env.SUUNTO_CLIENT_ID && env.SUUNTO_CLIENT_SECRET && env.SUUNTO_SUBSCRIPTION_KEY);
+  return !!(clientId(env) && clientSecret(env) && subscriptionKey(env));
 }
 
 function redirectUri(env: Env): string {
@@ -123,7 +137,7 @@ async function requestToken(env: Env, params: Record<string, string>): Promise<{
   const response = await fetch(`${SUUNTO_OAUTH_BASE}/token`, {
     method: 'POST',
     headers: {
-      'Authorization': `Basic ${btoa(`${env.SUUNTO_CLIENT_ID}:${env.SUUNTO_CLIENT_SECRET}`)}`,
+      'Authorization': `Basic ${btoa(`${clientId(env)}:${clientSecret(env)}`)}`,
       'Content-Type': 'application/x-www-form-urlencoded',
       'Accept': 'application/json',
     },
@@ -178,7 +192,7 @@ export async function getValidSuuntoToken(account: SuuntoAccount, storage: Worke
 function apiHeaders(env: Env, accessToken: string, accept: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${accessToken}`,
-    'Ocp-Apim-Subscription-Key': env.SUUNTO_SUBSCRIPTION_KEY || '',
+    'Ocp-Apim-Subscription-Key': subscriptionKey(env),
     'Accept': accept,
   };
 }
@@ -759,11 +773,11 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
       const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
-      if (!isSuuntoConfigured(c.env) || !c.env.SUUNTO_CLIENT_SECRET) {
+      if (!isSuuntoConfigured(c.env)) {
         return c.json({ error: 'Suunto not configured' }, 400);
       }
-      const state = await createOAuthState(userId, c.env.SUUNTO_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
-      const authUrl = `${SUUNTO_OAUTH_BASE}/authorize?response_type=code&client_id=${encodeURIComponent(c.env.SUUNTO_CLIENT_ID || '')}&redirect_uri=${encodeURIComponent(redirectUri(c.env))}&state=${encodeURIComponent(state)}`;
+      const state = await createOAuthState(userId, clientSecret(c.env), { app: c.req.query('client') === 'ios' });
+      const authUrl = `${SUUNTO_OAUTH_BASE}/authorize?response_type=code&client_id=${encodeURIComponent(clientId(c.env))}&redirect_uri=${encodeURIComponent(redirectUri(c.env))}&state=${encodeURIComponent(state)}`;
       return c.json({ authUrl, url: authUrl });
     } catch (error: any) {
       console.error('[SUUNTO] Connect error:', error);
@@ -773,7 +787,7 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
 
   app.get('/api/suunto/callback', async (c) => {
     const state = c.req.query('state');
-    const secret = c.env.SUUNTO_CLIENT_SECRET;
+    const secret = clientSecret(c.env);
     const verified = state && secret ? await verifyOAuthState(state, secret) : null;
     const frontend = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
     const finish = (query: string) => oauthFinish(c, verified?.app === true, 'suunto', `${frontend}/profile?${query}`);
@@ -842,7 +856,7 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
   app.post('/api/suunto/webhook', async (c) => {
     try {
       const rawBody = await c.req.text();
-      const secret = c.env.SUUNTO_WEBHOOK_SECRET;
+      const secret = (c.env.SUUNTO_WEBHOOK_SECRET || '').trim();
       if (secret) {
         const signature = SIGNATURE_HEADERS.map((name) => c.req.header(name)).find((value): value is string => !!value);
         if (signature && !(await verifySuuntoSignature(secret, rawBody, signature))) {
