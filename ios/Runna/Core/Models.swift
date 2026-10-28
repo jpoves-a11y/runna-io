@@ -19,11 +19,10 @@ struct AppUser: Codable, Identifiable, Hashable {
     var nickname: String?
     var createdAt: String?
     var token: String?
-    var requiresVerification: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, username, name, color, avatar, totalArea, email, emailVerified, rank, friendCount
-        case nickname, createdAt, token, requiresVerification
+        case nickname, createdAt, token
     }
 
     init(from decoder: Decoder) throws {
@@ -41,7 +40,6 @@ struct AppUser: Codable, Identifiable, Hashable {
         nickname = c.string(.nickname)
         createdAt = c.string(.createdAt)
         token = c.string(.token)
-        requiresVerification = c.bool(.requiresVerification)
     }
 
     var displayName: String { nickname.map { "\($0) (\(name))" } ?? name }

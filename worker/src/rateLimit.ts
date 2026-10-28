@@ -26,6 +26,10 @@ export const LIMITS = {
   resetRequestAccount: { max: 3, windowMs: 60 * MINUTE, lockMs: 60 * MINUTE },
   /** "Forgot password" requests from one IP address */
   resetRequestIp: { max: 10, windowMs: 60 * MINUTE, lockMs: 60 * MINUTE },
+  /** Sign-up codes emailed to one address (first one and resends) */
+  signupEmail: { max: 4, windowMs: 60 * MINUTE, lockMs: 60 * MINUTE },
+  /** Sign-up codes requested from one IP address, whatever the email */
+  signupIp: { max: 10, windowMs: 60 * MINUTE, lockMs: 60 * MINUTE },
 } satisfies Record<string, AttemptLimit>;
 
 /** The caller's IP on Cloudflare; null elsewhere (local API), where IP limits are skipped. */

@@ -348,7 +348,7 @@ struct VerifyEmailView: View {
 
     private var subtitle: Text {
         let email: String = session.pendingVerification?.email ?? ""
-        return Text("Introduce el código de 6 dígitos que hemos enviado a **\(email)**.")
+        return Text("Introduce el código de 6 dígitos que hemos enviado a **\(email)**. Tu cuenta se creará al confirmarlo.")
     }
 
     private var verifyButton: some View {
@@ -376,7 +376,7 @@ struct VerifyEmailView: View {
                 .disabled(remaining > 0)
                 .frame(minHeight: 44)
             }
-            Button("Usar otra cuenta") {
+            Button("Cambiar el email") {
                 session.cancelVerification()
             }
             .font(.subheadline)

@@ -11,13 +11,16 @@ final class SessionStore {
         case loggedIn
     }
 
-    /// Account created but email not verified yet. The registration token is only used to verify it
-    /// and is kept in the keychain (never in UserDefaults, which ends up in backups unencrypted).
+    /// Sign-up waiting for the 6-digit code emailed to the address: the account is only created
+    /// once the code is confirmed. Kept in the keychain so it survives going to the Mail app.
     struct PendingVerification: Codable, Equatable {
-        let userId: String
         let email: String
-        let token: String
         let createdAt: Date
+    }
+
+    /// What older versions kept while the email was unverified (the account already existed then).
+    private struct LegacyPendingVerification: Decodable {
+        let token: String
     }
 
     private(set) var state: State = .loading
@@ -28,19 +31,24 @@ final class SessionStore {
     private let tokenKey = "sessionToken"
     private let userIdKey = "sessionUserId"
     private let cachedUserKey = "cachedUser"
-    private let pendingKey = "pendingVerification"
-    /// How long the "verify your email" screen is kept after registering (the user may take a while to find the email).
+    private let pendingKey = "pendingSignup"
+    private let legacyPendingKey = "pendingVerification"
+    /// How long the "verify your email" screen is kept after registering (the server keeps the
+    /// sign-up for a day, so a new code can still be requested).
     private let pendingValidity: TimeInterval = 24 * 60 * 60
 
     init() {
         api.onUnauthorized = { [weak self] in
             self?.endSession()
         }
-        // Older versions kept the pending registration in UserDefaults: move it to the keychain
-        if let legacy = UserDefaults.standard.data(forKey: pendingKey) {
-            UserDefaults.standard.removeObject(forKey: pendingKey)
-            if let text = String(data: legacy, encoding: .utf8) {
-                KeychainStore.set(text, for: pendingKey)
+        // Older versions created the account before the email was verified and kept its token:
+        // revoke it (that account can sign in with its password)
+        UserDefaults.standard.removeObject(forKey: legacyPendingKey)
+        if let text = KeychainStore.get(legacyPendingKey) {
+            KeychainStore.delete(legacyPendingKey)
+            if let data = text.data(using: .utf8),
+               let legacy = try? JSONDecoder().decode(LegacyPendingVerification.self, from: data) {
+                Self.revoke(token: legacy.token)
             }
         }
         if let text = KeychainStore.get(pendingKey),
@@ -49,9 +57,7 @@ final class SessionStore {
             if Date().timeIntervalSince(pending.createdAt) < pendingValidity {
                 pendingVerification = pending
             } else {
-                // Expired: forget it and revoke its token on the server
                 KeychainStore.delete(pendingKey)
-                Self.revoke(token: pending.token)
             }
         }
     }
@@ -111,9 +117,11 @@ final class SessionStore {
         startSession(user: response, token: token)
     }
 
+    /// Step 1 of sign-up: the server checks that the email and username are free and emails a code.
+    /// No account exists until `verifyEmail(code:)`.
     func register(name: String, username: String, email: String, password: String) async throws {
-        let response: AppUser = try await api.request(
-            "POST", "/api/users",
+        let response: SignupStartResponse = try await api.request(
+            "POST", "/api/auth/register/start",
             body: [
                 "name": name.trimmingCharacters(in: .whitespaces),
                 "username": username.trimmingCharacters(in: .whitespaces),
@@ -122,33 +130,28 @@ final class SessionStore {
                 "color": AppConfig.userColors.randomElement() ?? "#377EB8",
             ]
         )
-        guard let token = response.token else {
-            throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inténtalo más tarde.")
-        }
-        if response.requiresVerification == true {
-            if let previous = pendingVerification, previous.token != token {
-                Self.revoke(token: previous.token)
-            }
-            let pending = PendingVerification(userId: response.id, email: response.email ?? email, token: token, createdAt: Date())
-            pendingVerification = pending
-            if let data = try? JSONEncoder().encode(pending), let text = String(data: data, encoding: .utf8) {
-                KeychainStore.set(text, for: pendingKey)
-            }
-        } else {
-            startSession(user: response, token: token)
+        let pending = PendingVerification(
+            email: response.email ?? email.trimmingCharacters(in: .whitespaces).lowercased(),
+            createdAt: Date()
+        )
+        pendingVerification = pending
+        if let data = try? JSONEncoder().encode(pending), let text = String(data: data, encoding: .utf8) {
+            KeychainStore.set(text, for: pendingKey)
         }
     }
 
+    /// Step 2 of sign-up: the code from the email creates the account and signs in.
     func verifyEmail(code: String) async throws {
         guard let pending = pendingVerification else { return }
-        try await api.send(
-            "POST", "/api/auth/verify-email",
-            body: ["code": code.trimmingCharacters(in: .whitespaces)],
-            token: pending.token
+        let response: AppUser = try await api.request(
+            "POST", "/api/auth/register/confirm",
+            body: ["email": pending.email, "code": code.trimmingCharacters(in: .whitespaces)]
         )
-        let user: AppUser = try await api.request("GET", "/api/current-user/\(pending.userId)", token: pending.token)
+        guard let token = response.token else {
+            throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inicia sesión con tu email y contraseña.")
+        }
         clearPendingVerification()
-        startSession(user: user, token: pending.token)
+        startSession(user: response, token: token)
     }
 
     // MARK: - Forgot password
@@ -176,23 +179,17 @@ final class SessionStore {
         guard let token = response.token else {
             throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inicia sesión con tu nueva contraseña.")
         }
-        if let pending = pendingVerification {
-            Self.revoke(token: pending.token)
-            clearPendingVerification()
-        }
+        clearPendingVerification()
         startSession(user: response, token: token)
     }
 
     func resendVerificationCode() async throws {
         guard let pending = pendingVerification else { return }
-        try await api.send("POST", "/api/auth/resend-verification", body: [:], token: pending.token)
+        try await api.send("POST", "/api/auth/register/resend", body: ["email": pending.email])
     }
 
-    /// "Usar otra cuenta": forgets the pending registration and revokes its token on the server.
+    /// Back to the sign-up form (e.g. a mistyped email): nothing was created on the server.
     func cancelVerification() {
-        if let pending = pendingVerification {
-            Self.revoke(token: pending.token)
-        }
         clearPendingVerification()
     }
 
@@ -329,7 +326,6 @@ final class SessionStore {
     private func clearPendingVerification() {
         pendingVerification = nil
         KeychainStore.delete(pendingKey)
-        UserDefaults.standard.removeObject(forKey: pendingKey)
     }
 
     /// Revokes a session token on the server (abandoned registration), without waiting.
@@ -341,5 +337,10 @@ final class SessionStore {
 }
 
 private struct PasswordResetRequestResponse: Decodable {
+    let message: String?
+}
+
+private struct SignupStartResponse: Decodable {
+    let email: String?
     let message: String?
 }

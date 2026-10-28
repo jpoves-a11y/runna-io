@@ -270,6 +270,19 @@ export const passwordResets = sqliteTable("password_resets", {
   attempts: integer("attempts").notNull().default(0),
 });
 
+// Sign-ups waiting for the 6-digit code emailed to the address: the account is only created
+// (POST /api/auth/register/confirm) once the code proves the email exists and belongs to the user
+export const pendingSignups = sqliteTable("pending_signups", {
+  email: text("email").primaryKey(), // lowercased
+  username: text("username").notNull(),
+  name: text("name").notNull(),
+  passwordHash: text("password_hash").notNull(),
+  color: text("color").notNull(),
+  codeHash: text("code_hash").notNull(),
+  expiresAt: integer("expires_at").notNull(), // ms since epoch
+  attempts: integer("attempts").notNull().default(0),
+});
+
 // Email notifications tables
 export const emailNotifications = sqliteTable("email_notifications", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),
