@@ -47,6 +47,15 @@ Una sola vez:
 
 Cada build: GitHub → **Actions → TestFlight → Run workflow**. Tarda unos 15 minutos y la build aparece en TestFlight cuando Apple termina de procesarla (10–30 minutos). El número de build sube solo (1000 + número de ejecución).
 
+Cómo firma el workflow (no crea certificados):
+
+- Archiva **sin firmar** y después añade las capacidades (Push Notifications y HealthKit, de `Config/Runna.entitlements`) con una firma *ad-hoc*, que no necesita certificado.
+- Al exportar, Xcode firma la app y la extensión RunnaLive con el certificado de distribución **gestionado por Apple en la nube** (gracias a la clave de API con rol Admin). En el Mac de GitHub no hay ni hace falta ningún certificado.
+- Antes de subir comprueba que el IPA está firmado con *Apple Distribution*, que incluye RunnaLive y que mantiene `aps-environment = production` y HealthKit. Si falta algo, la ejecución falla sin subir nada.
+- El último paso, **List signing certificates**, muestra los certificados de la cuenta. El número de `DEVELOPMENT` no debe crecer entre ejecuciones.
+
+Antes el workflow firmaba el archivo en modo desarrollo y cada ejecución creaba un certificado *Apple Development* nuevo, hasta llegar al límite de Apple ("Your account has reached the maximum number of certificates"). Esos certificados no sirven para nada (su clave privada se borró con el Mac de GitHub): revócalos en [developer.apple.com → Certificates](https://developer.apple.com/account/resources/certificates/list) (los de tipo *Apple Development* que se crearon en las fechas de las ejecuciones del workflow). No revoques el que usas en tu propio Mac.
+
 ### Desde Xcode (en el Mac)
 
 1. **Product → Archive** (con "Any iOS Device" como destino).
