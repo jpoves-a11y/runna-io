@@ -51,11 +51,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/keys"
           printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8"
 
-      - name: Archive (Release, automatic signing)
+      # Archive WITHOUT signing. Signing the archive with automatic signing makes Xcode create a new
+      # "Apple Development" certificate on every run (the runner's keychain is empty), until the account
+      # hits Apple's certificate limit. The App Store signature is applied later, at export, with Apple's
+      # cloud-managed distribution certificate, which needs no certificate or private key on the runner.
+      - name: Archive (Release, unsigned)
         working-directory: ios
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -o pipefail
@@ -68,17 +70,34 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Runna.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             > archive.log 2>&1 || { grep -E "error:" archive.log | sort -u; tail -60 archive.log; exit 1; }
           echo "Archive created"
 
-      - name: Export and upload to App Store Connect
+      # The export re-signs each bundle with the entitlements it finds in the archived bundle's signature.
+      # An unsigned archive has none, so push notifications and HealthKit would be dropped. Ad-hoc signing
+      # ("-", no certificate needed) records the entitlements so the export carries them over.
+      - name: Add entitlements to the archive (ad-hoc signature)
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/Runna.xcarchive/Products/Applications/Runna.app"
+          ENT="$RUNNER_TEMP/Runna.entitlements"
+          cp Config/Runna.entitlements "$ENT"
+          # TestFlight and App Store builds use the production APNs environment
+          /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$ENT"
+          # Inside out: extensions first, then the app
+          for appex in "$APP"/PlugIns/*.appex; do
+            codesign --force --sign - --timestamp=none "$appex"
+          done
+          codesign --force --sign - --timestamp=none --entitlements "$ENT" "$APP"
+          codesign -d --entitlements - --xml "$APP" && echo
+
+      - name: Export (App Store, cloud-managed distribution signing)
         working-directory: ios
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -92,7 +111,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>upload</string>
+            <key>destination</key><string>export</string>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
             <key>signingStyle</key><string>automatic</string>
             <key>uploadSymbols</key><true/>
@@ -109,7 +128,90 @@ jobs:
             -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             > export.log 2>&1 || { grep -E "error" export.log | sort -u; tail -60 export.log; exit 1; }
           tail -5 export.log
+          ls -l "$RUNNER_TEMP/export"
+
+      - name: Check signature and entitlements of the IPA
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/ipa"
+          mkdir -p "$RUNNER_TEMP/ipa"
+          unzip -q "$RUNNER_TEMP"/export/*.ipa -d "$RUNNER_TEMP/ipa"
+          APP="$RUNNER_TEMP/ipa/Payload/Runna.app"
+          APPEX="$APP/PlugIns/RunnaLive.appex"
+          [ -d "$APPEX" ] || { echo "::error::RunnaLive.appex is missing from the IPA"; exit 1; }
+          fail=0
+          check() { # bundle, entitlements plist, key, expected value ("" = must exist)
+            local value
+            if ! value=$(/usr/libexec/PlistBuddy -c "Print :$3" "$2" 2>/dev/null); then
+              echo "::error::$(basename "$1") is missing the entitlement $3"; fail=1
+            elif [ -n "$4" ] && [ "$value" != "$4" ]; then
+              echo "::error::$(basename "$1"): $3 is '$value', expected '$4'"; fail=1
+            fi
+          }
+          for bundle in "$APP" "$APPEX"; do
+            name=$(basename "$bundle")
+            echo "== $name"
+            codesign -dvv "$bundle" 2>&1 | grep -E "^(Identifier|Authority|TeamIdentifier)=" || true
+            if ! codesign -dvv "$bundle" 2>&1 | grep -q "^Authority=Apple Distribution"; then
+              echo "::error::$name is not signed with an Apple Distribution certificate"; fail=1
+            fi
+            codesign --verify --strict "$bundle" || { echo "::error::$name has an invalid signature"; fail=1; }
+            codesign -d --entitlements - --xml "$bundle" > "$RUNNER_TEMP/$name.ent.plist" 2>/dev/null
+            plutil -p "$RUNNER_TEMP/$name.ent.plist"
+            check "$bundle" "$RUNNER_TEMP/$name.ent.plist" application-identifier ""
+            check "$bundle" "$RUNNER_TEMP/$name.ent.plist" get-task-allow false
+          done
+          ENT="$RUNNER_TEMP/Runna.app.ent.plist"
+          check "$APP" "$ENT" aps-environment production
+          check "$APP" "$ENT" com.apple.developer.healthkit true
+          check "$APP" "$ENT" com.apple.developer.healthkit.access ""
+          exit $fail
+
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          API_PRIVATE_KEYS_DIR: ${{ runner.temp }}/keys
+        run: |
+          set -o pipefail
+          xcrun altool --upload-app --type ios \
+            --file "$(ls "$RUNNER_TEMP"/export/*.ipa | head -1)" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            > upload.log 2>&1 || { cat upload.log; exit 1; }
+          tail -5 upload.log
           echo "Uploaded. The build shows up in App Store Connect -> TestFlight after Apple finishes processing (10-30 min)."
+
+      # Informational: the number of Apple Development certificates must stay the same from one run
+      # to the next. Never fails the job.
+      - name: List signing certificates
+        if: always()
+        continue-on-error: true
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          [ -f "$RUNNER_TEMP/keys/AuthKey_$ASC_KEY_ID.p8" ] || exit 0
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "pyjwt[crypto]==2.9.0"
+          "$RUNNER_TEMP/venv/bin/python" - <<'PY'
+          import json, os, time, urllib.request
+          import jwt
+          key_id, issuer = os.environ["ASC_KEY_ID"], os.environ["ASC_ISSUER_ID"]
+          key = open(f"{os.environ['RUNNER_TEMP']}/keys/AuthKey_{key_id}.p8").read()
+          now = int(time.time())
+          token = jwt.encode({"iss": issuer, "iat": now, "exp": now + 600, "aud": "appstoreconnect-v1"},
+                             key, algorithm="ES256", headers={"kid": key_id})
+          req = urllib.request.Request("https://api.appstoreconnect.apple.com/v1/certificates?limit=200",
+                                       headers={"Authorization": f"Bearer {token}"})
+          certs = json.load(urllib.request.urlopen(req))["data"]
+          counts = {}
+          for c in certs:
+              a = c["attributes"]
+              counts[a["certificateType"]] = counts.get(a["certificateType"], 0) + 1
+              print(f'{a["certificateType"]:<24} {a.get("name", ""):<40} expires {a.get("expirationDate", "")[:10]}')
+          print("Totals:", ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+          PY
 
       - name: Remove API key
         if: always()
