@@ -224,14 +224,12 @@ struct MapScreen: View {
     @MapContentBuilder
     private var selectionContent: some MapContent {
         if let territory = selectedTerritory {
-            ForEach(selectedShapes) { shape in
-                MapPolygon(shape.polygon)
-                    .foregroundStyle(Color.clear)
-                    .stroke(Color.white.opacity(0.9), lineWidth: 7)
-                MapPolygon(shape.polygon)
-                    .foregroundStyle(Color.clear)
-                    .stroke(territory.color, lineWidth: 3.5)
-            }
+            MapPolygon(territory.polygon)
+                .foregroundStyle(Color.clear)
+                .stroke(Color.white.opacity(0.9), lineWidth: 5)
+            MapPolygon(territory.polygon)
+                .foregroundStyle(Color.clear)
+                .stroke(territory.color, lineWidth: 2.5)
             if let coordinates = selectedRouteCoordinates {
                 MapPolyline(coordinates: coordinates)
                     .stroke(Color.white.opacity(0.85), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
@@ -330,12 +328,6 @@ struct MapScreen: View {
         showsFriendRoutes ? model.visibleRouteLines + model.visibleFriendRouteLines : model.visibleRouteLines
     }
 
-    /// Every polygon of the selected territory.
-    private var selectedShapes: [TerritoryShape] {
-        guard let id = selectedTerritory?.territoryId else { return [] }
-        return model.shapes.filter { $0.territoryId == id }
-    }
-
     /// The selected run, thinned out (a long run has thousands of GPS points).
     private var selectedRouteCoordinates: [CLLocationCoordinate2D]? {
         guard let route = selectedRoute else { return nil }
@@ -345,24 +337,19 @@ struct MapScreen: View {
 
     // MARK: - Selection
 
-    // No withAnimation here: it would make MapKit animate every overlay of the map.
+    // No withAnimation and no camera move here: the map stays where it is (animating would make MapKit
+    // animate every overlay).
     private func select(_ shape: TerritoryShape) {
         Haptics.tap()
         selectedTerritory = shape
         selectedRoute = nil
-        focusCamera(on: shape, route: nil)
-        guard let routeId = shape.routeId else {
-            isLoadingSelectedRoute = false
-            return
-        }
         isLoadingSelectedRoute = true
         Task {
-            let route = await model.route(id: routeId, userId: shape.userId)
-            // Another territory may have been tapped meanwhile
+            let route = await model.latestRoute(through: shape)
+            // Another zone may have been tapped meanwhile
             guard selectedTerritory?.id == shape.id else { return }
             isLoadingSelectedRoute = false
             selectedRoute = route
-            if route != nil { focusCamera(on: shape, route: route) }
         }
     }
 
@@ -371,16 +358,6 @@ struct MapScreen: View {
         selectedTerritory = nil
         selectedRoute = nil
         isLoadingSelectedRoute = false
-    }
-
-    /// Fits the territory (and its run) above the card at the bottom.
-    private func focusCamera(on shape: TerritoryShape, route: RunRoute?) {
-        var points = model.shapes.filter { $0.territoryId == shape.territoryId }.flatMap { $0.rings.first ?? [] }
-        if let route { points += MapGeometry.simplified(route.locations, maxPoints: 400) }
-        guard let rect = MapGeometry.fittingRect(points, bottomShare: 0.42, topShare: 0.22) else { return }
-        withAnimation(.smooth(duration: 0.7)) {
-            camera = .rect(rect)
-        }
     }
 
     // MARK: - Camera

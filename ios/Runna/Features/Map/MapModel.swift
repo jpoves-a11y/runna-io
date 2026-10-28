@@ -363,12 +363,33 @@ final class MapModel {
 
     // MARK: - Runs of other players
 
-    /// The run with `routeId` of `userId` (yours from memory, a friend's fetched once).
-    func route(id routeId: String, userId: String) async -> RunRoute? {
-        if userId == ownerId, let route = latestRoutes.first(where: { $0.id == routeId }) {
-            return route
+    /// The owner's most recent run that goes through this zone (the run that last conquered it).
+    /// A user's territory is one multipolygon, so the territory's own routeId is just their latest run.
+    func latestRoute(through shape: TerritoryShape) async -> RunRoute? {
+        var candidates: [RunRoute] = []
+        if shape.userId == ownerId {
+            candidates = latestRoutes
         }
-        return await routes(of: userId)?.first { $0.id == routeId }
+        if candidates.isEmpty {
+            candidates = await routes(of: shape.userId) ?? []
+        }
+        guard let outer = shape.rings.first, !outer.isEmpty else { return nil }
+        let holes = Array(shape.rings.dropFirst())
+        let minLat = outer.map(\.latitude).min() ?? 0
+        let maxLat = outer.map(\.latitude).max() ?? 0
+        let minLng = outer.map(\.longitude).min() ?? 0
+        let maxLng = outer.map(\.longitude).max() ?? 0
+        let sorted = candidates.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+        for route in sorted {
+            let points = MapGeometry.simplified(route.locations, maxPoints: 300)
+            let passes = points.contains { point in
+                guard point.latitude >= minLat, point.latitude <= maxLat,
+                      point.longitude >= minLng, point.longitude <= maxLng else { return false }
+                return Self.contains(outer, point) && !holes.contains { Self.contains($0, point) }
+            }
+            if passes { return route }
+        }
+        return nil
     }
 
     private func routes(of userId: String) async -> [RunRoute]? {

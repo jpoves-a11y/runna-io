@@ -510,15 +510,11 @@ struct SelectedTerritoryCard: View {
     }
 
     private var subtitle: String {
-        var parts: [String] = []
-        if let conqueredAt {
-            parts.append("Conquistado el \(Format.dayAndTime(conqueredAt))")
-        }
         if let route {
-            parts.append("\(route.name) · \(Format.distance(route.distance))")
-        } else if isLoadingRoute {
-            parts.append("Buscando la carrera…")
+            return "Conquistado con \(route.name) · \(Format.distance(route.distance))\n\(Format.dayAndTime(route.startDate))"
         }
-        return parts.isEmpty ? "Territorio conquistado" : parts.joined(separator: "\n")
+        if isLoadingRoute { return "Buscando la carrera…" }
+        if let conqueredAt { return "Conquistado el \(Format.dayAndTime(conqueredAt))" }
+        return "Territorio conquistado"
     }
 }
