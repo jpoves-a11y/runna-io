@@ -45,6 +45,13 @@ RESEND_FROM = "onboarding@resend.dev"
 # 2. wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml   # signatureSecretKey from step 1
 # The 5-minute cron poll keeps running as a fallback.
 #
+# ===== Garmin (Garmin Connect Developer Program, Activity API push) =====
+# wrangler secret put GARMIN_CLIENT_ID -c wrangler.worker.toml       # consumer key
+# wrangler secret put GARMIN_CLIENT_SECRET -c wrangler.worker.toml   # consumer secret
+# wrangler secret put GARMIN_WEBHOOK_SECRET -c wrangler.worker.toml  # optional; webhook URL then needs ?key=<secret>
+# Endpoint Configuration (apis.garmin.com/tools/endpoints): <worker>/api/garmin/webhook?key=<secret>
+# for Activity Details, Deregistrations and User Permissions Change. No cron: Garmin pushes every activity.
+#
 # ===== Scheduled tasks =====
 # A single Cloudflare Cron Trigger (every 5 minutes) runs every task in-process, without HTTP
 # (see worker/src/cron.ts, times in Europe/Madrid):
