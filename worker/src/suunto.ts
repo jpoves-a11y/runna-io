@@ -153,6 +153,23 @@ async function requestToken(env: Env, params: Record<string, string>): Promise<{
   return { ok: response.ok, status: response.status, token, text };
 }
 
+/**
+ * "token_exchange_<status>[_<Suunto error>]", e.g. token_exchange_401_invalid_client: only
+ * [a-z0-9_], so it is safe in a URL and carries no secret (it's Suunto's error code, not the body).
+ */
+export function tokenErrorCode(status: number, text: string): string {
+  let error = '';
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const value = parsed.error ?? parsed.error_code ?? parsed.code;
+    if (typeof value === 'string' || typeof value === 'number') error = String(value);
+  } catch {
+    error = '';
+  }
+  const clean = error.toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  return `token_exchange_${status}${clean ? `_${clean}` : ''}`;
+}
+
 function expiryFromToken(token: SuuntoTokenResponse): string {
   const seconds = typeof token.expires_in === 'number' && token.expires_in > 0 ? token.expires_in : 86400;
   return new Date(Date.now() + seconds * 1000).toISOString();
@@ -802,7 +819,8 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
       const result = await requestToken(c.env, { grant_type: 'authorization_code', redirect_uri: redirectUri(c.env), code });
       if (!result.ok || !result.token?.access_token) {
         console.error(`[SUUNTO] Token exchange failed: ${result.status} ${result.text.slice(0, 300)}`);
-        return finish('suunto_error=token_exchange');
+        // The app shows unknown codes in brackets, so Suunto's answer is visible without the logs
+        return finish(`suunto_error=${tokenErrorCode(result.status, result.text)}`);
       }
       const username = suuntoUsernameFromToken(result.token);
       if (!username) {
