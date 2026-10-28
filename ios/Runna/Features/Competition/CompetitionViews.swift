@@ -467,10 +467,14 @@ struct FortificationShape: Identifiable {
     let userId: String
     let color: Color
     let polygon: MKPolygon
-    /// 1 + layers × 0.5
-    let level: Double
+    /// Fortification layers of its zone (1 or more).
+    let layers: Int
+    /// Diagonal hatch lines clipped to the polygon (drawn close up).
+    let hatch: [[CLLocationCoordinate2D]]
 
-    var fillOpacity: Double { min(0.30 + level * 0.12, 0.65) }
+    var fillOpacity: Double { min(0.30 + Double(layers) * 0.08, 0.6) }
+    /// The wall gets thicker with every layer.
+    var wallWidth: CGFloat { CGFloat(min(1.5 + Double(layers) * 1.5, 7.5)) }
 }
 
 /// Castle marker for a zone fortified several times.
@@ -478,12 +482,11 @@ struct CastleZone: Identifiable {
     let id: String
     let userId: String
     let coordinate: CLLocationCoordinate2D
-    let level: Double
+    /// Fortification layers stacked on the zone.
+    let layers: Int
     let color: Color
 
-    var levelText: String {
-        level == level.rounded() ? String(Int(level)) : level.formatted(.number.precision(.fractionLength(1)).locale(Locale(identifier: "es_ES")))
-    }
+    var levelText: String { "×\(layers)" }
 }
 
 /// Fortress on the map: a compact solid capsule with a shield glyph and the level, ringed in the owner's colour.
@@ -506,7 +509,7 @@ struct CastleMarker: View {
         .overlay(Capsule().strokeBorder(zone.color, lineWidth: 1.5))
         .shadow(color: Color.black.opacity(0.15), radius: 2, x: 0, y: 1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Fortaleza nivel \(zone.levelText)")
+        .accessibilityLabel("Fortaleza de \(zone.layers) capas")
     }
 }
 

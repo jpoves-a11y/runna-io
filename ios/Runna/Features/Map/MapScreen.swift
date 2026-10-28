@@ -20,8 +20,21 @@ struct MapScreen: View {
     @State private var autoWeeklySummary: WeeklySummary?
     @State private var lastWeeklySummaryCheck: Date?
     @State private var confirmDiscardRun = false
-    @AppStorage("map_show_own_routes") private var showOwnRoutes = true
     @AppStorage("map_style_satellite") private var satellite = false
+    @AppStorage("map_route_mode") private var routeMode: RouteDisplayMode = .lines
+    @AppStorage("map_routes_everyone") private var routesOfEveryone = false
+    @AppStorage("map_focus") private var focus: MapFocus = .all
+    @AppStorage("map_only_fortified") private var onlyFortified = false
+    /// Look that depends on the zoom (updated when the camera stops).
+    @State private var zoomStyle = MapZoomStyle(cameraDistance: 8_000)
+    /// Territory tapped on the map: its card shows and the run that conquered it is drawn.
+    @State private var selectedTerritory: TerritoryShape?
+    @State private var selectedRoute: RunRoute?
+    @State private var isLoadingSelectedRoute = false
+    /// 0...1 while the selected run is being drawn.
+    @State private var selectedRouteProgress: Double = 1
+    @State private var routeDetail: RunRoute?
+    @State private var showLegend = false
 
     private var competition: CompetitionStore { CompetitionStore.shared }
 
@@ -44,6 +57,19 @@ struct MapScreen: View {
         }
         .sheet(item: $selectedTreasure) { treasure in
             TreasureDetailView(treasure: treasure)
+        }
+        .sheet(item: $routeDetail) { route in
+            NavigationStack {
+                RouteDetailView(
+                    route: route,
+                    color: selectedTerritory?.colorHex,
+                    editable: route.userId == session.userId,
+                    onChange: { Task { await reload(force: true) } }
+                )
+            }
+        }
+        .sheet(isPresented: $showLegend) {
+            MapLegendSheet(color: Color(hex: session.user?.color ?? "#16A34A"))
         }
         .sheet(isPresented: $router.showPowers, onDismiss: { refreshPowerBadge() }) {
             PowersSheet()
@@ -84,6 +110,11 @@ struct MapScreen: View {
         .onChange(of: model.treasures) { _, _ in
             tracker.activeTreasures = model.liveTreasures
         }
+        .task(id: friendRoutesKey) {
+            guard showsFriendRoutes else { return }
+            await model.loadFriendRoutes()
+        }
+        .task(id: selectedRoute?.id) { await drawSelectedRoute() }
     }
 
     // MARK: - Map
@@ -104,13 +135,17 @@ struct MapScreen: View {
             .onMapCameraChange(frequency: .onEnd) { context in
                 lastCamera = context.camera
                 withAnimation(.snappy) { heading = context.camera.heading }
+                let zoom = MapZoomStyle(cameraDistance: context.camera.distance)
+                if zoom != zoomStyle { zoomStyle = zoom }
             }
             .onTapGesture { location in
                 if let treasure = treasureNear(location, proxy: proxy) {
                     selectedTreasure = treasure
                 } else if let coordinate = proxy.convert(location, from: .local),
                           let shape = model.shape(at: coordinate) {
-                    selectedUserId = shape.userId
+                    select(shape)
+                } else {
+                    clearSelection()
                 }
             }
         }
@@ -120,22 +155,96 @@ struct MapScreen: View {
     @MapContentBuilder
     private var mapContent: some MapContent {
         UserAnnotation()
-        ForEach(model.visibleShapes) { shape in
-            MapPolygon(shape.polygon)
-                .foregroundStyle(shape.color.opacity(fillOpacity(for: shape)))
-                .stroke(shape.color, style: strokeStyle(for: shape))
+        territoryContent
+        fortificationContent
+        routeContent
+        selectionContent
+        markerContent
+    }
+
+    @MapContentBuilder
+    private var territoryContent: some MapContent {
+        ForEach(territoryLooks) { look in
+            if let haloWidth = look.haloWidth {
+                MapPolygon(look.shape.polygon)
+                    .foregroundStyle(Color.clear)
+                    .stroke(look.stroke.opacity(0.3), lineWidth: haloWidth)
+            }
+            MapPolygon(look.shape.polygon)
+                .foregroundStyle(look.fill)
+                .stroke(look.stroke, style: look.strokeStyle)
         }
+        if !onlyFortified {
+            // Where your territory touches a rival's
+            ForEach(model.visibleContestedBorders) { line in
+                MapPolyline(coordinates: line.coordinates)
+                    .stroke(Color.steal.opacity(0.3), style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: line.coordinates)
+                    .stroke(Color.steal, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            }
+        }
+    }
+
+    /// Walls (thicker with every layer, with a light inner line) and, close up, the hatching.
+    @MapContentBuilder
+    private var fortificationContent: some MapContent {
         ForEach(model.visibleFortifications) { fort in
             MapPolygon(fort.polygon)
                 .foregroundStyle(fort.color.opacity(fort.fillOpacity))
-                .stroke(fort.color, lineWidth: 1)
+                .stroke(fort.color, lineWidth: fort.wallWidth)
+            MapPolygon(fort.polygon)
+                .foregroundStyle(Color.clear)
+                .stroke(Color.white.opacity(0.55), lineWidth: max(1, fort.wallWidth / 3))
         }
-        if showOwnRoutes {
-            ForEach(model.visibleRouteLines) { line in
+        if zoomStyle.showsDetail {
+            ForEach(hatchLines) { line in
+                MapPolyline(coordinates: line.coordinates)
+                    .stroke(line.color.opacity(0.55), lineWidth: 1)
+            }
+        }
+    }
+
+    @MapContentBuilder
+    private var routeContent: some MapContent {
+        if routeMode == .lines {
+            ForEach(plainRouteLines) { line in
                 MapPolyline(coordinates: line.coordinates)
                     .stroke(line.color.opacity(0.55), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
             }
         }
+        if routeMode == .heat {
+            // Faint wide lines on top of each other: the streets run most get the strongest colour
+            ForEach(heatRouteLines) { line in
+                MapPolyline(coordinates: line.coordinates)
+                    .stroke(line.color.opacity(0.16), style: StrokeStyle(lineWidth: zoomStyle.showsDetail ? 7 : 4.5, lineCap: .round, lineJoin: .round))
+            }
+        }
+    }
+
+    /// The run that conquered the selected territory, drawn from start to finish.
+    @MapContentBuilder
+    private var selectionContent: some MapContent {
+        if let route = selectedRoute, let territory = selectedTerritory {
+            let coordinates = Self.prefix(route.locations, progress: selectedRouteProgress)
+            if coordinates.count >= 2 {
+                MapPolyline(coordinates: coordinates)
+                    .stroke(Color.white.opacity(0.85), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: coordinates)
+                    .stroke(territory.color, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
+            }
+            if let head = coordinates.last, selectedRouteProgress < 1 {
+                Annotation("", coordinate: head) {
+                    Circle()
+                        .fill(territory.color)
+                        .frame(width: 14, height: 14)
+                        .overlay(Circle().strokeBorder(Color.white, lineWidth: 3))
+                }
+            }
+        }
+    }
+
+    @MapContentBuilder
+    private var markerContent: some MapContent {
         ForEach(model.visibleCastles) { zone in
             Annotation("", coordinate: zone.coordinate) {
                 CastleMarker(zone: zone)
@@ -157,19 +266,115 @@ struct MapScreen: View {
         shape.userId == session.userId
     }
 
-    /// Own territory slightly stronger; shared (ran together) territories a bit denser.
-    private func fillOpacity(for shape: TerritoryShape) -> Double {
-        if shape.isShared { return 0.38 }
-        return isMine(shape) ? 0.34 : 0.26
+    /// Every visible territory with zoom, focus, age and selection applied.
+    private var territoryLooks: [TerritoryLook] {
+        guard !onlyFortified else { return [] }
+        let now = Date()
+        let selectedId = selectedTerritory?.territoryId
+        return model.visibleShapes.map { shape in
+            let mine = isMine(shape)
+            let inFocus: Bool
+            switch focus {
+            case .all: inFocus = true
+            case .mine: inFocus = mine
+            case .rivals: inFocus = !mine
+            }
+            let isSelected = selectedId == shape.territoryId
+            var opacity = zoomStyle.fillOpacity(isMine: mine, isShared: shape.isShared) * TerritoryAge.fade(shape.conqueredAt, now: now)
+            if !inFocus { opacity *= 0.6 }
+            if selectedId != nil && !isSelected { opacity *= 0.5 }
+            var width = zoomStyle.strokeWidth(isMine: mine)
+            let isRecent = inFocus && TerritoryAge.isRecent(shape.conqueredAt, now: now)
+            if isRecent { width += 0.8 }
+            if isSelected { width += 2 }
+            let color = inFocus ? shape.color : shape.mutedColor
+            return TerritoryLook(
+                shape: shape,
+                fill: color.opacity(opacity),
+                stroke: inFocus ? color : color.opacity(0.8),
+                // Shared (ran together) territories get a dashed outline
+                strokeStyle: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: shape.isShared ? [8, 5] : []),
+                haloWidth: isRecent || isSelected ? width + 7 : nil
+            )
+        }
     }
 
-    /// 2.5pt outline, 3pt for your own; shared territories get a dashed outline.
-    private func strokeStyle(for shape: TerritoryShape) -> StrokeStyle {
-        let width: CGFloat = isMine(shape) ? 3 : 2.5
-        if shape.isShared {
-            return StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: [8, 5])
+    private var hatchLines: [ColoredMapLine] {
+        model.visibleFortifications.flatMap { fort in
+            fort.hatch.enumerated().map { index, coordinates in
+                ColoredMapLine(id: "\(fort.id)-\(index)", color: fort.color, coordinates: coordinates)
+            }
         }
-        return StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
+    }
+
+    private var showsFriendRoutes: Bool {
+        routeMode != .off && routesOfEveryone && model.players.count > 1
+    }
+
+    /// Changes when friends' runs need to be (re)loaded.
+    private var friendRoutesKey: String {
+        "\(showsFriendRoutes)-\(model.players.map(\.id).joined(separator: ","))"
+    }
+
+    private var plainRouteLines: [RouteLine] {
+        let own = Array(model.visibleRouteLines.prefix(MapModel.maxPlainRouteLines))
+        return showsFriendRoutes ? own + model.visibleFriendRouteLines : own
+    }
+
+    private var heatRouteLines: [RouteLine] {
+        showsFriendRoutes ? model.visibleRouteLines + model.visibleFriendRouteLines : model.visibleRouteLines
+    }
+
+    private static func prefix(_ coordinates: [CLLocationCoordinate2D], progress: Double) -> [CLLocationCoordinate2D] {
+        guard progress < 1 else { return coordinates }
+        let count = max(2, Int((Double(coordinates.count) * progress).rounded()))
+        return Array(coordinates.prefix(count))
+    }
+
+    // MARK: - Selection
+
+    private func select(_ shape: TerritoryShape) {
+        Haptics.tap()
+        withAnimation(.snappy) {
+            selectedTerritory = shape
+            selectedRoute = nil
+        }
+        guard let routeId = shape.routeId else {
+            isLoadingSelectedRoute = false
+            return
+        }
+        isLoadingSelectedRoute = true
+        Task {
+            let route = await model.route(id: routeId, userId: shape.userId)
+            // Another territory may have been tapped meanwhile
+            guard selectedTerritory?.id == shape.id else { return }
+            isLoadingSelectedRoute = false
+            withAnimation(.snappy) { selectedRoute = route }
+        }
+    }
+
+    private func clearSelection() {
+        guard selectedTerritory != nil else { return }
+        withAnimation(.snappy) {
+            selectedTerritory = nil
+            selectedRoute = nil
+        }
+        isLoadingSelectedRoute = false
+    }
+
+    /// Draws the selected run from start to finish in about a second.
+    private func drawSelectedRoute() async {
+        guard selectedRoute != nil else {
+            selectedRouteProgress = 1
+            return
+        }
+        let steps = 24
+        selectedRouteProgress = 0
+        for step in 1...steps {
+            try? await Task.sleep(nanoseconds: 1_100_000_000 / UInt64(steps))
+            if Task.isCancelled { return }
+            selectedRouteProgress = Double(step) / Double(steps)
+        }
     }
 
     // MARK: - Camera
@@ -420,28 +625,68 @@ struct MapScreen: View {
         }
     }
 
-    /// Map style, own routes and show / hide every player.
+    /// Map style, territory focus and filters, runs (lines / heat map, yours / everyone's), players and the legend.
     private var layersMenu: some View {
         Menu {
             Picker("Estilo del mapa", selection: $satellite) {
                 Label("Mapa", systemImage: "map").tag(false)
                 Label("Satélite", systemImage: "globe.europe.africa.fill").tag(true)
             }
-            Toggle(isOn: $showOwnRoutes) {
-                Label("Mis recorridos", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+            Section("Territorio") {
+                Picker(selection: $focus) {
+                    ForEach(MapFocus.allCases) { option in
+                        Label(option.title, systemImage: option.systemImage).tag(option)
+                    }
+                } label: {
+                    Label("Resaltar", systemImage: "scope")
+                }
+                .pickerStyle(.menu)
+                if !model.fortifications.isEmpty {
+                    Toggle(isOn: $onlyFortified) {
+                        Label("Solo fortificaciones", systemImage: "shield.lefthalf.filled")
+                    }
+                }
+                if model.players.count > 1 {
+                    Button {
+                        withAnimation(.snappy) { model.showOnlyMe() }
+                    } label: {
+                        Label("Solo mi territorio", systemImage: "person.crop.circle")
+                    }
+                }
+            }
+            Section("Recorridos") {
+                Picker(selection: $routeMode) {
+                    ForEach(RouteDisplayMode.allCases) { option in
+                        Label(option.title, systemImage: option.systemImage).tag(option)
+                    }
+                } label: {
+                    Label("Recorridos", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                }
+                .pickerStyle(.menu)
+                if model.players.count > 1 && routeMode != .off {
+                    Toggle(isOn: $routesOfEveryone) {
+                        Label("Recorridos de todos", systemImage: "person.3")
+                    }
+                }
             }
             if model.players.count > 1 {
-                Divider()
-                Button {
-                    withAnimation(.snappy) { model.showAll() }
-                } label: {
-                    Label("Mostrar a todos", systemImage: "eye")
+                Section {
+                    Button {
+                        withAnimation(.snappy) { model.showAll() }
+                    } label: {
+                        Label("Mostrar a todos", systemImage: "eye")
+                    }
+                    Button {
+                        withAnimation(.snappy) { model.hideAll() }
+                    } label: {
+                        Label("Ocultar a todos", systemImage: "eye.slash")
+                    }
                 }
-                Button {
-                    withAnimation(.snappy) { model.hideAll() }
-                } label: {
-                    Label("Ocultar a todos", systemImage: "eye.slash")
-                }
+            }
+            Button {
+                showLegend = true
+            } label: {
+                Label("Leyenda", systemImage: "info.circle")
             }
         } label: {
             GlassCircleLabel(systemImage: "square.3.layers.3d")
@@ -454,6 +699,20 @@ struct MapScreen: View {
 
     private var bottomArea: some View {
         VStack(spacing: DS.Spacing.s) {
+            if let territory = selectedTerritory {
+                SelectedTerritoryCard(
+                    owner: model.players.first(where: { $0.id == territory.userId }),
+                    ownerName: territory.ownerName,
+                    color: territory.color,
+                    conqueredAt: territory.conqueredAt,
+                    route: selectedRoute,
+                    isLoadingRoute: isLoadingSelectedRoute,
+                    onProfile: { selectedUserId = territory.userId },
+                    onRoute: { routeDetail = selectedRoute },
+                    onClose: { clearSelection() }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if tracker.hasRecoverableRun {
                 recoveredRunCard
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -468,6 +727,7 @@ struct MapScreen: View {
             .accessibilityHint("Abre la pantalla para grabar una carrera")
         }
         .animation(.snappy, value: tracker.hasRecoverableRun)
+        .animation(.snappy, value: selectedTerritory?.id)
         .animation(.snappy, value: uploadedPendingRuns)
     }
 

@@ -85,7 +85,12 @@ struct RouteDetailView: View {
     @ViewBuilder
     private var mapHeader: some View {
         if route.locations.count >= 2 {
-            RouteDetailMap(locations: route.locations, color: lineColor)
+            RouteDetailMap(
+                locations: route.locations,
+                color: lineColor,
+                // The territory this run conquered (as drawn on the map), for the replay
+                territories: MapModel.shared.shapes.filter { $0.routeId == route.id }
+            )
                 .frame(height: 320)
                 .overlay(alignment: .bottom) { HairlineDivider() }
         } else {
@@ -300,29 +305,100 @@ struct RouteDetailView: View {
 
 // MARK: - Pieces
 
-/// Interactive map of the route with start and finish markers.
+/// Interactive map of the route with start and finish markers, the territory it conquered and a button
+/// that replays the conquest: the line is drawn from start to finish and then the territory fills in.
 private struct RouteDetailMap: View {
     let locations: [CLLocationCoordinate2D]
     let color: Color
+    let territories: [TerritoryShape]
+
+    /// 0...1 of the line drawn.
+    @State private var progress: Double = 1
+    @State private var territoryOpacity: Double = 1
+    /// Bumped by the button; 0 = no replay yet.
+    @State private var replayToken = 0
+
+    private var drawnLocations: [CLLocationCoordinate2D] {
+        guard progress < 1 else { return locations }
+        let count = max(2, Int((Double(locations.count) * progress).rounded()))
+        return Array(locations.prefix(count))
+    }
+
+    private var isReplaying: Bool { progress < 1 || territoryOpacity < 1 }
 
     var body: some View {
         Map(initialPosition: .automatic) {
-            MapPolyline(coordinates: locations)
+            ForEach(territories) { shape in
+                MapPolygon(shape.polygon)
+                    .foregroundStyle(color.opacity(0.3 * territoryOpacity))
+                    .stroke(color.opacity(territoryOpacity), lineWidth: 2)
+            }
+            MapPolyline(coordinates: drawnLocations)
                 .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
-            MapPolyline(coordinates: locations)
+            MapPolyline(coordinates: drawnLocations)
                 .stroke(color, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
             if let start = locations.first {
                 Annotation("Salida", coordinate: start) {
                     RouteDetailPin(isFinish: false, tint: color)
                 }
             }
-            if let end = locations.last {
+            if progress >= 1, let end = locations.last {
                 Annotation("Llegada", coordinate: end) {
                     RouteDetailPin(isFinish: true, tint: color)
                 }
             }
+            if progress < 1, let head = drawnLocations.last {
+                Annotation("", coordinate: head) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 16, height: 16)
+                        .overlay(Circle().strokeBorder(Color.white, lineWidth: 3))
+                        .shadow(color: Color.black.opacity(0.2), radius: 2, x: 0, y: 1)
+                }
+            }
         }
         .mapStyle(.standard(emphasis: .muted, pointsOfInterest: .excludingAll))
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                replayToken += 1
+            } label: {
+                Label(territories.isEmpty ? "Reproducir recorrido" : "Reproducir conquista", systemImage: "play.fill")
+                    .font(.footnote.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .glassSurface(Capsule(), interactive: true)
+            }
+            .buttonStyle(.plain)
+            .disabled(isReplaying)
+            .opacity(isReplaying ? 0.5 : 1)
+            .padding(DS.Spacing.m)
+        }
+        .task(id: replayToken) { await replay() }
+    }
+
+    private func replay() async {
+        guard replayToken > 0 else { return }
+        Haptics.tap()
+        territoryOpacity = 0
+        progress = 0
+        let steps = 60
+        for step in 1...steps {
+            try? await Task.sleep(nanoseconds: 2_400_000_000 / UInt64(steps))
+            if Task.isCancelled {
+                progress = 1
+                territoryOpacity = 1
+                return
+            }
+            progress = Double(step) / Double(steps)
+        }
+        // The territory fills in (stepped: map overlays don't animate)
+        for step in 1...12 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if Task.isCancelled { break }
+            territoryOpacity = Double(step) / 12
+        }
+        territoryOpacity = 1
+        if !territories.isEmpty { Haptics.success() }
     }
 }
 
