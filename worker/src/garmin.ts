@@ -60,8 +60,27 @@ function getStorage(env: Env): WorkerStorage {
   return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
 }
 
+// Secrets pasted in the Cloudflare dashboard often carry a trailing space or newline: Garmin then
+// doesn't recognise the client ("We could not give this application the permissions you requested").
+function clientId(env: Env): string {
+  return (env.GARMIN_CLIENT_ID || '').trim();
+}
+
+function clientSecret(env: Env): string {
+  return (env.GARMIN_CLIENT_SECRET || '').trim();
+}
+
+function webhookSecret(env: Env): string {
+  return (env.GARMIN_WEBHOOK_SECRET || '').trim();
+}
+
+/** Garmin client IDs are UUIDs (e.g. 600a2456-ab5f-4b1f-8eb3-8cc8dc86264d). */
+export function isGarminClientIdFormatOk(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 export function isGarminConfigured(env: Env): boolean {
-  return !!(env.GARMIN_CLIENT_ID && env.GARMIN_CLIENT_SECRET);
+  return !!(clientId(env) && clientSecret(env));
 }
 
 function redirectUri(env: Env): string {
@@ -118,8 +137,8 @@ async function requestToken(env: Env, params: Record<string, string>): Promise<{
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
     body: new URLSearchParams({
       ...params,
-      client_id: env.GARMIN_CLIENT_ID || '',
-      client_secret: env.GARMIN_CLIENT_SECRET || '',
+      client_id: clientId(env),
+      client_secret: clientSecret(env),
     }).toString(),
   });
   const text = await response.text();
@@ -638,7 +657,9 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
       const configured = isGarminConfigured(c.env);
       const storage = getStorage(c.env);
       const account = await storage.getGarminAccountByUserId(userId);
-      if (!account) return c.json({ configured, connected: false });
+      // Lets the app / support see a malformed GARMIN_CLIENT_ID without revealing it
+      const clientIdFormatOk = isGarminClientIdFormatOk(clientId(c.env));
+      if (!account) return c.json({ configured, clientIdFormatOk, connected: false });
       const stats = await storage.getGarminActivityStats(userId);
       let permissions: string[] | null = null;
       try {
@@ -648,6 +669,7 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
       }
       return c.json({
         configured,
+        clientIdFormatOk,
         connected: true,
         connectedAt: account.connectedAt,
         lastSyncAt: account.lastSyncAt,
@@ -668,14 +690,18 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
       const notSelf = rejectIfNotSelf(c, c.req.query('userId'));
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
-      if (!isGarminConfigured(c.env) || !c.env.GARMIN_CLIENT_SECRET) {
+      if (!isGarminConfigured(c.env)) {
         return c.json({ error: 'Garmin not configured' }, 400);
       }
-      const state = await createOAuthState(userId, c.env.GARMIN_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
-      const challenge = await pkceChallenge(await pkceVerifier(c.env.GARMIN_CLIENT_SECRET, state));
+      const secret = clientSecret(c.env);
+      if (!isGarminClientIdFormatOk(clientId(c.env))) {
+        console.warn(`[GARMIN] GARMIN_CLIENT_ID is not a UUID (${clientId(c.env).length} chars): check the secret in Cloudflare`);
+      }
+      const state = await createOAuthState(userId, secret, { app: c.req.query('client') === 'ios' });
+      const challenge = await pkceChallenge(await pkceVerifier(secret, state));
       const params = new URLSearchParams({
         response_type: 'code',
-        client_id: c.env.GARMIN_CLIENT_ID || '',
+        client_id: clientId(c.env),
         code_challenge: challenge,
         code_challenge_method: 'S256',
         redirect_uri: redirectUri(c.env),
@@ -691,7 +717,7 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
 
   app.get('/api/garmin/callback', async (c) => {
     const state = c.req.query('state');
-    const secret = c.env.GARMIN_CLIENT_SECRET;
+    const secret = clientSecret(c.env);
     const verified = state && secret ? await verifyOAuthState(state, secret) : null;
     const frontend = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
     const finish = (query: string) => oauthFinish(c, verified?.app === true, 'garmin', `${frontend}/profile?${query}`);
@@ -768,7 +794,7 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
 
   app.post('/api/garmin/webhook', async (c) => {
     try {
-      const secret = c.env.GARMIN_WEBHOOK_SECRET;
+      const secret = webhookSecret(c.env);
       if (secret && c.req.query('key') !== secret) {
         console.warn('[GARMIN WEBHOOK] Missing or wrong ?key: rejected');
         return c.json({ error: 'unauthorized' }, 401);
