@@ -27,20 +27,39 @@ function base64Utf8(text: string): string {
   return btoa(binary);
 }
 
-/** RFC 2047 encoded header value, so accents and emoji survive. */
+/**
+ * RFC 2047 encoded header value, so accents and emoji survive. Each encoded word holds at most
+ * 45 bytes (60 base64 characters) and the words go on folded lines, as the RFC requires.
+ */
 function encodeHeader(text: string): string {
-  return /^[\x20-\x7e]*$/.test(text) ? text : `=?UTF-8?B?${base64Utf8(text)}?=`;
+  if (/^[\x20-\x7e]*$/.test(text) && text.length <= 70) return text;
+  const words: string[] = [];
+  let chunk = '';
+  for (const ch of text) {
+    if (encoder.encode(chunk + ch).length > 45) {
+      words.push(chunk);
+      chunk = '';
+    }
+    chunk += ch;
+  }
+  if (chunk) words.push(chunk);
+  return words.map((word) => `=?UTF-8?B?${base64Utf8(word)}?=`).join('\r\n ');
+}
+
+/** Display name as an RFC 5322 quoted string ("Runna.io": a bare dot isn't allowed). */
+function quoteDisplayName(name: string): string {
+  if (!/^[\x20-\x7e]*$/.test(name)) return encodeHeader(name);
+  return `"${name.replace(/(["\\])/g, '\\$1')}"`;
 }
 
 function buildMessage(msg: SmtpMessage): string {
   const body = base64Utf8(msg.html).replace(/.{1,76}/g, (line) => `${line}\r\n`);
-  const domain = msg.fromEmail.split('@')[1] || 'localhost';
+  // No Message-ID: Gmail adds its own before signing (one made up here would claim its domain)
   return [
-    `From: ${encodeHeader(msg.fromName)} <${msg.fromEmail}>`,
-    `To: <${msg.to}>`,
+    `From: ${quoteDisplayName(msg.fromName)} <${msg.fromEmail}>`,
+    `To: ${msg.to}`,
     `Subject: ${encodeHeader(msg.subject)}`,
     `Date: ${new Date().toUTCString().replace('GMT', '+0000')}`,
-    `Message-ID: <${crypto.randomUUID()}@${domain}>`,
     'MIME-Version: 1.0',
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
