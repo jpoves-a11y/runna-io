@@ -133,6 +133,14 @@ function pickTaunt(lastIndex?: number | null): { message: string; index: number 
   return { message: TERRITORY_LOSS_MESSAGES[index], index };
 }
 
+/** At most one "te ha robado" per attacker and victim in this window. */
+const TERRITORY_LOSS_WINDOW_MS = 6 * 60 * 60 * 1000;
+/**
+ * Smaller thefts aren't notified (they still change the map): someone running again the streets they
+ * already took nibbles a few hundred m² each time because of GPS drift.
+ */
+const MIN_NOTIFIED_STOLEN_M2 = 1_000;
+
 export async function notifyTerritoryLoss(
   storage: WorkerStorage,
   victimUserId: string,
@@ -142,6 +150,10 @@ export async function notifyTerritoryLoss(
   options: { routeId?: string; center?: { lat: number; lng: number } | null } = {},
 ): Promise<void> {
   try {
+    if (stolenAreaM2 !== undefined && stolenAreaM2 < MIN_NOTIFIED_STOLEN_M2) return;
+    // One notification per attacker and victim every 6 hours: several runs processed together
+    // (a backlog imported from a watch, a retried run) don't send the same news again and again
+    if (!(await storage.takePushThrottle(`territory_loss:${conquerorUserId}:${victimUserId}`, TERRITORY_LOSS_WINDOW_MS))) return;
     const conqueror = await storage.getUser(conquerorUserId);
     const name = displayName(conqueror);
     const lastNotification = await storage.getLastTerritoryLossNotification(victimUserId);

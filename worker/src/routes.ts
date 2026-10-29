@@ -520,6 +520,9 @@ export async function autoCollectTreasuresAlongRoute(
   return treasuresCollected;
 }
 
+/** Smaller overlaps with someone else's territory are border noise, not a theft. */
+export const MIN_STOLEN_AREA_M2 = 100;
+
 export async function processTerritoryConquest(
   storage: WorkerStorage,
   userId: string,
@@ -848,7 +851,9 @@ export async function processTerritoryConquest(
         attackGeometry
       );
 
-      if (result.stolenArea > 0) {
+      // Touching a neighbour's border leaves slivers of a few m² (geometry noise): the overlap is still
+      // removed above, but it isn't a theft (no victim, notification, metric or feed event)
+      if (result.stolenArea >= MIN_STOLEN_AREA_M2) {
         // Check if defender has TIME BOMB — damage is reflected back to attacker (using pre-loaded data)
         if (isCompMode && competition) {
           const defenderPowers = enemyDefensivePowers.get(enemyTerritory.userId);

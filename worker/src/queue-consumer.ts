@@ -205,7 +205,14 @@ async function handleProcessRouteTerritory(
     await notifyImport(conquestResult.newAreaConquered, conquestResult.victims);
 
     const victimIds = conquestResult.victims.filter((v) => v.stolenArea > 0).map((v) => v.userId);
-    try {
+    // A run done more than a day ago (an old activity imported late, a backlog from a watch) changes the
+    // map, but telling friends "X te ha robado / ha corrido" about it now would be stale news
+    const completedMs = Date.parse(completedAt);
+    const isOldRun = Number.isFinite(completedMs) && Date.now() - completedMs > 24 * 60 * 60 * 1000;
+    if (isOldRun) {
+      console.log(`[QUEUE] Route ${routeId} completed ${completedAt}: no notifications to other users`);
+    }
+    if (!isOldRun) try {
       // Territory loss: one notification per victim, pointing at the middle of the run
       if (victimIds.length > 0) {
         const { notifyTerritoryLoss } = await import('./notifications');
@@ -230,7 +237,7 @@ async function handleProcessRouteTerritory(
       console.error('[QUEUE] Territory loss notification error (non-critical):', notifErr);
     }
 
-    try {
+    if (!isOldRun) try {
       const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
       // Friends who lost territory to this run already got "⚔️ … te ha robado …"
       await notifyFriendNewActivity(storage, userId, distance || 0, conquestResult.newAreaConquered, env, {
