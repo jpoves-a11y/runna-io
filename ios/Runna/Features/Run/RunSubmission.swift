@@ -210,7 +210,8 @@ enum PendingRuns {
             body["pointTimes"] = times.map { ($0 * 10).rounded() / 10 }
             if let altitudes = entry.altitudes, altitudes.count == entry.coordinates.count {
                 body["altitudes"] = altitudes.map { value -> Any in
-                    value.map { ($0 * 10).rounded() / 10 } ?? NSNull()
+                    guard let value else { return NSNull() }
+                    return (value * 10).rounded() / 10
                 }
             }
         }

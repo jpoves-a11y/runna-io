@@ -226,7 +226,8 @@ final class HealthImporter {
             // Time of each point (pace, splits and the speed check of each stretch) and its altitude
             body["pointTimes"] = coordinates.map { (max(0, $0.timestamp.timeIntervalSince(workout.startDate)) * 10).rounded() / 10 }
             body["altitudes"] = coordinates.map { location -> Any in
-                location.verticalAccuracy >= 0 ? (location.altitude * 10).rounded() / 10 : NSNull()
+                guard location.verticalAccuracy >= 0 else { return NSNull() }
+                return (location.altitude * 10).rounded() / 10
             }
             do {
                 let response: CreateRouteResponse = try await APIClient.shared.request("POST", "/api/routes", body: body)
