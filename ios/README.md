@@ -14,7 +14,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 - **Amigos**: solicitudes, búsqueda, perfiles con sus amigos y actividades, enlace de invitación para compartir (`/invite/<token>` abre la app y pide confirmar).
 - **Seguridad**: denunciar publicaciones, comentarios y usuarios; bloquear y desbloquear (Perfil → Usuarios bloqueados).
 - **Perfil**: foto, nombre, color del territorio, estadísticas de robos, apariencia clara/oscura, Strava, Polar y **Apple Salud** (importa las carreras del Apple Watch) en "Conectar dispositivos", notificaciones, soporte y enlaces legales.
-- **Notificaciones push** nativas (APNs): robos de territorio, solicitudes de amistad, comentarios, cofres, resumen semanal, importaciones automáticas, etc.
+- **Notificaciones push** nativas (APNs): robos de territorio, carreras importadas con lo conquistado, carreras de amigos, solicitudes de amistad, comentarios y me gusta, tesoros, apodos, resumen semanal y recordatorios. Se eligen por tipos (Perfil → Notificaciones → Tipos de notificaciones), tienen botones ("Correr ahora", "Aceptar", "Ver en el mapa") y abren la zona, el tesoro o la publicación concretos.
 
 ## Abrir y ejecutar (Mac)
 

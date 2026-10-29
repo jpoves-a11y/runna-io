@@ -108,6 +108,19 @@ struct MapScreen: View {
         .onChange(of: model.treasures) { _, _ in
             tracker.activeTreasures = model.liveTreasures
         }
+        // A notification asked for a place (territory lost, treasure) or for "Correr ahora"
+        .task(id: router.mapFocus?.id) {
+            guard let focus = router.mapFocus else { return }
+            router.mapFocus = nil
+            withAnimation(.smooth(duration: 0.8)) {
+                camera = .camera(MapCamera(centerCoordinate: focus.coordinate, distance: 2_500))
+            }
+        }
+        .task(id: router.pendingRunStart) {
+            guard router.pendingRunStart else { return }
+            router.pendingRunStart = false
+            if !tracker.isPresented { tracker.isPresented = true }
+        }
         .task(id: friendRoutesKey) {
             guard showsFriendRoutes else { return }
             await model.loadFriendRoutes()

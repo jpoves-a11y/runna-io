@@ -1,6 +1,27 @@
 import UIKit
 import UserNotifications
 
+/// Buttons of the notifications (identifiers match the categories the server sends in aps.category).
+enum NotificationAction {
+    static let run = "RUN_NOW"
+    static let showOnMap = "SHOW_ON_MAP"
+    static let acceptFriend = "ACCEPT_FRIEND"
+
+    /// Registered at launch: territory lost and reminders get "Correr ahora", friend requests "Aceptar",
+    /// treasures "Ver en el mapa".
+    static func registerCategories() {
+        let run = UNNotificationAction(identifier: run, title: "Correr ahora", options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "figure.run"))
+        let map = UNNotificationAction(identifier: showOnMap, title: "Ver en el mapa", options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "map"))
+        let accept = UNNotificationAction(identifier: acceptFriend, title: "Aceptar", options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "person.badge.plus"))
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(identifier: "TERRITORY_LOSS", actions: [run, map], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "RUN_REMINDER", actions: [run], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "FRIEND_REQUEST", actions: [accept], intentIdentifiers: []),
+            UNNotificationCategory(identifier: "TREASURE", actions: [map], intentIdentifiers: []),
+        ])
+    }
+}
+
 /// Push notifications through APNs: permission, device registration with the API, and cleanup on logout.
 @MainActor
 final class PushManager {

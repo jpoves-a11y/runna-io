@@ -152,6 +152,11 @@ struct ProfileView: View {
             switch notificationStatus {
             case .authorized, .provisional, .ephemeral:
                 notificationStatusRow
+                NavigationLink {
+                    NotificationPreferencesView()
+                } label: {
+                    SocialSettingsLabel(title: "Tipos de notificaciones", systemImage: "slider.horizontal.3")
+                }
                 Button {
                     sendTestNotification()
                 } label: {
@@ -183,7 +188,7 @@ struct ProfileView: View {
         } header: {
             SocialSectionHeader(title: "Notificaciones")
         } footer: {
-            Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta.")
+            Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta. En \"Tipos de notificaciones\" eliges cuáles.")
         }
         .listRowBackground(Color.surface)
     }
