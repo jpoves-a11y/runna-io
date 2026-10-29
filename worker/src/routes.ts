@@ -29,7 +29,7 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
-import { madridTime } from './cron';
+import { madridTime, madridWeekStart } from './cron';
 import { connectionTimeMs, startedBeforeConnection } from './importCutoff';
 import {
   simplifyCoordinates,
@@ -4338,6 +4338,33 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return { ...toPublicUser(f), nickname: nn?.nickname || null, nicknameExpiresAt: nn?.expiresAt || null };
       });
       return c.json(enriched);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // This week's ranking among friends (Monday 00:00 Madrid onwards): territory conquered, km and runs.
+  app.get('/api/leaderboard/friends/:userId/weekly', requireSelf('userId'), async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const weekStart = madridWeekStart(Date.now()).toISOString();
+      const entries = await storage.getWeeklyFriendsRanking(c.req.param('userId'), weekStart);
+      const nicknameMap = await storage.getActiveNicknamesForUsers(entries.map((entry) => entry.id));
+      return c.json({
+        weekStart,
+        entries: entries.map((entry) => {
+          const nn = nicknameMap.get(entry.id);
+          return {
+            ...toPublicUser(entry),
+            rank: entry.rank,
+            weekArea: entry.weekArea,
+            weekDistance: entry.weekDistance,
+            weekRuns: entry.weekRuns,
+            nickname: nn?.nickname || null,
+            nicknameExpiresAt: nn?.expiresAt || null,
+          };
+        }),
+      });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }

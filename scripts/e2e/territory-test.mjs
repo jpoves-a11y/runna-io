@@ -387,5 +387,19 @@ check('lists of everyone need a session', (await call('GET', '/api/leaderboard')
   check('same run without times: only the average is checked', noTimes.status === 200 || noTimes.status === 201, noTimes.status);
 }
 
+// 15. Weekly ranking among friends: this week's conquered area, km and runs; strangers not included
+{
+  const weekly = await call('GET', `/api/leaderboard/friends/${alice.id}/weekly`, { token: alice.token });
+  const entries = weekly.data?.entries ?? [];
+  const me = entries.find((e) => e.id === alice.id);
+  check('weekly ranking: me and my friends only', weekly.status === 200 && !!me && !entries.some((e) => e.id === dave.id)
+    && entries.length === 3, weekly.data);
+  check('weekly ranking: area, km and runs of this week', me && me.weekRuns >= 1 && me.weekDistance > 0 && me.weekArea > 0, me);
+  check('weekly ranking: sorted by area', entries.every((e, i) => i === 0 || entries[i - 1].weekArea >= e.weekArea)
+    && entries.every((e, i) => e.rank === i + 1), entries.map((e) => [e.username, e.weekArea]));
+  const other = await call('GET', `/api/leaderboard/friends/${bob.id}/weekly`, { token: alice.token });
+  check("weekly ranking: not someone else's", other.status === 403, other.status);
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

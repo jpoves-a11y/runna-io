@@ -14,6 +14,9 @@ struct RankingItem: Identifiable, Hashable {
     let area: Double
     var stolen: Double = 0
     var treasures: Int = 0
+    /// Weekly board: km and runs of the week.
+    var distance: Double = 0
+    var runs: Int = 0
     var isMe: Bool = false
 
     var hasNickname: Bool {
@@ -289,7 +292,7 @@ struct RankRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            if item.stolen > 0 || item.treasures > 0 {
+            if item.stolen > 0 || item.treasures > 0 || item.runs > 0 {
                 extras
             }
         }
@@ -297,6 +300,13 @@ struct RankRow: View {
 
     private var extras: some View {
         HStack(spacing: 10) {
+            if item.runs > 0 {
+                RankingMiniChip(
+                    systemImage: "figure.run",
+                    text: "\(Format.distance(item.distance)) · \(item.runs == 1 ? "1 carrera" : "\(item.runs) carreras")",
+                    tint: Color.secondary
+                )
+            }
             if item.stolen > 0 {
                 RankingMiniChip(systemImage: "arrow.down.right", text: "\(Format.area(item.stolen)) robados", tint: Color.steal)
             }

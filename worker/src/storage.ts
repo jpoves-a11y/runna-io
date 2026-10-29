@@ -2563,6 +2563,43 @@ export class WorkerStorage {
     }));
   }
 
+  /**
+   * This week's figures of the user and their friends: territory conquered (new area of each run),
+   * distance and number of runs since `since` (ISO date), best first.
+   */
+  async getWeeklyFriendsRanking(userId: string, since: string): Promise<Array<UserWithStats & {
+    weekArea: number; weekDistance: number; weekRuns: number;
+  }>> {
+    const friends = await this.getLeaderboardFriends(userId);
+    if (friends.length === 0) return [];
+    const ids = friends.map((friend) => friend.id);
+    const rows = await this.db.all<{ user_id: string; runs: number; distance: number; area: number }>(sql`
+      SELECT r.user_id AS user_id,
+             COUNT(*) AS runs,
+             COALESCE(SUM(r.distance), 0) AS distance,
+             COALESCE(SUM((
+               SELECT MAX(COALESCE(fe.new_area, 0)) FROM feed_events fe
+               WHERE fe.route_id = r.id AND fe.event_type = 'activity'
+             )), 0) AS area
+      FROM routes r
+      WHERE r.user_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+        AND datetime(r.started_at) >= datetime(${since})
+      GROUP BY r.user_id
+    `);
+    const byUser = new Map(rows.map((row) => [row.user_id, row]));
+    const entries = friends.map((friend) => {
+      const row = byUser.get(friend.id);
+      return {
+        ...friend,
+        weekArea: Number(row?.area) || 0,
+        weekDistance: Number(row?.distance) || 0,
+        weekRuns: Number(row?.runs) || 0,
+      };
+    });
+    entries.sort((a, b) => b.weekArea - a.weekArea || b.weekDistance - a.weekDistance);
+    return entries.map((entry, index) => ({ ...entry, rank: index + 1 }));
+  }
+
   /** Number of friendships of each user, in a single query. */
   async getFriendCounts(userIds: string[]): Promise<Map<string, number>> {
     const counts = new Map<string, number>();
