@@ -401,5 +401,103 @@ check('lists of everyone need a session', (await call('GET', '/api/leaderboard')
   check("weekly ranking: not someone else's", other.status === 403, other.status);
 }
 
+// Overlap (m²) between two users' territories, straight from the database
+async function overlapDb(userA, userB) {
+  const turf = await import('../../node_modules/@turf/turf/dist/esm/index.js');
+  const geoms = async (id) => (await all('select geometry from territories where user_id = ?', [id])).map((r) => JSON.parse(r.geometry));
+  let total = 0;
+  for (const g1 of await geoms(userA)) for (const g2 of await geoms(userB)) {
+    const inter = turf.intersect(turf.featureCollection([turf.feature(g1), turf.feature(g2)]));
+    if (inter) total += turf.area(inter);
+  }
+  return total;
+}
+
+// 16. Castles (no competition needed): each castle stops one attack on its zone, then it falls
+await db.execute({ sql: "update competitions set status = 'finished', ends_at = ? where id = ?", args: [new Date(Date.now() - DAY()).toISOString(), comp.data.id] });
+{
+  const eve = await register(`eve${stamp}`);
+  const fred = await register(`fre${stamp}`);
+  await befriend(eve, fred);
+  await run(eve, square(12000, 0, 300));
+  await run(eve, square(12000, 0, 300));
+  await run(eve, square(12000, 0, 300));
+  const castlesOf = async (user) => ((await call('GET', '/api/territories/fortifications', { token: fred.token })).data.castles || []).filter((z) => z.userId === user.id);
+  const zones = await castlesOf(eve);
+  check('castles: running your zone again builds castles (one zone, 2 castles), friends see them',
+    zones.length === 1 && zones[0].layers === 2 && Number.isFinite(zones[0].lat) && !!zones[0].expiresAt && !!zones[0].nextExpiryAt, zones);
+  const eveArea = await territoryArea(eve.id);
+  const fredMetrics = await metricsCount(fred.id);
+  await run(fred, square(12150, 0, 300));
+  check('castle stops the attack: nothing stolen', near(await territoryArea(eve.id), eveArea, 0.01) && await metricsCount(fred.id) === fredMetrics,
+    { eve: await territoryArea(eve.id), eveArea });
+  check('the attacker does not get the protected zone', await overlapDb(eve.id, fred.id) < 100, await overlapDb(eve.id, fred.id));
+  check('the attacker keeps the part outside the castles', near(await territoryArea(fred.id), 45_000, 0.12), await territoryArea(fred.id));
+  check('one castle fell', (await castlesOf(eve))[0]?.layers === 1, await castlesOf(eve));
+  await run(fred, square(12150, 0, 300));
+  check('second attack: the last castle falls, the zone holds', near(await territoryArea(eve.id), eveArea, 0.01) && (await castlesOf(eve)).length === 0);
+  await run(fred, square(12150, 0, 300));
+  check('without castles the zone is stolen', near(eveArea - await territoryArea(eve.id), 45_000, 0.12), eveArea - await territoryArea(eve.id));
+}
+
+// 17. Decay: zones not run over for 14 days wear away from the border, ~3 % a day
+{
+  const gus = await register(`gus${stamp}`);
+  const routeA = await run(gus, square(15000, 0, 400));
+  const routeB = await run(gus, square(16000, 0, 400));
+  const decayPass = async () => {
+    const r = await call('POST', '/api/tasks/territory-decay', { headers: { Authorization: 'Bearer e2e-cron-secret' } });
+    await flush();
+    return r;
+  };
+  const daysAgo = (days) => new Date(Date.now() - days * DAY()).toISOString();
+  const weakOf = async () => (await call('GET', '/api/territories/weak', { token: gus.token })).data;
+  const first = await decayPass();
+  const before = await territoryArea(gus.id);
+  const state = await one('select * from territory_decay where user_id = ?', [gus.id]);
+  check('decay: the first pass only starts the clock', first.status === 200 && !!state && near(before, 320_000, 0.05), { first, before });
+
+  // A was run 20 days ago, B 5 days ago, the clock started 30 days ago
+  await db.execute({ sql: 'update routes set started_at = ? where id = ?', args: [daysAgo(20), routeA] });
+  await db.execute({ sql: 'update routes set started_at = ? where id = ?', args: [daysAgo(5), routeB] });
+  await db.execute({ sql: 'update territory_decay set tracking_since = ?, last_day = null where user_id = ?', args: [daysAgo(30), gus.id] });
+  await decayPass();
+  const after = await territoryArea(gus.id);
+  const lost = before - after;
+  check('decay: the undefended zone loses about 3 % a day', lost > 1_500 && lost < 9_000, lost);
+  check('decay: total area updated', near(await userArea(gus.id), after, 0.001));
+  const weak = await weakOf();
+  const turf = await import('../../node_modules/@turf/turf/dist/esm/index.js');
+  const gusWeak = weak.zones?.find((z) => z.userId === gus.id);
+  check('decay: the worn zone is listed as weak (only A)', !!gusWeak?.weak && near(turf.area(gusWeak.weak), 160_000 - lost, 0.1), gusWeak && turf.area(gusWeak.weak));
+  await decayPass();
+  check('decay: one pass a day (a repeated message changes nothing)', near(await territoryArea(gus.id), after, 0.0001));
+
+  // B was last run 12,5 days ago: it starts wearing away in two days
+  await db.execute({ sql: 'update routes set started_at = ? where id = ?', args: [daysAgo(12.5), routeB] });
+  await db.execute({ sql: 'update territory_decay set last_day = null where user_id = ?', args: [gus.id] });
+  await decayPass();
+  const atRisk = (await weakOf()).zones?.find((z) => z.userId === gus.id)?.atRisk;
+  check('decay: zone at risk in two days', !!atRisk && near(turf.area(atRisk), 160_000, 0.1), atRisk && turf.area(atRisk));
+
+  // Running through A defends it at once
+  await run(gus, square(15000, 0, 400));
+  const afterRun = (await weakOf()).zones?.find((z) => z.userId === gus.id);
+  check('decay: running a weak zone defends it right away', !afterRun?.weak || turf.area(afterRun.weak) < 1_000, afterRun && afterRun.weak && turf.area(afterRun.weak));
+
+  // Rest mode: the clock stops
+  const rest = await call('POST', '/api/user/rest', { token: gus.token, body: { days: 3 } });
+  check('rest mode starts', rest.status === 200 && rest.data.active && rest.data.daysLeft === 11, rest);
+  check('rest mode: not twice at once', (await call('POST', '/api/user/rest', { token: gus.token, body: { days: 2 } })).status === 409);
+  await db.execute({ sql: 'update routes set started_at = ? where user_id = ?', args: [daysAgo(20), gus.id] });
+  await db.execute({ sql: 'update territory_decay set last_day = null where user_id = ?', args: [gus.id] });
+  const restingArea = await territoryArea(gus.id);
+  await decayPass();
+  check('rest mode: nothing wears away', near(await territoryArea(gus.id), restingArea, 0.0001));
+  const ended = await call('DELETE', '/api/user/rest', { token: gus.token });
+  check('rest mode ended early gives back the unused days', ended.status === 200 && !ended.data.active && ended.data.daysLeft === 13, ended);
+  check('rest mode: at most the days left', (await call('POST', '/api/user/rest', { token: gus.token, body: { days: 20 } })).status === 400);
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

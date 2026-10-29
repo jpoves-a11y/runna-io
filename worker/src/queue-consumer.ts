@@ -7,6 +7,7 @@
  * Message types:
  * - process_route_territory: Process territory conquest + feed update for a new route
  * - reprocess_friend_group: Full chronological reprocess of a friend group's territories
+ * - territory_decay: nightly decay of one user's undefended territory
  */
 import { createDb } from './db';
 import { WorkerStorage } from './storage';
@@ -51,7 +52,13 @@ export interface ReprocessFriendGroupMessage {
   userId: string; // trigger user — friend group is derived from their friendships
 }
 
-export type TerritoryQueueMessage = ProcessRouteTerritoryMessage | ReprocessFriendGroupMessage;
+/** Nightly decay of one user's undefended territory (through the queue: never during a run's processing). */
+export interface TerritoryDecayMessage {
+  type: 'territory_decay';
+  userId: string;
+}
+
+export type TerritoryQueueMessage = ProcessRouteTerritoryMessage | ReprocessFriendGroupMessage | TerritoryDecayMessage;
 
 // ─── Queue Consumer ──────────────────────────────────────────────────────────
 
@@ -81,6 +88,12 @@ async function processMessage(msg: TerritoryQueueMessage, env: Env): Promise<voi
     case 'reprocess_friend_group':
       await handleReprocessFriendGroup(storage, msg);
       break;
+    case 'territory_decay': {
+      const { runTerritoryDecay } = await import('./decayTask');
+      const outcome = await runTerritoryDecay(storage, env, msg.userId);
+      if (outcome.lost > 0) console.log(`[DECAY] ${msg.userId}: -${outcome.lost.toFixed(0)} m²`);
+      break;
+    }
     default:
       console.error(`[QUEUE] Unknown message type:`, (msg as any).type);
   }

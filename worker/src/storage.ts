@@ -107,11 +107,45 @@ import {
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
 import { cleanGeometry, geometryBbox, hidePrivateEnds, parseNumberArray, MIN_TERRITORY_PIECE_M2 } from './territory';
+import { withoutDefended } from './decay';
 
 /** Fortification layers kept per zone (a new run there renews the oldest). */
 export const MAX_FORTIFICATION_LAYERS = 3;
 /** Fortifications older than this no longer count and are purged. */
 export const FORTIFICATION_TTL_DAYS = 14;
+
+export interface DecayState {
+  userId: string;
+  /** When the decay clock started for this user (nothing wears away before DECAY_GRACE_DAYS after it). */
+  trackingSince: string;
+  /** Day (YYYY-MM-DD) of the last decay pass (the queue may deliver twice). */
+  lastDay: string | null;
+  weak: any | null;
+  atRisk: any | null;
+  lostToday: number;
+  lostTotal: number;
+}
+
+export interface RestMode {
+  userId: string;
+  startedAt: string;
+  until: string;
+  year: number;
+  daysUsed: number;
+}
+
+function decayStateFromRow(row: any): DecayState {
+  const parse = (value: string | null) => { try { return value ? JSON.parse(value) : null; } catch { return null; } };
+  return {
+    userId: row.user_id,
+    trackingSince: row.tracking_since,
+    lastDay: row.last_day ?? null,
+    weak: parse(row.weak_geometry),
+    atRisk: parse(row.at_risk_geometry),
+    lostToday: Number(row.lost_today) || 0,
+    lostTotal: Number(row.lost_total) || 0,
+  };
+}
 
 /** bbox_* columns of a territory with this geometry (parsed or JSON). */
 function bboxColumns(geometry: any): { bboxMinLng: number | null; bboxMinLat: number | null; bboxMaxLng: number | null; bboxMaxLat: number | null } {
@@ -312,6 +346,25 @@ export class WorkerStorage {
       PRIMARY KEY (blocker_id, blocked_id)
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+    // Territory decay: per user, when the clock started, the zones wearing away and the ones at risk
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS territory_decay (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      tracking_since TEXT NOT NULL,
+      last_day TEXT,
+      weak_geometry TEXT,
+      at_risk_geometry TEXT,
+      lost_today REAL NOT NULL DEFAULT 0,
+      lost_total REAL NOT NULL DEFAULT 0,
+      updated_at TEXT
+    )`);
+    // Rest mode: the decay clock stops (REST_DAYS_PER_YEAR days a year)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS rest_mode (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      until TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      days_used INTEGER NOT NULL DEFAULT 0
+    )`);
     // migrations/0011_auth_attempts_password_resets.sql
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS auth_attempts (
       key TEXT PRIMARY KEY,
@@ -4308,13 +4361,13 @@ export class WorkerStorage {
 
   /** Batch-load fortifications for ALL enemy users in a bbox — single DB call instead of N.
    *  Returns a Map from userId to their fortification records. */
-  async getAllFortificationsInBbox(userIds: string[], minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Map<string, Array<{ id: string; geometry: string; area: number }>>> {
-    const result = new Map<string, Array<{ id: string; geometry: string; area: number }>>();
+  async getAllFortificationsInBbox(userIds: string[], minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Map<string, Array<{ id: string; geometry: string; area: number; createdAt: string }>>> {
+    const result = new Map<string, Array<{ id: string; geometry: string; area: number; createdAt: string }>>();
     if (userIds.length === 0) return result;
     await this.ensureCompetitionTables();
     const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
-    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number }>(
-      sql.raw(`SELECT id, user_id, geometry, area FROM territory_fortifications
+    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number; created_at: string }>(
+      sql.raw(`SELECT id, user_id, geometry, area, created_at FROM territory_fortifications
         WHERE user_id IN (${placeholders})
         AND bbox_max_lng >= ${minLng} AND bbox_min_lng <= ${maxLng}
         AND bbox_max_lat >= ${minLat} AND bbox_min_lat <= ${maxLat}
@@ -4323,7 +4376,7 @@ export class WorkerStorage {
     for (const row of rows) {
       const uid = row.user_id;
       if (!result.has(uid)) result.set(uid, []);
-      result.get(uid)!.push({ id: row.id, geometry: row.geometry, area: row.area });
+      result.get(uid)!.push({ id: row.id, geometry: row.geometry, area: row.area, createdAt: row.created_at });
     }
     return result;
   }
@@ -4339,6 +4392,106 @@ export class WorkerStorage {
       })
       .from(territoryFortifications)
       .where(eq(territoryFortifications.userId, userId));
+  }
+
+  // ===== Territory decay =====
+
+  async getDecayState(userId: string): Promise<DecayState | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<any>(sql`SELECT * FROM territory_decay WHERE user_id = ${userId}`);
+    return rows[0] ? decayStateFromRow(rows[0]) : null;
+  }
+
+  async getDecayStates(userIds: string[]): Promise<DecayState[]> {
+    if (userIds.length === 0) return [];
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<any>(sql`SELECT * FROM territory_decay
+      WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
+    return rows.map(decayStateFromRow);
+  }
+
+  async saveDecayState(state: DecayState): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const weak = state.weak ? JSON.stringify(state.weak) : null;
+    const atRisk = state.atRisk ? JSON.stringify(state.atRisk) : null;
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO territory_decay (user_id, tracking_since, last_day, weak_geometry, at_risk_geometry, lost_today, lost_total, updated_at)
+      VALUES (${state.userId}, ${state.trackingSince}, ${state.lastDay}, ${weak}, ${atRisk}, ${state.lostToday}, ${state.lostTotal}, ${now})
+      ON CONFLICT(user_id) DO UPDATE SET tracking_since = excluded.tracking_since, last_day = excluded.last_day,
+        weak_geometry = excluded.weak_geometry, at_risk_geometry = excluded.at_risk_geometry,
+        lost_today = excluded.lost_today, lost_total = excluded.lost_total, updated_at = excluded.updated_at`);
+  }
+
+  /** A run went through these zones: they stop wearing away / being at risk right away. */
+  async clearDefendedFromDecay(userId: string, footprint: any): Promise<void> {
+    const state = await this.getDecayState(userId);
+    if (!state || (!state.weak && !state.atRisk) || !footprint) return;
+    await this.saveDecayState({
+      ...state,
+      weak: withoutDefended(state.weak, footprint),
+      atRisk: withoutDefended(state.atRisk, footprint),
+    });
+  }
+
+  /** Tracks of the user's runs started since `since` (newest first, at most `limit`). */
+  async getRecentTracks(userId: string, since: string, limit = 40): Promise<Array<{ startedAt: string; coordinates: Array<[number, number]> }>> {
+    const rows = await this.db.all<{ started_at: string; coordinates: string }>(sql`
+      SELECT started_at, coordinates FROM routes
+      WHERE user_id = ${userId} AND datetime(started_at) >= datetime(${since})
+      ORDER BY datetime(started_at) DESC LIMIT ${limit}`);
+    const tracks: Array<{ startedAt: string; coordinates: Array<[number, number]> }> = [];
+    for (const row of rows) {
+      try {
+        const coordinates = typeof row.coordinates === 'string' ? JSON.parse(row.coordinates) : row.coordinates;
+        if (Array.isArray(coordinates)) tracks.push({ startedAt: row.started_at, coordinates });
+      } catch { /* unreadable track */ }
+    }
+    return tracks;
+  }
+
+  async getUserIdsWithTerritory(): Promise<string[]> {
+    const rows = await this.db.all<{ user_id: string }>(sql`SELECT DISTINCT user_id FROM territories`);
+    return rows.map((row) => row.user_id);
+  }
+
+  /** Replaces one territory row's geometry (null deletes it); keeps its run and date. */
+  async setTerritoryRowGeometry(id: string, geometry: any | null): Promise<void> {
+    if (!geometry) {
+      await this.db.delete(territories).where(eq(territories.id, id));
+      return;
+    }
+    await this.db.update(territories).set({
+      geometry: JSON.stringify(geometry),
+      area: turf.area(geometry),
+      ...bboxColumns(geometry),
+    }).where(eq(territories.id, id));
+  }
+
+  async getRestMode(userId: string): Promise<RestMode | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<any>(sql`SELECT * FROM rest_mode WHERE user_id = ${userId}`);
+    const row = rows[0];
+    return row ? { userId: row.user_id, startedAt: row.started_at, until: row.until, year: Number(row.year), daysUsed: Number(row.days_used) || 0 } : null;
+  }
+
+  async saveRestMode(rest: RestMode): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO rest_mode (user_id, started_at, until, year, days_used)
+      VALUES (${rest.userId}, ${rest.startedAt}, ${rest.until}, ${rest.year}, ${rest.daysUsed})
+      ON CONFLICT(user_id) DO UPDATE SET started_at = excluded.started_at, until = excluded.until,
+        year = excluded.year, days_used = excluded.days_used`);
+  }
+
+  /** Castles still in force of these users, oldest first. */
+  async getFortificationsOfUsers(userIds: string[]): Promise<Array<{ id: string; userId: string; geometry: string; area: number; createdAt: string }>> {
+    if (userIds.length === 0) return [];
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number; created_at: string }>(sql`
+      SELECT id, user_id, geometry, area, created_at FROM territory_fortifications
+      WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})
+        AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
+      ORDER BY julianday(created_at) ASC`);
+    return rows.map((row) => ({ id: row.id, userId: row.user_id, geometry: row.geometry, area: row.area, createdAt: row.created_at }));
   }
 
   /** Fortifications still in force (younger than FORTIFICATION_TTL_DAYS). */

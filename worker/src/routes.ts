@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createDb } from './db';
-import { WorkerStorage } from './storage';
+import { WorkerStorage, FORTIFICATION_TTL_DAYS, MAX_FORTIFICATION_LAYERS } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
 import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES, SIGNUP_CODE_MINUTES } from './email';
@@ -30,6 +30,8 @@ import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
 import { madridTime, madridWeekStart } from './cron';
+import { defendedFootprint, REST_DAYS_PER_YEAR, DAY_MS } from './decay';
+import { castleDefense, attackWithoutProtected, castleMarkerPoint, groupCastleZones, type CastleDefense, type CastleRecord } from './castles';
 import { connectionTimeMs, startedBeforeConnection } from './importCutoff';
 import {
   simplifyCoordinates,
@@ -783,9 +785,12 @@ async function runTerritoryConquest(
   let attackBbox: number[] | null = null;
   try { attackBbox = turf.bbox(attackGeometry); } catch (_) {}
 
-  // PRE-LOAD: Batch-fetch ALL fortifications for ALL enemy users in the attack bbox (1 query instead of 25)
-  let preloadedFortifications = new Map<string, Array<{ id: string; geometry: string; area: number }>>();
-  if (isCompMode && competition && !hasBulldozerPower && attackBbox) {
+  // PRE-LOAD: the castles of every enemy in the attack bbox (1 query instead of 25). Castles defend
+  // always, not only during a competition (the bulldozer power ignores them).
+  let preloadedFortifications = new Map<string, Array<{ id: string; geometry: string; area: number; createdAt: string }>>();
+  const castleDefenses = new Map<string, CastleDefense>();
+  const castlesLostByDefender = new Map<string, number>();
+  if (!hasBulldozerPower && attackBbox) {
     try {
       const enemyUserIdsForForts = [...new Set(territoriesToProcess.map(t => t.userId))];
       preloadedFortifications = await storage.getAllFortificationsInBbox(
@@ -832,59 +837,36 @@ async function runTerritoryConquest(
         if (defenderPowers?.has('invisibility')) {
           continue;
         }
+      }
 
-        // Fortification defense: check how many layers protect this territory
-        if (!hasBulldozerPower && attackBbox) {
-          try {
-            const defenderGeomRaw = typeof enemyTerritory.geometry === 'string'
-              ? JSON.parse(enemyTerritory.geometry)
-              : enemyTerritory.geometry;
-            if (defenderGeomRaw) {
-              // Use pre-loaded fortifications (0 DB calls — already fetched in bulk)
-              const fortRecords = preloadedFortifications.get(enemyTerritory.userId) || [];
-              if (fortRecords.length > 0) {
-                const attackFeature = turf.feature(attackGeometry);
-                let overlappingLayers = 0;
-                const layersToRemove: string[] = [];
-                for (const fort of fortRecords) {
-                  try {
-                    const fortGeom = JSON.parse(fort.geometry);
-                    const fortFeature = turf.feature(fortGeom);
-                    const overlap = turf.intersect(turf.featureCollection([attackFeature as any, fortFeature as any]));
-                    if (overlap && turf.area(overlap) > 10) {
-                      overlappingLayers++;
-                      layersToRemove.push(fort.id);
-                    }
-                  } catch (_) {}
-                }
-                // Base territory counts as layer 1; each fort record adds +0.5
-                // 1 run = level 1 (stealable), 2 runs = 1.5 (stealable), 3 runs = 2.0 (fortified)
-                const fortLevel = 1 + overlappingLayers * 0.5;
-                if (fortLevel >= 2) {
-                  // Break 2 records per attack (reduces level by 1.0); battering ram breaks up to 6
-                  const layersToBreak = hasBatteringRamPower ? Math.min(overlappingLayers, 6) : Math.min(overlappingLayers, 2);
-                  console.log(`[COMPETITION] FORTIFICATION level ${fortLevel} — breaking ${layersToBreak} layer(s) from ${enemyTerritory.userId}`);
-                  // BATCH: accumulate fortification deletes instead of individual calls
-                  for (let i = 0; i < layersToBreak && i < layersToRemove.length; i++) {
-                    pendingFortificationDeletes.push(layersToRemove[i]);
-                  }
-                  fortressesDestroyed += layersToBreak;
-                  continue;
-                }
-              }
-            }
-          } catch (err) {
-            console.error('[TERRITORY] Error checking fortification:', err);
+      // Castles: each zone the attack touches keeps its area and loses one castle (all of them with
+      // the battering ram). Computed once per defender, whatever the number of territory rows.
+      let attackForDefender: any = attackGeometry;
+      const fortRecords = preloadedFortifications.get(enemyTerritory.userId) || [];
+      if (fortRecords.length > 0) {
+        let defense = castleDefenses.get(enemyTerritory.userId);
+        if (!defense) {
+          const records: CastleRecord[] = [];
+          for (const fort of fortRecords) {
+            try { records.push({ id: fort.id, geometry: JSON.parse(fort.geometry), createdAt: fort.createdAt }); } catch (_) {}
           }
-        } else if (hasBulldozerPower) {
-          // Bulldozer ignores fortifications — no DB call needed
+          defense = castleDefense(attackGeometry, records, { breakAll: hasBatteringRamPower });
+          castleDefenses.set(enemyTerritory.userId, defense);
+          if (defense.destroyedIds.length > 0) {
+            pendingFortificationDeletes.push(...defense.destroyedIds);
+            fortressesDestroyed += defense.destroyedIds.length;
+            castlesLostByDefender.set(enemyTerritory.userId, defense.destroyedIds.length);
+            console.log(`[CASTLES] ${defense.destroyedIds.length} castle(s) of ${enemyTerritory.userId} destroyed in ${defense.zonesHit} zone(s)`);
+          }
         }
+        attackForDefender = attackWithoutProtected(attackGeometry, defense.protectedGeometry);
+        if (!attackForDefender) continue;
       }
       
       // Use subtractFromTerritoryDirect with pre-loaded territory (avoids redundant DB read)
       const result = await storage.subtractFromTerritoryDirect(
         enemyTerritory as any,
-        attackGeometry
+        attackForDefender
       );
 
       // Touching a neighbour's border leaves slivers of a few m² (geometry noise): the overlap is still
@@ -1026,13 +1008,33 @@ async function runTerritoryConquest(
   const fortificationMultiplier = (isCompMode && hasWallPower) ? 2 : 1;
   console.log('[TERRITORY] Merging with existing user territories...');
   
-  const result = await storage.addOrMergeTerritory(
-    userId,
-    routeId,
-    attackGeometry, // Use power-expanded geometry if applicable
-    userTerritories,
-    fortificationMultiplier
-  );
+  // Zones kept by their castles stay with their owner: the attacker doesn't get them either
+  let gainedGeometry: any = attackGeometry;
+  for (const defense of castleDefenses.values()) {
+    if (!defense.protectedGeometry) continue;
+    gainedGeometry = attackWithoutProtected(gainedGeometry, defense.protectedGeometry);
+    if (!gainedGeometry) break;
+  }
+  if (!gainedGeometry) {
+    console.log('[CASTLES] The whole run was inside castle zones: nothing gained');
+  }
+
+  const result = gainedGeometry
+    ? await storage.addOrMergeTerritory(
+      userId,
+      routeId,
+      gainedGeometry, // power-expanded geometry if applicable, without castle zones
+      userTerritories,
+      fortificationMultiplier
+    )
+    : {
+      territory: userTerritories[0] ?? null,
+      totalArea: await storage.getUserTotalAreaFromTerritories(userId),
+      newArea: 0,
+      existingArea: 0,
+      fortificationLayers: 0,
+      fortificationArea: 0,
+    };
 
   // In competition mode, new territory is worth 1.5x
   const effectiveNewArea = isCompMode ? result.newArea * 1.5 : result.newArea;
@@ -1054,6 +1056,28 @@ async function runTerritoryConquest(
     console.log(`[COMPETITION] Time bomb penalty applied: -${(timeBombPenalty/1e6).toFixed(4)} km²`);
   }
   await storage.updateUserTotalArea(userId, finalTotalArea);
+
+  // The zones this run went through are defended again: they stop wearing away right away
+  try {
+    const footprint = routeCoordinates && routeCoordinates.length >= 2
+      ? defendedFootprint([routeCoordinates])
+      : attackGeometry;
+    await storage.clearDefendedFromDecay(userId, footprint);
+  } catch (error) {
+    console.error('[DECAY] Could not clear defended zones (non-critical):', error);
+  }
+
+  // Castles that fell: their owners are told (they kept the zone this time)
+  if (env && castlesLostByDefender.size > 0 && !isLateImport) {
+    try {
+      const { notifyCastlesDestroyed } = await import('./notifications');
+      for (const [defenderId, destroyed] of [...castlesLostByDefender].slice(0, 5)) {
+        await notifyCastlesDestroyed(storage, env, defenderId, userId, destroyed, castleDefenses.get(defenderId)?.remaining ?? 0);
+      }
+    } catch (error) {
+      console.error('[CASTLES] Notification failed (non-critical):', error);
+    }
+  }
 
   // Step 4: Send deferred emails/notifications (non-critical, best-effort)
   // CAP: Only send notifications for the top MAX_NOTIFICATIONS victims (by stolen area) to prevent subrequest explosion
@@ -7727,35 +7751,55 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // GET /api/territories/fortifications — Get all fortification records (for map overlay)
+  // GET /api/territories/fortifications — your castles and your friends' (map overlay), always on.
+  // `castles`: one entry per zone with its number of castles, a point inside it for the marker and
+  // when its castles expire. `fortifications`: the raw records grouped by user (older app versions).
   app.get('/api/territories/fortifications', requireAuth, async (c) => {
     try {
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const comp = await storage.getActiveCompetition();
-      if (!comp || !isCompetitionActive(comp)) {
-        return c.json({ fortifications: [] });
+      const storage = new WorkerStorage(getDb(c.env));
+      const me = c.get('authUserId');
+      const userIds = [me, ...(await storage.getFriendIds(me))];
+      const records = await storage.getFortificationsOfUsers(userIds);
+      const ttlMs = FORTIFICATION_TTL_DAYS * 24 * 3600 * 1000;
+      const expiry = (createdAt: string) => {
+        const created = Date.parse(createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}Z`);
+        return new Date((Number.isFinite(created) ? created : Date.now()) + ttlMs).toISOString();
+      };
+      const byUser = new Map<string, typeof records>();
+      for (const record of records) {
+        if (!byUser.has(record.userId)) byUser.set(record.userId, []);
+        byUser.get(record.userId)!.push(record);
       }
-      const allForts = await storage.getAllFortifications();
-      // Group by userId and compute levels per zone
-      const byUser = new Map<string, Array<{ geometry: string; area: number }>>();
-      for (const fort of allForts) {
-        if (!byUser.has(fort.userId)) byUser.set(fort.userId, []);
-        byUser.get(fort.userId)!.push({ geometry: fort.geometry, area: fort.area });
-      }
-      // Return grouped data for the client
-      const fortifications: Array<{ userId: string; layers: number; records: Array<{ geometry: any; area: number }> }> = [];
-      for (const [uid, records] of byUser) {
+      const castles: any[] = [];
+      const fortifications: any[] = [];
+      for (const [uid, userRecords] of byUser) {
+        const parsed: CastleRecord[] = [];
+        for (const record of userRecords) {
+          try { parsed.push({ id: record.id, geometry: JSON.parse(record.geometry), createdAt: record.createdAt }); } catch (_) {}
+        }
+        for (const zone of groupCastleZones(parsed)) {
+          if (!zone.geometry) continue;
+          const center = castleMarkerPoint(zone.geometry);
+          castles.push({
+            id: zone.records[0].id,
+            userId: uid,
+            layers: Math.min(zone.records.length, MAX_FORTIFICATION_LAYERS),
+            lat: center?.[0] ?? null,
+            lng: center?.[1] ?? null,
+            geometry: zone.geometry,
+            area: turf.area(zone.geometry),
+            // The oldest castle falls first; the zone is unfortified when the newest expires
+            nextExpiryAt: expiry(zone.records[0].createdAt),
+            expiresAt: expiry(zone.records[zone.records.length - 1].createdAt),
+          });
+        }
         fortifications.push({
           userId: uid,
-          layers: records.length,
-          records: records.map(r => ({
-            geometry: JSON.parse(r.geometry),
-            area: r.area,
-          })),
+          layers: parsed.length,
+          records: parsed.map((record) => ({ geometry: record.geometry, area: turf.area(record.geometry) })),
         });
       }
-      return c.json({ fortifications });
+      return c.json({ castles, fortifications });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -7930,6 +7974,128 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // POST /api/tasks/weekly-summary — Cron: generate weekly summary (Sundays 8PM)
+  // ===== CRON: territory decay (04:00 Europe/Madrid): one queue message per user with territory =====
+  app.post('/api/tasks/territory-decay', async (c) => {
+    try {
+      if (!(await isCronRequest(c))) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      const userIds = await storage.getUserIdsWithTerritory();
+      const queue: any = (c.env as any).TERRITORY_QUEUE;
+      if (!queue) return c.json({ error: 'No queue' }, 500);
+      const messages = userIds.map((userId) => ({ body: { type: 'territory_decay', userId } }));
+      for (let i = 0; i < messages.length; i += 100) {
+        const chunk = messages.slice(i, i + 100);
+        if (typeof queue.sendBatch === 'function') await queue.sendBatch(chunk);
+        else for (const message of chunk) await queue.send(message.body);
+      }
+      return c.json({ success: true, queued: userIds.length });
+    } catch (error: any) {
+      console.error('[CRON DECAY] Error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Zones wearing away (yours and your friends') and, for you, the ones that start in two days
+  app.get('/api/territories/weak', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const me = c.get('authUserId');
+      const userIds = [me, ...(await storage.getFriendIds(me))];
+      const states = await storage.getDecayStates(userIds);
+      const rest = await storage.getRestMode(me);
+      const resting = !!rest && Date.now() < Date.parse(rest.until) && Date.now() >= Date.parse(rest.startedAt);
+      return c.json({
+        zones: states
+          .filter((state) => state.weak || (state.userId === me && state.atRisk))
+          .map((state) => ({
+            userId: state.userId,
+            weak: state.weak,
+            atRisk: state.userId === me ? state.atRisk : null,
+            lostToday: state.lostToday,
+          })),
+        resting,
+        restUntil: resting ? rest!.until : null,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Rest mode: the decay clock stops, up to REST_DAYS_PER_YEAR days a year
+  const restStatus = (rest: { startedAt: string; until: string; year: number; daysUsed: number } | null) => {
+    const now = Date.now();
+    const year = new Date(now).getUTCFullYear();
+    const used = rest && rest.year === year ? rest.daysUsed : 0;
+    const active = !!rest && now >= Date.parse(rest.startedAt) && now < Date.parse(rest.until);
+    return {
+      active,
+      startedAt: active ? rest!.startedAt : null,
+      until: active ? rest!.until : null,
+      daysLeft: Math.max(0, REST_DAYS_PER_YEAR - used),
+      maxDays: REST_DAYS_PER_YEAR,
+    };
+  };
+
+  app.get('/api/user/rest', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      return c.json(restStatus(await storage.getRestMode(c.get('authUserId'))));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/user/rest', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const userId = c.get('authUserId');
+      const body = await c.req.json().catch(() => ({}));
+      const days = Math.floor(Number(body?.days));
+      const current = await storage.getRestMode(userId);
+      const status = restStatus(current);
+      if (status.active) return c.json({ error: 'Ya estás en modo descanso', ...status }, 409);
+      if (!Number.isFinite(days) || days < 1 || days > status.daysLeft) {
+        return c.json({ error: `Puedes descansar entre 1 y ${status.daysLeft} días`, ...status }, 400);
+      }
+      const now = Date.now();
+      const year = new Date(now).getUTCFullYear();
+      const used = current && current.year === year ? current.daysUsed : 0;
+      await storage.saveRestMode({
+        userId,
+        startedAt: new Date(now).toISOString(),
+        until: new Date(now + days * DAY_MS).toISOString(),
+        year,
+        daysUsed: used + days,
+      });
+      return c.json(restStatus(await storage.getRestMode(userId)));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Ends the rest early: the whole days not used are given back
+  app.delete('/api/user/rest', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const userId = c.get('authUserId');
+      const current = await storage.getRestMode(userId);
+      if (current && restStatus(current).active) {
+        const now = Date.now();
+        const unused = Math.floor((Date.parse(current.until) - now) / DAY_MS);
+        await storage.saveRestMode({
+          ...current,
+          until: new Date(now).toISOString(),
+          daysUsed: Math.max(0, current.daysUsed - unused),
+        });
+      }
+      return c.json(restStatus(await storage.getRestMode(userId)));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.post('/api/tasks/weekly-summary', async (c) => {
     try {
       if (!(await isUpstashAuthorized(c))) {

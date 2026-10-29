@@ -199,6 +199,81 @@ export async function notifyTerritoryLoss(
   }
 }
 
+// ===== Castles =====
+
+/** A rival ran over a zone you had fortified: the castle stopped them, but it fell. */
+export async function notifyCastlesDestroyed(
+  storage: WorkerStorage,
+  env: any,
+  victimUserId: string,
+  attackerUserId: string,
+  destroyed: number,
+  remaining: number,
+): Promise<void> {
+  try {
+    if (destroyed <= 0) return;
+    if (!(await storage.takePushThrottle(`castles:${attackerUserId}:${victimUserId}`, TERRITORY_LOSS_WINDOW_MS))) return;
+    const attacker = await storage.getUser(attackerUserId);
+    const name = displayName(attacker);
+    const fallen = destroyed === 1 ? 'un castillo' : `${destroyed} castillos`;
+    await pushToUser(storage, env, victimUserId, 'conquest', {
+      image: personImage(env, attacker),
+      title: `🏰 ${name} ha derribado ${fallen} tuyo${destroyed === 1 ? '' : 's'}`,
+      body: remaining > 0
+        ? `Tu zona aguanta: te ${remaining === 1 ? 'queda 1 castillo' : `quedan ${remaining} castillos`}. Vuelve a correr por allí para reforzarla.`
+        : 'Esa zona ya no tiene castillos: el próximo ataque te la roba. Corre por allí para volver a fortificarla.',
+      tag: `castles-${attackerUserId}`,
+      threadId: 'territory',
+      category: IOS_CATEGORY.territoryLoss,
+      data: { type: 'castles_destroyed', conquerorId: attackerUserId },
+    });
+  } catch (error) {
+    console.error('Error sending castles notification:', error);
+  }
+}
+
+// ===== Territory decay =====
+
+/** Zones you last ran over 12 days ago start wearing away in two days. */
+export async function notifyDecayWarning(
+  storage: WorkerStorage,
+  env: any,
+  userId: string,
+  atRiskArea: number,
+  point: { lat: number; lng: number } | null,
+): Promise<void> {
+  if (atRiskArea < 1_000) return;
+  if (!(await storage.takePushThrottle(`decay_warning:${userId}`, 3 * 24 * 3600 * 1000))) return;
+  await pushToUser(storage, env, userId, 'reminders', {
+    title: '⏳ Parte de tu territorio empieza a desgastarse en 2 días',
+    body: `${formatArea(atRiskArea)} que no pisas desde hace 12 días. Corre por allí para defenderlo.`,
+    tag: 'territory-decay-warning',
+    threadId: 'territory',
+    category: IOS_CATEGORY.runReminder,
+    data: { type: 'territory_decay', lat: point?.lat ?? null, lng: point?.lng ?? null },
+  });
+}
+
+/** Undefended zones wore away (told at most once a week). */
+export async function notifyDecayLoss(
+  storage: WorkerStorage,
+  env: any,
+  userId: string,
+  lostArea: number,
+  point: { lat: number; lng: number } | null,
+): Promise<void> {
+  if (lostArea < 500) return;
+  if (!(await storage.takePushThrottle(`decay_loss:${userId}`, 7 * 24 * 3600 * 1000))) return;
+  await pushToUser(storage, env, userId, 'conquest', {
+    title: '🍂 Tu territorio se está desgastando',
+    body: `Hoy has perdido ${formatArea(lostArea)} en zonas que no pisas desde hace más de 14 días. Pasa corriendo por ellas para frenarlo.`,
+    tag: 'territory-decay',
+    threadId: 'territory',
+    category: IOS_CATEGORY.runReminder,
+    data: { type: 'territory_decay', lat: point?.lat ?? null, lng: point?.lng ?? null },
+  });
+}
+
 // ===== Ranking =====
 
 export async function notifyAreaOvertake(
