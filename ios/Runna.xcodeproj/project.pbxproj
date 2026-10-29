@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4A1D0000000000000000001B /* RunnaLive.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 4A1D00000000000000000010 /* RunnaLive.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		4A1D00000000000000000029 /* RunnaNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 4A1D00000000000000000020 /* RunnaNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -17,6 +18,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 4A1D00000000000000000013;
 			remoteInfo = RunnaLive;
+		};
+		4A1D0000000000000000002B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4A1D00000000000000000009 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4A1D00000000000000000025;
+			remoteInfo = RunnaNotificationService;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -28,6 +36,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				4A1D0000000000000000001B /* RunnaLive.appex in Embed Foundation Extensions */,
+				4A1D00000000000000000029 /* RunnaNotificationService.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -37,6 +46,7 @@
 /* Begin PBXFileReference section */
 		4A1D00000000000000000001 /* Runna.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Runna.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A1D00000000000000000010 /* RunnaLive.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RunnaLive.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		4A1D00000000000000000020 /* RunnaNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RunnaNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -53,6 +63,11 @@
 		4A1D00000000000000000012 /* Shared */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		4A1D00000000000000000021 /* RunnaNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = RunnaNotificationService;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -72,6 +87,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4A1D00000000000000000023 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -80,6 +102,7 @@
 			children = (
 				4A1D00000000000000000002 /* Runna */,
 				4A1D00000000000000000011 /* RunnaLive */,
+				4A1D00000000000000000021 /* RunnaNotificationService */,
 				4A1D00000000000000000012 /* Shared */,
 				4A1D00000000000000000005 /* Products */,
 			);
@@ -90,6 +113,7 @@
 			children = (
 				4A1D00000000000000000001 /* Runna.app */,
 				4A1D00000000000000000010 /* RunnaLive.appex */,
+				4A1D00000000000000000020 /* RunnaNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -110,6 +134,7 @@
 			);
 			dependencies = (
 				4A1D0000000000000000001C /* PBXTargetDependency */,
+				4A1D0000000000000000002A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				4A1D00000000000000000002 /* Runna */,
@@ -145,6 +170,28 @@
 			productReference = 4A1D00000000000000000010 /* RunnaLive.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		4A1D00000000000000000025 /* RunnaNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4A1D00000000000000000026 /* Build configuration list for PBXNativeTarget "RunnaNotificationService" */;
+			buildPhases = (
+				4A1D00000000000000000022 /* Sources */,
+				4A1D00000000000000000023 /* Frameworks */,
+				4A1D00000000000000000024 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4A1D00000000000000000021 /* RunnaNotificationService */,
+			);
+			name = RunnaNotificationService;
+			packageProductDependencies = (
+			);
+			productName = RunnaNotificationService;
+			productReference = 4A1D00000000000000000020 /* RunnaNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -159,6 +206,9 @@
 						CreatedOnToolsVersion = 16.0;
 					};
 					4A1D00000000000000000013 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					4A1D00000000000000000025 = {
 						CreatedOnToolsVersion = 16.0;
 					};
 				};
@@ -179,6 +229,7 @@
 			targets = (
 				4A1D00000000000000000006 /* Runna */,
 				4A1D00000000000000000013 /* RunnaLive */,
+				4A1D00000000000000000025 /* RunnaNotificationService */,
 			);
 		};
 /* End PBXProject section */
@@ -192,6 +243,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		4A1D00000000000000000016 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4A1D00000000000000000024 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -215,6 +273,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4A1D00000000000000000022 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -222,6 +287,11 @@
 			isa = PBXTargetDependency;
 			target = 4A1D00000000000000000013 /* RunnaLive */;
 			targetProxy = 4A1D0000000000000000001D /* PBXContainerItemProxy */;
+		};
+		4A1D0000000000000000002A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4A1D00000000000000000025 /* RunnaNotificationService */;
+			targetProxy = 4A1D0000000000000000002B /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -465,6 +535,58 @@
 			};
 			name = Release;
 		};
+		4A1D00000000000000000027 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/RunnaNotificationService-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Runna.io";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jpoves.runnaio.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		4A1D00000000000000000028 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Config/RunnaNotificationService-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Runna.io";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jpoves.runnaio.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -491,6 +613,15 @@
 			buildConfigurations = (
 				4A1D00000000000000000018 /* Debug */,
 				4A1D00000000000000000019 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4A1D00000000000000000026 /* Build configuration list for PBXNativeTarget "RunnaNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4A1D00000000000000000027 /* Debug */,
+				4A1D00000000000000000028 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

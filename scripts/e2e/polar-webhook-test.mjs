@@ -234,6 +234,16 @@ check('runs off: imported, no push', !!activity3?.route_id && calls.apns.slice(a
 const prefs2 = await call('PUT', '/api/push/preferences', { token: user.token, body: { runs: true } });
 check('preferences: back on', prefs2.data.runs === true, prefs2.data);
 
+// Profile picture for the notification extension: served as an image, 404 without one
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+await db.execute({ sql: 'update users set avatar = ? where id = ?', args: [`data:image/png;base64,${png}`, user.id] });
+const avatarRes = await worker.fetch(new Request(`http://127.0.0.1:8787/api/users/${user.id}/avatar?v=1`), env, ctx);
+const avatarBytes = new Uint8Array(await avatarRes.arrayBuffer());
+check('avatar served as an image', avatarRes.status === 200 && avatarRes.headers.get('content-type') === 'image/png'
+  && avatarBytes.length === Buffer.from(png, 'base64').length && avatarBytes[1] === 0x50, { status: avatarRes.status, type: avatarRes.headers.get('content-type'), length: avatarBytes.length });
+const noAvatar = await worker.fetch(new Request(`http://127.0.0.1:8787/api/users/${friend.id}/avatar`), env, ctx);
+check('no avatar: 404', noAvatar.status === 404, noAvatar.status);
+
 // Cron fallback still works and finds nothing new
 await db.execute({ sql: 'update polar_accounts set last_sync_at = ? where user_id = ?', args: [new Date(Date.now() - 3600 * 1000).toISOString(), user.id] });
 const cron = await call('POST', '/api/tasks/polar-auto-sync', { headers: { Authorization: 'Bearer e2e-cron-secret' } });

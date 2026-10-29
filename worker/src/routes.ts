@@ -2279,6 +2279,32 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // Upload avatar image
+  // Profile picture as an image, for the picture shown in notifications (the notification extension has
+  // no session). Avatars are already public through /api/leaderboard; ids are random.
+  app.get('/api/users/:userId/avatar', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const user = await storage.getUser(c.req.param('userId'));
+      const avatar = user?.avatar;
+      if (!avatar) return c.json({ error: 'No avatar' }, 404);
+      if (/^https?:\/\//.test(avatar)) return c.redirect(avatar, 302);
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/is.exec(avatar);
+      if (!match) return c.json({ error: 'No avatar' }, 404);
+      const binary = atob(match[2].replace(/\s+/g, ''));
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return new Response(bytes, {
+        headers: {
+          'Content-Type': match[1],
+          // The URL carries a version (?v=), so a new picture gets a new URL
+          'Cache-Control': 'public, max-age=86400',
+        },
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.post('/api/user/avatar', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
@@ -6881,8 +6907,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       try {
         const sender = await storage.getUser(senderId);
         if (sender) {
-          const { pushToUser, formatArea } = await import('./notifications');
+          const { pushToUser, formatArea, personImage } = await import('./notifications');
           await pushToUser(storage, c.env, recipientId, 'social', {
+            image: personImage(c.env, sender),
             title: `📸 ${sender.name} te ha enviado una foto`,
             body: areaStolen
               ? `Después de robarte ${formatArea(areaStolen)}. Solo podrás verla una vez.`

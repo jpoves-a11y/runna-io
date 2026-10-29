@@ -1,5 +1,6 @@
 import type { WorkerStorage } from './storage';
 import { sendPushToUser, type PushNotificationPayload } from './pushHelper';
+import { DEFAULT_WORKER_URL } from './email';
 
 // ===== Categories and preferences =====
 
@@ -87,6 +88,25 @@ function displayName(user: { name?: string | null; username?: string | null } | 
   return user?.name || user?.username || fallback;
 }
 
+/**
+ * The person a notification is about, as the picture on its right: their profile picture
+ * (GET /api/users/:id/avatar) or, without one, their initials on their colour.
+ */
+export function personImage(
+  env: any,
+  user: { id: string; name?: string | null; username?: string | null; color?: string | null; avatar?: string | null } | undefined | null,
+): PushNotificationPayload['image'] {
+  if (!user) return undefined;
+  const base = String(env?.WORKER_URL || DEFAULT_WORKER_URL).replace(/\/+$/, '');
+  // The version changes with the picture, so a cached old one isn't shown
+  const version = user.avatar ? `${user.avatar.length}-${user.avatar.slice(-12).replace(/[^A-Za-z0-9]/g, '')}` : '';
+  return {
+    url: user.avatar ? `${base}/api/users/${encodeURIComponent(user.id)}/avatar?v=${version}` : null,
+    name: user.name || user.username || '',
+    color: user.color || '#888888',
+  };
+}
+
 function preview(text: string, length = 100): string {
   const trimmed = text.trim().replace(/\s+/g, ' ');
   return trimmed.length > length ? `${trimmed.slice(0, length - 1)}…` : trimmed;
@@ -159,6 +179,7 @@ export async function notifyTerritoryLoss(
     const lastNotification = await storage.getLastTerritoryLossNotification(victimUserId);
     const { message, index } = pickTaunt(lastNotification?.messageIndex ?? null);
     const sent = await pushToUser(storage, env, victimUserId, 'conquest', {
+  image: personImage(env, conqueror),
       title: stolenAreaM2 ? `⚔️ ${name} te ha robado ${formatArea(stolenAreaM2)}` : `⚔️ ${name} te ha robado territorio`,
       body: message,
       tag: `territory-loss-${conquerorUserId}`,
@@ -192,6 +213,7 @@ export async function notifyAreaOvertake(
   const name = displayName(overtaker);
   const lead = Math.max(0, overtakerAreaM2 - victimAreaM2);
   await pushToUser(storage, env, victimUserId, 'conquest', {
+    image: personImage(env, overtaker),
     title: `🥇 ${name} te ha adelantado en el ranking`,
     body: `Tiene ${formatArea(overtakerAreaM2)} y te saca ${formatArea(lead)}. ¿Lo recuperas?`,
     tag: `area-overtake-${overtakerUserId}`,
@@ -265,6 +287,7 @@ export async function notifyFriendNewActivity(
     const user = await storage.getUser(activityUserId);
     const name = displayName(user, 'Un amigo');
     await pushToUsers(storage, env, recipients, 'friends', {
+      image: personImage(env, user),
       title: `🏃 ${name} ha corrido ${formatKm(distanceMeters)}`,
       body: newAreaM2 >= 1 ? `Y ha conquistado ${formatArea(newAreaM2)}` : 'Mira su carrera en el feed',
       tag: `friend-activity-${activityUserId}`,
@@ -286,6 +309,7 @@ export async function notifyFriendRequest(
 ): Promise<void> {
   const sender = await storage.getUser(senderUserId);
   await pushToUser(storage, env, recipientUserId, 'social', {
+    image: personImage(env, sender),
     title: `👋 ${displayName(sender)} quiere ser tu amigo`,
     body: 'Acepta para ver sus carreras y competir por el territorio',
     tag: `friend-request-${senderUserId}`,
@@ -303,6 +327,7 @@ export async function notifyFriendRequestAccepted(
 ): Promise<void> {
   const accepter = await storage.getUser(accepterUserId);
   await pushToUser(storage, env, originalSenderUserId, 'social', {
+    image: personImage(env, accepter),
     title: `🤝 ${displayName(accepter)} ha aceptado tu solicitud`,
     body: 'Ya podéis veros en el mapa y en el ranking',
     tag: `friend-accepted-${accepterUserId}`,
@@ -341,6 +366,7 @@ export async function notifyReaction(
     }
 
     await pushToUser(storage, env, targetOwnerId, 'social', {
+      image: personImage(env, reactor),
       title: others > 0 ? `👍 ${name} y ${others} más` : `👍 ${name}`,
       body: `${others > 0 ? 'Les ha gustado' : 'Le ha gustado'} ${target}`,
       // The newest count replaces the previous notification for the same post
@@ -368,7 +394,7 @@ export async function notifyFeedComment(
     const name = displayName(commenter);
     const body = preview(comment.content);
     const notified = new Set<string>([comment.commenterId]);
-    const base = { threadId: `feed-${comment.eventId}`, category: undefined };
+    const base = { threadId: `feed-${comment.eventId}`, image: personImage(env, commenter) };
 
     const event = await storage.getFeedEvent(comment.eventId);
     if (event && !notified.has(event.userId)) {
@@ -472,7 +498,9 @@ export async function notifyNickname(
   env: any,
   nickname: { attackerName: string; attackerId: string; targetName: string; targetUserId: string; nickname: string },
 ): Promise<void> {
+  const [attacker, target] = await Promise.all([storage.getUser(nickname.attackerId), storage.getUser(nickname.targetUserId)]);
   await pushToUser(storage, env, nickname.targetUserId, 'competition', {
+    image: personImage(env, attacker),
     title: `🎭 ${nickname.attackerName} te ha puesto un apodo`,
     body: `Durante 48 h todos te verán como «${nickname.nickname}»`,
     tag: `nickname-${nickname.targetUserId}`,
@@ -481,6 +509,7 @@ export async function notifyNickname(
   });
   const friendIds = (await storage.getFriendIds(nickname.targetUserId)).filter((id) => id !== nickname.attackerId);
   await pushToUsers(storage, env, friendIds, 'competition', {
+    image: personImage(env, target),
     title: `🎭 ${nickname.targetName} ahora se llama «${nickname.nickname}»`,
     body: `Cortesía de ${nickname.attackerName}, durante 48 h`,
     tag: `nickname-${nickname.targetUserId}`,

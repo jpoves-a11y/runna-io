@@ -24,6 +24,11 @@ export interface PushNotificationPayload {
   passive?: boolean;
   /** iOS notification category: decides the action buttons (see PushManager in the app). */
   category?: string;
+  /**
+   * Picture shown on the right of the notification (the person it is about): the app's notification
+   * extension downloads `url`, or draws the initials on `color` when there is no picture.
+   */
+  image?: { url: string | null; name: string; color: string };
   data?: any;
 }
 
@@ -477,7 +482,10 @@ async function sendApnsDetailed(endpoint: string, payload: PushNotificationPaylo
         'interruption-level': payload.passive ? 'passive' : 'active',
         ...(threadId ? { 'thread-id': threadId } : {}),
         ...(payload.category ? { category: payload.category } : {}),
+        // Lets the notification service extension add the picture before it is shown
+        ...(payload.image ? { 'mutable-content': 1 } : {}),
       },
+      ...(payload.image ? { image: payload.image } : {}),
       type: payload.data?.type ?? null,
       data: payload.data ?? null,
     });

@@ -24,6 +24,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
    - Cambia **Bundle Identifier** si quieres (ahora es `com.jpoves.runnaio`). Tiene que ser único en tu cuenta.
    - Xcode creará el App ID con las capacidades que ya trae el proyecto: Push Notifications, HealthKit y Background Modes (Location updates).
    - Haz lo mismo con el target **RunnaLive** (la extensión de la Live Activity): mismo Team. Su Bundle Identifier tiene que ser el de la app seguido de `.RunnaLive` (ahora `com.jpoves.runnaio.RunnaLive`).
+   - Y con el target **RunnaNotificationService** (añade la foto de perfil a las notificaciones): mismo Team, Bundle Identifier `com.jpoves.runnaio.NotificationService`.
 3. Elige tu iPhone y pulsa ▶︎.
 
 La app habla con la API de producción (`AppConfig.apiBaseURL` en `Runna/Core/AppConfig.swift`).
@@ -39,7 +40,7 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 Una sola vez:
 
 1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit** y **Push Notifications**.
-   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
+   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app. Lo mismo para la extensión de notificaciones, `com.jpoves.runnaio.NotificationService`.
 2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Runna" ya existe).
 3. App Store Connect → Usuarios y acceso → Integraciones → **App Store Connect API** → nueva clave con rol **Admin**. Descarga el `.p8` (solo se puede una vez) y apunta **Key ID** e **Issuer ID**.
 4. Tu **Team ID**: developer.apple.com → Membership.
@@ -81,6 +82,8 @@ El servidor envía las notificaciones directamente a Apple. Hay que darle una cl
    En `APNS_BUNDLE_ID` pon el Bundle Identifier de la app. En `APNS_PRIVATE_KEY` pega el contenido completo del `.p8`, con las líneas `BEGIN/END PRIVATE KEY`.
 
 Las builds de Xcode (Debug) se registran en el entorno *sandbox* de APNs. Las de TestFlight y App Store, en *production*. El servidor usa el que corresponda a cada dispositivo.
+
+Las notificaciones que tratan de una persona (quién te ha robado, quién te comenta…) llevan su foto de perfil a la derecha. El servidor manda `image: {url, name, color}` con `mutable-content`, y la extensión **RunnaNotificationService** (`ios/RunnaNotificationService/`) descarga la foto (`GET /api/users/:id/avatar`) y la adjunta antes de mostrarla. Si no hay foto o no llega a tiempo, dibuja las iniciales sobre su color.
 
 ## Live Activity (pantalla bloqueada y Dynamic Island)
 
