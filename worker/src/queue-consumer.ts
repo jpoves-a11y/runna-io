@@ -42,6 +42,8 @@ export interface ProcessRouteTerritoryMessage {
   distance: number;
   duration: number;
   earlyFeedEventId?: string;
+  /** Set for runs imported from a connected service: the owner is told what the run conquered. */
+  importSource?: 'strava' | 'polar' | 'suunto' | 'garmin';
 }
 
 export interface ReprocessFriendGroupMessage {
@@ -91,8 +93,22 @@ async function handleProcessRouteTerritory(
   msg: ProcessRouteTerritoryMessage,
   env: Env
 ): Promise<void> {
-  const { userId, routeId, startedAt, completedAt, distance, duration, earlyFeedEventId } = msg;
+  const { userId, routeId, startedAt, completedAt, distance, duration, earlyFeedEventId, importSource } = msg;
   console.log(`[QUEUE] Processing territory for route ${routeId} (user ${userId})`);
+
+  // Imported runs: "✅ Carrera de Strava importada · 8,2 km · +0,31 km² conquistados"
+  const notifyImport = async (newArea: number, victims: ConquestVictimInfo[]) => {
+    if (!importSource) return;
+    try {
+      const { notifyImportedRun } = await import('./notifications');
+      await notifyImportedRun(storage, env, {
+        userId, routeId, source: importSource, distance, newArea,
+        victimNames: victims.filter((v) => v.stolenArea > 0).map((v) => v.userName),
+      });
+    } catch (error) {
+      console.error('[QUEUE] Import notification failed (non-critical):', error);
+    }
+  };
 
   // Read coordinates from the routes table (not from the message) to stay
   // under the 128 KB Cloudflare Queue message-size limit.
@@ -111,6 +127,7 @@ async function handleProcessRouteTerritory(
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected: [],
     }, earlyFeedEventId);
+    await notifyImport(0, []);
     return;
   }
 
@@ -121,6 +138,7 @@ async function handleProcessRouteTerritory(
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected: [],
     }, earlyFeedEventId);
+    await notifyImport(0, []);
     return;
   }
 
@@ -143,6 +161,7 @@ async function handleProcessRouteTerritory(
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected,
     }, earlyFeedEventId);
+    await notifyImport(0, []);
     return;
   }
 
@@ -181,19 +200,29 @@ async function handleProcessRouteTerritory(
       }
     } catch (_) {}
 
-    // ── BEST-EFFORT: Send notifications (territory loss + friend activity) ──
+    // ── BEST-EFFORT: Send notifications (your import, territory loss, ranking, friends) ──
     // These can fail without affecting data integrity.
+    await notifyImport(conquestResult.newAreaConquered, conquestResult.victims);
+
+    const victimIds = conquestResult.victims.filter((v) => v.stolenArea > 0).map((v) => v.userId);
     try {
-      // Territory loss notifications (previously done inside processTerritoryConquest)
-      if (conquestResult.victims.length > 0) {
+      // Territory loss: one notification per victim, pointing at the middle of the run
+      if (victimIds.length > 0) {
         const { notifyTerritoryLoss } = await import('./notifications');
         const MAX_NOTIFICATIONS = 3;
+        const center = coords.length > 0
+          ? {
+              lat: coords.reduce((sum, c) => sum + c[0], 0) / coords.length,
+              lng: coords.reduce((sum, c) => sum + c[1], 0) / coords.length,
+            }
+          : null;
         const topVictims = [...conquestResult.victims]
+          .filter((v) => v.stolenArea > 0)
           .sort((a, b) => b.stolenArea - a.stolenArea)
           .slice(0, MAX_NOTIFICATIONS);
         for (const victim of topVictims) {
           try {
-            await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea);
+            await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea, { routeId, center });
           } catch (_) {}
         }
       }
@@ -203,14 +232,17 @@ async function handleProcessRouteTerritory(
 
     try {
       const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
-      const distanceKm = distance ? distance / 1000 : 0;
-      const newAreaKm2 = conquestResult.newAreaConquered / 1000000;
-      await notifyFriendNewActivity(storage, userId, distanceKm, newAreaKm2, env);
+      // Friends who lost territory to this run already got "⚔️ … te ha robado …"
+      await notifyFriendNewActivity(storage, userId, distance || 0, conquestResult.newAreaConquered, env, {
+        excludeUserIds: victimIds,
+        routeId,
+        eventId: earlyFeedEventId,
+      });
 
       // Check overtakes (top 10 friends) — batch load users in 1 query
       const friendIds = await storage.getFriendIds(userId);
-      const userAreaKm2 = conquestResult.totalArea / 1000000;
-      const previousAreaKm2 = (conquestResult.totalArea - conquestResult.newAreaConquered) / 1000000;
+      const userArea = conquestResult.totalArea;
+      const previousArea = conquestResult.totalArea - conquestResult.newAreaConquered;
       const MAX_FRIEND_CHECKS = 10;
       const friendIdsToCheck = friendIds.slice(0, MAX_FRIEND_CHECKS);
 
@@ -218,11 +250,8 @@ async function handleProcessRouteTerritory(
         try {
           const friends = await storage.getUsersByIds(friendIdsToCheck);
           for (const friend of friends) {
-            if (friend?.totalArea != null) {
-              const friendAreaKm2 = friend.totalArea / 1000000;
-              if (previousAreaKm2 < friendAreaKm2 && userAreaKm2 >= friendAreaKm2) {
-                await notifyAreaOvertake(storage, userId, friend.id, userAreaKm2, env);
-              }
+            if (friend?.totalArea != null && previousArea < friend.totalArea && userArea >= friend.totalArea) {
+              await notifyAreaOvertake(storage, userId, friend.id, userArea, friend.totalArea, env);
             }
           }
         } catch (_) {}

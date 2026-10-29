@@ -13,10 +13,17 @@ interface PushSubscriptionData {
   };
 }
 
-interface PushNotificationPayload {
+export interface PushNotificationPayload {
   title: string;
   body: string;
+  /** Collapse id: a newer notification with the same tag replaces the previous one on the device. */
   tag?: string;
+  /** Groups notifications in Notification Center (defaults to the tag). */
+  threadId?: string;
+  /** Delivered silently (no sound, no wake): friends' runs, likes. */
+  passive?: boolean;
+  /** iOS notification category: decides the action buttons (see PushManager in the app). */
+  category?: string;
   data?: any;
 }
 
@@ -462,11 +469,14 @@ async function sendApnsDetailed(endpoint: string, payload: PushNotificationPaylo
 
   try {
     const jwt = await getApnsJwt(config);
+    const threadId = payload.threadId ?? payload.tag;
     const body = JSON.stringify({
       aps: {
         alert: { title: payload.title, body: payload.body },
-        sound: 'default',
-        ...(payload.tag ? { 'thread-id': payload.tag } : {}),
+        ...(payload.passive ? {} : { sound: 'default' }),
+        'interruption-level': payload.passive ? 'passive' : 'active',
+        ...(threadId ? { 'thread-id': threadId } : {}),
+        ...(payload.category ? { category: payload.category } : {}),
       },
       type: payload.data?.type ?? null,
       data: payload.data ?? null,
@@ -475,7 +485,7 @@ async function sendApnsDetailed(endpoint: string, payload: PushNotificationPaylo
       authorization: `bearer ${jwt}`,
       'apns-topic': config.bundleId,
       'apns-push-type': 'alert',
-      'apns-priority': '10',
+      'apns-priority': payload.passive ? '5' : '10',
       'apns-expiration': String(Math.floor(Date.now() / 1000) + 24 * 60 * 60),
       'content-type': 'application/json',
     };

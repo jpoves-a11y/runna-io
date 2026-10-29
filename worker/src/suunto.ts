@@ -32,7 +32,6 @@ import { parseFit, isFootSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPOR
 import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
-import { sendPushToUser } from './pushHelper';
 
 type AppContext = Context<AppEnv>;
 
@@ -600,6 +599,8 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
       distance: activity.distance,
       duration: activity.duration,
       earlyFeedEventId,
+      // The owner is told what the run conquered once the territory is processed
+      importSource: 'suunto',
     });
     queued = true;
   } catch (error) {
@@ -611,26 +612,10 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
   return { routeId: route.id, queued, reused: false, skipReason: null };
 }
 
+/** Only when the territory couldn't be queued: otherwise the queue says what the run conquered. */
 async function notifyImported(env: Env, storage: WorkerStorage, activity: SuuntoActivity, routeId: string): Promise<void> {
-  try {
-    const subscriptions = await storage.getPushSubscriptionsByUserId(activity.userId);
-    if (subscriptions.length === 0) return;
-    const distKm = (activity.distance / 1000).toFixed(1);
-    await sendPushToUser(
-      subscriptions.map((sub) => ({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } })),
-      {
-        title: '🏃 ¡Carrera registrada!',
-        body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-        tag: `suunto-auto-${activity.id}`,
-        data: { type: 'suunto_auto_import', routeId, url: '/?showPendingAnimation=true' },
-      },
-      env.VAPID_PUBLIC_KEY || '',
-      env.VAPID_PRIVATE_KEY || '',
-      env.VAPID_SUBJECT || 'mailto:notifications@runna.io',
-    );
-  } catch (error) {
-    console.warn(`[SUUNTO] Push notification failed for ${activity.userId}:`, error);
-  }
+  const { notifyImportedRunPending } = await import('./notifications');
+  await notifyImportedRunPending(storage, env, { userId: activity.userId, routeId, source: 'suunto', distance: activity.distance });
 }
 
 /** Imports + processes workouts and notifies the user of each new route (webhook and cron path). */
@@ -659,7 +644,7 @@ async function importAndProcess(
       const result = await processSuuntoActivity(env, storage, activity);
       if (result.routeId && !result.reused) {
         routes.push(result.routeId);
-        await notifyImported(env, storage, activity, result.routeId);
+        if (!result.queued) await notifyImported(env, storage, activity, result.routeId);
       }
     } catch (error) {
       console.error(`[SUUNTO] Processing activity ${activity.id} failed:`, error);

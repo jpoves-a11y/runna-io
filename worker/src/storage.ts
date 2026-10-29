@@ -214,6 +214,8 @@ export class WorkerStorage {
     await this.db.delete(territoryLossNotifications).where(eq(territoryLossNotifications.userId, userId));
     await this.db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
     await this.db.delete(emailPreferences).where(eq(emailPreferences.userId, userId));
+    await this.ensureNotificationTables();
+    await this.db.run(sql`DELETE FROM notification_preferences WHERE user_id = ${userId}`);
     await this.db.delete(emailNotifications).where(eq(emailNotifications.userId, userId));
     await this.db.delete(conquestMetrics).where(eq(conquestMetrics.attackerId, userId));
     await this.db.delete(conquestMetrics).where(eq(conquestMetrics.defenderId, userId));
@@ -3445,6 +3447,7 @@ export class WorkerStorage {
       .values({
         userId,
         messageIndex,
+        sentAt: new Date().toISOString(),
       });
   }
 
@@ -3749,6 +3752,93 @@ export class WorkerStorage {
 
   async getAllPushSubscriptions() {
     return await this.db.select().from(pushSubscriptions);
+  }
+
+  // ===== Notification preferences and throttling (tables created at runtime) =====
+
+  private static notificationTables: Promise<void> | null = null;
+
+  ensureNotificationTables(): Promise<void> {
+    if (!WorkerStorage.notificationTables) {
+      WorkerStorage.notificationTables = (async () => {
+        // One row per user who changed something; missing row = everything on
+        await this.db.run(sql`CREATE TABLE IF NOT EXISTS notification_preferences (
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          settings TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        // Last time a throttled notification went out, by key (e.g. "friend_activity:<runnerId>")
+        await this.db.run(sql`CREATE TABLE IF NOT EXISTS push_throttle (
+          key TEXT PRIMARY KEY,
+          sent_at TEXT NOT NULL
+        )`);
+      })().catch((error) => {
+        WorkerStorage.notificationTables = null;
+        throw error;
+      });
+    }
+    return WorkerStorage.notificationTables;
+  }
+
+  /** Categories the user turned off ({} when they never changed anything). */
+  async getNotificationSettings(userId: string): Promise<Record<string, boolean>> {
+    await this.ensureNotificationTables();
+    const rows = await this.db.all<{ settings: string }>(sql`SELECT settings FROM notification_preferences WHERE user_id = ${userId}`);
+    if (rows.length === 0) return {};
+    try {
+      const parsed = JSON.parse(rows[0].settings);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async setNotificationSettings(userId: string, settings: Record<string, boolean>): Promise<void> {
+    await this.ensureNotificationTables();
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO notification_preferences (user_id, settings, updated_at)
+      VALUES (${userId}, ${JSON.stringify(settings)}, ${now})
+      ON CONFLICT(user_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at`);
+  }
+
+  /**
+   * True (and the key is stamped) when nothing was sent under `key` in the last `windowMs`;
+   * false when it is still too soon.
+   */
+  async takePushThrottle(key: string, windowMs: number): Promise<boolean> {
+    await this.ensureNotificationTables();
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - windowMs).toISOString();
+    const rows = await this.db.all<{ sent_at: string }>(sql`SELECT sent_at FROM push_throttle WHERE key = ${key}`);
+    if (rows.length > 0 && rows[0].sent_at > cutoff) return false;
+    await this.db.run(sql`INSERT INTO push_throttle (key, sent_at) VALUES (${key}, ${now.toISOString()})
+      ON CONFLICT(key) DO UPDATE SET sent_at = excluded.sent_at`);
+    return true;
+  }
+
+  /** Inactivity reminders sent to the user after `since` (ISO). */
+  async countInactivityRemindersSince(userId: string, since: string): Promise<number> {
+    await this.ensureInactivityRemindersTable();
+    const rows = await this.db.all<{ count: number }>(
+      // julianday() reads both CURRENT_TIMESTAMP ("2026-10-28 10:00:00") and ISO ("2026-10-28T10:00:00.000Z")
+      sql`SELECT count(*) AS count FROM inactivity_reminders WHERE user_id = ${userId} AND julianday(sent_at) > julianday(${since})`
+    );
+    return Number(rows[0]?.count) || 0;
+  }
+
+  /** The friend who ran most since `since` (ISO), with how many runs, or null. */
+  async getMostActiveFriendSince(userId: string, since: string): Promise<{ name: string; runs: number } | null> {
+    const rows = await this.db.all<{ name: string; runs: number }>(sql`
+      SELECT u.name AS name, count(*) AS runs
+      FROM friendships f
+      JOIN routes r ON r.user_id = f.friend_id AND julianday(r.completed_at) > julianday(${since})
+      JOIN users u ON u.id = f.friend_id
+      WHERE f.user_id = ${userId}
+      GROUP BY f.friend_id
+      ORDER BY runs DESC
+      LIMIT 1`);
+    if (rows.length === 0) return null;
+    return { name: rows[0].name, runs: Number(rows[0].runs) || 0 };
   }
 
   async usePower(powerId: string): Promise<void> {

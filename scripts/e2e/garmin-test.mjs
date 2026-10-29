@@ -233,6 +233,9 @@ check('token exchange sent code_verifier matching the challenge', tokenCall.gran
 const account = await one('select * from garmin_accounts where user_id = ?', [user.id]);
 check('account stored with the Garmin user ID', account?.garmin_user_id === GARMIN_USER && account.access_token === 'access-1' && account.refresh_token === 'refresh-1'
   && Date.parse(account.expires_at) > Date.now() + 23 * 3600 * 1000 && JSON.parse(account.permissions).includes('ACTIVITY_EXPORT'), account);
+check('connection time stored', Math.abs(Date.parse(`${account.connected_at.replace(' ', 'T')}Z`) - Date.now()) < 120 * 1000, account.connected_at);
+// Only activities after the account was linked are imported: pretend it was linked 10 days ago
+await db.execute({ sql: 'update garmin_accounts set connected_at = ? where user_id = ?', args: [new Date(Date.now() - 10 * DAY).toISOString(), user.id] });
 
 // Same Garmin account from another Runna.io user
 const { state: otherState } = await connect(other);
@@ -267,6 +270,13 @@ check('feed event created', !!(runRoute && await one('select * from feed_events 
 check('territory processed by the queue', Number((await one('select count(*) n from territories where user_id = ?', [user.id])).n) > 0);
 const push = calls.apns.find((p) => p.body?.type === 'garmin_auto_import');
 check('APNs push garmin_auto_import with routeId', !!push && push.body.data.routeId === runRoute?.id, calls.apns);
+check('push sent after the territory, with what the run conquered', calls.apns.filter((p) => p.body?.type === 'garmin_auto_import').length === 1
+  && push.body.aps.alert.title === '✅ Carrera de Garmin importada' && /^2,4 km · \+[\d,]+ (m²|km²) conquistados$/.test(push.body.aps.alert.body), push?.body);
+// Not linked yet when the run started (the account was linked 10 days ago): never imported
+await webhook({ activityDetails: [activityDetail({ summaryId: '1006-detail', daysAgo: 20 })] });
+await flush();
+check('run from before linking skipped as before_connection', (await one('select skip_reason from garmin_activities where summary_id = ?', ['1006-detail']))?.skip_reason === 'before_connection');
+await db.execute({ sql: 'delete from garmin_activities where summary_id = ?', args: ['1006-detail'] });
 const skipped = async (id) => (await one('select skip_reason from garmin_activities where summary_id = ?', [id]))?.skip_reason;
 check('bike skipped as excluded_type', await skipped('1002-detail') === 'excluded_type');
 check('treadmill skipped as excluded_type', await skipped('1003-detail') === 'excluded_type');

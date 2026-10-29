@@ -163,7 +163,8 @@ const stamp = Date.now() % 100000;
 const user = await register(`pol${stamp}`);
 const friend = await register(`fri${stamp}`);
 check('users registered', !!user.token && !!friend.token);
-await db.execute({ sql: 'insert into polar_accounts (user_id, polar_user_id, access_token, member_id) values (?, ?, ?, ?)', args: [user.id, POLAR_USER_ID, ACCESS_TOKEN, String(POLAR_USER_ID)] });
+// Linked 10 days ago: only exercises after that are imported
+await db.execute({ sql: 'insert into polar_accounts (user_id, polar_user_id, access_token, member_id, created_at) values (?, ?, ?, ?, ?)', args: [user.id, POLAR_USER_ID, ACCESS_TOKEN, String(POLAR_USER_ID), new Date(Date.now() - 10 * DAY).toISOString()] });
 const deviceToken = `abcdef${String(stamp).padStart(6, '0')}`.padEnd(64, '0');
 const register1 = await call('POST', '/api/push/apns/register', { token: user.token, body: { deviceToken, environment: 'sandbox' } });
 check('device registered (sandbox)', register1.status === 200, register1);
@@ -218,6 +219,20 @@ const unsigned = await hook({ ...payload, entity_id: 'ex-2' }, { signature: null
 await flush();
 const activity2 = await one('select * from polar_activities where polar_exercise_id = ?', ['ex-2']);
 check('without secret: unsigned EXERCISE imported', unsigned.status === 200 && !!activity2?.route_id, { unsigned, activity2 });
+
+// Notification preferences: everything on by default; a category turned off is not sent
+const prefs0 = await call('GET', '/api/push/preferences', { token: user.token });
+check('preferences: all on by default', prefs0.status === 200 && Object.keys(prefs0.data).length === 6 && Object.values(prefs0.data).every((v) => v === true), prefs0.data);
+const prefs1 = await call('PUT', '/api/push/preferences', { token: user.token, body: { runs: false, bogus: false, social: 'no' } });
+check('preferences: runs off, unknown keys and non-booleans ignored', prefs1.status === 200 && prefs1.data.runs === false && prefs1.data.social === true && !('bogus' in prefs1.data), prefs1.data);
+const apnsBeforeOff = calls.apns.length;
+exercises = [...exercises, exercise('ex-3', Date.now() - 3 * 3600 * 1000)];
+await hook({ ...payload, entity_id: 'ex-3' });
+await flush();
+const activity3 = await one('select * from polar_activities where polar_exercise_id = ?', ['ex-3']);
+check('runs off: imported, no push', !!activity3?.route_id && calls.apns.slice(apnsBeforeOff).every((p) => p.body?.type !== 'polar_auto_import'), calls.apns.slice(apnsBeforeOff));
+const prefs2 = await call('PUT', '/api/push/preferences', { token: user.token, body: { runs: true } });
+check('preferences: back on', prefs2.data.runs === true, prefs2.data);
 
 // Cron fallback still works and finds nothing new
 await db.execute({ sql: 'update polar_accounts set last_sync_at = ? where user_id = ?', args: [new Date(Date.now() - 3600 * 1000).toISOString(), user.id] });

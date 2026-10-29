@@ -29,6 +29,7 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
+import { madridTime } from './cron';
 import { connectionTimeMs, startedBeforeConnection } from './importCutoff';
 import {
   simplifyCoordinates,
@@ -1034,24 +1035,26 @@ export async function processTerritoryConquest(
 
       for (const notif of cappedNotifs) {
         try {
-          const emailService = emailServiceFromEnv(env, env.WORKER_URL);
-          
-          await emailService.sendTerritoryConqueredEmail(
-            notif.victimEmail,
-            attacker.name,
-            attacker.username,
-            notif.stolenArea
-          );
-          
-          await emailService.recordNotification(
-            storage,
-            notif.victimId,
-            'territory_conquered',
-            userId,
-            `¡${attacker.name} te conquistó ${formatAreaNotification(notif.stolenArea)}!`,
-            `${attacker.name} (@${attacker.username}) ha conquistado ${formatAreaNotification(notif.stolenArea)} de tu territorio.`,
-            notif.stolenArea
-          );
+          // Respect "Avisos de territorio" in the email preferences
+          const prefs = await storage.getEmailPreferences(notif.victimId);
+          if (!prefs || prefs.territoryConqueredNotifications) {
+            const emailService = emailServiceFromEnv(env, env.WORKER_URL);
+            await emailService.sendTerritoryConqueredEmail(
+              notif.victimEmail,
+              attacker.name,
+              attacker.username,
+              notif.stolenArea
+            );
+            await emailService.recordNotification(
+              storage,
+              notif.victimId,
+              'territory_conquered',
+              userId,
+              `¡${attacker.name} te conquistó ${formatAreaNotification(notif.stolenArea)}!`,
+              `${attacker.name} (@${attacker.username}) ha conquistado ${formatAreaNotification(notif.stolenArea)} de tu territorio.`,
+              notif.stolenArea
+            );
+          }
         } catch (emailErr) {
           console.error('[TERRITORY] Failed to send conquest email:', emailErr);
         }
@@ -3581,99 +3584,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
         parentId: parentId || null,
       });
 
-      // Send push notifications (non-blocking)
-      c.executionCtx.waitUntil((async () => {
-        try {
-          const { sendPushToUser } = await import('./pushHelper');
-          const commenter = await storage.getUser(userId);
-          const commenterName = commenter?.name || 'Alguien';
-          const notifiedUserIds = new Set<string>([userId]); // track who we already notified
-
-          // Notify event owner
-          const event = await storage.getFeedEvent(eventId);
-          if (event && event.userId !== userId) {
-            notifiedUserIds.add(event.userId);
-            const subs = await storage.getPushSubscriptionsByUserId(event.userId);
-            if (subs.length > 0) {
-              await sendPushToUser(
-                subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
-                {
-                  title: `💬 ${commenterName} comentó tu actividad`,
-                  body: content.trim().substring(0, 100),
-                  tag: 'feed-comment',
-                  data: { url: '/activity', type: 'feed_comment' },
-                },
-                c.env.VAPID_PUBLIC_KEY || '',
-                c.env.VAPID_PRIVATE_KEY || '',
-                c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-              );
-            }
-          }
-
-          // Notify parent comment author for replies
-          if (parentId) {
-            const parentComment = await storage.getFeedCommentById(parentId);
-            if (parentComment && !notifiedUserIds.has(parentComment.userId)) {
-              notifiedUserIds.add(parentComment.userId);
-              const subs = await storage.getPushSubscriptionsByUserId(parentComment.userId);
-              if (subs.length > 0) {
-                await sendPushToUser(
-                  subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
-                  {
-                    title: `💬 ${commenterName} respondió tu comentario`,
-                    body: content.trim().substring(0, 100),
-                    tag: 'feed-reply',
-                    data: { url: '/activity', type: 'feed_reply' },
-                  },
-                  c.env.VAPID_PUBLIC_KEY || '',
-                  c.env.VAPID_PRIVATE_KEY || '',
-                  c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                );
-              }
-            }
-          }
-
-          // Notify @mentioned users
-          const mentionRegex = /@([\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/g;
-          const mentions = [...content.matchAll(mentionRegex)].map((m: RegExpMatchArray) => m[1]);
-          if (mentions.length > 0) {
-            const friendIds = await storage.getFriendIds(userId);
-            for (const friendId of friendIds) {
-              const friend = await storage.getUser(friendId);
-              if (!friend || notifiedUserIds.has(friend.id)) continue;
-              const friendNameLower = friend.name?.toLowerCase() || '';
-              const friendUsernameLower = friend.username?.toLowerCase() || '';
-              const isMentioned = mentions.some((m: string) => {
-                const ml = m.toLowerCase();
-                // The pattern also captures the next word ("@Ana hola" -> "Ana hola"): try the first word too
-                const firstWord = ml.split(/\s/)[0];
-                return ml === friendNameLower || ml === friendUsernameLower
-                  || firstWord === friendNameLower || firstWord === friendUsernameLower;
-              });
-              if (isMentioned) {
-                notifiedUserIds.add(friend.id);
-                const subs = await storage.getPushSubscriptionsByUserId(friend.id);
-                if (subs.length > 0) {
-                  await sendPushToUser(
-                    subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
-                    {
-                      title: `📣 ${commenterName} te mencionó en un comentario`,
-                      body: content.trim().substring(0, 100),
-                      tag: 'feed-mention',
-                      data: { url: '/activity', type: 'feed_mention' },
-                    },
-                    c.env.VAPID_PUBLIC_KEY || '',
-                    c.env.VAPID_PRIVATE_KEY || '',
-                    c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                  );
-                }
-              }
-            }
-          }
-        } catch (e) {
-          console.error('[FEED] Error sending comment notification:', e);
-        }
-      })());
+      // Push to the post's owner, the replied comment's author and the friends mentioned, after the response
+      inBackground(c, 'comment notifications', async () => {
+        const { notifyFeedComment } = await import('./notifications');
+        await notifyFeedComment(storage, c.env, { commenterId: userId, eventId, parentId: parentId || null, content });
+      });
 
       return c.json(comment);
     } catch (error: any) {
@@ -3734,7 +3649,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
           }
           if (ownerId && ownerId !== userId) {
             const { notifyReaction } = await import('./notifications');
-            await notifyReaction(storage, userId, ownerId, reactionType, targetType, c.env);
+            await notifyReaction(storage, userId, ownerId, reactionType, targetType, c.env, {
+              targetId,
+              likeCount: result.likeCount,
+            });
           }
         });
       }
@@ -3843,7 +3761,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Push + email to the recipient, after the response
       inBackground(c, 'friend request notifications', async () => {
         const { notifyFriendRequest } = await import('./notifications');
-        await notifyFriendRequest(storage, friendId, userId, c.env);
+        await notifyFriendRequest(storage, friendId, userId, c.env, request.id);
 
         // Send email notification
         try {
@@ -4565,6 +4483,35 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // Notification diagnostics for the logged-in user (no secrets): is APNs configured on the server,
   // which devices are registered, and the last error Apple returned for them.
+  // Which kinds of notifications the user wants (all on until they change something)
+  app.get('/api/push/preferences', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const { PUSH_CATEGORIES } = await import('./notifications');
+      const settings = await storage.getNotificationSettings(c.get('authUserId'));
+      return c.json(Object.fromEntries(PUSH_CATEGORIES.map((category) => [category, settings[category] !== false])));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.put('/api/push/preferences', requireAuth, async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const storage = new WorkerStorage(getDb(c.env));
+      const { PUSH_CATEGORIES } = await import('./notifications');
+      const userId = c.get('authUserId');
+      const settings = await storage.getNotificationSettings(userId);
+      for (const category of PUSH_CATEGORIES) {
+        if (typeof body?.[category] === 'boolean') settings[category] = body[category];
+      }
+      await storage.setNotificationSettings(userId, settings);
+      return c.json(Object.fromEntries(PUSH_CATEGORIES.map((category) => [category, settings[category] !== false])));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.get('/api/push/status', requireAuth, async (c) => {
     try {
       const userId = c.get('authUserId');
@@ -5042,6 +4989,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
                           distance: activity.distance,
                           duration: activity.moving_time,
                           earlyFeedEventId,
+                          // The owner is told what the run conquered once the territory is processed
+                          importSource: 'strava',
                         });
 
                         // Mark as processed
@@ -5055,32 +5004,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
                         console.log(`[STRAVA WEBHOOK] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-                        // Send push notification
-                        try {
-                          const { sendPushToUser } = await import('./pushHelper');
-                          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-                          if (subscriptions.length > 0) {
-                            const distKm = (activity.distance / 1000).toFixed(1);
-                            const pushSubs = subscriptions.map((sub: any) => ({
-                              endpoint: sub.endpoint,
-                              keys: { p256dh: sub.p256dh, auth: sub.auth },
-                            }));
-                            await sendPushToUser(
-                              pushSubs,
-                              {
-                                title: '🏃 ¡Carrera registrada!',
-                                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                                tag: `strava-auto-${activity.id}`,
-                                data: { type: 'strava_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-                              },
-                              (c.env as any).VAPID_PUBLIC_KEY || '',
-                              (c.env as any).VAPID_PRIVATE_KEY || '',
-                              (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                            );
-                          }
-                        } catch (pushErr) {
-                          console.warn(`[STRAVA WEBHOOK] Push notification failed:`, pushErr);
-                        }
                       } else {
                         // Short route (<10 coords) — create route + feed event without territory
                         try {
@@ -6275,6 +6198,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
           distance: activity.distance,
           duration: activity.duration,
           earlyFeedEventId,
+          // The owner is told what the run conquered once the territory is processed
+          importSource: 'polar',
         });
 
         await storage.updatePolarActivity(activity.id, {
@@ -6286,32 +6211,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
         processed++;
         console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-        // 3. Send push notification to user about the new activity
-        try {
-          const { sendPushToUser } = await import('./pushHelper');
-          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-          if (subscriptions.length > 0) {
-            const distKm = (activity.distance / 1000).toFixed(1);
-            const pushSubs = subscriptions.map((sub: any) => ({
-              endpoint: sub.endpoint,
-              keys: { p256dh: sub.p256dh, auth: sub.auth },
-            }));
-            await sendPushToUser(
-              pushSubs,
-              {
-                title: '🏃 ¡Carrera registrada!',
-                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                tag: `polar-auto-${activity.id}`,
-                data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-              },
-              env.VAPID_PUBLIC_KEY || '',
-              env.VAPID_PRIVATE_KEY || '',
-              env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-            );
-          }
-        } catch (pushErr) {
-          console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
-        }
       } catch (procErr) {
         console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
       }
@@ -6977,27 +6876,16 @@ export function registerRoutes(app: Hono<AppEnv>) {
       try {
         const sender = await storage.getUser(senderId);
         if (sender) {
-          const subs = await storage.getPushSubscriptionsByUserId(recipientId);
-          if (subs.length > 0) {
-            const { sendPushToUser } = await import('./pushHelper');
-            const pushSubs = subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }));
-            const areaText = areaStolen ? formatAreaNotification(areaStolen) : null;
-            const bodyText = areaText 
-              ? `${sender.name} te ha robado ${areaText} y te ha enviado una foto` 
-              : `${sender.name} te ha enviado una foto de conquista`;
-            await sendPushToUser(
-              pushSubs,
-              {
-                title: '📸 ¡Foto de conquista!',
-                body: bodyText,
-                tag: 'ephemeral-photo',
-                data: { url: '/', type: 'ephemeral-photo', photoId: photo.id },
-              },
-              c.env.VAPID_PUBLIC_KEY || '',
-              c.env.VAPID_PRIVATE_KEY || '',
-              c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-            );
-          }
+          const { pushToUser, formatArea } = await import('./notifications');
+          await pushToUser(storage, c.env, recipientId, 'social', {
+            title: `📸 ${sender.name} te ha enviado una foto`,
+            body: areaStolen
+              ? `Después de robarte ${formatArea(areaStolen)}. Solo podrás verla una vez.`
+              : 'Solo podrás verla una vez.',
+            tag: `ephemeral-photo-${photo.id}`,
+            threadId: 'social',
+            data: { type: 'ephemeral-photo', photoId: photo.id },
+          });
         }
       } catch (_) {}
 
@@ -7252,7 +7140,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // Helper: compute today's deterministic spawn hour for a competition
+  /** Treasures appear (and are announced) only between 9:00 and 21:00 Spanish time. */
+  const TREASURE_FIRST_HOUR = 9;
+  const TREASURE_LAST_HOUR = 20;
+
+  // Helper: compute today's deterministic spawn hour for a competition (Europe/Madrid, 9-20)
   function getTodaySpawnHour(competitionId: string): number {
     const today = new Date().toISOString().slice(0, 10);
     const seed = today + competitionId;
@@ -7260,7 +7152,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
     for (let i = 0; i < seed.length; i++) {
       hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
     }
-    return ((hash % 24) + 24) % 24; // 0-23 UTC
+    const span = TREASURE_LAST_HOUR - TREASURE_FIRST_HOUR + 1;
+    return TREASURE_FIRST_HOUR + (((hash % span) + span) % span);
   }
 
   // Helper: check if a treasure was already spawned today (checks ALL treasures, not just active)
@@ -7276,7 +7169,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
     const spot = pickRandomSpawnPoint();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(); // 24h
-    const rarityLabel = pick.rarity === 'legendary' ? '💎 LEGENDARIO' : pick.rarity === 'epic' ? '✨ ÉPICO' : pick.rarity === 'rare' ? '🔵 RARO' : '🟤 COMÚN';
     const treasure = await storage.createTreasure({
       competitionId: comp.id,
       name: pick.name,
@@ -7310,29 +7202,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
       console.error(`[TREASURE ${source}] Feed event error:`, e);
     }
 
-    // Send push notifications (non-blocking)
+    // Push to the competition's participants
     try {
-      const allSubs = await storage.getAllPushSubscriptions();
-      const { sendPushToUser } = await import('./pushHelper');
-      const payload = {
-        title: `🗺️ ¡Nuevo tesoro en ${spot.zone}!`,
-        body: `Un ${pick.name} (${rarityLabel}) ha aparecido en ${spot.zone}. ¡Corre a por él!`,
-        tag: `treasure-${treasure.id}`,
-        data: { type: 'treasure_spawned', treasureId: treasure.id },
-      };
-      const subsByUser = new Map<string, any[]>();
-      for (const sub of allSubs) {
-        if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-        subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-      }
-      let sent = 0;
-      for (const [_, userSubs] of subsByUser) {
-        try {
-          await sendPushToUser(userSubs, payload, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
-          sent++;
-        } catch (_) {}
-      }
-      console.log(`[TREASURE ${source}] Notified ${sent} users`);
+      const { notifyTreasure } = await import('./notifications');
+      const sent = await notifyTreasure(storage, env, comp.id, {
+        id: treasure.id, name: pick.name, rarity: pick.rarity, zone: spot.zone, lat: spot.lat, lng: spot.lng, expiresAt,
+      });
+      console.log(`[TREASURE ${source}] Notified ${sent} participants`);
     } catch (e) {
       console.error(`[TREASURE ${source}] Push error:`, e);
     }
@@ -7361,8 +7237,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Use ?force=true to bypass hour check (admin use)
       const forceSpawn = c.req.query('force') === 'true' && isAdminRequest(c, { allowWithoutSecret: false });
       const spawnHour = getTodaySpawnHour(comp.id);
-      const currentHour = new Date().getUTCHours();
-      if (forceSpawn || currentHour >= spawnHour) {
+      const currentHour = madridTime(Date.now()).hour;
+      // Late opening of the app (cron missed): still not after 21:00
+      if (forceSpawn || (currentHour >= spawnHour && currentHour <= TREASURE_LAST_HOUR)) {
         const alreadySpawned = await wasTreasureSpawnedToday(storage, comp.id);
         if (!alreadySpawned) {
           try {
@@ -7402,31 +7279,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const active = await storage.getActiveTreasures(comp.id);
       if (active.length === 0) return c.json({ error: 'No active treasures' }, 404);
 
-      const allSubs = await storage.getAllPushSubscriptions();
-      if (allSubs.length === 0) return c.json({ error: 'No subscriptions' }, 404);
-
-      const { sendPushToUser } = await import('./pushHelper');
-      const subsByUser = new Map<string, any[]>();
-      for (const sub of allSubs) {
-        if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-        subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-      }
-
+      const { notifyTreasure } = await import('./notifications');
       let totalSent = 0;
       for (const t of active) {
-        const power = TREASURE_POWERS[t.powerType as keyof typeof TREASURE_POWERS];
-        const payload = {
-          title: `🗺️ ¡Tesoro disponible!`,
-          body: `${power?.name || t.name} (${t.rarity === 'legendary' ? '💎 LEGENDARIO' : t.rarity === 'epic' ? '✨ ÉPICO' : t.rarity === 'rare' ? '🔵 RARO' : '🟤 COMÚN'}) está en el mapa. ¡Corre a por él!`,
-          tag: `treasure-renotify-${t.id}`,
-          data: { type: 'treasure_spawned', treasureId: t.id },
-        };
-        for (const [_, userSubs] of subsByUser) {
-          try {
-            await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:runna.io.service@gmail.com');
-            totalSent++;
-          } catch (_) {}
-        }
+        totalSent += await notifyTreasure(storage, c.env, comp.id, t, { reminder: true });
       }
       return c.json({ success: true, sent: totalSent, treasures: active.length });
     } catch (error: any) {
@@ -7647,35 +7503,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
             console.error('[NICKNAME] Feed event error:', e);
           }
 
-          // Send push notification to ALL users (non-blocking via waitUntil)
-          const env = c.env;
-          (c.executionCtx as any).waitUntil?.((async () => {
-            try {
-              const allSubs = await storage.getAllPushSubscriptions();
-              const { sendPushToUser } = await import('./pushHelper');
-              const payload = {
-                title: `🎭 ¡Nuevo apodo en la competición!`,
-                body: `${attackerName} ha puesto el apodo "${nickname}" a ${targetName} durante 48h`,
-                tag: `nickname-${targetUserId}`,
-                data: { type: 'nickname_changed', targetUserId },
-              };
-              const subsByUser = new Map<string, any[]>();
-              for (const sub of allSubs) {
-                if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-                subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-              }
-              let sent = 0;
-              for (const [_, userSubs] of subsByUser) {
-                try {
-                  await sendPushToUser(userSubs, payload, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
-                  sent++;
-                } catch (_) {}
-              }
-              console.log(`[NICKNAME] Notified ${sent} users about nickname "${nickname}" for ${targetName}`);
-            } catch (e) {
-              console.error('[NICKNAME] Push error:', e);
-            }
-          })());
+          // Push to the person who got the nickname and to their friends, after the response
+          inBackground(c, 'nickname notifications', async () => {
+            const { notifyNickname } = await import('./notifications');
+            await notifyNickname(storage, c.env, { attackerName, attackerId: power.userId, targetName, targetUserId, nickname });
+          });
 
           return c.json({ success: true, message: `Apodo "${nickname}" asignado durante 48h` });
         }
@@ -7874,10 +7706,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Determine today's random spawn hour
       const spawnHour = getTodaySpawnHour(comp.id);
-      const currentHour = new Date().getUTCHours();
+      const currentHour = madridTime(Date.now()).hour;
 
       if (currentHour !== spawnHour) {
-        return c.json({ skipped: true, reason: `Not spawn hour (today=${spawnHour}h UTC, now=${currentHour}h UTC)` });
+        return c.json({ skipped: true, reason: `Not spawn hour (today=${spawnHour}h, now=${currentHour}h Europe/Madrid)` });
       }
 
       // Check if a treasure was already spawned today (checks ALL treasures, not just active)
@@ -7974,25 +7806,23 @@ export function registerRoutes(app: Hono<AppEnv>) {
         data: JSON.stringify(summaryData),
       });
 
-      // Push notification to all users
+      // Personalised push to every participant: position, area, distance and the award they won
       try {
-        const allSubs = await storage.getAllPushSubscriptions();
-        const { sendPushToUser } = await import('./pushHelper');
-        const payload = {
-          title: `📊 Resumen Semanal — Semana ${weekNumber}`,
-          body: `¡El resumen de ${comp.name} está listo! Abre la app para ver los premios.`,
-          tag: `weekly-summary-${weekNumber}`,
-          data: { type: 'weekly_summary', weekNumber },
-        };
-        const subsByUser = new Map<string, any[]>();
-        for (const sub of allSubs) {
-          if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-          subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
+        const awardsByUser = new Map<string, string[]>();
+        for (const award of Object.values(summaryData.awards)) {
+          if (!award.user?.id || !award.value) continue;
+          const name = award.title.replace(/^\S+\s+/, ''); // without the emoji
+          awardsByUser.set(award.user.id, [...(awardsByUser.get(award.user.id) ?? []), name]);
         }
-        for (const [_, userSubs] of subsByUser) {
-          try { await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY!, c.env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com'); } catch (_) {}
-        }
-      } catch (_) {}
+        const { notifyWeeklySummary } = await import('./notifications');
+        await notifyWeeklySummary(storage, c.env, {
+          weekNumber,
+          ranking: byArea.map((entry) => ({ userId: entry.user.id, totalArea: entry.totalArea, totalDistance: entry.totalDistance })),
+          awardsByUser,
+        });
+      } catch (error) {
+        console.error('[WEEKLY SUMMARY] Push error:', error);
+      }
 
       return c.json({ success: true, weekNumber, summary: summaryData });
     } catch (error: any) {
