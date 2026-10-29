@@ -173,6 +173,33 @@ export function bboxesOverlap(a: number[] | null, b: number[] | null): boolean {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
+// ─── Privacy ─────────────────────────────────────────────────────────────────
+
+/** Other people don't see the part of a run this close to its start or its end (usually home). */
+export const PRIVATE_ZONE_RADIUS_M = 200;
+
+function metersBetween(a: [number, number], b: [number, number]): number {
+  const dLat = (b[0] - a[0]) * 111_320;
+  const dLng = (b[1] - a[1]) * 111_320 * Math.cos(((a[0] + b[0]) / 2) * Math.PI / 180);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
+/**
+ * The run as shown to other people: without the stretch near its start and near its end
+ * (PRIVATE_ZONE_RADIUS_M), like Strava's privacy zones. Points are [lat, lng]. Empty when the whole
+ * run stays near home.
+ */
+export function hidePrivateEnds(coords: Array<[number, number]>, radius: number = PRIVATE_ZONE_RADIUS_M): Array<[number, number]> {
+  if (coords.length < 2) return [];
+  const start = coords[0];
+  const end = coords[coords.length - 1];
+  let first = 0;
+  while (first < coords.length && metersBetween(coords[first], start) < radius) first++;
+  let last = coords.length - 1;
+  while (last >= first && metersBetween(coords[last], end) < radius) last--;
+  return last - first >= 1 ? coords.slice(first, last + 1) : [];
+}
+
 // ─── Anti-cheat ──────────────────────────────────────────────────────────────
 
 /** Average speeds above this aren't running (2:51 min/km is world-class pace even over 10 km). */

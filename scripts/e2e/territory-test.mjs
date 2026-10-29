@@ -265,11 +265,11 @@ check('competition: victim score updated, bonus kept', near(Number(bobStatsAfter
 for (let i = 0; i < 5; i++) await run(alice, square(0, 0, 200));
 const forts = await all('select id, created_at from territory_fortifications where user_id = ?', [alice.id]);
 check('fortification capped at 3 layers', forts.length <= 3 && forts.length >= 1, forts.length);
-const fortList = await call('GET', '/api/territories/fortifications');
+const fortList = await call('GET', '/api/territories/fortifications', { token: alice.token });
 const aliceForts = fortList.data.fortifications?.find((f) => f.userId === alice.id);
 check('fortifications listed', !!aliceForts && aliceForts.records.length === forts.length, fortList.data);
 await db.execute({ sql: 'update territory_fortifications set created_at = ? where user_id = ?', args: [new Date(Date.now() - 15 * DAY()).toISOString(), alice.id] });
-const fortListOld = await call('GET', '/api/territories/fortifications');
+const fortListOld = await call('GET', '/api/territories/fortifications', { token: alice.token });
 check('fortifications expire after 14 days', !fortListOld.data.fortifications?.some((f) => f.userId === alice.id), fortListOld.data);
 
 // 9. Double area power: exactly about twice the area, whatever the shape (a long thin rectangle)
@@ -313,6 +313,26 @@ await run(carol, square(8000, 8000, 150));
 check('old territory without bbox can still be stolen from', await metricsCount(carol.id) === carolMetricsBefore + 1, await metricsCount(carol.id));
 const daveBox = await one('select bbox_min_lng from territories where user_id = ?', [dave.id]);
 check('its bounding box is filled in', daveBox && daveBox.bbox_min_lng !== null, daveBox);
+
+// 13. Privacy: your runs in full; a friend's without the stretch near home; a stranger's not at all
+const distanceM = (a, b) => Math.hypot((a[0] - b[0]) / M_LAT, (a[1] - b[1]) / M_LNG);
+const own = await call('GET', `/api/routes/${alice.id}`, { token: alice.token });
+const ownRun = own.data.find((r) => r.id === aliceRoute1);
+const fullStart = ownRun.coordinates[0];
+check('own runs: full track', own.status === 200 && ownRun.coordinates.length > 100, own.status);
+const asFriend = await call('GET', `/api/routes/${alice.id}`, { token: bob.token });
+const friendView = asFriend.data.find((r) => r.id === aliceRoute1);
+check("friend's runs: start and end hidden (200 m)", asFriend.status === 200 && friendView.coordinates.length > 10
+  && distanceM(friendView.coordinates[0], fullStart) >= 195 && distanceM(friendView.coordinates.at(-1), fullStart) >= 195,
+  { status: asFriend.status, first: friendView && distanceM(friendView.coordinates[0], fullStart) });
+const asStranger = await call('GET', `/api/routes/${alice.id}`, { token: dave.token });
+check("stranger can't download someone's runs", asStranger.status === 403, asStranger.status);
+const feed = await call('GET', `/api/feed/${bob.id}`, { token: bob.token });
+const aliceCard = (Array.isArray(feed.data) ? feed.data : feed.data.events ?? []).find((e) => e.routeId === aliceRoute1);
+check("feed: friend's run without the stretch near home", !!aliceCard && aliceCard.routeCoordinates.length > 0
+  && distanceM(aliceCard.routeCoordinates[0], fullStart) >= 195, aliceCard && { n: aliceCard.routeCoordinates.length });
+check('lists of everyone need a session', (await call('GET', '/api/leaderboard')).status === 401
+  && (await call('GET', '/api/territories')).status === 401 && (await call('GET', '/api/territories/fortifications')).status === 401);
 
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

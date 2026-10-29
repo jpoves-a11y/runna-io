@@ -44,6 +44,7 @@ import {
   checkRunPlausibility,
   geometryBbox,
   cleanGeometry,
+  hidePrivateEnds,
   type ConquestVictimInfo,
 } from './territory';
 
@@ -2494,7 +2495,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  app.get('/api/leaderboard', async (c) => {
+  app.get('/api/leaderboard', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3558,12 +3559,25 @@ export function registerRoutes(app: Hono<AppEnv>) {
     return c.json({ error: `Fase desconocida: ${phase}. Usa: diagnose, cleanup, process, reprocess, reset` }, 400);
   });
 
+  // Runs of a user: your own, or a friend's (without the stretch near their home). Anyone else's GPS
+  // tracks aren't served: they show where people live and run.
   app.get('/api/routes/:userId', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
+      const viewerId = c.get('authUserId');
+      if (userId !== viewerId) {
+        const isFriend = await storage.checkFriendship(viewerId, userId);
+        if (!isFriend) return c.json({ error: 'Solo puedes ver las carreras de tus amigos' }, 403);
+      }
       const routes = await storage.getRoutesByUserId(userId);
+      if (userId !== viewerId) {
+        return c.json(routes.map((route: any) => {
+          const coords = Array.isArray(route.coordinates) ? route.coordinates : [];
+          return { ...route, coordinates: hidePrivateEnds(coords) };
+        }));
+      }
       return c.json(routes);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -3831,7 +3845,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  app.get('/api/territories', async (c) => {
+  app.get('/api/territories', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -7668,7 +7682,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // GET /api/territories/fortifications — Get all fortification records (for map overlay)
-  app.get('/api/territories/fortifications', async (c) => {
+  app.get('/api/territories/fortifications', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -7702,7 +7716,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // GET /api/competition/participants — All users in the system (for nickname target selector etc.)
-  app.get('/api/competition/participants', async (c) => {
+  app.get('/api/competition/participants', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -7722,7 +7736,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // GET /api/competition/leaderboard — Competition leaderboard (with active nicknames)
-  app.get('/api/competition/leaderboard', async (c) => {
+  app.get('/api/competition/leaderboard', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);

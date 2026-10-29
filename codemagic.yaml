@@ -1,0 +1,45 @@
+# Codemagic (codemagic.io): builds the iOS app on a cloud Mac and uploads it to TestFlight.
+# No Mac needed: connect this repository in Codemagic and create an environment variable group
+# called "app_store_connect" with ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (contents of the .p8 key,
+# marked Secure) and APPLE_TEAM_ID — the same values as the GitHub secrets. Start it by hand:
+# Codemagic → runna-io → Start new build → workflow "TestFlight" → branch.
+workflows:
+  testflight:
+    name: TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      groups:
+        - app_store_connect
+    scripts:
+      - name: Xcode
+        script: xcodebuild -version
+      - name: Unit tests (iOS Simulator)
+        script: |
+          set -euo pipefail
+          cd ios
+          if ! xcodebuild -list -project Runna.xcodeproj | grep -q "RunnaTests"; then
+            echo "No test target"; exit 0
+          fi
+          # First available iPhone simulator
+          SIM_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          ids = [d["udid"] for runtime, items in devices.items() if "iOS" in runtime for d in items if d["name"].startswith("iPhone")]
+          print(ids[-1] if ids else "")')
+          [ -n "$SIM_ID" ] || { echo "No iPhone simulator available"; exit 1; }
+          xcodebuild test \
+            -project Runna.xcodeproj \
+            -scheme Runna \
+            -destination "id=$SIM_ID" \
+            CODE_SIGNING_ALLOWED=NO \
+            > "$CM_BUILD_DIR/tests.log" 2>&1 || { grep -E "error:|failed|XCTAssert" "$CM_BUILD_DIR/tests.log" | sort -u | head -80; tail -40 "$CM_BUILD_DIR/tests.log"; exit 1; }
+          grep -E "Executed [0-9]+ tests?" "$CM_BUILD_DIR/tests.log" | tail -1
+      - name: Archive, sign and upload to TestFlight
+        script: |
+          # Build numbers from 2000 on (the GitHub workflow uses 1000 + its run number)
+          BUILD_NUMBER=$((2000 + BUILD_NUMBER)) WORK_DIR="$CM_BUILD_DIR/build-output" ios/ci/testflight.sh
+    artifacts:
+      - build-output/*.log
+      - tests.log

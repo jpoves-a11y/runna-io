@@ -106,7 +106,7 @@ import {
 } from '../../shared/schema';
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
-import { cleanGeometry, geometryBbox, MIN_TERRITORY_PIECE_M2 } from './territory';
+import { cleanGeometry, geometryBbox, hidePrivateEnds, MIN_TERRITORY_PIECE_M2 } from './territory';
 
 /** Fortification layers kept per zone (a new run there renews the oldest). */
 export const MAX_FORTIFICATION_LAYERS = 3;
@@ -3195,9 +3195,11 @@ export class WorkerStorage {
           activityDate = route.startedAt;
           // Parse and downsample coordinates for feed animation (max 80 points)
           try {
-            const raw: [number, number][] = typeof route.coordinates === 'string'
+            const stored: [number, number][] = typeof route.coordinates === 'string'
               ? JSON.parse(route.coordinates)
               : (route.coordinates as any) || [];
+            // Other people's runs without the stretch near home (start and end)
+            const raw = event.userId === userId ? stored : hidePrivateEnds(stored);
             if (raw.length > 0) {
               if (raw.length <= 80) {
                 routeCoordinates = raw;
