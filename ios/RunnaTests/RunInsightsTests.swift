@@ -55,6 +55,31 @@ final class RunPreviewTests: XCTestCase {
     }
 }
 
+final class RunPreviewCastleTests: XCTestCase {
+    func testCastleZoneIsNotStolen() throws {
+        // Ana owns the east half; a castle covers the north-east quarter of the square
+        let rival = TestTracks.territory(userId: "ana", name: "Ana", east: 50, north: -20, width: 100, height: 140)
+        let castleZone = TestTracks.territory(userId: "ana", name: "Ana", east: 50, north: 50, width: 100, height: 70)
+        let castle = CastleArea(userId: "ana", layers: 2, polygons: [castleZone.rings])
+        let preview = try XCTUnwrap(RunPreviewCalculator.preview(
+            path: TestTracks.square(side: 100), territories: [rival], myUserId: "me", castles: [castle]
+        ))
+        XCTAssertEqual(preview.steals.first?.area ?? 0, 2_500, accuracy: 500)
+        XCTAssertEqual(preview.protectedArea, 2_500, accuracy: 500)
+        XCTAssertEqual(preview.castlesHit, 1)
+    }
+
+    func testOwnCastlesDontCount() throws {
+        let mine = TestTracks.territory(userId: "me", name: "Yo", east: 0, north: 0, width: 100, height: 100)
+        let castle = CastleArea(userId: "me", layers: 3, polygons: [mine.rings])
+        let preview = try XCTUnwrap(RunPreviewCalculator.preview(
+            path: TestTracks.square(side: 100), territories: [mine], myUserId: "me", castles: [castle]
+        ))
+        XCTAssertEqual(preview.castlesHit, 0)
+        XCTAssertTrue(preview.steals.isEmpty)
+    }
+}
+
 final class RunZoneDetectorTests: XCTestCase {
     func testChangeNeedsTwoFixes() {
         let rival = TestTracks.territory(userId: "ana", name: "Ana", east: 0, north: 0, width: 100, height: 100)

@@ -464,6 +464,7 @@ struct MapScreen: View {
 
     private func syncTracker() {
         tracker.territoryShapes = model.shapes
+        tracker.castleAreas = model.castleAreas
         tracker.activeTreasures = model.liveTreasures
     }
 

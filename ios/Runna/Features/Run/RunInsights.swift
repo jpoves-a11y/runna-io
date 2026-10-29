@@ -95,6 +95,18 @@ enum RunGeometry {
 
 // MARK: - What you'd conquer if you finished now
 
+/// A rival's fortified zone: its castles stop attacks, so its area isn't stolen (one castle falls).
+struct CastleArea {
+    let userId: String
+    let layers: Int
+    /// Polygons, each with its outer ring first and then its holes.
+    let polygons: [[[CLLocationCoordinate2D]]]
+
+    func contains(_ point: CLLocationCoordinate2D) -> Bool {
+        polygons.contains { RunGeometry.contains(rings: $0, point) }
+    }
+}
+
 /// The route closed back to its start (as the server does when the run ends), with its area and an
 /// estimate of how much of it belongs to other runners.
 struct RunPreview: Equatable {
@@ -108,11 +120,16 @@ struct RunPreview: Equatable {
     /// Closed ring (last point = first point).
     let ring: [CLLocationCoordinate2D]
     let area: Double
-    /// Area of other runners inside the ring, largest first.
+    /// Area of other runners inside the ring, largest first (castle zones left out).
     let steals: [Steal]
+    /// Rivals' area inside the ring kept by their castles.
+    var protectedArea: Double = 0
+    /// Castles that would fall (one per fortified zone the ring covers).
+    var castlesHit: Int = 0
 
     static func == (lhs: RunPreview, rhs: RunPreview) -> Bool {
         lhs.area == rhs.area && lhs.steals == rhs.steals && lhs.ring.count == rhs.ring.count
+            && lhs.protectedArea == rhs.protectedArea && lhs.castlesHit == rhs.castlesHit
     }
 }
 
@@ -122,7 +139,7 @@ enum RunPreviewCalculator {
     /// Grid used to estimate the overlap with other territories (cells per side).
     private static let gridSide = 40
 
-    static func preview(path: [CLLocationCoordinate2D], territories: [TerritoryShape], myUserId: String?) -> RunPreview? {
+    static func preview(path: [CLLocationCoordinate2D], territories: [TerritoryShape], myUserId: String?, castles: [CastleArea] = []) -> RunPreview? {
         guard path.count >= 3, let start = path.first else { return nil }
         var ring = RunGeometry.thinned(path, maxPoints: 300)
         ring.append(start)
@@ -134,12 +151,23 @@ enum RunPreviewCalculator {
             guard shape.userId != myUserId, let outer = shape.rings.first, let other = RunGeometry.bounds(outer) else { return false }
             return other.minLat <= box.maxLat && other.maxLat >= box.minLat && other.minLng <= box.maxLng && other.maxLng >= box.minLng
         }
+        // Rivals' castle zones that can touch the ring
+        let rivalCastles = castles.filter { castle in
+            guard castle.userId != myUserId else { return false }
+            return castle.polygons.contains { rings in
+                guard let outer = rings.first, let other = RunGeometry.bounds(outer) else { return false }
+                return other.minLat <= box.maxLat && other.maxLat >= box.minLat && other.minLng <= box.maxLng && other.maxLng >= box.minLng
+            }
+        }
         var steals: [RunPreview.Steal] = []
+        var protectedCells = 0
+        var castlesTouched = Set<Int>()
+        var cellArea = 0.0
         if !rivals.isEmpty {
             // Sample the ring on a grid: each cell inside the ring and inside a rival counts for that rival
             let dLat = (box.maxLat - box.minLat) / Double(gridSide)
             let dLng = (box.maxLng - box.minLng) / Double(gridSide)
-            let cellArea = RunGeometry.area(of: [
+            cellArea = RunGeometry.area(of: [
                 CLLocationCoordinate2D(latitude: box.minLat, longitude: box.minLng),
                 CLLocationCoordinate2D(latitude: box.minLat, longitude: box.minLng + dLng),
                 CLLocationCoordinate2D(latitude: box.minLat + dLat, longitude: box.minLng + dLng),
@@ -155,6 +183,12 @@ enum RunPreviewCalculator {
                     )
                     guard RunGeometry.contains(ring, point) else { continue }
                     if let owner = rivals.first(where: { RunGeometry.contains(rings: $0.rings, point) }) {
+                        // Inside one of the owner's castle zones: kept by the castle (which falls)
+                        if let castle = rivalCastles.firstIndex(where: { $0.userId == owner.userId && $0.contains(point) }) {
+                            protectedCells += 1
+                            castlesTouched.insert(castle)
+                            continue
+                        }
                         cellsByUser[owner.userId, default: 0] += 1
                         names[owner.userId] = owner.ownerName
                     }
@@ -165,7 +199,14 @@ enum RunPreviewCalculator {
                 .filter { $0.area >= minArea }
                 .sorted { $0.area > $1.area }
         }
-        return RunPreview(ring: ring, area: area, steals: steals)
+        let protectedArea = Double(protectedCells) * cellArea
+        return RunPreview(
+            ring: ring,
+            area: area,
+            steals: steals,
+            protectedArea: protectedArea >= minArea ? protectedArea : 0,
+            castlesHit: protectedArea >= minArea ? castlesTouched.count : 0
+        )
     }
 }
 

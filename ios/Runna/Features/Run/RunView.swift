@@ -734,6 +734,12 @@ private struct RunTerritoryStrip: View {
                         .foregroundStyle(Color.steal)
                         .lineLimit(1)
                 }
+                if let castleText {
+                    Text(castleText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: DS.Spacing.s)
             if let distanceToStart, distanceToStart > 20 {
@@ -768,6 +774,13 @@ private struct RunTerritoryStrip: View {
             return "Robas ~\(Format.area(total)) a \(first.name)"
         }
         return "Robas ~\(Format.area(total)) a \(preview.steals.count) corredores"
+    }
+
+    /// "🏰 2 castillos protegen 3.400 m² (los derribas)"
+    private var castleText: String? {
+        guard let preview, preview.castlesHit > 0 else { return nil }
+        let castles = preview.castlesHit == 1 ? "1 castillo protege" : "\(preview.castlesHit) castillos protegen"
+        return "🏰 \(castles) \(Format.area(preview.protectedArea)): \(preview.castlesHit == 1 ? "lo derribas" : "los derribas")"
     }
 
     /// Arrow relative to where you're heading when known, else relative to north.

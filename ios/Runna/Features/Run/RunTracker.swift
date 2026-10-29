@@ -51,6 +51,8 @@ final class RunTracker {
 
     /// Friends' and rivals' territories drawn under the run (set by the map).
     var territoryShapes: [TerritoryShape] = []
+    /// Castle zones (yours and friends'): what they protect isn't counted as stolen in the preview.
+    var castleAreas: [CastleArea] = []
 
     /// The territory you'd conquer if you finished now (route closed back to the start).
     private(set) var preview: RunPreview?
@@ -503,7 +505,7 @@ final class RunTracker {
             || now.timeIntervalSince(lastPreviewAt ?? .distantPast) >= previewEverySeconds {
             lastPreviewAt = now
             lastPreviewCount = coordinates.count
-            preview = RunPreviewCalculator.preview(path: coordinates, territories: territoryShapes, myUserId: ownerId)
+            preview = RunPreviewCalculator.preview(path: coordinates, territories: territoryShapes, myUserId: ownerId, castles: castleAreas)
         }
     }
 

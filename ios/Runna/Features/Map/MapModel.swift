@@ -39,6 +39,8 @@ final class MapModel {
     private(set) var treasures: [Treasure] = []
     private(set) var fortifications: [FortificationShape] = []
     private(set) var castles: [CastleZone] = []
+    /// Castle zones as polygons (for the run preview).
+    private(set) var castleAreas: [CastleArea] = []
     /// Zones wearing away (not run over for 14 days) and, yours, the ones that start soon.
     private(set) var weakZones: [WeakZoneShape] = []
     /// You're in rest mode (your territory doesn't wear away).
@@ -147,6 +149,7 @@ final class MapModel {
         treasures = []
         fortifications = []
         castles = []
+        castleAreas = []
         weakZones = []
         isResting = false
         routeLines = []
@@ -560,6 +563,7 @@ final class MapModel {
         }
         fortifications = newShapes
         castles = newCastles
+        castleAreas = response.castles.map { CastleArea(userId: $0.userId, layers: $0.layers, polygons: $0.polygons) }
     }
 
     private func makeWeakZones(_ response: WeakZonesResponse) {
