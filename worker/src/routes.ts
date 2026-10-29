@@ -42,6 +42,8 @@ import {
   decodePolyline,
   formatAreaNotification,
   checkRunPlausibility,
+  geometryBbox,
+  cleanGeometry,
   type ConquestVictimInfo,
 } from './territory';
 
@@ -523,7 +525,53 @@ export async function autoCollectTreasuresAlongRoute(
 /** Smaller overlaps with someone else's territory are border noise, not a theft. */
 export const MIN_STOLEN_AREA_M2 = 100;
 
+export type TerritoryConquestResult = Awaited<ReturnType<typeof runTerritoryConquest>> & {
+  /** The route had already been processed (a repeated queue message): nothing was changed. */
+  alreadyProcessed?: boolean;
+};
+
+/**
+ * Conquers the route's area: steals from the territories it covers and merges it into the user's
+ * territory. Each route is processed once (the queue delivers at least once); a failure releases
+ * the route so the retry can process it.
+ */
 export async function processTerritoryConquest(
+  storage: WorkerStorage,
+  userId: string,
+  routeId: string,
+  routeGeometry: any,
+  env?: any,
+  activityStartedAt?: string,
+  activityCompletedAt?: string,
+  routeCoordinates?: [number, number][]
+): Promise<TerritoryConquestResult> {
+  if (!(await storage.claimRouteTerritory(routeId))) {
+    console.log(`[TERRITORY] Route ${routeId} already processed: skipped`);
+    return {
+      territory: null,
+      totalArea: await storage.getUserTotalAreaFromTerritories(userId),
+      newAreaConquered: 0,
+      areaStolen: 0,
+      victimsNotified: [],
+      victims: [],
+      ranTogetherWith: [],
+      treasuresCollected: [],
+      powersUsed: [],
+      fortressesDestroyed: 0,
+      fortificationLayers: 0,
+      fortificationArea: 0,
+      alreadyProcessed: true,
+    };
+  }
+  try {
+    return await runTerritoryConquest(storage, userId, routeId, routeGeometry, env, activityStartedAt, activityCompletedAt, routeCoordinates);
+  } catch (error) {
+    await storage.releaseRouteTerritory(routeId).catch(() => {});
+    throw error;
+  }
+}
+
+async function runTerritoryConquest(
   storage: WorkerStorage,
   userId: string,
   routeId: string,
@@ -551,22 +599,9 @@ export async function processTerritoryConquest(
   const isCompMode = !!(competition && isCompetitionActive(competition));
   
   const friendIds = await storage.getFriendIds(userId);
-  
-  let allTerritories: any[];
-  if (isCompMode) {
-    // Competition: ALL-VS-ALL - load ALL users' territories
-    console.log('[COMPETITION] All-vs-all mode active — loading ALL territories');
-    allTerritories = await storage.getAllTerritories();
-  } else {
-    // Normal mode: only friends
-    const relevantUserIds = [userId, ...friendIds];
-    allTerritories = await storage.getTerritoriesForUsers(relevantUserIds);
-  }
-  
-  const userTerritories = allTerritories.filter(t => t.userId === userId);
-  const enemyTerritories = isCompMode
-    ? allTerritories.filter(t => t.userId !== userId)
-    : allTerritories.filter(t => t.userId !== userId && friendIds.includes(t.userId));
+
+  // The user's own territory, all of it (the merge replaces it)
+  const userTerritories = await storage.getTerritoriesForUsers([userId]);
   
   // --- Competition power checks for attacker ---
   let hasDoubleAreaPower = false;
@@ -606,33 +641,32 @@ export async function processTerritoryConquest(
   if (isCompMode && (hasDoubleAreaPower || hasMagnetPower)) {
     try {
       let currentGeom = attackGeometry;
+      // Scaling the shape from its centre by √k multiplies its area by exactly k, whatever the shape
+      // (a buffer grows long thin runs much more than a round one)
       if (hasDoubleAreaPower) {
-        // Double area: expand radius by sqrt(2) ≈ 1.414x → ~2x area
         const area = turf.area(turf.feature(currentGeom));
-        const approxRadius = Math.sqrt(area / Math.PI);
-        const bufferDist = approxRadius * (Math.SQRT2 - 1);
-        const expanded = turf.buffer(turf.feature(currentGeom), bufferDist / 1000, { units: 'kilometers' });
-        if (expanded) {
-          currentGeom = expanded.geometry;
-          console.log(`[COMPETITION] DOUBLE AREA applied: ${(area/1e6).toFixed(4)} → ${(turf.area(expanded)/1e6).toFixed(4)} km²`);
-        }
+        const scaled = turf.transformScale(turf.feature(currentGeom), Math.SQRT2, { origin: 'centroid' });
+        currentGeom = scaled.geometry;
+        console.log(`[COMPETITION] DOUBLE AREA applied: ${(area/1e6).toFixed(4)} → ${(turf.area(scaled)/1e6).toFixed(4)} km²`);
       }
       if (hasMagnetPower) {
-        // Magnet: expand radius by sqrt(1.25) ≈ 1.118x → +25% area
-        const area = turf.area(turf.feature(currentGeom));
-        const approxRadius = Math.sqrt(area / Math.PI);
-        const bufferDist = approxRadius * (Math.sqrt(1.25) - 1);
-        const expanded = turf.buffer(turf.feature(currentGeom), bufferDist / 1000, { units: 'kilometers' });
-        if (expanded) {
-          currentGeom = expanded.geometry;
-          console.log(`[COMPETITION] MAGNET applied: +25% area`);
-        }
+        const scaled = turf.transformScale(turf.feature(currentGeom), Math.sqrt(1.25), { origin: 'centroid' });
+        currentGeom = scaled.geometry;
+        console.log(`[COMPETITION] MAGNET applied: +25% area`);
       }
       attackGeometry = currentGeom;
     } catch (err) {
       console.error('[COMPETITION] Error applying power geometry expansion:', err);
     }
   }
+
+  // Only the territories this run can touch (bounding boxes overlap): in the competition everyone's,
+  // otherwise the friends'. Far-away territories are neither loaded nor intersected.
+  const attackBox = geometryBbox(attackGeometry);
+  const enemyTerritories = attackBox
+    ? (await storage.getTerritoriesForConquest(attackBox, isCompMode ? null : friendIds)).filter((t) => t.userId !== userId)
+    : [];
+  if (isCompMode) console.log(`[COMPETITION] All-vs-all: ${enemyTerritories.length} territories near the run`);
 
   let totalStolenArea = 0;
   const victimsNotified: string[] = [];
@@ -1001,19 +1035,20 @@ export async function processTerritoryConquest(
   // In competition mode, new territory is worth 1.5x
   const effectiveNewArea = isCompMode ? result.newArea * 1.5 : result.newArea;
 
-  // Step 3: Update user's total area (accounting for time bomb penalty and new territory bonus)
-  let finalTotalArea = result.totalArea;
+  // Step 3: users.total_area is always the real territory. The competition score adds a bonus kept
+  // apart (competition_stats.bonus_area): +50% of the new area, minus time bombs. Mixing it into
+  // total_area made it vanish at the next recount of the territory.
+  const finalTotalArea = result.totalArea;
+  let competitionBonus = 0;
   if (isCompMode && result.newArea > 0) {
-    // Add the 50% bonus for truly new territory
-    const newTerritoryBonus = result.newArea * 0.5;
-    finalTotalArea += newTerritoryBonus;
-    console.log(`[COMPETITION] New territory bonus: +${(newTerritoryBonus/1e6).toFixed(4)} km² (1.5x on ${(result.newArea/1e6).toFixed(4)} km² new area)`);
+    competitionBonus += result.newArea * 0.5;
+    console.log(`[COMPETITION] New territory bonus: +${(result.newArea * 0.5 / 1e6).toFixed(4)} km² (1.5x on ${(result.newArea/1e6).toFixed(4)} km² new area)`);
   }
   if (result.fortificationLayers > 0) {
     console.log(`[COMPETITION] Fortification: ${result.fortificationLayers} layer(s) added (multiplier: ${fortificationMultiplier}x)`);
   }
-  if (timeBombPenalty > 0) {
-    finalTotalArea = Math.max(0, finalTotalArea - timeBombPenalty);
+  if (isCompMode && timeBombPenalty > 0) {
+    competitionBonus -= timeBombPenalty;
     console.log(`[COMPETITION] Time bomb penalty applied: -${(timeBombPenalty/1e6).toFixed(4)} km²`);
   }
   await storage.updateUserTotalArea(userId, finalTotalArea);
@@ -1209,10 +1244,11 @@ export async function processTerritoryConquest(
         areaStolen: totalStolenArea,
         treasures: treasuresCollected.length,
         ranTogether: ranTogetherWith.length,
+        bonusArea: competitionBonus,
       });
-      // Sync totalArea to competition stats (includes 1.5x new-territory bonus)
+      // Score = territory + bonus, for the runner and for everyone who lost territory to the run
       try {
-        await storage.updateCompetitionStats(competition.id, userId, { totalArea: finalTotalArea });
+        await storage.syncCompetitionAreas(competition.id, [userId, ...victimsToUpdate]);
       } catch (_) {}
       // Fix: compute truly unique victims from conquest_metrics (not per-run)
       try {
@@ -1251,6 +1287,73 @@ function safeUnion(geomA: any, geomB: any): any | null {
   } catch (err) {
     console.error('[TERRITORY] safeUnion failed:', err);
     return null;
+  }
+}
+
+/**
+ * After the user deletes a run: removes from their territory the area only that run covered.
+ * Area also covered by their other runs stays, and area other users stole from them is NOT given
+ * back (rebuilding from all remaining runs did, and left it overlapping the thief's territory).
+ * `route` is the deleted run (loaded before deleting it).
+ */
+export async function removeRouteFromTerritory(
+  storage: WorkerStorage,
+  userId: string,
+  route: { id: string; coordinates: any },
+): Promise<void> {
+  const parse = (value: any): [number, number][] => {
+    if (Array.isArray(value)) return value as [number, number][];
+    if (typeof value === 'string') {
+      try { return JSON.parse(value); } catch { return []; }
+    }
+    return [];
+  };
+  try { await storage.deleteFortificationsByRouteId(route.id); } catch (_) {}
+
+  const deletedCoords = parse(route.coordinates);
+  const deletedPoly = deletedCoords.length >= 10 ? routeToEnclosedPolygon(deletedCoords, 150) : null;
+  if (!deletedPoly) return;
+  const box = geometryBbox(deletedPoly.geometry);
+
+  // Union of the user's other runs that can overlap the deleted one (their bounding boxes touch)
+  let covered: any = null;
+  for (const other of await storage.getRoutesByUserIdChronological(userId)) {
+    if (other.id === route.id) continue;
+    const coords = parse(other.coordinates);
+    if (coords.length < 10 || !box) continue;
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const [lat, lng] of coords) {
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+    }
+    if (minLng > box[2] || maxLng < box[0] || minLat > box[3] || maxLat < box[1]) continue;
+    if (!checkRunPlausibility({ ...other, coordinates: coords }).ok) continue;
+    const poly = routeToEnclosedPolygon(coords, 150);
+    if (!poly) continue;
+    covered = covered ? (safeUnion(covered, poly.geometry) ?? covered) : poly.geometry;
+  }
+
+  let onlyThisRun: any = deletedPoly.geometry;
+  if (covered) {
+    try {
+      const difference = turf.difference(turf.featureCollection([turf.feature(deletedPoly.geometry) as any, turf.feature(covered) as any]));
+      onlyThisRun = difference ? difference.geometry : null;
+    } catch (error) {
+      console.error('[DELETE ROUTE] Could not subtract the other runs:', error);
+    }
+  }
+  if (onlyThisRun) {
+    for (const territory of await storage.getTerritoriesForUsers([userId])) {
+      await storage.subtractFromTerritoryDirect(territory as any, onlyThisRun);
+    }
+  }
+
+  await storage.updateUserTotalArea(userId, await storage.getUserTotalAreaFromTerritories(userId));
+  const competition = await storage.getActiveCompetition();
+  if (competition && isCompetitionActive(competition)) {
+    await storage.syncCompetitionAreas(competition.id, [userId]);
   }
 }
 
@@ -2544,7 +2647,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
               if (conquestResult.ranTogetherWith.length > 0) {
                 await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
               }
-              await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, conquestResult, false, earlyFeedEventId);
+              if (!conquestResult.alreadyProcessed) {
+                await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, conquestResult, false, earlyFeedEventId);
+              }
             }
           } catch (fallbackErr) {
             console.error('[QUEUE FALLBACK] Inline territory processing failed:', fallbackErr);
@@ -2623,12 +2728,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);
 
-      // Rebuild territories after delete — smart reprocess like Polar delete
-      // SAFETY: Only reprocess the affected user to avoid CPU timeout (error 1102).
-      // Friend-group reprocessing is too expensive and can wipe all territory data.
+      // Remove from the territory what only this run covered (stolen area is not given back)
       try {
-        console.log('[DELETE ROUTE] Reprocessing user territories only (safe mode)');
-        await reprocessUserTerritories(storage, userId);
+        await removeRouteFromTerritory(storage, userId, route);
       } catch (e) {
         console.error('[DELETE ROUTE] Error reprocessing territories:', e);
       }
@@ -3107,6 +3209,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
+
+      // Twice a day: fortifications older than 14 days stop counting and are deleted
+      try {
+        const purged = await storage.purgeExpiredFortifications();
+        if (purged > 0) console.log(`[FORTIFICATIONS] Purged ${purged} expired records`);
+      } catch (error) {
+        console.error('[FORTIFICATIONS] Purge failed:', error);
+      }
 
       const { checkAndSendInactivityReminders } = await import('./inactivityReminders');
       const result = await checkAndSendInactivityReminders(storage, c.env);
@@ -5200,13 +5310,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 processed: true,
                 processedAt: new Date(),
                 routeId: route.id,
-                territoryId: conquestResult.territory.id,
+                territoryId: conquestResult.territory?.id ?? null,
               });
 
               results.push({ 
                 activityId: activity.stravaActivityId, 
                 routeId: route.id, 
-                territoryId: conquestResult.territory.id,
+                territoryId: conquestResult.territory?.id ?? null,
                 metrics: {
                   totalArea: conquestResult.totalArea,
                   newAreaConquered: conquestResult.newAreaConquered,
@@ -5219,7 +5329,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
               // Update early feed event with full conquest data
               try {
-                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult, false, earlyFeedEventId);
+                if (!conquestResult.alreadyProcessed) await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult, false, earlyFeedEventId);
               } catch (feedErr) {
                 console.warn(`[STRAVA PROCESS] Feed events update failed (early event already exists):`, feedErr);
               }
@@ -6440,6 +6550,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         }
       }
 
+      // The deleted run, for removing its area from the territory afterwards
+      const deletedRoute = routeId ? await storage.getRouteById(routeId) : null;
+
       // If we have a route, perform consistent cleanup similar to the /api/routes/:routeId handler
       if (routeId) {
         try {
@@ -6468,11 +6581,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         console.log(`[DELETE] Polar activity ${activityId} deleted (no route attached)`);
       }
 
-      // Rebuild territories after delete.
-      // SAFETY: Only reprocess the affected user to avoid CPU timeout (error 1102).
+      // Remove from the territory what only this run covered (stolen area is not given back)
       try {
-        console.log('[DELETE] Reprocessing user territories only (safe mode)');
-        await reprocessUserTerritories(storage, userId);
+        if (deletedRoute) await removeRouteFromTerritory(storage, userId, deletedRoute);
       } catch (e) {
         console.error('Error reprocessing territories after delete:', e);
       }

@@ -31,7 +31,7 @@ import type { SuuntoAccount, SuuntoActivity, Route } from '../../shared/schema';
 import { parseFit, isFootSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPORT, type FitActivity } from './fit';
 import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
-import { generateFeedEvents, reprocessUserTerritories } from './routes';
+import { generateFeedEvents, removeRouteFromTerritory } from './routes';
 
 type AppContext = Context<AppEnv>;
 
@@ -1013,6 +1013,8 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
       if (activity.userId !== userId) return c.json({ error: 'No autorizado' }, 403);
 
       const routeId = activity.routeId;
+      // The deleted run, for removing its area from the territory afterwards
+      const deletedRoute = routeId ? await storage.getRouteById(routeId) : null;
       if (routeId) {
         await storage.markSuuntoActivityDeletedByRouteId(routeId);
         await storage.detachTerritoriesFromRoute(routeId);
@@ -1022,7 +1024,8 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
         await storage.deleteStravaActivityByRouteId(routeId);
         await storage.deleteRouteById(routeId);
         try {
-          await reprocessUserTerritories(storage, userId);
+          // What only this run covered leaves the territory (stolen area is not given back)
+          if (deletedRoute) await removeRouteFromTerritory(storage, userId, deletedRoute);
         } catch (error) {
           console.error('[SUUNTO] Territory rebuild after delete failed:', error);
         }

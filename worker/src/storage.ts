@@ -106,6 +106,21 @@ import {
 } from '../../shared/schema';
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
+import { cleanGeometry, geometryBbox, MIN_TERRITORY_PIECE_M2 } from './territory';
+
+/** Fortification layers kept per zone (a new run there renews the oldest). */
+export const MAX_FORTIFICATION_LAYERS = 3;
+/** Fortifications older than this no longer count and are purged. */
+export const FORTIFICATION_TTL_DAYS = 14;
+
+/** bbox_* columns of a territory with this geometry (parsed or JSON). */
+function bboxColumns(geometry: any): { bboxMinLng: number | null; bboxMinLat: number | null; bboxMaxLng: number | null; bboxMaxLat: number | null } {
+  const parsed = typeof geometry === 'string' ? (() => { try { return JSON.parse(geometry); } catch { return null; } })() : geometry;
+  const box = parsed ? geometryBbox(parsed) : null;
+  return box
+    ? { bboxMinLng: box[0], bboxMinLat: box[1], bboxMaxLng: box[2], bboxMaxLat: box[3] }
+    : { bboxMinLng: null, bboxMinLat: null, bboxMaxLng: null, bboxMaxLat: null };
+}
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
 function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
@@ -258,6 +273,21 @@ export class WorkerStorage {
     try {
       await this.db.run(sql`ALTER TABLE routes ADD COLUMN client_run_id TEXT`);
     } catch (_) { /* column already exists */ }
+    // Territory bounding boxes (filled in lazily for older rows, see getTerritoriesForConquest)
+    for (const column of ['bbox_min_lng', 'bbox_min_lat', 'bbox_max_lng', 'bbox_max_lat']) {
+      try {
+        await this.db.run(sql.raw(`ALTER TABLE territories ADD COLUMN ${column} REAL`));
+      } catch (_) { /* column already exists */ }
+    }
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_territories_bbox ON territories(bbox_min_lng, bbox_max_lng, bbox_min_lat, bbox_max_lat)`);
+    // Routes whose territory has been processed (the queue delivers at least once)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_territory_runs (
+      route_id TEXT PRIMARY KEY,
+      processed_at TEXT NOT NULL
+    )`);
+    try {
+      await this.db.run(sql`ALTER TABLE competition_stats ADD COLUMN bonus_area REAL NOT NULL DEFAULT 0`);
+    } catch (_) { /* column already exists, or the competition tables aren't created yet */ }
     await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_user_client_run ON routes(user_id, client_run_id)`);
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -860,7 +890,7 @@ export class WorkerStorage {
   async createTerritory(insertTerritory: InsertTerritory): Promise<Territory> {
     const [territory] = await this.db
       .insert(territories)
-      .values(insertTerritory)
+      .values({ ...insertTerritory, ...bboxColumns(insertTerritory.geometry) })
       .returning();
     return territory;
   }
@@ -1061,19 +1091,22 @@ export class WorkerStorage {
       turf.featureCollection([originalFeature, subtractionFeature])
     );
     
-    if (!difference) {
+    // Slivers left along the new border are dropped, vertices simplified
+    const remaining = difference ? cleanGeometry(difference.geometry) : null;
+    if (!remaining) {
       // Entire territory was conquered, delete it
       await this.db.delete(territories).where(eq(territories.id, territory.id));
       return { updatedTerritory: null, stolenArea };
     }
-    
+
     // Update the territory with the remaining geometry as JSON string
-    const newArea = turf.area(difference);
+    const newArea = turf.area(remaining);
     const [updatedTerritory] = await this.db
       .update(territories)
       .set({
-        geometry: JSON.stringify(difference.geometry),
+        geometry: JSON.stringify(remaining),
         area: newArea,
+        ...bboxColumns(remaining),
       })
       .where(eq(territories.id, territory.id))
       .returning();
@@ -1124,11 +1157,20 @@ export class WorkerStorage {
     // Save fortification records for overlap zones (batch insert)
     let fortificationLayers = 0;
     const fortRecords: Array<{userId: string; routeId: string; geometry: string; area: number; bboxMinLng: number; bboxMinLat: number; bboxMaxLng: number; bboxMaxLat: number}> = [];
+    const renewedFortifications: string[] = [];
     for (const overlapGeom of overlapGeometries) {
       const overlapArea = turf.area(overlapGeom);
-      if (overlapArea < 10) continue; // Skip tiny overlaps
+      if (overlapArea < MIN_TERRITORY_PIECE_M2) continue; // Skip tiny overlaps
       const bbox = turf.bbox(overlapGeom);
-      const recordsToCreate = fortificationMultiplier; // 1 normally, 2 with wall power
+      const recordsToCreate = Math.min(fortificationMultiplier, MAX_FORTIFICATION_LAYERS); // 1 normally, 2 with wall power
+      // At most MAX_FORTIFICATION_LAYERS per zone: running there again renews the oldest layers
+      try {
+        const zone = await this.getFortificationZone(userId, overlapGeom);
+        const excess = zone.length + recordsToCreate - MAX_FORTIFICATION_LAYERS;
+        if (excess > 0) renewedFortifications.push(...zone.slice(0, excess).map((record) => record.id));
+      } catch (err) {
+        console.error('[TERRITORY] Could not read the fortification zone:', err);
+      }
       for (let i = 0; i < recordsToCreate; i++) {
         fortRecords.push({
           userId, routeId,
@@ -1139,6 +1181,9 @@ export class WorkerStorage {
         });
         fortificationLayers++;
       }
+    }
+    if (renewedFortifications.length > 0) {
+      await this.deleteFortificationRecordsBatch(renewedFortifications);
     }
     if (fortRecords.length > 0) {
       try {
@@ -1178,6 +1223,11 @@ export class WorkerStorage {
       }
     }
 
+    // Tidy the union (vertices pile up run after run; slivers between runs)
+    if (mergeSucceeded) {
+      finalGeometry = cleanGeometry(finalGeometry) ?? finalGeometry;
+    }
+
     // Validate the final geometry before committing
     let finalArea: number;
     try {
@@ -1197,6 +1247,7 @@ export class WorkerStorage {
           geometry: JSON.stringify(newGeometry),
           area: newArea,
           conqueredAt: new Date(),
+          ...bboxColumns(newGeometry),
         })
         .returning();
 
@@ -1227,6 +1278,7 @@ export class WorkerStorage {
           geometry: JSON.stringify(newGeometry),
           area: newArea,
           conqueredAt: new Date(),
+          ...bboxColumns(newGeometry),
         })
         .returning();
 
@@ -1257,6 +1309,7 @@ export class WorkerStorage {
         geometry: JSON.stringify(finalGeometry),
         area: finalArea,
         conqueredAt: new Date(),
+        ...bboxColumns(finalGeometry),
       })
       .returning();
 
@@ -1288,6 +1341,7 @@ export class WorkerStorage {
         geometry: JSON.stringify(geometry),
         area,
         conqueredAt: new Date(),
+        ...bboxColumns(geometry),
       })
       .returning();
 
@@ -3554,8 +3608,12 @@ export class WorkerStorage {
         area_stolen REAL NOT NULL DEFAULT 0,
         unique_victims INTEGER NOT NULL DEFAULT 0,
         ran_together_count INTEGER NOT NULL DEFAULT 0,
+        bonus_area REAL NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
+      try {
+        await this.db.run(sql`ALTER TABLE competition_stats ADD COLUMN bonus_area REAL NOT NULL DEFAULT 0`);
+      } catch (_) { /* column already exists */ }
       await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_competition_stats_unique ON competition_stats(competition_id, user_id)`);
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS weekly_summaries (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -4012,6 +4070,8 @@ export class WorkerStorage {
       treasures?: number;
       areaStolen?: number;
       ranTogether?: number;
+      /** Added to bonus_area (negative for a time bomb). */
+      bonusArea?: number;
     }
   ): Promise<void> {
     await this.ensureCompetitionTables();
@@ -4030,6 +4090,9 @@ export class WorkerStorage {
     }
     if (increments.treasures != null && increments.treasures > 0) {
       setParts.push(`treasures_collected = treasures_collected + ${increments.treasures}`);
+    }
+    if (increments.bonusArea != null && increments.bonusArea !== 0 && Number.isFinite(increments.bonusArea)) {
+      setParts.push(`bonus_area = bonus_area + ${increments.bonusArea}`);
     }
     if (increments.areaStolen != null && increments.areaStolen > 0) {
       setParts.push(`area_stolen = area_stolen + ${increments.areaStolen}`);
@@ -4206,7 +4269,8 @@ export class WorkerStorage {
       sql.raw(`SELECT id, user_id, geometry, area FROM territory_fortifications
         WHERE user_id IN (${placeholders})
         AND bbox_max_lng >= ${minLng} AND bbox_min_lng <= ${maxLng}
-        AND bbox_max_lat >= ${minLat} AND bbox_min_lat <= ${maxLat}`)
+        AND bbox_max_lat >= ${minLat} AND bbox_min_lat <= ${maxLat}
+        AND julianday(created_at) > julianday('now', '-${FORTIFICATION_TTL_DAYS} days')`)
     );
     for (const row of rows) {
       const uid = row.user_id;
@@ -4229,6 +4293,7 @@ export class WorkerStorage {
       .where(eq(territoryFortifications.userId, userId));
   }
 
+  /** Fortifications still in force (younger than FORTIFICATION_TTL_DAYS). */
   async getAllFortifications(): Promise<Array<{ id: string; userId: string; geometry: string; area: number }>> {
     await this.ensureCompetitionTables();
     return await this.db
@@ -4238,7 +4303,8 @@ export class WorkerStorage {
         geometry: territoryFortifications.geometry,
         area: territoryFortifications.area,
       })
-      .from(territoryFortifications);
+      .from(territoryFortifications)
+      .where(sql`julianday(${territoryFortifications.createdAt}) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})`);
   }
 
   async deleteFortificationsByRouteId(routeId: string): Promise<void> {
@@ -4249,6 +4315,95 @@ export class WorkerStorage {
   async deleteFortificationRecord(id: string): Promise<void> {
     await this.ensureCompetitionTables();
     await this.db.run(sql`DELETE FROM territory_fortifications WHERE id = ${id}`);
+  }
+
+  // ===== Territory processing helpers =====
+
+  /**
+   * Marks the route's territory as processed. False when it already was: the queue delivers
+   * at least once, and a second run would count the activity and its thefts twice.
+   */
+  async claimRouteTerritory(routeId: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const result: any = await this.db.run(sql`INSERT OR IGNORE INTO route_territory_runs (route_id, processed_at) VALUES (${routeId}, ${new Date().toISOString()})`);
+    return Number(result?.rowsAffected ?? result?.changes ?? 0) > 0;
+  }
+
+  /** Lets a failed processing be retried. */
+  async releaseRouteTerritory(routeId: string): Promise<void> {
+    await this.db.run(sql`DELETE FROM route_territory_runs WHERE route_id = ${routeId}`);
+  }
+
+  /**
+   * Territories that can touch `bbox` ([minLng, minLat, maxLng, maxLat]), optionally only of some
+   * users. Rows from before bounding boxes existed get theirs computed and stored on the way.
+   */
+  async getTerritoriesForConquest(bbox: number[], userIds: string[] | null): Promise<Territory[]> {
+    await this.ensureSchemaUpgrades();
+    if (userIds && userIds.length === 0) return [];
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    const touches = sql`(${territories.bboxMinLng} IS NULL OR (${territories.bboxMinLng} <= ${maxLng} AND ${territories.bboxMaxLng} >= ${minLng} AND ${territories.bboxMinLat} <= ${maxLat} AND ${territories.bboxMaxLat} >= ${minLat}))`;
+    const rows = await this.db
+      .select()
+      .from(territories)
+      .where(userIds ? and(inArray(territories.userId, userIds), touches) : touches)
+      .orderBy(desc(territories.conqueredAt));
+    const result: Territory[] = [];
+    for (const row of rows) {
+      if (row.bboxMinLng == null) {
+        const columns = bboxColumns(row.geometry);
+        if (columns.bboxMinLng != null) {
+          await this.db.update(territories).set(columns).where(eq(territories.id, row.id));
+          Object.assign(row, columns);
+          if (!(columns.bboxMinLng! <= maxLng && columns.bboxMaxLng! >= minLng && columns.bboxMinLat! <= maxLat && columns.bboxMaxLat! >= minLat)) continue;
+        }
+      }
+      result.push(row);
+    }
+    return result;
+  }
+
+  /**
+   * Competition score = territory + bonus, for these users (after any change to their territory:
+   * a run, a theft, a deleted run).
+   */
+  async syncCompetitionAreas(competitionId: string, userIds: string[]): Promise<void> {
+    const ids = [...new Set(userIds)].filter(Boolean);
+    if (ids.length === 0) return;
+    await this.ensureCompetitionTables();
+    await this.db.run(sql`UPDATE competition_stats SET total_area =
+      COALESCE((SELECT SUM(area) FROM territories WHERE territories.user_id = competition_stats.user_id), 0) + bonus_area
+      WHERE competition_id = ${competitionId} AND user_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  /** Fortification records of the user overlapping `geometry`, oldest first (expired ones excluded). */
+  async getFortificationZone(userId: string, geometry: any): Promise<Array<{ id: string; createdAt: string }>> {
+    const box = geometryBbox(geometry);
+    if (!box) return [];
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ id: string; geometry: string; created_at: string }>(sql`
+      SELECT id, geometry, created_at FROM territory_fortifications
+      WHERE user_id = ${userId}
+        AND bbox_max_lng >= ${box[0]} AND bbox_min_lng <= ${box[2]}
+        AND bbox_max_lat >= ${box[1]} AND bbox_min_lat <= ${box[3]}
+        AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
+      ORDER BY julianday(created_at) ASC`);
+    const target = turf.feature(geometry);
+    const zone: Array<{ id: string; createdAt: string }> = [];
+    for (const row of rows) {
+      try {
+        const overlap = turf.intersect(turf.featureCollection([target as any, turf.feature(JSON.parse(row.geometry)) as any]));
+        if (overlap && turf.area(overlap) > 10) zone.push({ id: row.id, createdAt: row.created_at });
+      } catch (_) {}
+    }
+    return zone;
+  }
+
+  /** Deletes fortifications older than FORTIFICATION_TTL_DAYS. Returns how many. */
+  async purgeExpiredFortifications(): Promise<number> {
+    await this.ensureCompetitionTables();
+    const result: any = await this.db.run(sql`DELETE FROM territory_fortifications WHERE julianday(created_at) <= julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})`);
+    return Number(result?.rowsAffected ?? result?.changes ?? 0);
   }
 
   /** Delete multiple fortification records in a single query */

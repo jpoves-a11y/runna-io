@@ -41,6 +41,11 @@ export const territories = sqliteTable("territories", {
   geometry: text("geometry").notNull(), // JSON string of GeoJSON polygon
   area: real("area").notNull(), // square meters
   conqueredAt: text("conquered_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // Bounding box of the geometry: lets a run load only the territories it can touch
+  bboxMinLng: real("bbox_min_lng"),
+  bboxMinLat: real("bbox_min_lat"),
+  bboxMaxLng: real("bbox_max_lng"),
+  bboxMaxLat: real("bbox_max_lat"),
 });
 
 export const conquestMetrics = sqliteTable("conquest_metrics", {
@@ -451,6 +456,9 @@ export const competitionStats = sqliteTable("competition_stats", {
   areaStolen: real("area_stolen").notNull().default(0),
   uniqueVictims: integer("unique_victims").notNull().default(0),
   ranTogetherCount: integer("ran_together_count").notNull().default(0),
+  // Competition score extras on top of the real territory: +50% of new area, minus time bombs.
+  // totalArea = territory area + bonusArea
+  bonusArea: real("bonus_area").notNull().default(0),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

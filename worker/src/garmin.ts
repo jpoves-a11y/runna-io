@@ -30,7 +30,7 @@ import type { GarminAccount, GarminActivity, Route } from '../../shared/schema';
 import { fitTrack, type FitPoint } from './fit';
 import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
-import { generateFeedEvents, reprocessUserTerritories } from './routes';
+import { generateFeedEvents, removeRouteFromTerritory } from './routes';
 
 type AppContext = Context<AppEnv>;
 
@@ -895,6 +895,8 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
       if (activity.userId !== userId) return c.json({ error: 'No autorizado' }, 403);
 
       const routeId = activity.routeId;
+      // The deleted run, for removing its area from the territory afterwards
+      const deletedRoute = routeId ? await storage.getRouteById(routeId) : null;
       if (routeId) {
         await storage.markGarminActivityDeletedByRouteId(routeId);
         await storage.markSuuntoActivityDeletedByRouteId(routeId);
@@ -905,7 +907,8 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
         await storage.deleteStravaActivityByRouteId(routeId);
         await storage.deleteRouteById(routeId);
         try {
-          await reprocessUserTerritories(storage, userId);
+          // What only this run covered leaves the territory (stolen area is not given back)
+          if (deletedRoute) await removeRouteFromTerritory(storage, userId, deletedRoute);
         } catch (error) {
           console.error('[GARMIN] Territory rebuild after delete failed:', error);
         }

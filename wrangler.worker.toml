@@ -94,6 +94,9 @@ crons = ["*/5 * * * *"]
   queue = "territory-processing"
   max_batch_size = 1
   max_retries = 2
+  # One route at a time: two runs processed together read the same territory and one of them
+  # was lost when both wrote it back (also the stolen area could come back to its owner)
+  max_concurrency = 1
   dead_letter_queue = "territory-dlq"
 
 # Para desplegar el Worker:

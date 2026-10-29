@@ -37,39 +37,140 @@ export function simplifyCoordinates(coords: Array<[number, number]>, maxPoints: 
   return simplified;
 }
 
+/** Pieces and holes smaller than this are GPS noise, not territory (also the minimum theft). */
+export const MIN_TERRITORY_PIECE_M2 = 100;
+
+/**
+ * Reduces a GPS track to at most `maxPoints` points keeping its shape (Douglas-Peucker, starting at
+ * ~3 m of tolerance), instead of keeping one point in N, which cut corners on long runs.
+ * Points are [lat, lng].
+ */
+export function simplifyTrack(coords: Array<[number, number]>, maxPoints: number = 150): Array<[number, number]> {
+  if (coords.length <= maxPoints) return coords;
+  const line = turf.lineString(coords.map((c) => [c[1], c[0]]));
+  let tolerance = 0.00003;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const simplified = turf.simplify(line, { tolerance, highQuality: false }).geometry.coordinates;
+    if (simplified.length <= maxPoints && simplified.length >= 4) {
+      return simplified.map((c) => [c[1], c[0]] as [number, number]);
+    }
+    if (simplified.length < 4) break;
+    tolerance *= 1.6;
+  }
+  return simplifyCoordinates(coords, maxPoints);
+}
+
+type AreaFeature = ReturnType<typeof turf.polygon> | ReturnType<typeof turf.multiPolygon>;
+
+/**
+ * A valid polygon from a ring that may cross itself (a figure eight, an out-and-back on another
+ * street): the ring is split where it crosses and the pieces are joined. Without this the area of a
+ * crossing loop cancels out and intersections/differences go wrong.
+ */
+export function validPolygon(ring: number[][]): AreaFeature | null {
+  const polygon = turf.polygon([ring]);
+  let pieces: AreaFeature[] = [];
+  try {
+    pieces = turf.unkinkPolygon(polygon).features as AreaFeature[];
+  } catch {
+    pieces = [polygon];
+  }
+  pieces = pieces.filter((piece) => turf.area(piece) >= MIN_TERRITORY_PIECE_M2);
+  if (pieces.length === 0) return null;
+  if (pieces.length === 1) return pieces[0];
+  try {
+    const joined = turf.union(turf.featureCollection(pieces as any));
+    return joined ? (joined as AreaFeature) : pieces[0];
+  } catch {
+    return pieces[0];
+  }
+}
+
+/**
+ * Territory geometry tidied after every union/difference: ~2 m simplification (vertices otherwise
+ * pile up run after run) and no pieces or holes under MIN_TERRITORY_PIECE_M2 (slivers left along
+ * borders). Returns null when nothing meaningful is left, the original if tidying fails.
+ */
+export function cleanGeometry(geometry: any): any | null {
+  if (!geometry || (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon')) return geometry;
+  try {
+    const polygons: number[][][][] = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+    const kept: number[][][][] = [];
+    for (const rings of polygons) {
+      if (!rings.length || turf.area(turf.polygon([rings[0]])) < MIN_TERRITORY_PIECE_M2) continue;
+      const holes = rings.slice(1).filter((hole) => hole.length >= 4 && turf.area(turf.polygon([hole])) >= MIN_TERRITORY_PIECE_M2);
+      const simplified = turf.simplify(turf.polygon([rings[0], ...holes]), { tolerance: 0.00002, highQuality: false });
+      kept.push(simplified.geometry.coordinates);
+    }
+    if (kept.length === 0) return null;
+    const cleaned = kept.length === 1 ? { type: 'Polygon', coordinates: kept[0] } : { type: 'MultiPolygon', coordinates: kept };
+    const before = turf.area(geometry);
+    const after = turf.area(cleaned as any);
+    // Simplifying must not change the territory: keep the original if the area moved more than 2 %
+    if (!isFinite(after) || after <= 0 || Math.abs(after - before) > before * 0.02 + MIN_TERRITORY_PIECE_M2 * kept.length) {
+      return geometry;
+    }
+    return cleaned;
+  } catch {
+    return geometry;
+  }
+}
+
 /**
  * Convert a GPS route to a closed polygon representing the enclosed area.
- * Always closes the route by connecting last point → first point.
- * Returns the polygon geometry, or null if the route has too few points.
+ * Always closes the route by connecting last point → first point; a route that crosses itself
+ * becomes the union of its loops. Returns null if the route has too few points or encloses nothing.
  */
-export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimplifyPoints: number = 150): ReturnType<typeof turf.polygon> | null {
+export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimplifyPoints: number = 150): AreaFeature | null {
   if (coords.length < 10) return null;
 
-  const simplified = simplifyCoordinates(coords, maxSimplifyPoints);
+  const simplified = simplifyTrack(coords, maxSimplifyPoints);
   // Flip [lat, lng] → [lng, lat] for GeoJSON convention
-  const ring = simplified.map((c: [number, number]) => [c[1], c[0]]);
+  const ring = simplified
+    .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]))
+    .map((c: [number, number]) => [c[1], c[0]]);
+  // Consecutive duplicates make degenerate edges
+  const deduped = ring.filter((p, i) => i === 0 || p[0] !== ring[i - 1][0] || p[1] !== ring[i - 1][1]);
+  if (deduped.length < 3) return null;
 
   // Close the ring: always connect last point to first point
-  const first = ring[0];
-  const last = ring[ring.length - 1];
+  const first = deduped[0];
+  const last = deduped[deduped.length - 1];
   if (first[0] !== last[0] || first[1] !== last[1]) {
-    ring.push([first[0], first[1]]);
+    deduped.push([first[0], first[1]]);
   }
+  if (deduped.length < 4) return null;
 
   try {
-    const poly = turf.polygon([ring]);
+    const poly = validPolygon(deduped);
+    if (!poly) return null;
     const area = turf.area(poly);
     if (!area || area <= 0 || !isFinite(area)) return null;
     return poly;
   } catch (e) {
     // Fallback: convex hull
     try {
-      const line = turf.lineString(ring.slice(0, -1));
+      const line = turf.lineString(deduped.slice(0, -1));
       const hull = turf.convex(turf.explode(line));
       if (hull && turf.area(hull) > 0) return hull;
     } catch (_) {}
     return null;
   }
+}
+
+/** [minLng, minLat, maxLng, maxLat] of a geometry, or null. */
+export function geometryBbox(geometry: any): [number, number, number, number] | null {
+  try {
+    const box = turf.bbox(geometry);
+    return box.every(Number.isFinite) ? [box[0], box[1], box[2], box[3]] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function bboxesOverlap(a: number[] | null, b: number[] | null): boolean {
+  if (!a || !b) return true;
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
 // ─── Anti-cheat ──────────────────────────────────────────────────────────────

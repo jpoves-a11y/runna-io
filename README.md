@@ -141,6 +141,26 @@ DATABASE_URL=file:scripts/e2e/.build/garmin.db npx drizzle-kit push --force
 node scripts/e2e/garmin-test.mjs
 ```
 
+## Territorio
+
+Cada carrera se procesa en la cola `territory-processing` (`worker/src/queue-consumer.ts` → `processTerritoryConquest` en `worker/src/routes.ts`):
+
+- La ruta se reduce con Douglas-Peucker (máx. 150 puntos), se cierra uniendo el final con el inicio y, si se cruza consigo misma, se divide en lazos que se unen (`worker/src/territory.ts`).
+- Solo se cargan los territorios cuya caja de coordenadas toca la carrera (columnas `bbox_*`); en la competición, los de todos los jugadores, si no, los de los amigos.
+- Robar exige al menos 100 m²; tras cada unión o resta se quitan piezas y agujeros de menos de 100 m² y se simplifica a ~2 m.
+- Cada ruta se procesa una sola vez (`route_territory_runs`) y la cola procesa de una en una (`max_concurrency = 1`).
+- Competición: puntuación = territorio real + `competition_stats.bonus_area` (+50 % del área nueva, menos bombas). `users.total_area` es siempre el territorio real.
+- Fortificaciones: máximo 3 capas por zona (correr de nuevo renueva la más antigua) y caducan a los 14 días.
+- Borrar una carrera quita solo el área que cubría únicamente esa carrera; lo que otros te robaron no vuelve.
+
+Prueba end-to-end con carreras sintéticas (robo, duplicados, borrado, competición, fortificaciones, poderes):
+
+```bash
+rm -f scripts/e2e/.build/territory.db
+DATABASE_URL=file:scripts/e2e/.build/territory.db npx drizzle-kit push --force
+node scripts/e2e/territory-test.mjs
+```
+
 ## Páginas que sirve el Worker
 
 | Ruta | Qué es |

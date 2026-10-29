@@ -176,6 +176,8 @@ async function handleProcessRouteTerritory(
       storage, userId, routeId, enclosedPoly.geometry,
       undefined, startedAt, completedAt, coords
     );
+    // A repeated delivery of a route already processed: its feed, notifications and stats are done
+    if (conquestResult.alreadyProcessed) return;
 
     // Save ran-together info
     if (conquestResult.ranTogetherWith.length > 0) {
