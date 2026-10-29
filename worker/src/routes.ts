@@ -3698,11 +3698,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Parse metadata for victims and treasures
       let victims: any[] = [];
       let treasuresCollected: any[] = [];
+      let castlesBuilt = 0;
+      let castlesDestroyed = 0;
       if (feedEvent.metadata) {
         try {
           const meta = JSON.parse(feedEvent.metadata);
           victims = meta.victims || [];
           treasuresCollected = meta.treasures || [];
+          castlesBuilt = Number(meta.fortificationLayers) || 0;
+          castlesDestroyed = Number(meta.fortressesDestroyed) || 0;
         } catch (_) {}
       }
       // The activity event's own area_stolen column is never filled: the stolen total is the
@@ -3719,6 +3723,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         duration: feedEvent.duration || 0,
         victims,
         treasuresCollected,
+        castlesBuilt,
+        castlesDestroyed,
       });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);

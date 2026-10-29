@@ -284,8 +284,11 @@ struct ConquestResult: Decodable {
     let victims: [Victim]
     /// Treasures the server collected along the route (and the ones collected live, once processed).
     let treasuresCollected: [CollectedTreasure]
+    /// Castles this run built on your territory, and castles of rivals it knocked down.
+    let castlesBuilt: Int
+    let castlesDestroyed: Int
 
-    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims, treasuresCollected }
+    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims, treasuresCollected, castlesBuilt, castlesDestroyed }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -294,6 +297,8 @@ struct ConquestResult: Decodable {
         areaStolen = c.double(.areaStolen) ?? 0
         victims = (try? c.decodeIfPresent([Victim].self, forKey: .victims)) ?? []
         treasuresCollected = (try? c.decodeIfPresent([CollectedTreasure].self, forKey: .treasuresCollected)) ?? []
+        castlesBuilt = c.int(.castlesBuilt) ?? 0
+        castlesDestroyed = c.int(.castlesDestroyed) ?? 0
     }
 
     /// Victims that actually lost territory.

@@ -477,39 +477,42 @@ struct FortificationShape: Identifiable {
     var wallWidth: CGFloat { CGFloat(min(1.5 + Double(layers) * 1.5, 7.5)) }
 }
 
-/// Castle marker for a zone fortified several times.
+/// Castle marker of a fortified zone.
 struct CastleZone: Identifiable {
     let id: String
     let userId: String
     let coordinate: CLLocationCoordinate2D
-    /// Fortification layers stacked on the zone.
+    /// Castles in the zone (1 to 3): each one stops one attack.
     let layers: Int
     let color: Color
+    var area: Double = 0
+    /// When the oldest castle falls, and when the zone is left without castles.
+    var nextExpiryAt: Date? = nil
+    var expiresAt: Date? = nil
+    /// Name of the owner ("Tú" for your own).
+    var ownerName: String = ""
 
     var levelText: String { "×\(layers)" }
 }
 
-/// Fortress on the map: a compact solid capsule with a shield glyph and the level, ringed in the owner's colour.
+/// Castle on the map: one castle per layer on a white capsule ringed in the owner's colour.
 struct CastleMarker: View {
     let zone: CastleZone
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "shield.lefthalf.filled")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(zone.color)
-            Text(zone.levelText)
-                .font(.system(size: 12, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(Color.primary)
+        HStack(spacing: -3) {
+            ForEach(0..<min(max(zone.layers, 1), 3), id: \.self) { _ in
+                Text("🏰")
+                    .font(.system(size: 14))
+            }
         }
-        .padding(.horizontal, 7)
-        .frame(height: 24)
+        .padding(.horizontal, 6)
+        .frame(height: 26)
         .background(Color(uiColor: .systemBackground), in: Capsule())
-        .overlay(Capsule().strokeBorder(zone.color, lineWidth: 1.5))
-        .shadow(color: Color.black.opacity(0.15), radius: 2, x: 0, y: 1)
+        .overlay(Capsule().strokeBorder(zone.color, lineWidth: 2))
+        .shadow(color: Color.black.opacity(0.18), radius: 2, x: 0, y: 1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Fortaleza de \(zone.layers) capas")
+        .accessibilityLabel(zone.layers == 1 ? "Zona con 1 castillo" : "Zona con \(zone.layers) castillos")
     }
 }
 

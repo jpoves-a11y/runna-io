@@ -14,6 +14,7 @@ struct MapScreen: View {
     @State private var heading: Double = 0
     @State private var selectedUserId: String?
     @State private var selectedTreasure: Treasure?
+    @State private var selectedCastle: CastleZone?
     @State private var uploadedPendingRuns = 0
     @State private var showIntro = false
     @State private var showFinalResults = false
@@ -55,6 +56,9 @@ struct MapScreen: View {
         }
         .sheet(item: $selectedTreasure) { treasure in
             TreasureDetailView(treasure: treasure)
+        }
+        .sheet(item: $selectedCastle) { zone in
+            CastleDetailSheet(zone: zone, isMine: zone.userId == session.userId)
         }
         .sheet(item: $routeDetail) { route in
             NavigationStack {
@@ -185,6 +189,12 @@ struct MapScreen: View {
                 .foregroundStyle(look.fill)
                 .stroke(look.stroke, style: look.strokeStyle)
         }
+        // Zones wearing away: faded with a dashed border; yours at risk: dotted border
+        ForEach(model.visibleWeakZones) { zone in
+            MapPolygon(zone.polygon)
+                .foregroundStyle(zone.isAtRisk ? Color.clear : Color(uiColor: .systemBackground).opacity(0.35))
+                .stroke(zone.color.opacity(0.95), style: zone.strokeStyle)
+        }
         if !onlyFortified {
             // Where your territory touches a rival's
             ForEach(model.visibleContestedBorders) { line in
@@ -266,7 +276,12 @@ struct MapScreen: View {
     private var markerContent: some MapContent {
         ForEach(model.visibleCastles) { zone in
             Annotation("", coordinate: zone.coordinate) {
-                CastleMarker(zone: zone)
+                Button {
+                    selectedCastle = zone
+                } label: {
+                    CastleMarker(zone: zone)
+                }
+                .buttonStyle(.plain)
             }
         }
         ForEach(model.liveTreasures) { treasure in
@@ -640,7 +655,7 @@ struct MapScreen: View {
                 .pickerStyle(.menu)
                 if !model.fortifications.isEmpty {
                     Toggle(isOn: $onlyFortified) {
-                        Label("Solo fortificaciones", systemImage: "shield.lefthalf.filled")
+                        Label("Solo castillos", systemImage: "shield.lefthalf.filled")
                     }
                 }
                 if model.players.count > 1 {

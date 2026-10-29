@@ -192,8 +192,41 @@ struct ParticipantsResponse: Decodable {
 
 // MARK: - Fortifications
 
-/// GET /api/territories/fortifications
+/// GET /api/territories/fortifications: castle zones (yours and your friends') and, for older
+/// servers, the raw records grouped by user.
 struct FortificationsResponse: Decodable {
+    /// A fortified zone: up to 3 castles, each one stops one attack; they last 14 days.
+    struct Castle: Decodable {
+        let id: String
+        let userId: String
+        let layers: Int
+        /// Where the marker goes (a point inside the zone).
+        let coordinate: CLLocationCoordinate2D?
+        let polygons: [[[CLLocationCoordinate2D]]]
+        let area: Double
+        /// When the oldest castle falls, and when the last one does.
+        let nextExpiryAt: Date?
+        let expiresAt: Date?
+
+        enum CodingKeys: String, CodingKey { case id, userId, layers, lat, lng, geometry, area, nextExpiryAt, expiresAt }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.string(.id) ?? UUID().uuidString
+            userId = c.string(.userId) ?? ""
+            layers = max(1, c.int(.layers) ?? 1)
+            if let lat = c.double(.lat), let lng = c.double(.lng) {
+                coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+            } else {
+                coordinate = nil
+            }
+            polygons = GeoJSON.polygons(from: c.jsonObject(.geometry))
+            area = c.double(.area) ?? 0
+            nextExpiryAt = APIDate.parse(c.string(.nextExpiryAt))
+            expiresAt = APIDate.parse(c.string(.expiresAt))
+        }
+    }
+
     struct Group: Decodable {
         let userId: String
         let layers: Int
@@ -224,12 +257,14 @@ struct FortificationsResponse: Decodable {
     }
 
     let fortifications: [Group]
+    let castles: [Castle]
 
-    enum CodingKeys: String, CodingKey { case fortifications }
+    enum CodingKeys: String, CodingKey { case fortifications, castles }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         fortifications = (try? c.decodeIfPresent([Group].self, forKey: .fortifications)) ?? []
+        castles = (try? c.decodeIfPresent([Castle].self, forKey: .castles)) ?? []
     }
 }
 

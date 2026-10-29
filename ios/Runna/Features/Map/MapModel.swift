@@ -39,6 +39,10 @@ final class MapModel {
     private(set) var treasures: [Treasure] = []
     private(set) var fortifications: [FortificationShape] = []
     private(set) var castles: [CastleZone] = []
+    /// Zones wearing away (not run over for 14 days) and, yours, the ones that start soon.
+    private(set) var weakZones: [WeakZoneShape] = []
+    /// You're in rest mode (your territory doesn't wear away).
+    private(set) var isResting = false
     /// Your runs, most recent first.
     private(set) var routeLines: [RouteLine] = []
     /// Friends' runs (only loaded while "Recorridos de todos" is on).
@@ -66,6 +70,10 @@ final class MapModel {
 
     var visibleCastles: [CastleZone] {
         hiddenUserIds.isEmpty ? castles : castles.filter { !hiddenUserIds.contains($0.userId) }
+    }
+
+    var visibleWeakZones: [WeakZoneShape] {
+        hiddenUserIds.isEmpty ? weakZones : weakZones.filter { !hiddenUserIds.contains($0.userId) }
     }
 
     var visibleRouteLines: [RouteLine] {
@@ -105,6 +113,7 @@ final class MapModel {
     private var routesResource: CachedResource<[RunRoute]>?
     private let treasuresResource = CachedResource<TreasuresResponse>("/api/treasures/active")
     private let fortificationsResource = CachedResource<FortificationsResponse>("/api/territories/fortifications")
+    private let weakResource = CachedResource<WeakZonesResponse>("/api/territories/weak")
     /// Friends as last received (players are rebuilt when the user's own name/colour changes).
     private var friendList: [AppUser] = []
     private var latestRoutes: [RunRoute] = []
@@ -125,6 +134,7 @@ final class MapModel {
         routesResource = nil
         treasuresResource.forget()
         fortificationsResource.forget()
+        weakResource.forget()
         friendList = []
         latestRoutes = []
         routeColor = nil
@@ -137,6 +147,8 @@ final class MapModel {
         treasures = []
         fortifications = []
         castles = []
+        weakZones = []
+        isResting = false
         routeLines = []
         friendRouteLines = []
         contestedBorders = []
@@ -178,12 +190,16 @@ final class MapModel {
             latestRoutes = routes
         }
         updateRouteLines(user: user)
+        // Castles and wear are part of the normal game (not only competitions)
+        if let response = await fortificationsResource.loadCached() {
+            makeFortifications(response)
+        }
+        if let response = await weakResource.loadCached() {
+            makeWeakZones(response)
+        }
         if CompetitionStore.shared.isActive {
             if let response = await treasuresResource.loadCached() {
                 treasures = response.treasures
-            }
-            if let response = await fortificationsResource.loadCached() {
-                makeFortifications(response.fortifications)
             }
         }
     }
@@ -241,7 +257,10 @@ final class MapModel {
             errorMessage = nil
             hasContent = true
         }
-        await loadCompetition(userId: user.id)
+        async let defense: Void = refreshDefenseOverlays()
+        async let competitionOverlays: Void = loadCompetition(userId: user.id)
+        await defense
+        await competitionOverlays
     }
 
     private static func fetch<T: Decodable>(_ resource: CachedResource<T>) async -> Result<T?, Error> {
@@ -279,8 +298,6 @@ final class MapModel {
         let store = CompetitionStore.shared
         guard store.isActive else {
             treasures = []
-            fortifications = []
-            castles = []
             store.setAvailablePowerCount(0)
             return
         }
@@ -288,6 +305,20 @@ final class MapModel {
         async let powers: Void = store.refreshPowers(userId: userId)
         await overlays
         await powers
+    }
+
+    /// Castles and zones wearing away (yours and your friends'), in parallel.
+    func refreshDefenseOverlays() async {
+        let fortificationsSource: CachedResource<FortificationsResponse> = fortificationsResource
+        let weakSource: CachedResource<WeakZonesResponse> = weakResource
+        async let fortificationsResult = Self.fetch(fortificationsSource)
+        async let weakResult = Self.fetch(weakSource)
+        if case .success(let response) = await fortificationsResult, let response {
+            makeFortifications(response)
+        }
+        if case .success(let response) = await weakResult, let response {
+            makeWeakZones(response)
+        }
     }
 
     /// Treasures and fortifications (refreshed every minute while the map is visible), in parallel.
@@ -303,7 +334,7 @@ final class MapModel {
             treasures = response.treasures
         }
         if case .success(let response) = fortificationsOutcome, let response {
-            makeFortifications(response.fortifications)
+            makeFortifications(response)
         }
     }
 
@@ -476,6 +507,83 @@ final class MapModel {
     }
 
     // MARK: - Fortifications
+
+    /// Colour of each player (territory colour, or the friend list's).
+    private func playerColors() -> [String: Color] {
+        var colors: [String: Color] = [:]
+        for shape in shapes where colors[shape.userId] == nil {
+            colors[shape.userId] = shape.color
+        }
+        for player in players {
+            colors[player.id] = Color(hex: player.color)
+        }
+        return colors
+    }
+
+    /// Castle zones from the server: the wall and hatching of each zone and a castle marker with its castles.
+    private func makeFortifications(_ response: FortificationsResponse) {
+        guard !response.castles.isEmpty || response.fortifications.isEmpty else {
+            // Older server: raw records only
+            makeFortifications(response.fortifications)
+            return
+        }
+        let colors = playerColors()
+        let names = Dictionary(players.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        var newShapes: [FortificationShape] = []
+        var newCastles: [CastleZone] = []
+        for castle in response.castles {
+            let color = (colors[castle.userId] ?? Color.gray).darkened(0.35)
+            for (index, rings) in castle.polygons.enumerated() {
+                guard let outer = rings.first else { continue }
+                let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
+                newShapes.append(FortificationShape(
+                    id: "\(castle.id)-\(index)",
+                    userId: castle.userId,
+                    color: color,
+                    polygon: MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes),
+                    layers: castle.layers,
+                    hatch: MapGeometry.hatch(rings: rings)
+                ))
+            }
+            guard let coordinate = castle.coordinate ?? Self.centroid(of: castle.polygons) else { continue }
+            newCastles.append(CastleZone(
+                id: castle.id,
+                userId: castle.userId,
+                coordinate: coordinate,
+                layers: castle.layers,
+                color: color,
+                area: castle.area,
+                nextExpiryAt: castle.nextExpiryAt,
+                expiresAt: castle.expiresAt,
+                ownerName: names[castle.userId] ?? ""
+            ))
+        }
+        fortifications = newShapes
+        castles = newCastles
+    }
+
+    private func makeWeakZones(_ response: WeakZonesResponse) {
+        let colors = playerColors()
+        var zones: [WeakZoneShape] = []
+        for zone in response.zones {
+            let color = colors[zone.userId] ?? Color.gray
+            for (kind, polygons) in [(false, zone.weak), (true, zone.atRisk)] {
+                for (index, rings) in polygons.enumerated() {
+                    guard let outer = rings.first else { continue }
+                    let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
+                    zones.append(WeakZoneShape(
+                        id: "\(zone.userId)-\(kind ? "risk" : "weak")-\(index)",
+                        userId: zone.userId,
+                        color: color,
+                        polygon: MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes),
+                        isAtRisk: kind
+                    ))
+                }
+            }
+        }
+        weakZones = zones
+        isResting = response.resting
+    }
 
     /// Fortified zones in the owner's colour (darker): the wall gets thicker with every layer stacked on the
     /// same zone, the zone is hatched, and a castle shows the number of layers where there are several.

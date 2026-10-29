@@ -416,8 +416,8 @@ struct MapLegendSheet: View {
                             .background(Capsule().fill(Color.steal.opacity(0.3)).frame(width: 38, height: 11))
                     }
                 }
-                Section("Fortificaciones") {
-                    row("Zona fortificada", "Rayada y con muralla: cuantas más capas, más gruesa.") {
+                Section("Castillos") {
+                    row("Zona fortificada", "Vuelve a correr por tu territorio y esa zona gana un castillo (máximo 3, duran 14 días). Rayada y con muralla: más gruesa con cada castillo.") {
                         ZStack {
                             swatch(fill: color.darkened(0.35).opacity(0.45), stroke: color.darkened(0.35), width: 4.5)
                             Hatch().stroke(color.darkened(0.35).opacity(0.6), lineWidth: 1)
@@ -425,8 +425,16 @@ struct MapLegendSheet: View {
                             RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.6), lineWidth: 1.2)
                         }
                     }
-                    row("Fortaleza", "Número de capas de la zona.") {
+                    row("Castillos", "Cada castillo frena un ataque rival y cae. Sin castillos, la zona se puede robar. Tócalo para ver cuándo caducan.") {
                         CastleMarker(zone: CastleZone(id: "legend", userId: "", coordinate: CLLocationCoordinate2D(), layers: 3, color: color.darkened(0.35)))
+                    }
+                }
+                Section("Desgaste") {
+                    row("Se desgasta", "Sin pisarla en 14 días, la zona pierde un 3 % al día desde el borde. Corre por ella para defenderla.") {
+                        swatch(fill: color.opacity(0.15), stroke: color, width: 2.5, dash: [5, 4])
+                    }
+                    row("Empieza pronto", "Tus zonas que empiezan a desgastarse en 2 días: borde punteado.") {
+                        swatch(fill: color.opacity(0.3), stroke: color, width: 2, dash: [1, 4])
                     }
                 }
                 Section("Recorridos") {

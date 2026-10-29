@@ -94,6 +94,7 @@ struct ProfileView: View {
                 rivalriesSection
             }
             IntegrationsSection()
+            territorySection
             notificationsSection
             appearanceSection
             privacySection
@@ -249,6 +250,21 @@ struct ProfileView: View {
             return "Último error de Apple: \(error)"
         }
         return nil
+    }
+
+    private var territorySection: some View {
+        Section {
+            NavigationLink {
+                RestModeView()
+            } label: {
+                SocialSettingsLabel(title: "Modo descanso", systemImage: "moon.zzz")
+            }
+        } header: {
+            SocialSectionHeader(title: "Territorio")
+        } footer: {
+            Text("Las zonas que no pisas en 14 días se desgastan. Si te vas de vacaciones o te lesionas, pausa el desgaste hasta 14 días al año.")
+        }
+        .listRowBackground(Color.surface)
     }
 
     private var appearanceSection: some View {
