@@ -364,6 +364,7 @@ struct RunView: View {
             return
         }
         Haptics.success()
+        Task { await HealthImporter.shared.save(run) }
         let newSubmission = RunSubmission(run: run)
         submission = newSubmission
         Task { await newSubmission.submit() }

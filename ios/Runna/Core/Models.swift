@@ -222,9 +222,14 @@ struct RunRoute: Decodable, Identifiable, Hashable {
     let completedAt: String
     let territoryArea: Double?
     let ranTogetherWith: [String]
+    /// Seconds since the start of each point (runs recorded or imported since times are kept).
+    let pointTimes: [Double]?
+    /// Altitude of each point in metres (nil where unknown).
+    let altitudes: [Double?]?
 
     enum CodingKeys: String, CodingKey {
         case id, userId, name, coordinates, distance, duration, startedAt, completedAt, territory, ranTogetherWithUsers
+        case pointTimes, altitudes
     }
 
     private struct TerritorySummary: Decodable {
@@ -245,6 +250,16 @@ struct RunRoute: Decodable, Identifiable, Hashable {
         completedAt = c.string(.completedAt) ?? ""
         territoryArea = (try? c.decodeIfPresent(TerritorySummary.self, forKey: .territory))?.area
         ranTogetherWith = (try? c.decodeIfPresent([NameRef].self, forKey: .ranTogetherWithUsers))?.map(\.name) ?? []
+        // One value per point, or nothing
+        let pointCount = coordinates.count
+        let times = (c.jsonObject(.pointTimes) as? [Any])?.map { ($0 as? NSNumber)?.doubleValue }
+        if let times, times.count == pointCount, times.allSatisfy({ $0 != nil }) {
+            pointTimes = times.compactMap { $0 }
+        } else {
+            pointTimes = nil
+        }
+        let heights = (c.jsonObject(.altitudes) as? [Any])?.map { ($0 as? NSNumber)?.doubleValue }
+        altitudes = heights?.count == pointCount ? heights : nil
     }
 
     var startDate: Date? { APIDate.parse(startedAt) }

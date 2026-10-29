@@ -18,6 +18,8 @@ struct RouteDetailView: View {
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var showReplay = false
+    /// Splits, pace and elevation (runs with the time of each point only).
+    @State private var analysis: RouteAnalysis?
 
     init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
         self.route = route
@@ -25,6 +27,7 @@ struct RouteDetailView: View {
         self.editable = editable
         self.onChange = onChange
         _name = State(initialValue: route.name)
+        _analysis = State(initialValue: RouteAnalysis(route: route))
     }
 
     private var lineColor: Color {
@@ -38,6 +41,7 @@ struct RouteDetailView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     titleBlock
                     statsSection
+                    analysisSections
                     conquestSection
                     companions
                     if editable {
@@ -173,6 +177,26 @@ struct RouteDetailView: View {
                 }
             }
             .card()
+        }
+    }
+
+    // MARK: Splits and charts
+
+    @ViewBuilder
+    private var analysisSections: some View {
+        if let analysis {
+            if analysis.splits.count >= 2 {
+                RouteSplitsSection(splits: analysis.splits)
+            }
+            if analysis.pace.count >= 3 {
+                RoutePaceChart(
+                    samples: analysis.pace,
+                    averagePace: route.distance > 0 ? Double(route.duration) / (route.distance / 1000) : nil
+                )
+            }
+            if analysis.elevation.count >= 3 {
+                RouteElevationChart(samples: analysis.elevation, gain: analysis.elevationGain)
+            }
         }
     }
 

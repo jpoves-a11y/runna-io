@@ -319,6 +319,7 @@ final class SessionStore {
         // Apple Health auto-import is a device setting: the next account must opt in again,
         // otherwise the device owner's workouts would be uploaded to it.
         HealthImporter.shared.autoImport = false
+        HealthImporter.shared.saveRuns = false
         AppRouter.shared.reset()
         PushManager.shared.clearDelivered()
     }
