@@ -80,6 +80,23 @@ final class RunLiveActivity {
         }
     }
 
+    /// Sends the new state and lights up the lock screen / expands the Dynamic Island with a short alert
+    /// (entering another runner's territory). In the foreground iOS doesn't show the alert.
+    func alert(_ state: State, title: String, body: String) {
+        guard let activity else { return }
+        lastSent = state
+        lastSentAt = Date()
+        let content = content(state)
+        let alert = AlertConfiguration(
+            title: LocalizedStringResource(stringLiteral: title),
+            body: LocalizedStringResource(stringLiteral: body),
+            sound: .default
+        )
+        enqueue {
+            await activity.update(content, alertConfiguration: alert)
+        }
+    }
+
     /// Sends the new state only if the distance changed enough or it's been a while (called on every GPS fix).
     func updateIfNeeded(_ state: State) {
         guard activity != nil else { return }
@@ -89,7 +106,9 @@ final class RunLiveActivity {
         }
         let sinceLast = Date().timeIntervalSince(lastSentAt)
         let moved = abs(state.distanceMeters - lastSent.distanceMeters)
-        let changedFlags = state.isPaused != lastSent.isPaused || state.conqueredHint != lastSent.conqueredHint
+        let changedFlags = state.isPaused != lastSent.isPaused
+            || state.conqueredHint != lastSent.conqueredHint
+            || state.zoneText != lastSent.zoneText
         if changedFlags
             || (moved >= minUpdateDistance && sinceLast >= minUpdateInterval)
             || sinceLast >= refreshInterval {

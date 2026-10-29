@@ -52,6 +52,21 @@ final class RunTracker {
     /// Friends' and rivals' territories drawn under the run (set by the map).
     var territoryShapes: [TerritoryShape] = []
 
+    /// The territory you'd conquer if you finished now (route closed back to the start).
+    private(set) var preview: RunPreview?
+    /// Whose territory you're running through.
+    private(set) var zone: RunZoneDetector.Zone = .none
+    /// Pace over the last ~200 m (seconds per km).
+    private(set) var currentPace: Double?
+    /// Last completed km.
+    private(set) var lastSplit: RunSplits.Split?
+    /// Paused by itself because the runner stopped (resumes by itself too).
+    private(set) var isAutoPaused = false
+    /// Seconds since `startDate` of each recorded point (same order as `coordinates`).
+    private(set) var pointTimes: [Double] = []
+    /// Altitude in metres of each point (nil when the GPS didn't give a usable one).
+    private(set) var altitudes: [Double?] = []
+
     /// Treasures still on the map (collected ones are removed).
     var visibleTreasures: [Treasure] {
         activeTreasures.filter { !collectedTreasureIds.contains($0.id) }
@@ -75,6 +90,21 @@ final class RunTracker {
     private var ownerId: String?
     private var wantsFullAccuracy = false
     private var fullAccuracyRequested = false
+
+    @ObservationIgnored private var zoneDetector = RunZoneDetector()
+    @ObservationIgnored private var recentPace = RecentPace()
+    @ObservationIgnored private var splits = RunSplits()
+    @ObservationIgnored private var autoPause = AutoPauseDetector()
+    @ObservationIgnored private var lastPreviewAt: Date?
+    @ObservationIgnored private var lastPreviewCount = 0
+    @ObservationIgnored private var previousFix: CLLocation?
+    @ObservationIgnored private var announcedTreasureIds: Set<String> = []
+    private let coach = RunVoiceCoach()
+    /// A treasure closer than this is announced once.
+    private let treasureAnnounceRadius: CLLocationDistance = 300
+    /// The preview is recomputed every this many new points or seconds.
+    private let previewEveryPoints = 8
+    private let previewEverySeconds: TimeInterval = 15
 
     @ObservationIgnored private var treasureRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
@@ -124,6 +154,18 @@ final class RunTracker {
         guard let startDate else { return 0 }
         let pausedNow = pausedAt.map { date.timeIntervalSince($0) } ?? 0
         return max(0, date.timeIntervalSince(startDate) - pausedTotal - pausedNow)
+    }
+
+    /// Straight-line distance from where you are to the start (where the territory closes).
+    var distanceToStart: CLLocationDistance? {
+        guard let start = coordinates.first, let here = currentLocation?.coordinate ?? coordinates.last else { return nil }
+        return RunGeometry.distance(here, start)
+    }
+
+    /// Compass bearing from where you are to the start.
+    var bearingToStart: Double? {
+        guard let start = coordinates.first, let here = currentLocation?.coordinate ?? coordinates.last else { return nil }
+        return RunGeometry.bearing(from: here, to: start)
     }
 
     // MARK: - Location permission and preview
@@ -198,12 +240,14 @@ final class RunTracker {
         collectingTreasureIds = []
         collectedTreasureIds = []
         lastCollected = nil
+        resetInsights()
         runId = UUID().uuidString
         ownerId = RunOwner.currentUserId
         // Starting a new run replaces any unfinished one (the run screen asks first)
         hasRecoverableRun = false
         startDate = Date()
         phase = .running
+        autoPause.reset(at: Date())
         beginBackgroundUpdates()
         UIApplication.shared.isIdleTimerDisabled = true
         startTreasureRefresh()
@@ -214,9 +258,16 @@ final class RunTracker {
     }
 
     func pause() {
+        pause(at: Date())
+    }
+
+    private func pause(at date: Date, automatic: Bool = false) {
         guard phase == .running else { return }
-        pausedAt = Date()
+        pausedAt = date
         phase = .paused
+        isAutoPaused = automatic
+        currentPace = nil
+        recentPace.reset()
         treasureRefreshTask?.cancel()
         persist()
         liveActivity.update(liveActivityState())
@@ -232,6 +283,8 @@ final class RunTracker {
         lastAcceptedAt = nil
         skipNextSegment = true
         phase = .running
+        isAutoPaused = false
+        autoPause.reset(at: Date())
         UIApplication.shared.isIdleTimerDisabled = true
         startTreasureRefresh()
         persist()
@@ -251,6 +304,13 @@ final class RunTracker {
         distance = saved.distance
         startDate = saved.startDate
         pausedTotal = saved.pausedTotal
+        resetInsights()
+        // Times and altitudes only when they match the points (files from older versions have none)
+        if let times = saved.pointTimes, times.count == coordinates.count {
+            pointTimes = times
+            altitudes = saved.altitudes?.count == coordinates.count ? saved.altitudes ?? [] : Array(repeating: nil, count: coordinates.count)
+        }
+        splits.restart(distance: saved.distance, movingTime: saved.savedAt.timeIntervalSince(saved.startDate) - saved.pausedTotal)
         // Time while the app was closed counts as a pause
         pausedAt = saved.savedAt
         lastAcceptedAt = nil
@@ -297,7 +357,9 @@ final class RunTracker {
             duration: movingTime,
             startedAt: startDate ?? end,
             completedAt: end,
-            treasures: collectedTreasures
+            treasures: collectedTreasures,
+            pointTimes: pointTimes.count == points.count ? pointTimes : nil,
+            altitudes: altitudes.count == points.count ? altitudes : nil
         )
         liveActivity.end(finalState: liveActivityState(at: end, finished: true), discarded: false)
         let queued = PendingRuns.add(PendingRuns.Entry(run: run))
@@ -331,11 +393,30 @@ final class RunTracker {
         lastCollected = nil
         collectingTreasureIds = []
         collectedTreasureIds = []
+        resetInsights()
+        coach.stop()
         if clearSavedRun {
             RunPersistence.clear()
         } else {
             hasRecoverableRun = RunPersistence.loadForCurrentUser() != nil
         }
+    }
+
+    private func resetInsights() {
+        preview = nil
+        zone = .none
+        currentPace = nil
+        lastSplit = nil
+        isAutoPaused = false
+        pointTimes = []
+        altitudes = []
+        zoneDetector = RunZoneDetector()
+        recentPace.reset()
+        splits.reset()
+        lastPreviewAt = nil
+        lastPreviewCount = 0
+        previousFix = nil
+        announcedTreasureIds = []
     }
 
     private func beginBackgroundUpdates() {
@@ -354,6 +435,9 @@ final class RunTracker {
                 gpsAccuracy = location.horizontalAccuracy
             }
             currentLocation = location
+            if isRecording {
+                checkAutoPause(location)
+            }
             guard phase == .running else { continue }
             accept(location)
         }
@@ -388,11 +472,78 @@ final class RunTracker {
         }
 
         coordinates.append(location.coordinate)
+        pointTimes.append(startDate.map { max(0, location.timestamp.timeIntervalSince($0)) } ?? 0)
+        altitudes.append(location.verticalAccuracy >= 0 && location.verticalAccuracy <= 30 ? location.altitude : nil)
         lastAcceptedAt = location.timestamp
         if coordinates.count % 10 == 0 {
             persist()
         }
+        updateInsights(at: location)
         checkTreasures(near: location)
+    }
+
+    // MARK: - While running: pace, splits, zone, preview
+
+    private func updateInsights(at location: CLLocation) {
+        let moving = elapsed(at: location.timestamp)
+        recentPace.add(movingTime: moving, distance: distance)
+        currentPace = recentPace.secondsPerKm
+        if let split = splits.update(distance: distance, movingTime: moving) {
+            lastSplit = split
+            coach.speak(RunSpeech.split(split, totalTime: moving))
+        }
+
+        if let newZone = zoneDetector.update(at: location.coordinate, territories: territoryShapes, myUserId: ownerId) {
+            zone = newZone
+            zoneChanged(newZone)
+        }
+
+        let now = Date()
+        if coordinates.count - lastPreviewCount >= previewEveryPoints
+            || now.timeIntervalSince(lastPreviewAt ?? .distantPast) >= previewEverySeconds {
+            lastPreviewAt = now
+            lastPreviewCount = coordinates.count
+            preview = RunPreviewCalculator.preview(path: coordinates, territories: territoryShapes, myUserId: ownerId)
+        }
+    }
+
+    /// Entering someone's territory: spoken, and on the lock screen (an alert when it's a rival's).
+    private func zoneChanged(_ newZone: RunZoneDetector.Zone) {
+        if let text = RunSpeech.zone(newZone) {
+            coach.speak(text)
+        }
+        let state = liveActivityState()
+        if case .rival(_, let name) = newZone {
+            Haptics.warning()
+            liveActivity.alert(state, title: "Territorio de \(name)", body: "Rodéalo y vuelve a la salida para robárselo.")
+        } else {
+            liveActivity.update(state)
+        }
+    }
+
+    // MARK: - Auto-pause
+
+    private func checkAutoPause(_ location: CLLocation) {
+        defer { previousFix = location }
+        guard RunSettings.autoPauseEnabled, phase == .running || isAutoPaused,
+              location.horizontalAccuracy >= 0, location.horizontalAccuracy <= maxAccuracy else { return }
+        // Speed from the GPS, or from the last fix when the GPS doesn't give one
+        var speed = location.speed
+        if speed < 0, let previousFix {
+            let seconds = location.timestamp.timeIntervalSince(previousFix.timestamp)
+            speed = seconds > 0 ? location.distance(from: previousFix) / seconds : 0
+        }
+        switch autoPause.evaluate(speed: max(0, speed), coordinate: location.coordinate, at: location.timestamp, isAutoPaused: isAutoPaused) {
+        case .pause:
+            // Paused from when the runner stopped, not from when it was noticed
+            pause(at: location.timestamp.addingTimeInterval(-autoPause.stillDuration), automatic: true)
+            coach.speak(RunSpeech.autoPaused)
+        case .resume:
+            resume()
+            coach.speak(RunSpeech.autoResumed)
+        case .none:
+            break
+        }
     }
 
     // MARK: - Treasures
@@ -400,6 +551,11 @@ final class RunTracker {
     private func checkTreasures(near location: CLLocation) {
         for treasure in activeTreasures where !collectingTreasureIds.contains(treasure.id) {
             let treasureLocation = CLLocation(latitude: treasure.lat, longitude: treasure.lng)
+            let meters = location.distance(from: treasureLocation)
+            if meters > treasureRadius, meters <= treasureAnnounceRadius, !announcedTreasureIds.contains(treasure.id) {
+                announcedTreasureIds.insert(treasure.id)
+                coach.speak(RunSpeech.treasureNear(meters: meters))
+            }
             guard location.distance(from: treasureLocation) <= treasureRadius else { continue }
             collectingTreasureIds.insert(treasure.id)
             Task {
@@ -464,8 +620,20 @@ final class RunTracker {
             distanceMeters: distance,
             paceSecondsPerKm: pace,
             conqueredHint: hint,
-            isFinished: finished
+            isFinished: finished,
+            zoneText: finished ? nil : zone.text,
+            zoneIsRival: zone.isRival,
+            zoneColorHex: zoneColorHex
         )
+    }
+
+    /// Colour of the territory you're in.
+    private var zoneColorHex: String? {
+        switch zone {
+        case .none: return nil
+        case .mine: return territoryShapes.first { $0.userId == ownerId }?.colorHex
+        case .rival(let userId, _): return territoryShapes.first { $0.userId == userId }?.colorHex
+        }
     }
 
     // MARK: - Persistence
@@ -480,7 +648,9 @@ final class RunTracker {
             savedAt: Date(),
             id: runId,
             ownerId: ownerId,
-            collectedTreasureIds: Array(collectedTreasureIds)
+            collectedTreasureIds: Array(collectedTreasureIds),
+            pointTimes: pointTimes,
+            altitudes: altitudes
         ))
     }
 }
@@ -497,6 +667,10 @@ struct FinishedRun {
     let startedAt: Date
     let completedAt: Date
     let treasures: [Treasure]
+    /// Seconds since `startedAt` of each point, nil when unknown.
+    var pointTimes: [Double]? = nil
+    /// Altitude of each point (nil entries where the GPS gave none).
+    var altitudes: [Double?]? = nil
 
     var defaultName: String { "Carrera del \(Format.day(startedAt))" }
 }
@@ -530,6 +704,8 @@ struct SavedRun: Codable {
     let id: String?
     let ownerId: String?
     let collectedTreasureIds: [String]?
+    var pointTimes: [Double]? = nil
+    var altitudes: [Double?]? = nil
 }
 
 enum RunPersistence {

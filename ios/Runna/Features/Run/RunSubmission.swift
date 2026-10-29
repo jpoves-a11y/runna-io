@@ -100,6 +100,9 @@ enum PendingRuns {
         let duration: Int
         let startedAt: Date
         let completedAt: Date
+        /// Seconds since `startedAt` of each point and its altitude (nil for runs saved by older versions).
+        let pointTimes: [Double]?
+        let altitudes: [Double?]?
         /// Days on which the server refused the run (validation error).
         var attempts: Int
         var lastAttemptDay: String?
@@ -115,6 +118,8 @@ enum PendingRuns {
             duration = run.duration
             startedAt = run.startedAt
             completedAt = run.completedAt
+            pointTimes = run.pointTimes
+            altitudes = run.altitudes
             attempts = 0
             lastAttemptDay = nil
             lastError = nil
@@ -122,7 +127,7 @@ enum PendingRuns {
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, ownerId, name, coordinates, distance, duration, startedAt, completedAt
+            case id, ownerId, name, coordinates, distance, duration, startedAt, completedAt, pointTimes, altitudes
             case attempts, lastAttemptDay, lastError, rejected
         }
 
@@ -135,6 +140,8 @@ enum PendingRuns {
             startedAt = try c.decode(Date.self, forKey: .startedAt)
             completedAt = try c.decode(Date.self, forKey: .completedAt)
             ownerId = try c.decodeIfPresent(String.self, forKey: .ownerId)
+            pointTimes = try c.decodeIfPresent([Double].self, forKey: .pointTimes)
+            altitudes = try c.decodeIfPresent([Double?].self, forKey: .altitudes)
             attempts = try c.decodeIfPresent(Int.self, forKey: .attempts) ?? 0
             lastAttemptDay = try c.decodeIfPresent(String.self, forKey: .lastAttemptDay)
             lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
@@ -189,7 +196,7 @@ enum PendingRuns {
     // MARK: - Queue file
 
     static func body(for entry: Entry) -> [String: Any] {
-        [
+        var body: [String: Any] = [
             "name": entry.name,
             "coordinates": entry.coordinates,
             "distance": entry.distance,
@@ -198,6 +205,16 @@ enum PendingRuns {
             "completedAt": APIDate.string(entry.completedAt),
             "clientRunId": entry.id,
         ]
+        // One value per point, or nothing (the server ignores arrays of another length)
+        if let times = entry.pointTimes, times.count == entry.coordinates.count {
+            body["pointTimes"] = times.map { ($0 * 10).rounded() / 10 }
+            if let altitudes = entry.altitudes, altitudes.count == entry.coordinates.count {
+                body["altitudes"] = altitudes.map { value -> Any in
+                    value.map { ($0 * 10).rounded() / 10 } ?? NSNull()
+                }
+            }
+        }
+        return body
     }
 
     static func all() -> [Entry] {

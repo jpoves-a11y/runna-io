@@ -13,6 +13,8 @@ struct RunView: View {
     @State private var submission: RunSubmission?
     @State private var tooShortAlert = false
     @State private var confirmReplaceRecovered = false
+    @AppStorage(RunSettings.voiceKey) private var voiceEnabled = true
+    @AppStorage(RunSettings.autoPauseKey) private var autoPauseEnabled = true
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -24,6 +26,9 @@ struct RunView: View {
                 if let treasure = tracker.lastCollected {
                     RunCollectedBanner(treasure: treasure)
                         .transition(.move(edge: .top).combined(with: .opacity))
+                } else if tracker.isRecording, let text = tracker.zone.text {
+                    RunZoneBanner(text: text, isRival: tracker.zone.isRival, color: zoneColor)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 Spacer(minLength: 0)
                 HStack {
@@ -34,6 +39,7 @@ struct RunView: View {
                 controlPanel
             }
             .animation(.snappy, value: tracker.lastCollected?.id)
+            .animation(.snappy, value: tracker.zone)
             .animation(.snappy, value: tracker.phase)
         }
         .onAppear {
@@ -105,6 +111,24 @@ struct RunView: View {
                     .foregroundStyle(shape.color.opacity(0.18))
                     .stroke(shape.color.opacity(0.5), lineWidth: 1)
             }
+            if tracker.isRecording, let preview = tracker.preview {
+                // What you'd conquer if you finished now
+                MapPolygon(coordinates: preview.ring)
+                    .foregroundStyle(Color.brand.opacity(0.14))
+                    .stroke(Color.brand.opacity(0.55), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            }
+            if tracker.isRecording, let start = tracker.coordinates.first, let last = tracker.coordinates.last,
+               (tracker.distanceToStart ?? 0) > 20 {
+                // How the territory closes: straight back to the start
+                MapPolyline(coordinates: [last, start])
+                    .stroke(Color.brand.opacity(0.7), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [2, 6]))
+            }
+            if tracker.isRecording, let start = tracker.coordinates.first {
+                Annotation("Salida", coordinate: start, anchor: .center) {
+                    RunStartPin()
+                }
+                .annotationTitles(.hidden)
+            }
             UserAnnotation()
             if tracker.coordinates.count >= 2 {
                 MapPolyline(coordinates: tracker.coordinates)
@@ -151,9 +175,34 @@ struct RunView: View {
                 .transition(.opacity)
             }
             Spacer(minLength: 0)
+            settingsMenu
         }
         .padding(.horizontal, DS.Spacing.l)
         .padding(.top, DS.Spacing.s)
+    }
+
+    /// Voice cues and auto-pause, kept between runs.
+    private var settingsMenu: some View {
+        Menu {
+            Toggle(isOn: $voiceEnabled) {
+                Label("Avisos de voz", systemImage: "speaker.wave.2")
+            }
+            Toggle(isOn: $autoPauseEnabled) {
+                Label("Pausa automática", systemImage: "pause.circle")
+            }
+        } label: {
+            GlassCircleLabel(systemImage: voiceEnabled ? "speaker.wave.2" : "speaker.slash", size: DS.Size.mapControl)
+        }
+        .accessibilityLabel("Opciones de la carrera")
+    }
+
+    private var zoneColor: Color {
+        switch tracker.zone {
+        case .none: return Color.secondary
+        case .mine: return Color.brand
+        case .rival(let userId, _):
+            return tracker.territoryShapes.first { $0.userId == userId }?.color ?? Color.steal
+        }
     }
 
     // MARK: - Panel
@@ -172,7 +221,19 @@ struct RunView: View {
                 RunLiveMetrics(
                     seconds: Int(tracker.elapsed(at: context.date)),
                     distance: tracker.distance,
-                    isPaused: tracker.phase == .paused
+                    currentPace: tracker.currentPace,
+                    lastSplit: tracker.lastSplit,
+                    isPaused: tracker.phase == .paused,
+                    isAutoPaused: tracker.isAutoPaused
+                )
+            }
+
+            if tracker.isRecording {
+                RunTerritoryStrip(
+                    preview: tracker.preview,
+                    distanceToStart: tracker.distanceToStart,
+                    bearingToStart: tracker.bearingToStart,
+                    heading: tracker.currentLocation?.course
                 )
             }
 
@@ -317,11 +378,14 @@ private struct IdentifiedSubmission: Identifiable {
 
 // MARK: - Metrics
 
-/// Big time on top; distance and pace below, separated by a hairline.
+/// Big time on top; distance, current pace and average pace below, separated by hairlines.
 private struct RunLiveMetrics: View {
     let seconds: Int
     let distance: Double
+    let currentPace: Double?
+    let lastSplit: RunSplits.Split?
     let isPaused: Bool
+    let isAutoPaused: Bool
 
     var body: some View {
         VStack(spacing: DS.Spacing.l) {
@@ -334,14 +398,22 @@ private struct RunLiveMetrics: View {
                     .minimumScaleFactor(0.5)
                     .foregroundStyle(isPaused ? Color.secondary : Color.primary)
                     .animation(.snappy, value: seconds)
-                Text("Tiempo")
+                Text(isAutoPaused ? "Pausa automática" : "Tiempo")
                     .statLabelStyle()
             }
             HairlineDivider()
             HStack(spacing: 0) {
                 metric(value: distanceValue, unit: distanceUnit, label: "Distancia")
                 StatDivider(height: 40)
-                metric(value: paceValue, unit: "/km", label: "Ritmo medio")
+                metric(value: currentPaceValue, unit: "/km", label: "Ritmo")
+                StatDivider(height: 40)
+                metric(value: paceValue, unit: "/km", label: "Medio")
+            }
+            if let lastSplit {
+                Text("Km \(lastSplit.km) en \(Format.duration(Int(lastSplit.seconds.rounded())))")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .accessibilityElement(children: .combine)
@@ -357,6 +429,12 @@ private struct RunLiveMetrics: View {
         return parts.count > 1 ? parts[1] : ""
     }
 
+    private var currentPaceValue: String {
+        guard !isPaused, let currentPace else { return "--" }
+        let total = Int(currentPace.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
     private var paceValue: String {
         let text = Format.pace(distanceMeters: distance, seconds: seconds)
         return text.components(separatedBy: " ").first ?? text
@@ -364,7 +442,7 @@ private struct RunLiveMetrics: View {
 
     private func metric(value: String, unit: String, label: String) -> some View {
         VStack(spacing: 4) {
-            StatValue(value: value, unit: unit.isEmpty ? nil : unit, font: Font.stat(36, weight: .semibold))
+            StatValue(value: value, unit: unit.isEmpty ? nil : unit, font: Font.stat(30, weight: .semibold))
             Text(label)
                 .statLabelStyle()
                 .lineLimit(1)
@@ -597,6 +675,105 @@ private struct RunCollectedBanner: View {
         .glassSurface(Capsule())
         .sensoryFeedback(.success, trigger: treasure.id)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Whose territory you're in, at the top of the map.
+private struct RunZoneBanner: View {
+    let text: String
+    let isRival: Bool
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: DS.Spacing.s) {
+            Image(systemName: isRival ? "flag.fill" : "checkmark.seal.fill")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(color)
+            Text(text)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.vertical, DS.Spacing.s)
+        .glassSurface(Capsule())
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Where the run started (the territory closes back here).
+private struct RunStartPin: View {
+    var body: some View {
+        Image(systemName: "flag.checkered")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Color.onBrand)
+            .frame(width: 26, height: 26)
+            .background(Color.brand, in: Circle())
+            .overlay(Circle().strokeBorder(Color.white, lineWidth: 2))
+    }
+}
+
+/// "Si terminas ahora: 0,12 km² · robas 3.400 m² a Ana" and the way back to the start.
+private struct RunTerritoryStrip: View {
+    let preview: RunPreview?
+    let distanceToStart: Double?
+    let bearingToStart: Double?
+    /// Direction the runner is moving (degrees, negative when unknown).
+    let heading: Double?
+
+    var body: some View {
+        HStack(alignment: .center, spacing: DS.Spacing.m) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                if let stealText {
+                    Text(stealText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.steal)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: DS.Spacing.s)
+            if let distanceToStart, distanceToStart > 20 {
+                HStack(spacing: 4) {
+                    Image(systemName: "location.north.fill")
+                        .font(.caption.weight(.bold))
+                        .rotationEffect(.degrees(arrowAngle))
+                        .foregroundStyle(Color.brand)
+                    Text("Salida a \(Format.distance(distanceToStart))")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, DS.Spacing.m)
+        .padding(.vertical, DS.Spacing.s)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var title: String {
+        guard let preview else { return "Rodea una zona para conquistarla" }
+        return "Si terminas ahora: \(Format.area(preview.area))"
+    }
+
+    private var stealText: String? {
+        guard let preview, let first = preview.steals.first else { return nil }
+        let total = preview.steals.reduce(0) { $0 + $1.area }
+        if preview.steals.count == 1 {
+            return "Robas ~\(Format.area(total)) a \(first.name)"
+        }
+        return "Robas ~\(Format.area(total)) a \(preview.steals.count) corredores"
+    }
+
+    /// Arrow relative to where you're heading when known, else relative to north.
+    private var arrowAngle: Double {
+        guard let bearingToStart else { return 0 }
+        if let heading, heading >= 0 { return bearingToStart - heading }
+        return bearingToStart
     }
 }
 

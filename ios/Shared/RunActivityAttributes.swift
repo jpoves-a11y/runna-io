@@ -19,6 +19,12 @@ struct RunActivityAttributes: ActivityAttributes {
         var conqueredHint: String?
         /// The run has ended (final state shown for a few minutes).
         var isFinished: Bool = false
+        /// Whose territory the runner is in ("En territorio de Ana"), nil outside any.
+        var zoneText: String? = nil
+        /// The zone belongs to another runner (shown in their colour as a warning).
+        var zoneIsRival: Bool = false
+        /// Territory colour of the zone's owner ("#RRGGBB").
+        var zoneColorHex: String? = nil
     }
 
     /// When the run started.
