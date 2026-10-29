@@ -26,6 +26,13 @@
 			remoteGlobalIDString = 4A1D00000000000000000025;
 			remoteInfo = RunnaNotificationService;
 		};
+		4A1D0000000000000000003A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4A1D00000000000000000009 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4A1D00000000000000000006;
+			remoteInfo = Runna;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -47,6 +54,7 @@
 		4A1D00000000000000000001 /* Runna.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Runna.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A1D00000000000000000010 /* RunnaLive.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RunnaLive.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A1D00000000000000000020 /* RunnaNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RunnaNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		4A1D00000000000000000030 /* RunnaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -68,6 +76,11 @@
 		4A1D00000000000000000021 /* RunnaNotificationService */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = RunnaNotificationService;
+			sourceTree = "<group>";
+		};
+		4A1D00000000000000000031 /* RunnaTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = RunnaTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -94,6 +107,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4A1D00000000000000000032 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -104,6 +124,7 @@
 				4A1D00000000000000000011 /* RunnaLive */,
 				4A1D00000000000000000021 /* RunnaNotificationService */,
 				4A1D00000000000000000012 /* Shared */,
+				4A1D00000000000000000031 /* RunnaTests */,
 				4A1D00000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -114,6 +135,7 @@
 				4A1D00000000000000000001 /* Runna.app */,
 				4A1D00000000000000000010 /* RunnaLive.appex */,
 				4A1D00000000000000000020 /* RunnaNotificationService.appex */,
+				4A1D00000000000000000030 /* RunnaTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -192,6 +214,29 @@
 			productReference = 4A1D00000000000000000020 /* RunnaNotificationService.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		4A1D00000000000000000035 /* RunnaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4A1D00000000000000000036 /* Build configuration list for PBXNativeTarget "RunnaTests" */;
+			buildPhases = (
+				4A1D00000000000000000033 /* Sources */,
+				4A1D00000000000000000032 /* Frameworks */,
+				4A1D00000000000000000034 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				4A1D00000000000000000039 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				4A1D00000000000000000031 /* RunnaTests */,
+			);
+			name = RunnaTests;
+			packageProductDependencies = (
+			);
+			productName = RunnaTests;
+			productReference = 4A1D00000000000000000030 /* RunnaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -210,6 +255,10 @@
 					};
 					4A1D00000000000000000025 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					4A1D00000000000000000035 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 4A1D00000000000000000006;
 					};
 				};
 			};
@@ -230,6 +279,7 @@
 				4A1D00000000000000000006 /* Runna */,
 				4A1D00000000000000000013 /* RunnaLive */,
 				4A1D00000000000000000025 /* RunnaNotificationService */,
+				4A1D00000000000000000035 /* RunnaTests */,
 			);
 		};
 /* End PBXProject section */
@@ -250,6 +300,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		4A1D00000000000000000024 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4A1D00000000000000000034 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -280,6 +337,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4A1D00000000000000000033 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -292,6 +356,11 @@
 			isa = PBXTargetDependency;
 			target = 4A1D00000000000000000025 /* RunnaNotificationService */;
 			targetProxy = 4A1D0000000000000000002B /* PBXContainerItemProxy */;
+		};
+		4A1D00000000000000000039 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4A1D00000000000000000006 /* Runna */;
+			targetProxy = 4A1D0000000000000000003A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -589,6 +658,42 @@
 			};
 			name = Release;
 		};
+		4A1D00000000000000000037 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jpoves.runnaio.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runna.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runna";
+			};
+			name = Debug;
+		};
+		4A1D00000000000000000038 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jpoves.runnaio.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runna.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runna";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -624,6 +729,15 @@
 			buildConfigurations = (
 				4A1D00000000000000000027 /* Debug */,
 				4A1D00000000000000000028 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4A1D00000000000000000036 /* Build configuration list for PBXNativeTarget "RunnaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4A1D00000000000000000037 /* Debug */,
+				4A1D00000000000000000038 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
