@@ -97,7 +97,7 @@ async function migrateColors() {
   }
 
   const client = createClient({
-    url: process.env.DATABASE_URL || 'libsql://runna-io-jpoves0.aws-eu-west-1.turso.io',
+    url: process.env.DATABASE_URL,
     authToken: process.env.TURSO_AUTH_TOKEN,
   });
 
