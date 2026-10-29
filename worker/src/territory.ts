@@ -190,14 +190,20 @@ function metersBetween(a: [number, number], b: [number, number]): number {
  * run stays near home.
  */
 export function hidePrivateEnds(coords: Array<[number, number]>, radius: number = PRIVATE_ZONE_RADIUS_M): Array<[number, number]> {
-  if (coords.length < 2) return [];
+  const range = visibleRange(coords, radius);
+  return range ? coords.slice(range[0], range[1] + 1) : [];
+}
+
+/** [first, last] indices of the points other people may see, or null when none (see hidePrivateEnds). */
+export function visibleRange(coords: Array<[number, number]>, radius: number = PRIVATE_ZONE_RADIUS_M): [number, number] | null {
+  if (coords.length < 2) return null;
   const start = coords[0];
   const end = coords[coords.length - 1];
   let first = 0;
   while (first < coords.length && metersBetween(coords[first], start) < radius) first++;
   let last = coords.length - 1;
   while (last >= first && metersBetween(coords[last], end) < radius) last--;
-  return last - first >= 1 ? coords.slice(first, last + 1) : [];
+  return last - first >= 1 ? [first, last] : null;
 }
 
 // ─── Anti-cheat ──────────────────────────────────────────────────────────────
@@ -209,7 +215,52 @@ const MIN_CHECKED_DISTANCE_M = 1000;
 /** Moving time can't exceed the time between start and end (slack for clock differences). */
 const ELAPSED_SLACK_S = 300;
 
-export type ImplausibleRunReason = 'too_fast' | 'invalid_duration';
+/** With the time of each point: no stretch this long may go faster than MAX_SEGMENT_SPEED_KMH. */
+const SEGMENT_CHECK_M = 400;
+/** A bike section inside a "run" (a sprint doesn't hold this over 400 m). */
+export const MAX_SEGMENT_SPEED_KMH = 30;
+
+export type ImplausibleRunReason = 'too_fast' | 'invalid_duration' | 'too_fast_segment';
+
+/** Parses a JSON array of numbers (or nulls) stored in a text column, or passes an array through. */
+export function parseNumberArray(value: unknown): Array<number | null> | null {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  if (!Array.isArray(parsed)) return null;
+  return parsed.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
+}
+
+/**
+ * Fastest stretch of at least SEGMENT_CHECK_M, in km/h, given the time (s) of each point; null when the
+ * times can't be used (missing, wrong length, not increasing).
+ */
+export function fastestStretchKmh(coords: Array<[number, number]>, times: Array<number | null> | null): number | null {
+  if (!times || times.length !== coords.length || coords.length < 2) return null;
+  const cumulative: number[] = [0];
+  for (let i = 1; i < coords.length; i++) {
+    const [lat1, lng1] = coords[i - 1];
+    const [lat2, lng2] = coords[i];
+    const step = [lat1, lng1, lat2, lng2].every(Number.isFinite)
+      ? turf.distance([lng1, lat1], [lng2, lat2], { units: 'meters' })
+      : 0;
+    cumulative.push(cumulative[i - 1] + step);
+  }
+  let fastest = 0;
+  let j = 0;
+  for (let i = 0; i < coords.length; i++) {
+    if (j < i) j = i;
+    while (j < coords.length - 1 && cumulative[j] - cumulative[i] < SEGMENT_CHECK_M) j++;
+    if (cumulative[j] - cumulative[i] < SEGMENT_CHECK_M) break;
+    const t1 = times[i];
+    const t2 = times[j];
+    if (t1 == null || t2 == null || t2 <= t1) continue;
+    const kmh = ((cumulative[j] - cumulative[i]) / (t2 - t1)) * 3.6;
+    if (kmh > fastest) fastest = kmh;
+  }
+  return fastest;
+}
 
 export interface RunPlausibility {
   ok: boolean;
@@ -244,6 +295,8 @@ export function checkRunPlausibility(run: {
   startedAt?: string | null;
   completedAt?: string | null;
   coordinates?: Array<[number, number]> | null;
+  /** Seconds since the start of each point (JSON or array), when known. */
+  pointTimes?: unknown;
 }): RunPlausibility {
   const trackLength = run.coordinates && run.coordinates.length > 1 ? pathLengthMeters(run.coordinates) : 0;
   const distance = Math.max(Number(run.distance) || 0, trackLength);
@@ -268,6 +321,16 @@ export function checkRunPlausibility(run: {
   }
 
   const speedKmh = (distance / 1000) / (duration / 3600);
+  // A fast stretch (by bike, by car) inside an otherwise plausible run
+  if (run.coordinates && run.coordinates.length > 1) {
+    const fastest = fastestStretchKmh(run.coordinates, parseNumberArray(run.pointTimes));
+    if (fastest !== null && fastest > MAX_SEGMENT_SPEED_KMH) {
+      return {
+        ok: false, reason: 'too_fast_segment', speedKmh: fastest,
+        message: `Hay un tramo a ${fastest.toFixed(0)} km/h: es demasiado rápido para correr, así que la carrera no cuenta para el territorio. ¿Ibas en bici o en coche en algún momento?`,
+      };
+    }
+  }
   if (speedKmh > MAX_RUN_SPEED_KMH) {
     return {
       ok: false, reason: 'too_fast', speedKmh,

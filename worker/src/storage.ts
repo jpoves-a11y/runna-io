@@ -106,7 +106,7 @@ import {
 } from '../../shared/schema';
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
-import { cleanGeometry, geometryBbox, hidePrivateEnds, MIN_TERRITORY_PIECE_M2 } from './territory';
+import { cleanGeometry, geometryBbox, hidePrivateEnds, parseNumberArray, MIN_TERRITORY_PIECE_M2 } from './territory';
 
 /** Fortification layers kept per zone (a new run there renews the oldest). */
 export const MAX_FORTIFICATION_LAYERS = 3;
@@ -273,6 +273,12 @@ export class WorkerStorage {
     try {
       await this.db.run(sql`ALTER TABLE routes ADD COLUMN client_run_id TEXT`);
     } catch (_) { /* column already exists */ }
+    // Time and altitude of each point of a run
+    for (const column of ['point_times', 'altitudes']) {
+      try {
+        await this.db.run(sql.raw(`ALTER TABLE routes ADD COLUMN ${column} TEXT`));
+      } catch (_) { /* column already exists */ }
+    }
     // Territory bounding boxes (filled in lazily for older rows, see getTerritoriesForConquest)
     for (const column of ['bbox_min_lng', 'bbox_min_lat', 'bbox_max_lng', 'bbox_max_lat']) {
       try {
@@ -842,6 +848,9 @@ export class WorkerStorage {
         return {
           ...route,
           coordinates: parsedCoordinates,
+          // Arrays parallel to the coordinates (null for runs without them)
+          pointTimes: parseNumberArray(route.pointTimes) as any,
+          altitudes: parseNumberArray(route.altitudes) as any,
           territory: territory || undefined,
           ranTogetherWithUsers,
         };

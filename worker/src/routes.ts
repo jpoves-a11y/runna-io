@@ -45,6 +45,7 @@ import {
   geometryBbox,
   cleanGeometry,
   hidePrivateEnds,
+  visibleRange,
   type ConquestVictimInfo,
 } from './territory';
 
@@ -2546,6 +2547,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
       delete body.source;
 
+      // Time and altitude of each point (arrays parallel to the coordinates), kept only when they match
+      const pointCount = Array.isArray(body.coordinates) ? body.coordinates.length : -1;
+      for (const key of ['pointTimes', 'altitudes']) {
+        const values = body[key];
+        if (Array.isArray(values) && values.length === pointCount && values.every((v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v)))) {
+          body[key] = JSON.stringify(values.map((v: number | null) => (v === null ? null : Math.round(v * 10) / 10)));
+        } else {
+          delete body[key];
+        }
+      }
+
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
         body.coordinates = JSON.stringify(body.coordinates);
@@ -3575,7 +3587,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (userId !== viewerId) {
         return c.json(routes.map((route: any) => {
           const coords = Array.isArray(route.coordinates) ? route.coordinates : [];
-          return { ...route, coordinates: hidePrivateEnds(coords) };
+          const range = visibleRange(coords);
+          const slice = (values: unknown) => (Array.isArray(values) && range ? values.slice(range[0], range[1] + 1) : null);
+          return {
+            ...route,
+            coordinates: range ? coords.slice(range[0], range[1] + 1) : [],
+            pointTimes: slice(route.pointTimes),
+            altitudes: slice(route.altitudes),
+          };
         }));
       }
       return c.json(routes);

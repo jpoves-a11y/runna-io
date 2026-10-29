@@ -334,5 +334,58 @@ check("feed: friend's run without the stretch near home", !!aliceCard && aliceCa
 check('lists of everyone need a session', (await call('GET', '/api/leaderboard')).status === 401
   && (await call('GET', '/api/territories')).status === 401 && (await call('GET', '/api/territories/fortifications')).status === 401);
 
+// 14. Time and altitude of each point: stored, trimmed with the track for friends, checked for bike stretches
+{
+  const points = square(10000, 0, 400);
+  const times = points.map((_, i) => i * 3.3); // ~3 m/s
+  const altitudes = points.map((_, i) => 200 + Math.sin(i / 10) * 5);
+  const start = new Date(Date.now() - 30 * 60 * 1000);
+  const distance = lengthMeters(points);
+  const up = await call('POST', '/api/routes', {
+    token: alice.token,
+    body: {
+      name: 'Con tiempos', coordinates: points, distance, duration: Math.round(times.at(-1)),
+      startedAt: start.toISOString(), completedAt: new Date(start.getTime() + times.at(-1) * 1000).toISOString(),
+      clientRunId: `times-${stamp}`, pointTimes: times, altitudes,
+    },
+  });
+  await flush();
+  const mine = (await call('GET', `/api/routes/${alice.id}`, { token: alice.token })).data.find((r) => r.id === up.data.route.id);
+  check('point times and altitudes stored', mine && mine.pointTimes?.length === points.length && mine.altitudes?.length === points.length
+    && Math.abs(mine.pointTimes[10] - times[10]) < 0.11, mine && { t: mine.pointTimes?.length, a: mine.altitudes?.length });
+  const friendsView = (await call('GET', `/api/routes/${alice.id}`, { token: bob.token })).data.find((r) => r.id === up.data.route.id);
+  check("friend's view: times trimmed with the track", friendsView && friendsView.pointTimes.length === friendsView.coordinates.length
+    && friendsView.coordinates.length < points.length, friendsView && { c: friendsView.coordinates.length, t: friendsView.pointTimes.length });
+
+  // 4 km running at 3 m/s with 1 km by bike at 11 m/s (40 km/h): plausible average, impossible stretch
+  const track = [];
+  const trackTimes = [];
+  let t = 0;
+  for (let i = 0; i <= 500; i++) {
+    track.push([LAT0 + (6000 + i * 10) * M_LAT, -0.89 + 6000 * M_LNG]);
+    trackTimes.push(t);
+    t += i >= 200 && i < 300 ? 10 / 11 : 10 / 3;
+  }
+  const bikeStart = new Date(Date.now() - 40 * 60 * 1000);
+  const bike = await call('POST', '/api/routes', {
+    token: alice.token,
+    body: {
+      name: 'Con bici', coordinates: track, distance: 5000, duration: Math.round(t),
+      startedAt: bikeStart.toISOString(), completedAt: new Date(bikeStart.getTime() + t * 1000).toISOString(),
+      clientRunId: `bike-${stamp}`, pointTimes: trackTimes,
+    },
+  });
+  check('a bike stretch inside a run is refused', bike.status === 422 && bike.data.reason === 'too_fast_segment', bike);
+  const noTimes = await call('POST', '/api/routes', {
+    token: alice.token,
+    body: {
+      name: 'Sin tiempos', coordinates: track, distance: 5000, duration: Math.round(t),
+      startedAt: bikeStart.toISOString(), completedAt: new Date(bikeStart.getTime() + t * 1000).toISOString(),
+      clientRunId: `notimes-${stamp}`,
+    },
+  });
+  check('same run without times: only the average is checked', noTimes.status === 200 || noTimes.status === 201, noTimes.status);
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);
