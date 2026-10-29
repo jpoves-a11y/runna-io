@@ -282,6 +282,7 @@ final class SessionStore {
         // Assigning an identical user would redraw every screen that shows it
         guard self.user != stored else { return }
         self.user = stored
+        WidgetSync.update(user: stored)
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: cachedUserKey)
         }
@@ -320,6 +321,7 @@ final class SessionStore {
         // otherwise the device owner's workouts would be uploaded to it.
         HealthImporter.shared.autoImport = false
         HealthImporter.shared.saveRuns = false
+        WidgetSync.clear()
         AppRouter.shared.reset()
         PushManager.shared.clearDelivered()
     }

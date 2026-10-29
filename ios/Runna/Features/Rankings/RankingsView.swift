@@ -312,6 +312,7 @@ final class RankingsModel {
         }
         if let loaded = await weeklyResult {
             withAnimation(.snappy) { weekly = loaded.entries }
+            WidgetSync.update(weekly: loaded, myId: userId)
         }
         await competitionRefresh
         var board: CompetitionLeaderboardResponse? = await competitionBoard

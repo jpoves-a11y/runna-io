@@ -440,6 +440,7 @@ struct MapScreen: View {
             syncTracker()
         }
         await session.refreshUser(force: force)
+        await WidgetSync.refresh(userId: user.id)
         await inbox
         await presentAutomaticDialogs()
         // The other tabs' data, once per session, at low priority

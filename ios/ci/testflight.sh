@@ -41,13 +41,16 @@ xcodebuild archive \
 
 echo "== Entitlements (ad-hoc signature, inside out)"
 APP="$WORK_DIR/Runna.xcarchive/Products/Applications/Runna.app"
+# Xcode expands $(AppIdentifierPrefix) (keychain sharing with the widget) when it signs; here we do it
+expand_entitlements() { sed "s/\$(AppIdentifierPrefix)/$APPLE_TEAM_ID./g" "$1" > "$2"; }
 # TestFlight and App Store builds use the production APNs environment
-cp Config/Runna.entitlements "$WORK_DIR/Runna.entitlements"
+expand_entitlements Config/Runna.entitlements "$WORK_DIR/Runna.entitlements"
 /usr/libexec/PlistBuddy -c "Set :aps-environment production" "$WORK_DIR/Runna.entitlements"
 for appex in "$APP"/PlugIns/*.appex; do
   name="$(basename "$appex" .appex)"
   if [ -f "Config/$name.entitlements" ]; then
-    codesign --force --sign - --timestamp=none --entitlements "Config/$name.entitlements" "$appex"
+    expand_entitlements "Config/$name.entitlements" "$WORK_DIR/$name.entitlements"
+    codesign --force --sign - --timestamp=none --entitlements "$WORK_DIR/$name.entitlements" "$appex"
   else
     codesign --force --sign - --timestamp=none "$appex"
   fi
@@ -117,6 +120,8 @@ for bundle in "$APP" "$APP"/PlugIns/*.appex; do
 done
 check "$APP" "$WORK_DIR/Runna.app.ent.plist" aps-environment production
 check "$APP" "$WORK_DIR/Runna.app.ent.plist" com.apple.developer.healthkit true
+check "$APP" "$WORK_DIR/Runna.app.ent.plist" keychain-access-groups:1 "$APPLE_TEAM_ID.com.jpoves.runnaio.shared"
+check "$APP/PlugIns/RunnaLive.appex" "$WORK_DIR/RunnaLive.appex.ent.plist" keychain-access-groups:0 "$APPLE_TEAM_ID.com.jpoves.runnaio.shared"
 [ "$fail" = 0 ] || exit 1
 
 if [ "${SKIP_UPLOAD:-0}" = 1 ]; then

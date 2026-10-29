@@ -489,6 +489,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = Config/RunnaLive.entitlements;
 				INFOPLIST_FILE = "Config/RunnaLive-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Runna.io";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -515,6 +516,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
+				CODE_SIGN_ENTITLEMENTS = Config/RunnaLive.entitlements;
 				INFOPLIST_FILE = "Config/RunnaLive-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Runna.io";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
