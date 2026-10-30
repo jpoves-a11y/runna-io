@@ -401,11 +401,16 @@ final class MapModel {
     func zones(crossedBy route: RunRoute) -> [TerritoryShape] {
         let points = MapGeometry.simplified(route.locations, maxPoints: 300)
         guard !points.isEmpty else { return [] }
+        let routeBox = MKPolyline(coordinates: points, count: points.count).boundingMapRect
         return shapes.filter { shape in
             guard shape.userId == route.userId, let outer = shape.rings.first else { return false }
+            // Bounding boxes first: the point-in-polygon tests are the slow part
+            let box = shape.polygon.boundingMapRect
+            guard box.intersects(routeBox) else { return false }
             let holes = shape.rings.dropFirst()
             return points.contains { point in
-                Self.contains(outer, point) && !holes.contains { Self.contains($0, point) }
+                box.contains(MKMapPoint(point))
+                    && Self.contains(outer, point) && !holes.contains { Self.contains($0, point) }
             }
         }
     }

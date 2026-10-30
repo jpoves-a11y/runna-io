@@ -295,12 +295,57 @@ export class WorkerStorage {
    */
   ensureSchemaUpgrades(): Promise<void> {
     if (!WorkerStorage.schemaUpgrades) {
-      WorkerStorage.schemaUpgrades = this.applySchemaUpgrades().catch((error) => {
+      WorkerStorage.schemaUpgrades = this.upgradeSchemaOnce().catch((error) => {
         WorkerStorage.schemaUpgrades = null; // retry on the next request
         console.error('[SCHEMA] Upgrade failed:', error);
       });
     }
     return WorkerStorage.schemaUpgrades;
+  }
+
+  /**
+   * Fingerprint of the code that creates tables, columns and indexes at runtime: a deploy that changes
+   * any of it applies them again.
+   */
+  private static schemaFingerprint(): string {
+    const source = [
+      WorkerStorage.prototype['applySchemaUpgrades'],
+      WorkerStorage.prototype['ensureCompetitionTables'],
+      WorkerStorage.prototype['applyReadPathIndexes'],
+    ].map((method) => String(method)).join('\n');
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < source.length; index++) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return `${hash.toString(16)}-${source.length}`;
+  }
+
+  /**
+   * The upgrades, the competition tables and the read-path indexes are ~40 statements, each one a
+   * subrequest to the database: run on every cold isolate they left too few of Cloudflare's 50
+   * subrequests per invocation for the request itself ("Too many subrequests", e.g. the widgets).
+   * They now run once per deploy; afterwards a cold isolate only reads the stored fingerprint.
+   */
+  private async upgradeSchemaOnce(): Promise<void> {
+    const fingerprint = WorkerStorage.schemaFingerprint();
+    try {
+      const rows = await this.db.all<{ value: string }>(sql`SELECT value FROM runtime_meta WHERE key = 'schema'`);
+      if (rows[0]?.value === fingerprint) {
+        WorkerStorage.competitionTablesEnsured = true;
+        WorkerStorage.indexesEnsured = Promise.resolve();
+        return;
+      }
+    } catch (_) { /* runtime_meta doesn't exist yet */ }
+
+    await this.applySchemaUpgrades();
+    await this.ensureCompetitionTables();
+    await this.ensureReadPathIndexes();
+    // Both swallow their errors: only remember the schema when everything was applied
+    if (!WorkerStorage.competitionTablesEnsured || !WorkerStorage.indexesEnsured) return;
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    await this.db.run(sql`INSERT INTO runtime_meta (key, value) VALUES ('schema', ${fingerprint})
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
   }
 
   private async applySchemaUpgrades(): Promise<void> {
