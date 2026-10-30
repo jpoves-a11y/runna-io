@@ -113,4 +113,6 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 
 ## Compilación automática
 
-`.github/workflows/ios.yml` se lanza a mano (Actions → iOS build → Run workflow), porque en repositorios privados los minutos de Mac cuentan 10 veces: compila la app (simulador y dispositivo, sin firmar), la abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`) y hace una captura de cada pestaña. Las capturas se descargan desde la ejecución, en "Artifacts".
+`.github/workflows/ios.yml` se lanza a mano (Actions → iOS build → Run workflow), porque en repositorios privados los minutos de Mac cuentan 10 veces: compila la app (simulador y dispositivo, sin firmar), la abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`) y hace una captura de cada pestaña. Las capturas se descargan desde la ejecución, en "Artifacts" (y quedan en la rama `ci-screenshots`).
+
+Los widgets también salen en las capturas (9 a 11): en las compilaciones DEBUG, `runnaio://widgets/<página>` abre una galería que dibuja cada widget a su tamaño real con los datos del usuario, con las mismas vistas y el mismo mapa que la extensión (`ios/Shared/WidgetViews.swift` y `WidgetData.swift`). Es la forma de ver un cambio en los widgets sin un iPhone.

@@ -152,6 +152,8 @@ Cada carrera se procesa en la cola `territory-processing` (`worker/src/queue-con
 - Competición: puntuación = territorio real + `competition_stats.bonus_area` (+50 % del área nueva, menos bombas). `users.total_area` es siempre el territorio real.
 - Fortificaciones: máximo 3 capas por zona (correr de nuevo renueva la más antigua) y caducan a los 14 días.
 - Borrar una carrera quita solo el área que cubría únicamente esa carrera; lo que otros te robaron no vuelve.
+- Hacerse amigos reconstruye el territorio del grupo por orden cronológico, pero solo reparte la tierra que el grupo tiene ahora (lo desgastado o lo que te quitó alguien de fuera no vuelve); durante una competición no hace nada.
+- El widget de mapa (`/api/widget/summary`, `worker/src/widget.ts`) muestra el lugar donde más corres: las zonas a menos de 25 km de la mayor de un lugar forman ese lugar, y gana el de más km corridos (por dónde empiezan las carreras: los últimos 90 días cuentan entero, las anteriores un 25 %). El resto se resume como "+N lugares más".
 
 Prueba end-to-end con carreras sintéticas (robo, duplicados, borrado, competición, fortificaciones, poderes):
 
