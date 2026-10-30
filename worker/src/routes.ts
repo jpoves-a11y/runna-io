@@ -7778,44 +7778,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const storage = new WorkerStorage(getDb(c.env));
       const me = c.get('authUserId');
       const userIds = [me, ...(await storage.getFriendIds(me))];
-      const records = await storage.getFortificationsOfUsers(userIds);
-      const ttlMs = FORTIFICATION_TTL_DAYS * 24 * 3600 * 1000;
-      const expiry = (createdAt: string) => {
-        const created = Date.parse(createdAt.includes('T') ? createdAt : `${createdAt.replace(' ', 'T')}Z`);
-        return new Date((Number.isFinite(created) ? created : Date.now()) + ttlMs).toISOString();
-      };
-      const byUser = new Map<string, typeof records>();
-      for (const record of records) {
-        if (!byUser.has(record.userId)) byUser.set(record.userId, []);
-        byUser.get(record.userId)!.push(record);
-      }
+      // Castle zones are cached per user while their castles don't change (see derived.ts)
+      const { castleZonesOfUsers } = await import('./derived');
+      const zonesByUser = await castleZonesOfUsers(storage, userIds);
       const castles: any[] = [];
       const fortifications: any[] = [];
-      for (const [uid, userRecords] of byUser) {
-        const parsed: CastleRecord[] = [];
-        for (const record of userRecords) {
-          try { parsed.push({ id: record.id, geometry: JSON.parse(record.geometry), createdAt: record.createdAt }); } catch (_) {}
-        }
-        for (const zone of groupCastleZones(parsed)) {
-          if (!zone.geometry) continue;
-          const center = castleMarkerPoint(zone.geometry);
-          castles.push({
-            id: zone.records[0].id,
-            userId: uid,
-            layers: Math.min(zone.records.length, MAX_FORTIFICATION_LAYERS),
-            lat: center?.[0] ?? null,
-            lng: center?.[1] ?? null,
-            geometry: zone.geometry,
-            area: turf.area(zone.geometry),
-            // The oldest castle falls first; the zone is unfortified when the newest expires
-            nextExpiryAt: expiry(zone.records[0].createdAt),
-            expiresAt: expiry(zone.records[zone.records.length - 1].createdAt),
-          });
-        }
+      for (const [uid, zones] of zonesByUser) {
+        for (const zone of zones) castles.push({ ...zone, userId: uid });
         fortifications.push({
           userId: uid,
-          layers: parsed.length,
-          records: parsed.map((record) => ({ geometry: record.geometry, area: turf.area(record.geometry) })),
+          layers: zones.reduce((sum, zone) => sum + zone.layers, 0),
+          records: zones.map((zone) => ({ geometry: zone.geometry, area: zone.area })),
         });
       }
       return c.json({ castles, fortifications });

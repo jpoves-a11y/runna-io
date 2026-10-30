@@ -267,7 +267,12 @@ const forts = await all('select id, created_at from territory_fortifications whe
 check('fortification capped at 3 layers', forts.length <= 3 && forts.length >= 1, forts.length);
 const fortList = await call('GET', '/api/territories/fortifications', { token: alice.token });
 const aliceForts = fortList.data.fortifications?.find((f) => f.userId === alice.id);
-check('fortifications listed', !!aliceForts && aliceForts.records.length === forts.length, fortList.data);
+check('fortifications listed', !!aliceForts && aliceForts.layers === forts.length, fortList.data);
+const aliceZones = (fortList.data.castles ?? []).filter((z) => z.userId === alice.id);
+check('castle zone with its castles', aliceZones.length === 1 && aliceZones[0].layers === forts.length && aliceZones[0].lat !== null, aliceZones);
+const fortListAgain = await call('GET', '/api/territories/fortifications', { token: alice.token });
+check('castle zones served from the cache', JSON.stringify(fortListAgain.data) === JSON.stringify(fortList.data)
+  && !!(await one("select 1 as ok from derived_cache where kind = 'castle-zones-v1' and key = ?", [alice.id])));
 await db.execute({ sql: 'update territory_fortifications set created_at = ? where user_id = ?', args: [new Date(Date.now() - 15 * DAY()).toISOString(), alice.id] });
 const fortListOld = await call('GET', '/api/territories/fortifications', { token: alice.token });
 check('fortifications expire after 14 days', !fortListOld.data.fortifications?.some((f) => f.userId === alice.id), fortListOld.data);

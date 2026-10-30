@@ -5,8 +5,8 @@ import * as turf from '@turf/turf';
 import type { WorkerStorage } from './storage';
 import { madridTime, madridWeekStart } from './cron';
 import { personImage } from './notifications';
-import { castleMarkerPoint, groupCastleZones, type CastleRecord } from './castles';
 import { insidePoint } from './decay';
+import { castleZonesOfUsers } from './derived';
 
 const DAY_MS = 24 * 3600 * 1000;
 /** Most points of the territory sent to the map widget. */
@@ -22,7 +22,15 @@ const parseTime = (value: string) => {
 /** A geometry with at most `maxPoints` vertices (coarser tolerance until it fits). */
 export function lightGeometry(geometry: any, maxPoints = MAX_MAP_POINTS): any | null {
   if (!geometry) return null;
-  const count = (g: any) => JSON.stringify(g.coordinates).split('],[').length;
+  const count = (g: any): number => {
+    let points = 0;
+    const walk = (value: any) => {
+      if (Array.isArray(value) && typeof value[0] === 'number') points++;
+      else if (Array.isArray(value)) value.forEach(walk);
+    };
+    walk(g.coordinates);
+    return points;
+  };
   let current = geometry;
   let tolerance = 0.00003;
   for (let attempt = 0; attempt < 10 && count(current) > maxPoints; attempt++) {
@@ -107,26 +115,10 @@ export async function widgetSummary(storage: WorkerStorage, env: any, userId: st
   const runTimes = runs.map((run) => parseTime(run.startedAt)).filter((t) => t > 0);
   const lastRunAt = runTimes.length ? new Date(Math.max(...runTimes)).toISOString() : null;
 
-  // --- Your territory, castles and wear
-  const territories = await storage.getTerritoriesByUserId(userId);
-  const territory = union(territories.map((t) => {
-    try { return typeof t.geometry === 'string' ? JSON.parse(t.geometry) : t.geometry; } catch { return null; }
-  }));
-  const records: CastleRecord[] = [];
-  for (const record of await storage.getFortificationsOfUsers([userId])) {
-    try { records.push({ id: record.id, geometry: JSON.parse(record.geometry), createdAt: record.createdAt }); } catch { /* skip */ }
-  }
-  const castles = groupCastleZones(records)
-    .map((zone) => {
-      const point = zone.geometry ? castleMarkerPoint(zone.geometry) : null;
-      return point ? { lat: point[0], lng: point[1], layers: Math.min(3, zone.records.length) } : null;
-    })
-    .filter(Boolean);
-  const decay = await storage.getDecayState(userId);
+  // --- Your territory, castles and wear (heavy geometry: cached while they don't change)
   const rest = await storage.getRestMode(userId);
   const resting = !!rest && now >= parseTime(rest.startedAt) && now < parseTime(rest.until);
-  const area = (g: any) => { try { return g ? turf.area(g) : 0; } catch { return 0; } };
-  const box = territory ? turf.bbox(territory) : null;
+  const { defense, map } = await widgetMap(storage, userId, resting);
 
   return {
     generatedAt: new Date(now).toISOString(),
@@ -152,21 +144,57 @@ export async function widgetSummary(storage: WorkerStorage, env: any, userId: st
       dayDistance,
     },
     streakWeeks: weekStreak(runTimes, now),
+    defense: { ...defense, resting },
+    map,
+  };
+}
+
+const WIDGET_MAP_KIND = 'widget-map-v1';
+
+/**
+ * The widgets' map (territory simplified, castles, wear) and defence figures. Uniting and
+ * simplifying the territory and grouping castles is the heavy part of the summary, so the result is
+ * kept in derived_cache until the territory, castles or wear change.
+ */
+async function widgetMap(storage: WorkerStorage, userId: string, resting: boolean) {
+  const signature = `${await storage.getWidgetMapSignature(userId)}|${resting ? 'rest' : ''}`;
+  const cached = (await storage.getDerived(WIDGET_MAP_KIND, new Map([[userId, signature]]))).get(userId);
+  if (cached) return cached as { defense: any; map: any };
+
+  const territories = await storage.getTerritoriesByUserId(userId);
+  const territory = union(territories.map((t) => {
+    try { return typeof t.geometry === 'string' ? JSON.parse(t.geometry) : t.geometry; } catch { return null; }
+  }));
+  const zones = (await castleZonesOfUsers(storage, [userId])).get(userId) ?? [];
+  const castles = zones
+    .filter((zone) => zone.lat !== null && zone.lng !== null)
+    .map((zone) => ({ lat: zone.lat, lng: zone.lng, layers: zone.layers }));
+  const decay = resting ? null : await storage.getDecayState(userId);
+  const area = (g: any) => { try { return g ? turf.area(g) : 0; } catch { return 0; } };
+  let box: number[] | null = null;
+  try { box = territory ? turf.bbox(territory) : null; } catch { box = null; }
+
+  const result = {
     defense: {
       castles: castles.length,
-      castleLayers: castles.reduce((sum: number, c: any) => sum + c.layers, 0),
-      atRiskArea: resting ? 0 : area(decay?.atRisk),
-      atRisk: resting ? null : insidePoint(decay?.atRisk ?? null),
-      weakArea: resting ? 0 : area(decay?.weak),
-      lostToday: resting ? 0 : (decay?.lostToday ?? 0),
-      resting,
+      castleLayers: castles.reduce((sum, castle) => sum + castle.layers, 0),
+      atRiskArea: area(decay?.atRisk),
+      atRisk: insidePoint(decay?.atRisk ?? null),
+      weakArea: area(decay?.weak),
+      lostToday: decay?.lostToday ?? 0,
     },
     map: {
       territory: lightGeometry(territory),
-      weak: resting ? null : lightGeometry(decay?.weak ?? null, 150),
-      atRisk: resting ? null : lightGeometry(decay?.atRisk ?? null, 150),
+      weak: lightGeometry(decay?.weak ?? null, 150),
+      atRisk: lightGeometry(decay?.atRisk ?? null, 150),
       castles,
       bbox: box,
     },
   };
+  try {
+    await storage.saveDerived(WIDGET_MAP_KIND, [{ key: userId, signature, payload: result }]);
+  } catch (error) {
+    console.error('[WIDGET] Could not cache the map:', error);
+  }
+  return result;
 }

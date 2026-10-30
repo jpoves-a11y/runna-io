@@ -31,8 +31,28 @@ enum WidgetDataLoader {
         }
     }
 
-    /// The latest summary: from the server when the cache is old, else the cache.
+    /// The latest summary: from the server when the cache is old, else the cache. The widgets refresh
+    /// together: they share one request instead of asking the server four times at once.
     static func load() async -> Outcome {
+        await inflight.run { await loadNow() }
+    }
+
+    private static let inflight = Inflight()
+
+    private actor Inflight {
+        private var task: Task<Outcome, Never>?
+
+        func run(_ work: @escaping @Sendable () async -> Outcome) async -> Outcome {
+            if let task { return await task.value }
+            let task = Task { await work() }
+            self.task = task
+            let outcome = await task.value
+            self.task = nil
+            return outcome
+        }
+    }
+
+    private static func loadNow() async -> Outcome {
         guard let credentials = WidgetSnapshotStore.loadCredentials() else {
             return .noSession(reason: WidgetSnapshotStore.problem)
         }
@@ -41,7 +61,14 @@ enum WidgetDataLoader {
         if let cached, let generated = WidgetDates.parse(cached.generatedAt), Date().timeIntervalSince(generated) < freshFor {
             return .loaded(cached)
         }
-        switch await fetch(credentials) {
+        // A busy server (503) or a dropped connection: try again twice before giving up
+        var result = await fetch(credentials)
+        for delay in [2.0, 6.0] {
+            guard case .failure(.failed) = result else { break }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            result = await fetch(credentials)
+        }
+        switch result {
         case .success(let data):
             do {
                 let fresh = try JSONDecoder().decode(WidgetSummary.self, from: data)

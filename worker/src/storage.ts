@@ -406,6 +406,16 @@ export class WorkerStorage {
       lost_total REAL NOT NULL DEFAULT 0,
       updated_at TEXT
     )`);
+    // Results of heavy geometry work (castle zones, the widgets' map), reused while their inputs
+    // don't change: recomputing them on every request went over the Worker's CPU limit
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS derived_cache (
+      kind TEXT NOT NULL,
+      key TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (kind, key)
+    )`);
     // Rest mode: the decay clock stops (REST_DAYS_PER_YEAR days a year)
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS rest_mode (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -4554,6 +4564,68 @@ export class WorkerStorage {
         AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
       ORDER BY julianday(created_at) ASC`);
     return rows.map((row) => ({ id: row.id, userId: row.user_id, geometry: row.geometry, area: row.area, createdAt: row.created_at }));
+  }
+
+  /**
+   * What the castles of each user depend on (ids and dates of the castles in force), in one query:
+   * a cached result for that user is still valid while it doesn't change. Users without castles are absent.
+   */
+  async getFortificationSignatures(userIds: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (userIds.length === 0) return result;
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ user_id: string; ids: string }>(sql`
+      SELECT user_id, group_concat(id || '@' || created_at, ',') AS ids FROM (
+        SELECT user_id, id, created_at FROM territory_fortifications
+        WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})
+          AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
+        ORDER BY id
+      ) GROUP BY user_id`);
+    for (const row of rows) result.set(row.user_id, String(row.ids));
+    return result;
+  }
+
+  /**
+   * What the widgets' map of a user depends on: their territory (rows, area, last change), castles
+   * and wear. One query.
+   */
+  async getWidgetMapSignature(userId: string): Promise<string> {
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ t: string; f: string; d: string }>(sql`
+      SELECT
+        (SELECT count(*) || ':' || round(coalesce(sum(area), 0), 1) || ':' || coalesce(max(conquered_at), '')
+           FROM territories WHERE user_id = ${userId}) AS t,
+        (SELECT count(*) || ':' || coalesce(min(created_at), '') || ':' || coalesce(max(created_at), '')
+           FROM territory_fortifications WHERE user_id = ${userId}
+             AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})) AS f,
+        (SELECT coalesce(max(updated_at), '') FROM territory_decay WHERE user_id = ${userId}) AS d`);
+    const row = rows[0];
+    return row ? `${row.t}|${row.f}|${row.d}` : '';
+  }
+
+  /** Cached results of `kind` for these keys whose signature still matches. */
+  async getDerived(kind: string, signatures: Map<string, string>): Promise<Map<string, any>> {
+    const result = new Map<string, any>();
+    if (signatures.size === 0) return result;
+    const rows = await this.db.all<{ key: string; signature: string; payload: string }>(sql`
+      SELECT key, signature, payload FROM derived_cache
+      WHERE kind = ${kind} AND key IN (${sql.join([...signatures.keys()].map((key) => sql`${key}`), sql`, `)})`);
+    for (const row of rows) {
+      if (row.signature !== signatures.get(row.key)) continue;
+      try { result.set(row.key, JSON.parse(row.payload)); } catch (_) { /* recomputed */ }
+    }
+    return result;
+  }
+
+  /** Stores results of `kind` (one round trip). */
+  async saveDerived(kind: string, entries: Array<{ key: string; signature: string; payload: any }>): Promise<void> {
+    if (entries.length === 0) return;
+    const now = new Date().toISOString();
+    await this.db.batch(entries.map((entry) => this.db.run(sql`
+      INSERT INTO derived_cache (kind, key, signature, payload, updated_at)
+      VALUES (${kind}, ${entry.key}, ${entry.signature}, ${JSON.stringify(entry.payload)}, ${now})
+      ON CONFLICT(kind, key) DO UPDATE SET signature = excluded.signature, payload = excluded.payload,
+        updated_at = excluded.updated_at`)) as any);
   }
 
   /** Fortifications still in force (younger than FORTIFICATION_TTL_DAYS). */
