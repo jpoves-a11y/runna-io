@@ -4373,6 +4373,19 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
+  // Everything the iOS widgets show (league, your week, streak, zones to defend, light territory map)
+  app.get('/api/widget/summary', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const { widgetSummary } = await import('./widget');
+      const summary = await widgetSummary(storage, c.env, c.get('authUserId'));
+      if (!summary) return c.json({ error: 'Usuario no encontrado' }, 404);
+      return c.json(summary);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   // This week's ranking among friends (Monday 00:00 Madrid onwards): territory conquered, km and runs.
   app.get('/api/leaderboard/friends/:userId/weekly', requireSelf('userId'), async (c) => {
     try {

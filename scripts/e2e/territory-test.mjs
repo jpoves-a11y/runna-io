@@ -508,5 +508,18 @@ await db.execute({ sql: "update competitions set status = 'finished', ends_at = 
     { user: await userArea(alice.id), territory: await territoryArea(alice.id) });
 }
 
+// 19. Widget summary: league, your week, castles and map in one request
+{
+  const w = await call('GET', '/api/widget/summary', { token: alice.token });
+  const d = w.data;
+  check('widget summary answers', w.status === 200 && d.me?.id === alice.id && Array.isArray(d.week?.entries), w.status);
+  check('widget: league with you marked and colours', d.week.entries.some((e) => e.isMe && e.name === 'Tú') && d.week.entries.every((e) => e.color && e.rank >= 1), d.week.entries);
+  check('widget: your week has 7 days and adds up', d.week.days.length === 7 && Math.abs(d.week.days.reduce((a, b) => a + b, 0) - d.week.myArea) < 1, { days: d.week.days, myArea: d.week.myArea });
+  check('widget: streak and last run', d.streakWeeks >= 1 && !!d.me.lastRunAt, { streak: d.streakWeeks, last: d.me.lastRunAt });
+  const points = d.map.territory ? JSON.stringify(d.map.territory.coordinates).split('],[').length : 0;
+  check('widget: light territory for the map', points > 3 && points <= 420 && d.map.bbox?.length === 4, points);
+  check('widget: not without a session', (await call('GET', '/api/widget/summary')).status === 401);
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

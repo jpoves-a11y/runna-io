@@ -2624,7 +2624,7 @@ export class WorkerStorage {
    * This week's figures of the user and their friends: territory conquered (new area of each run),
    * distance and number of runs since `since` (ISO date), best first.
    */
-  async getWeeklyFriendsRanking(userId: string, since: string): Promise<Array<UserWithStats & {
+  async getWeeklyFriendsRanking(userId: string, since: string, until?: string): Promise<Array<UserWithStats & {
     weekArea: number; weekDistance: number; weekRuns: number;
   }>> {
     const friends = await this.getLeaderboardFriends(userId);
@@ -2641,6 +2641,7 @@ export class WorkerStorage {
       FROM routes r
       WHERE r.user_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
         AND datetime(r.started_at) >= datetime(${since})
+        AND (${until ?? null} IS NULL OR datetime(r.started_at) < datetime(${until ?? null}))
       GROUP BY r.user_id
     `);
     const byUser = new Map(rows.map((row) => [row.user_id, row]));
@@ -4451,6 +4452,18 @@ export class WorkerStorage {
       } catch { /* unreadable track */ }
     }
     return tracks;
+  }
+
+  /** The user's runs since `since` with the new area each one conquered (oldest first). */
+  async getRunsWithAreaSince(userId: string, since: string): Promise<Array<{ startedAt: string; area: number; distance: number }>> {
+    const rows = await this.db.all<{ started_at: string; distance: number; area: number }>(sql`
+      SELECT r.started_at AS started_at, r.distance AS distance,
+             COALESCE((SELECT MAX(COALESCE(fe.new_area, 0)) FROM feed_events fe
+                       WHERE fe.route_id = r.id AND fe.event_type = 'activity'), 0) AS area
+      FROM routes r
+      WHERE r.user_id = ${userId} AND datetime(r.started_at) >= datetime(${since})
+      ORDER BY datetime(r.started_at) ASC`);
+    return rows.map((row) => ({ startedAt: row.started_at, area: Number(row.area) || 0, distance: Number(row.distance) || 0 }));
   }
 
   async getUserIdsWithTerritory(): Promise<string[]> {
