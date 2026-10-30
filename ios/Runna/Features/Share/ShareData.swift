@@ -18,6 +18,8 @@ struct ShareRun {
     let colorHex: String
     /// Territory this run conquered (the zones it passes through); empty when unknown.
     var territories: [TerritoryShape] = []
+    /// Altitude of each point (same count as `coordinates`), for the replay's elevation profile.
+    var altitudes: [Double?]? = nil
 
     var color: Color { Color(hex: colorHex) }
     var uiColor: UIColor { UIColor(widgetHex: colorHex) ?? .systemGreen }

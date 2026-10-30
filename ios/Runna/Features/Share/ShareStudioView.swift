@@ -93,6 +93,7 @@ struct ShareStudioView: View {
                     locations: run.coordinates,
                     color: run.color,
                     territories: run.territories,
+                    altitudes: run.altitudes,
                     title: run.name,
                     autoRecord: true,
                     videoFileName: run.fileBaseName

@@ -14,6 +14,8 @@ struct RouteReplayView: View {
     let locations: [CLLocationCoordinate2D]
     let color: Color
     let territories: [TerritoryShape]
+    /// Altitude of each point (same count as `locations`), for the elevation profile.
+    var altitudes: [Double?]? = nil
     /// Run name, shown on the opening card of the video.
     var title: String = ""
     /// Opens "Compartir" (cards and video); nil hides the button.
@@ -35,6 +37,7 @@ struct RouteReplayView: View {
     @State private var savedToPhotos = false
     /// Opening / closing cards of the recorded video.
     @State private var card: VideoCard?
+    @State private var profile: ReplayProfile?
 
     enum VideoCard { case opening, closing }
 
@@ -80,10 +83,9 @@ struct RouteReplayView: View {
                 ReplayVideoCard(kind: card, title: title, distance: state.totalDistance, color: color)
                     .transition(.opacity)
                     .allowsHitTesting(false)
-            }
-
-            if state.phase == .loading || (autoRecord && state.phase == .ready && !state.isExporting) {
-                loadingCover
+            } else if state.phase == .loading {
+                // The Runna cover while the map loads (the same one that opens the video)
+                ReplayVideoCard(kind: .opening, title: title, distance: state.totalDistance, color: color, isLoading: true)
                     .transition(.opacity)
             }
         }
@@ -97,6 +99,9 @@ struct RouteReplayView: View {
                 engine.holdAtStart = autoRecord
                 self.engine = engine
             }
+            if profile == nil { profile = ReplayProfile(coordinates: locations, altitudes: altitudes) }
+            // Recording: the cover stays up while the map loads and becomes the video's first frames
+            if autoRecord && exportedVideo == nil { card = .opening }
         }
         .onDisappear {
             engine?.stop()
@@ -143,7 +148,6 @@ struct RouteReplayView: View {
                 return
             }
             state.isExporting = true
-            card = .opening
             try? await Task.sleep(nanoseconds: 1_800_000_000)
             card = nil
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -283,47 +287,13 @@ struct RouteReplayView: View {
     }
 
     private var progressCard: some View {
-        let total = state.totalDistance
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(Format.distance(total * state.progress))
-                    .font(Font.stat(20, weight: .semibold))
-                    .monospacedDigit()
-                Spacer()
-                if state.isExporting {
-                    Text(Format.distance(total))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                } else {
-                    speedPicker
-                }
-            }
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.12))
-                    Capsule().fill(color)
-                        .frame(width: max(6, proxy.size.width * state.progress))
-                }
-            }
-            .frame(height: 6)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .glassSurface(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-    }
-
-    private var loadingCover: some View {
-        ZStack {
-            Color(uiColor: .systemBackground)
-                .ignoresSafeArea()
-            VStack(spacing: DS.Spacing.m) {
-                ProgressView()
-                    .controlSize(.large)
-                Text(autoRecord ? "Preparando el vídeo…" : "Preparando la reproducción…")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
+        ReplayProfileCard(
+            profile: profile ?? ReplayProfile(coordinates: [], altitudes: nil),
+            progress: state.progress,
+            totalDistance: state.totalDistance,
+            color: color
+        ) {
+            if !state.isExporting { speedPicker.environment(\.colorScheme, .dark) }
         }
     }
 }
@@ -334,6 +304,8 @@ private struct ReplayVideoCard: View {
     let title: String
     let distance: Double
     let color: Color
+    /// Shown while the replay loads (not recorded): a small spinner above the mark.
+    var isLoading = false
 
     var body: some View {
         ZStack {
@@ -363,6 +335,11 @@ private struct ReplayVideoCard: View {
                         .opacity(0.6)
                 }
                 Spacer()
+                if isLoading {
+                    ProgressView()
+                        .tint(.white)
+                        .padding(.bottom, 18)
+                }
                 if kind == .opening {
                     ShareWordmark(ink: .white, size: 13)
                         .padding(.bottom, 40)

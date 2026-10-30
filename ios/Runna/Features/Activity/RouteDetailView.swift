@@ -88,7 +88,7 @@ struct RouteDetailView: View {
         }
         .errorAlert($errorMessage)
         .fullScreenCover(isPresented: $showReplay) {
-            RouteReplayView(locations: route.locations, color: lineColor, territories: zones, title: name, shareRun: shareRun)
+            RouteReplayView(locations: route.locations, color: lineColor, territories: zones, altitudes: route.altitudes, title: name, shareRun: shareRun)
         }
         .sheet(isPresented: $showShare, onDismiss: { shareStartsWithVideo = false }) {
             ShareStudioView(run: shareRun, startWithVideo: shareStartsWithVideo)
@@ -105,7 +105,8 @@ struct RouteDetailView: View {
             distance: route.distance,
             duration: route.duration,
             colorHex: color ?? session.user?.color ?? "#16A34A",
-            territories: zones
+            territories: zones,
+            altitudes: route.altitudes
         )
     }
 

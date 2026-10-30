@@ -1,5 +1,6 @@
 import XCTest
 import CoreLocation
+import SwiftUI
 @testable import Runna
 
 final class ShareGeometryTests: XCTestCase {
@@ -48,5 +49,19 @@ final class ShareVideoTimelineTests: XCTestCase {
         XCTAssertEqual(normal.frameCount, Int((normal.total * 30).rounded()))
         XCTAssertGreaterThan(normal.total, 10)
         XCTAssertLessThan(normal.total, 20)
+    }
+}
+
+final class ReplayProfileTests: XCTestCase {
+    func testProfileFollowsAltitudeAndScalesKm() {
+        let route = (0...10).map { TestTracks.point(east: Double($0) * 100, north: 0) }
+        let altitudes: [Double?] = (0...10).map { $0 == 3 ? nil : Double($0) * 10 }
+        let profile = ReplayProfile(coordinates: route, altitudes: altitudes)
+        XCTAssertNotNil(profile.heights)
+        XCTAssertLessThan(profile.altitude(at: 0)!, profile.altitude(at: 1)!)
+        XCTAssertNil(ReplayProfile(coordinates: route, altitudes: nil).heights)
+        XCTAssertEqual(ReplayProfileCard<EmptyView>.step(for: 2.4), 0.5)
+        XCTAssertEqual(ReplayProfileCard<EmptyView>.step(for: 10), 2)
+        XCTAssertEqual(ReplayProfileCard<EmptyView>.label(1.5), "1,5")
     }
 }

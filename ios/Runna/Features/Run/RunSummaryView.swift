@@ -76,7 +76,8 @@ struct RunSummaryView: View {
                         coordinates: run.coordinates,
                         distance: run.distance,
                         duration: run.duration,
-                        colorHex: session.user?.color ?? "#16A34A"
+                        colorHex: session.user?.color ?? "#16A34A",
+                        altitudes: run.altitudes
                     ),
                     conquest: shareConquest
                 )
