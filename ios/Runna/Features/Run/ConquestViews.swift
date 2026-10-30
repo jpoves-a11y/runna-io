@@ -338,8 +338,8 @@ struct TreasuresCard: View {
     }
 }
 
-/// Replays the route: the line grows from start to finish over a few seconds.
-struct RouteReplayView: View {
+/// Compact replay in the summary cards: the line grows from start to finish over a few seconds.
+struct RouteGrowthReplay: View {
     let coordinates: [CLLocationCoordinate2D]
     let color: Color
     var duration: Double = 4

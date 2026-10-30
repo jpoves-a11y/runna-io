@@ -28,7 +28,7 @@ struct RunSummaryView: View {
                     )
                     .padding(.top, DS.Spacing.s)
                     VStack(spacing: DS.Spacing.m) {
-                        RouteReplayView(
+                        RouteGrowthReplay(
                             coordinates: run.coordinates,
                             color: Color.brand,
                             height: 220
