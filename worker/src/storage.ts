@@ -831,6 +831,14 @@ export class WorkerStorage {
       .orderBy(routes.completedAt); // oldest first (ASC)
   }
 
+  /** Distance and duration of every route of a user, without the (large) coordinates. */
+  async getRouteStatsByUserId(userId: string): Promise<Array<{ id: string; distance: number; duration: number }>> {
+    return await this.db
+      .select({ id: routes.id, distance: routes.distance, duration: routes.duration })
+      .from(routes)
+      .where(eq(routes.userId, userId));
+  }
+
   async getRoutesByUserIdChronologicalPaginated(userId: string, limit: number, offset: number): Promise<Route[]> {
     return await this.db
       .select()
@@ -2019,6 +2027,15 @@ export class WorkerStorage {
     if (userIds.length === 0) return;
     await this.db.delete(conquestMetrics).where(
       sql`${conquestMetrics.attackerId} IN (${sql.join(userIds.map(id => sql`${id}`), sql`, `)}) OR ${conquestMetrics.defenderId} IN (${sql.join(userIds.map(id => sql`${id}`), sql`, `)})`
+    );
+  }
+
+  /** Deletes the conquest metrics whose attacker and defender are both among `userIds`. */
+  async deleteConquestMetricsWithinUsers(userIds: string[]): Promise<void> {
+    if (userIds.length === 0) return;
+    const ids = sql.join(userIds.map(id => sql`${id}`), sql`, `);
+    await this.db.delete(conquestMetrics).where(
+      sql`${conquestMetrics.attackerId} IN (${ids}) AND ${conquestMetrics.defenderId} IN (${ids})`
     );
   }
 

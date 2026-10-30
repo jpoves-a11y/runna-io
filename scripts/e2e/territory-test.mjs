@@ -588,5 +588,30 @@ await db.execute({ sql: "update competitions set status = 'finished', ends_at = 
   check('widget: fresh after the queue', (await call('GET', '/api/widget/summary', { token: alice.token })).data.mapPending === false);
 }
 
+// 20. A new friendship rebuilds the pair's territory chronologically, but only shares out the land
+// the group holds now: what a third player took (or what wore away) doesn't come back
+{
+  const pia = await register(`pia${stamp}`);
+  const quim = await register(`qui${stamp}`);
+  const rosa = await register(`ros${stamp}`);
+  await befriend(quim, rosa);
+  await run(pia, square(40000, 0, 400));
+  await run(quim, square(40200, 0, 400)); // over Pia's east half: not friends, no theft
+  await run(rosa, square(40400, 0, 400)); // Quim's friend: takes Quim's east half
+  check('friendship: Rosa took Quim\'s east half', await overlapDb(quim.id, rosa.id) < 100 && await metricsCount(rosa.id) === 1);
+  check('friendship: not friends yet, Pia and Quim overlap', near(await overlapDb(pia.id, quim.id), 80_000, 0.1), await overlapDb(pia.id, quim.id));
+
+  await befriend(pia, quim);
+  queued.push({ type: 'reprocess_friend_group', userId: pia.id, friendUserId: quim.id });
+  await flush();
+  check('friendship: the later run keeps the shared zone', await overlapDb(pia.id, quim.id) < 100 && near(await territoryArea(pia.id), 80_000, 0.1),
+    { overlap: await overlapDb(pia.id, quim.id), pia: await territoryArea(pia.id) });
+  check('friendship: what Rosa took is not given back to Quim', await overlapDb(quim.id, rosa.id) < 100 && near(await territoryArea(quim.id), 80_000, 0.1),
+    { overlap: await overlapDb(quim.id, rosa.id), quim: await territoryArea(quim.id) });
+  check('friendship: Rosa keeps her theft metric, Quim\'s on Pia is added', await metricsCount(rosa.id) === 1 && await metricsCount(quim.id) === 1,
+    { rosa: await metricsCount(rosa.id), quim: await metricsCount(quim.id) });
+  check('friendship: totals match the territories', near(await userArea(pia.id), await territoryArea(pia.id), 0.001) && near(await userArea(quim.id), await territoryArea(quim.id), 0.001));
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

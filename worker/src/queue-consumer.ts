@@ -335,10 +335,18 @@ async function handleReprocessFriendGroup(
   storage: WorkerStorage,
   msg: ReprocessFriendGroupMessage
 ): Promise<void> {
+  // During a competition everybody steals from everybody: a new friendship changes nothing, and the
+  // friend-group rebuild (steals between friends only) would undo steals by players outside the group
+  const competition = await storage.getActiveCompetition();
+  if (competition && isCompetitionActive(competition)) {
+    console.log(`[QUEUE] Competition active: friend group reprocess for ${msg.userId} not needed, skipping`);
+    return;
+  }
+
   console.log(`[QUEUE] Reprocessing friend group for user ${msg.userId}`);
 
   const { reprocessFriendGroupTerritoriesChronologically } = await import('./routes');
-  await reprocessFriendGroupTerritoriesChronologically(storage, msg.userId);
+  await reprocessFriendGroupTerritoriesChronologically(storage, msg.userId, { keepToCurrentLand: true });
 
   console.log(`[QUEUE] ✅ Friend group reprocess complete for user ${msg.userId}`);
 }
