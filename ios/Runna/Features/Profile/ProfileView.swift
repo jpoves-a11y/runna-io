@@ -259,6 +259,7 @@ struct ProfileView: View {
             } label: {
                 SocialSettingsLabel(title: "Modo descanso", systemImage: "moon.zzz")
             }
+            WidgetStatusRow()
         } header: {
             SocialSectionHeader(title: "Territorio")
         } footer: {

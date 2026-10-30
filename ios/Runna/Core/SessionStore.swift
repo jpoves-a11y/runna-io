@@ -199,6 +199,10 @@ final class SessionStore {
         guard state == .loggedIn else { return }
         // Permission may have been granted in Settings meanwhile
         Task { await PushManager.shared.registerIfAuthorized() }
+        // The widgets always have the session (and pick up anything new)
+        if let token = api.sessionToken, let userId {
+            WidgetSync.storeCredentials(token: token, userId: userId)
+        }
     }
 
     // MARK: - Account

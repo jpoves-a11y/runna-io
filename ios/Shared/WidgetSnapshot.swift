@@ -113,12 +113,29 @@ enum WidgetSnapshotStore {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        lastStatus = status
+        guard status == errSecSuccess else { return nil }
         return item as? Data
     }
 
+    /// Result of the last keychain read/write (for the "Widgets" diagnosis in the app).
+    private(set) static var lastStatus: OSStatus = errSecSuccess
+
+    /// Why the shared keychain can't be used, or nil when it works.
+    static var problem: String? {
+        guard teamPrefix != nil else { return "no se encuentra el equipo de la app en el llavero" }
+        if lastStatus != errSecSuccess && lastStatus != errSecItemNotFound {
+            return "llavero compartido: error \(lastStatus)"
+        }
+        return nil
+    }
+
     private static func write(_ account: String, _ data: Data) -> Bool {
-        guard let query = baseQuery(account) else { return false }
+        guard let query = baseQuery(account) else {
+            lastStatus = errSecMissingEntitlement
+            return false
+        }
         let attributes: [String: Any] = [
             kSecValueData as String: data,
             // The widgets refresh while the phone is locked
@@ -130,6 +147,7 @@ enum WidgetSnapshotStore {
             insert.merge(attributes) { _, new in new }
             status = SecItemAdd(insert as CFDictionary, nil)
         }
+        lastStatus = status
         return status == errSecSuccess
     }
 

@@ -16,6 +16,8 @@ struct RunnaWidgetEntry: TimelineEntry {
     let summary: WidgetSummary?
     var avatars: [String: UIImage] = [:]
     var map: UIImage? = nil
+    /// Why there is no summary (shown small, to tell a logged-out phone from a failed load).
+    var problem: WidgetDataLoader.Outcome? = nil
 }
 
 struct RunnaWidgetProvider: TimelineProvider {
@@ -37,16 +39,17 @@ struct RunnaWidgetProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<RunnaWidgetEntry>) -> Void) {
         Task {
             let entry = await entry(context)
-            // Every 30 minutes, and right when the week turns over
-            var next = Date().addingTimeInterval(30 * 60)
+            // Every 30 minutes (5 when it couldn't load), and right when the week turns over
+            var next = Date().addingTimeInterval(entry.summary == nil ? 5 * 60 : 30 * 60)
             if let end = entry.summary?.weekEndDate, end > Date() { next = min(next, end.addingTimeInterval(60)) }
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
     }
 
     private func entry(_ context: Context) async -> RunnaWidgetEntry {
-        guard let summary = await WidgetDataLoader.load() else {
-            return RunnaWidgetEntry(date: Date(), summary: nil)
+        let outcome = await WidgetDataLoader.load()
+        guard let summary = outcome.summary else {
+            return RunnaWidgetEntry(date: Date(), summary: nil, problem: outcome)
         }
         var entry = RunnaWidgetEntry(date: Date(), summary: summary)
         switch extras {
@@ -136,7 +139,7 @@ private struct WidgetFrame<Content: View>: View {
             if let summary = entry.summary {
                 content(summary)
             } else {
-                LoggedOutView()
+                LoggedOutView(problem: entry.problem)
             }
         }
         .widgetURL(URL(string: url))
@@ -169,7 +172,23 @@ private struct WidgetFrame<Content: View>: View {
 }
 
 private struct LoggedOutView: View {
+    let problem: WidgetDataLoader.Outcome?
     @Environment(\.widgetFamily) private var family
+
+    private var message: String {
+        switch problem {
+        case .failed: return "No se ha podido cargar. Se reintentará en unos minutos."
+        default: return "Abre Runna.io para conectar el widget."
+        }
+    }
+
+    private var detail: String? {
+        switch problem {
+        case .failed(let reason): return reason
+        case .noSession(let reason): return reason
+        default: return nil
+        }
+    }
 
     var body: some View {
         switch family {
@@ -183,8 +202,14 @@ private struct LoggedOutView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                Text("Abre Runna.io e inicia sesión para ver tu territorio aquí.")
+                Text(message)
                     .font(.footnote.weight(.medium))
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }

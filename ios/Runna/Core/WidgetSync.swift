@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import WidgetKit
 
 /// Keeps the widgets up to date. They ask the server by themselves (GET /api/widget/summary every
@@ -9,12 +10,32 @@ enum WidgetSync {
     private static var lastRefresh: Date?
     private static let refreshInterval: TimeInterval = 15 * 60
 
-    /// The session the widgets use (login and every launch).
+    /// The session the widgets use (login, every launch and every time the app comes to the front).
+    /// Always written again: a widget that couldn't read it before gets it now.
     static func storeCredentials(token: String, userId: String) {
         let credentials = WidgetCredentials(token: token, userId: userId, baseURL: AppConfig.apiBaseURL.absoluteString)
-        guard WidgetSnapshotStore.loadCredentials() != credentials else { return }
-        if WidgetSnapshotStore.saveCredentials(credentials) {
+        let previous = WidgetSnapshotStore.loadCredentials()
+        if WidgetSnapshotStore.saveCredentials(credentials), previous != credentials {
             WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    /// Writes the session again and redraws every widget ("Reconectar widgets").
+    static func reconnect(token: String?, userId: String?) {
+        if let token, let userId { storeCredentials(token: token, userId: userId) }
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// Whether the widgets can work: the shared session is readable and the server answers.
+    static func diagnose() async -> (ok: Bool, text: String) {
+        guard let credentials = WidgetSnapshotStore.loadCredentials() else {
+            return (false, "Sin sesión compartida: \(WidgetSnapshotStore.problem ?? "no se ha guardado")")
+        }
+        do {
+            let _: WidgetSummary = try await APIClient.shared.request("GET", "/api/widget/summary")
+            return (credentials.userId == RunOwner.currentUserId, credentials.userId == RunOwner.currentUserId ? "Conectados" : "Sesión de otra cuenta")
+        } catch {
+            return (false, "El servidor no responde: \(error.localizedDescription)")
         }
     }
 
@@ -85,5 +106,45 @@ enum WidgetSync {
         if WidgetSnapshotStore.save(snapshot) {
             WidgetCenter.shared.reloadAllTimelines()
         }
+    }
+}
+
+/// Perfil → "Widgets": whether they're connected, and a button to connect them again.
+struct WidgetStatusRow: View {
+    @Environment(SessionStore.self) private var session
+    @State private var status: (ok: Bool, text: String)?
+    @State private var isChecking = false
+
+    var body: some View {
+        Button {
+            Task { await check(reconnect: true) }
+        } label: {
+            HStack {
+                SocialSettingsLabel(title: "Widgets", systemImage: "square.grid.2x2")
+                Spacer()
+                if isChecking {
+                    ProgressView()
+                } else if let status {
+                    Text(status.ok ? "Conectados" : "Reconectar")
+                        .font(.subheadline)
+                        .foregroundStyle(status.ok ? Color.secondary : Color.steal)
+                }
+            }
+        }
+        .task { await check(reconnect: false) }
+        if let status, !status.ok {
+            Text(status.text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func check(reconnect: Bool) async {
+        isChecking = true
+        defer { isChecking = false }
+        if reconnect {
+            WidgetSync.reconnect(token: APIClient.shared.sessionToken, userId: session.userId)
+        }
+        status = await WidgetSync.diagnose()
     }
 }

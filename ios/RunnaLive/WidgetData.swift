@@ -18,28 +18,61 @@ enum WidgetDataLoader {
             .appendingPathComponent("widget-summary-\(userId).json")
     }
 
-    /// The latest summary: from the server when the cache is old, else the cache. Nil when logged out.
-    static func load() async -> WidgetSummary? {
-        guard let credentials = WidgetSnapshotStore.loadCredentials() else { return nil }
+    enum Outcome {
+        case loaded(WidgetSummary)
+        /// No session shared by the app (logged out, or the shared keychain failed: `reason`).
+        case noSession(reason: String?)
+        /// The server couldn't be reached or answered an error, and there's nothing cached.
+        case failed(reason: String)
+
+        var summary: WidgetSummary? {
+            if case .loaded(let summary) = self { return summary }
+            return nil
+        }
+    }
+
+    /// The latest summary: from the server when the cache is old, else the cache.
+    static func load() async -> Outcome {
+        guard let credentials = WidgetSnapshotStore.loadCredentials() else {
+            return .noSession(reason: WidgetSnapshotStore.problem)
+        }
         let url = cacheURL(userId: credentials.userId)
         let cached = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(WidgetSummary.self, from: $0) }
         if let cached, let generated = WidgetDates.parse(cached.generatedAt), Date().timeIntervalSince(generated) < freshFor {
-            return cached
+            return .loaded(cached)
         }
-        guard let data = await fetch(credentials) else { return cached }
-        guard let fresh = try? JSONDecoder().decode(WidgetSummary.self, from: data) else { return cached }
-        try? data.write(to: url, options: .atomic)
-        return fresh
+        switch await fetch(credentials) {
+        case .success(let data):
+            do {
+                let fresh = try JSONDecoder().decode(WidgetSummary.self, from: data)
+                try? data.write(to: url, options: .atomic)
+                return .loaded(fresh)
+            } catch {
+                return cached.map { Outcome.loaded($0) } ?? .failed(reason: "datos no válidos (\(error.localizedDescription))")
+            }
+        case .failure(let reason):
+            return cached.map { Outcome.loaded($0) } ?? reason
+        }
     }
 
-    private static func fetch(_ credentials: WidgetCredentials) async -> Data? {
-        guard let base = URL(string: credentials.baseURL) else { return nil }
+    private enum Fetch { case success(Data), failure(Outcome) }
+
+    private static func fetch(_ credentials: WidgetCredentials) async -> Fetch {
+        guard let base = URL(string: credentials.baseURL) else { return .failure(.failed(reason: "dirección del servidor no válida")) }
         var request = URLRequest(url: base.appendingPathComponent("api/widget/summary"))
         request.timeoutInterval = 15
         request.setValue("Bearer \(credentials.token)", forHTTPHeaderField: "Authorization")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-        return data
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            switch status {
+            case 200: return .success(data)
+            case 401, 403: return .failure(.noSession(reason: "la sesión ha caducado"))
+            default: return .failure(.failed(reason: "el servidor respondió \(status)"))
+            }
+        } catch {
+            return .failure(.failed(reason: "sin conexión"))
+        }
     }
 }
 
