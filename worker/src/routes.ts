@@ -564,6 +564,7 @@ export async function processTerritoryConquest(
       fortressesDestroyed: 0,
       fortificationLayers: 0,
       fortificationArea: 0,
+      castleDefenderIds: [],
       alreadyProcessed: true,
     };
   }
@@ -597,6 +598,8 @@ async function runTerritoryConquest(
   fortressesDestroyed: number;
   fortificationLayers: number;
   fortificationArea: number;
+  /** Users who lost castles to this run (their castle zones changed even if nothing was stolen). */
+  castleDefenderIds: string[];
 }> {
   // Check if competition is active for ALL-VS-ALL mode
   const competition = await storage.getActiveCompetition();
@@ -1299,6 +1302,7 @@ async function runTerritoryConquest(
     fortressesDestroyed,
     fortificationLayers: result.fortificationLayers,
     fortificationArea: result.fortificationArea,
+    castleDefenderIds: [...castlesLostByDefender.keys()],
   };
 }
 
@@ -7778,9 +7782,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const storage = new WorkerStorage(getDb(c.env));
       const me = c.get('authUserId');
       const userIds = [me, ...(await storage.getFriendIds(me))];
-      // Castle zones are cached per user while their castles don't change (see derived.ts)
-      const { castleZonesOfUsers } = await import('./derived');
-      const zonesByUser = await castleZonesOfUsers(storage, userIds);
+      // Castle zones are worked out in the queue and cached per user (see derived.ts): the ones out of
+      // date are shown as they were and refreshed in the background
+      const { castleZonesOfUsers, requestDerivedRefresh } = await import('./derived');
+      const { zones: zonesByUser, stale } = await castleZonesOfUsers(storage, userIds);
+      if (stale.length > 0) await requestDerivedRefresh(c.env, stale);
       const castles: any[] = [];
       const fortifications: any[] = [];
       for (const [uid, zones] of zonesByUser) {

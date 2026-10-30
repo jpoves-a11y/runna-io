@@ -115,6 +115,8 @@ struct WidgetSummary: Codable {
     let streakWeeks: Int
     let defense: Defense
     let map: MapData
+    /// The server is still working out the map (it shows the previous one): ask again soon.
+    var mapPending: Bool? = nil
 }
 
 extension WidgetSummary {

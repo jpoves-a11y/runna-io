@@ -58,7 +58,8 @@ enum WidgetDataLoader {
         }
         let url = cacheURL(userId: credentials.userId)
         let cached = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(WidgetSummary.self, from: $0) }
-        if let cached, let generated = WidgetDates.parse(cached.generatedAt), Date().timeIntervalSince(generated) < freshFor {
+        if let cached, cached.mapPending != true,
+           let generated = WidgetDates.parse(cached.generatedAt), Date().timeIntervalSince(generated) < freshFor {
             return .loaded(cached)
         }
         // A busy server (503) or a dropped connection: try again twice before giving up

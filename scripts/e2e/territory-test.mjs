@@ -524,6 +524,19 @@ await db.execute({ sql: "update competitions set status = 'finished', ends_at = 
   const points = d.map.territory ? JSON.stringify(d.map.territory.coordinates).split('],[').length : 0;
   check('widget: light territory for the map', points > 3 && points <= 420 && d.map.bbox?.length === 4, points);
   check('widget: not without a session', (await call('GET', '/api/widget/summary')).status === 401);
+  // Earlier steps changed the database directly: the queue works the map out again
+  await flush();
+  const current = (await call('GET', '/api/widget/summary', { token: alice.token })).data;
+  check('widget: map worked out by the queue, not pending', current.mapPending === false, current.mapPending);
+
+  // The territory changes: the request shows the previous map, flags it and asks the queue for a new one
+  await db.execute({ sql: 'update territories set area = area + 5000 where user_id = ?', args: [alice.id] });
+  queued.length = 0;
+  const stale = (await call('GET', '/api/widget/summary', { token: alice.token })).data;
+  check('widget: out of date map shown while it is refreshed', stale.mapPending === true && JSON.stringify(stale.map) === JSON.stringify(current.map));
+  check('widget: refresh enqueued', queued.some((m) => m.type === 'refresh_derived' && m.widgetUserIds.includes(alice.id)), queued);
+  await flush();
+  check('widget: fresh after the queue', (await call('GET', '/api/widget/summary', { token: alice.token })).data.mapPending === false);
 }
 
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);

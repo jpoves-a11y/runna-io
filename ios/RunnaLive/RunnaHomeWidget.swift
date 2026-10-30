@@ -39,8 +39,10 @@ struct RunnaWidgetProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<RunnaWidgetEntry>) -> Void) {
         Task {
             let entry = await entry(context)
-            // Every 30 minutes (5 when it couldn't load), and right when the week turns over
-            var next = Date().addingTimeInterval(entry.summary == nil ? 5 * 60 : 30 * 60)
+            // Every 30 minutes (5 when it couldn't load, 3 while the server works out the map), and right
+            // when the week turns over
+            let wait: TimeInterval = entry.summary == nil ? 5 * 60 : entry.summary?.mapPending == true ? 3 * 60 : 30 * 60
+            var next = Date().addingTimeInterval(wait)
             if let end = entry.summary?.weekEndDate, end > Date() { next = min(next, end.addingTimeInterval(60)) }
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
@@ -93,7 +95,8 @@ struct RunnaHomeWidget: Widget {
         }
         .configurationDisplayName("Tu semana")
         .description("Tu territorio de la semana, tu puesto y cada día de un vistazo.")
-        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryRectangular, .accessoryInline])
+        // Medium too: the first version of this widget had it, and placed medium ones went black without it
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
@@ -431,8 +434,63 @@ private struct MyWeekView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         case .accessoryInline:
             Text("🏃 \(rankText) esta semana · +\(WStyle.area(summary.week.myArea))")
+        case .systemMedium:
+            medium
         default:
             small
+        }
+    }
+
+    private var ring: some View {
+        ZStack {
+            Circle().stroke(color.opacity(0.2), lineWidth: 7)
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(color, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text(rankText)
+                .font(WStyle.number(17, weight: .bold))
+                .foregroundStyle(summary.week.myRank == 1 ? Color.orange : Color.primary)
+        }
+    }
+
+    /// Ring and figures on the left, the week day by day on the right.
+    private var medium: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Esta semana")
+                    .font(WStyle.label)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    ring
+                        .frame(width: 58, height: 58)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(WStyle.area(summary.week.myArea))
+                            .font(WStyle.number(22, weight: .bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                        Text(WStyle.distance(summary.week.myDistance))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text(summary.week.myRuns == 1 ? "1 carrera" : "\(summary.week.myRuns) carreras")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+                if let leader = summary.leader, !leader.isMe, leader.area > 0 {
+                    Text("🏆 \(leader.name) · \(WStyle.area(leader.area))")
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack {
+                Spacer(minLength: 0)
+                DayBars(summary: summary, date: date, color: color, height: 52)
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -481,6 +539,8 @@ private struct DayBars: View {
     let summary: WidgetSummary
     let date: Date
     let color: Color
+    /// Height of the tallest bar.
+    var height: CGFloat = 22
     private let letters = ["L", "M", "X", "J", "V", "S", "D"]
 
     var body: some View {
@@ -494,7 +554,7 @@ private struct DayBars: View {
                 VStack(spacing: 2) {
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
                         .fill(value > 0 ? color : Color.primary.opacity(0.12))
-                        .frame(height: value > 0 ? max(4, 22 * value / top) : 3)
+                        .frame(height: value > 0 ? max(4, height * value / top) : 3)
                     Text(letters[index])
                         .font(.system(size: 8, weight: index == today ? .bold : .medium))
                         .foregroundStyle(index == today ? Color.primary : Color.secondary)
@@ -502,7 +562,7 @@ private struct DayBars: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .frame(height: 34, alignment: .bottom)
+        .frame(height: height + 12, alignment: .bottom)
     }
 
     private var todayIndex: Int {

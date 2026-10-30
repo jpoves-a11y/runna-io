@@ -18,6 +18,7 @@ import {
   type ConquestVictimInfo,
 } from './territory';
 import type { Env } from './index';
+import type { RefreshDerivedMessage } from './derived';
 
 // Cloudflare Workers Queue types (provided by runtime, declared here for TS)
 interface QueueMessage<T> {
@@ -58,7 +59,7 @@ export interface TerritoryDecayMessage {
   userId: string;
 }
 
-export type TerritoryQueueMessage = ProcessRouteTerritoryMessage | ReprocessFriendGroupMessage | TerritoryDecayMessage;
+export type TerritoryQueueMessage = ProcessRouteTerritoryMessage | ReprocessFriendGroupMessage | TerritoryDecayMessage | RefreshDerivedMessage;
 
 // ─── Queue Consumer ──────────────────────────────────────────────────────────
 
@@ -91,7 +92,17 @@ async function processMessage(msg: TerritoryQueueMessage, env: Env): Promise<voi
     case 'territory_decay': {
       const { runTerritoryDecay } = await import('./decayTask');
       const outcome = await runTerritoryDecay(storage, env, msg.userId);
-      if (outcome.lost > 0) console.log(`[DECAY] ${msg.userId}: -${outcome.lost.toFixed(0)} m²`);
+      if (outcome.lost > 0) {
+        console.log(`[DECAY] ${msg.userId}: -${outcome.lost.toFixed(0)} m²`);
+        const { requestDerivedRefresh } = await import('./derived');
+        await requestDerivedRefresh(env, [msg.userId], [msg.userId]);
+      }
+      break;
+    }
+    case 'refresh_derived': {
+      // Castle zones and widget maps: too heavy for a request, worked out here (see derived.ts)
+      const { refreshDerived } = await import('./derived');
+      await refreshDerived(storage, msg);
       break;
     }
     default:
@@ -214,6 +225,17 @@ async function handleProcessRouteTerritory(
         await storage.updateUserTotalArea(userId, actualArea);
       }
     } catch (_) {}
+
+    // The runner's and the victims' castle zones and widget maps changed: worked out in their own message
+    {
+      const { requestDerivedRefresh } = await import('./derived');
+      const changed = [
+        userId,
+        ...conquestResult.victims.filter((v) => v.stolenArea > 0).map((v) => v.userId),
+        ...(conquestResult.castleDefenderIds ?? []),
+      ];
+      await requestDerivedRefresh(env, changed, changed);
+    }
 
     // ── BEST-EFFORT: Send notifications (your import, territory loss, ranking, friends) ──
     // These can fail without affecting data integrity.

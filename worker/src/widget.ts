@@ -6,7 +6,7 @@ import type { WorkerStorage } from './storage';
 import { madridTime, madridWeekStart } from './cron';
 import { personImage } from './notifications';
 import { insidePoint } from './decay';
-import { castleZonesOfUsers } from './derived';
+import { castleZonesOfUsers, requestDerivedRefresh } from './derived';
 
 const DAY_MS = 24 * 3600 * 1000;
 /** Most points of the territory sent to the map widget. */
@@ -118,7 +118,10 @@ export async function widgetSummary(storage: WorkerStorage, env: any, userId: st
   // --- Your territory, castles and wear (heavy geometry: cached while they don't change)
   const rest = await storage.getRestMode(userId);
   const resting = !!rest && now >= parseTime(rest.startedAt) && now < parseTime(rest.until);
-  const { defense, map } = await widgetMap(storage, userId, resting);
+  const widget = await widgetMap(storage, userId, resting, false);
+  // Out of date: the map shown is the previous one (or empty) and the queue works out the new one
+  if (widget.stale) await requestDerivedRefresh(env, [userId], [userId]);
+  const { defense, map } = widget.value;
 
   return {
     generatedAt: new Date(now).toISOString(),
@@ -146,26 +149,42 @@ export async function widgetSummary(storage: WorkerStorage, env: any, userId: st
     streakWeeks: weekStreak(runTimes, now),
     defense: { ...defense, resting },
     map,
+    /** The map is being worked out: the widgets ask again in a few minutes instead of keeping this. */
+    mapPending: widget.stale,
   };
 }
 
 const WIDGET_MAP_KIND = 'widget-map-v1';
 
+const EMPTY_WIDGET_MAP = {
+  defense: { castles: 0, castleLayers: 0, atRiskArea: 0, atRisk: null, weakArea: 0, lostToday: 0 },
+  map: { territory: null, weak: null, atRisk: null, castles: [], bbox: null },
+};
+
+/** Queue: works out the widgets' map of a user if it's out of date. */
+export async function refreshWidgetMap(storage: WorkerStorage, userId: string, now = Date.now()): Promise<void> {
+  const rest = await storage.getRestMode(userId);
+  const resting = !!rest && now >= parseTime(rest.startedAt) && now < parseTime(rest.until);
+  await widgetMap(storage, userId, resting, true);
+}
+
 /**
- * The widgets' map (territory simplified, castles, wear) and defence figures. Uniting and
- * simplifying the territory and grouping castles is the heavy part of the summary, so the result is
- * kept in derived_cache until the territory, castles or wear change.
+ * The widgets' map (territory simplified, castles, wear) and defence figures. Uniting and simplifying
+ * the territory and grouping castles is too heavy for a request on the Workers free plan (503), so it
+ * is worked out in the queue (`compute`) and kept in derived_cache until the territory, castles or wear
+ * change; requests read it, possibly out of date (`stale`).
  */
-async function widgetMap(storage: WorkerStorage, userId: string, resting: boolean) {
+async function widgetMap(storage: WorkerStorage, userId: string, resting: boolean, compute: boolean) {
   const signature = `${await storage.getWidgetMapSignature(userId)}|${resting ? 'rest' : ''}`;
   const cached = (await storage.getDerived(WIDGET_MAP_KIND, new Map([[userId, signature]]))).get(userId);
-  if (cached) return cached as { defense: any; map: any };
+  if (cached?.fresh) return { value: cached.payload as typeof EMPTY_WIDGET_MAP, stale: false };
+  if (!compute) return { value: (cached?.payload ?? EMPTY_WIDGET_MAP) as typeof EMPTY_WIDGET_MAP, stale: true };
 
   const territories = await storage.getTerritoriesByUserId(userId);
   const territory = union(territories.map((t) => {
     try { return typeof t.geometry === 'string' ? JSON.parse(t.geometry) : t.geometry; } catch { return null; }
   }));
-  const zones = (await castleZonesOfUsers(storage, [userId])).get(userId) ?? [];
+  const zones = (await castleZonesOfUsers(storage, [userId], true)).zones.get(userId) ?? [];
   const castles = zones
     .filter((zone) => zone.lat !== null && zone.lng !== null)
     .map((zone) => ({ lat: zone.lat, lng: zone.lng, layers: zone.layers }));
@@ -191,10 +210,6 @@ async function widgetMap(storage: WorkerStorage, userId: string, resting: boolea
       bbox: box,
     },
   };
-  try {
-    await storage.saveDerived(WIDGET_MAP_KIND, [{ key: userId, signature, payload: result }]);
-  } catch (error) {
-    console.error('[WIDGET] Could not cache the map:', error);
-  }
-  return result;
+  await storage.saveDerived(WIDGET_MAP_KIND, [{ key: userId, signature, payload: result }]);
+  return { value: result as any, stale: false };
 }

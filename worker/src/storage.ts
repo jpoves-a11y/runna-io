@@ -4603,16 +4603,20 @@ export class WorkerStorage {
     return row ? `${row.t}|${row.f}|${row.d}` : '';
   }
 
-  /** Cached results of `kind` for these keys whose signature still matches. */
-  async getDerived(kind: string, signatures: Map<string, string>): Promise<Map<string, any>> {
-    const result = new Map<string, any>();
+  /**
+   * Cached results of `kind` for these keys, with whether their signature still matches (`fresh`).
+   * Stale ones are returned too: a request shows them while the queue works out the new ones.
+   */
+  async getDerived(kind: string, signatures: Map<string, string>): Promise<Map<string, { payload: any; fresh: boolean }>> {
+    const result = new Map<string, { payload: any; fresh: boolean }>();
     if (signatures.size === 0) return result;
     const rows = await this.db.all<{ key: string; signature: string; payload: string }>(sql`
       SELECT key, signature, payload FROM derived_cache
       WHERE kind = ${kind} AND key IN (${sql.join([...signatures.keys()].map((key) => sql`${key}`), sql`, `)})`);
     for (const row of rows) {
-      if (row.signature !== signatures.get(row.key)) continue;
-      try { result.set(row.key, JSON.parse(row.payload)); } catch (_) { /* recomputed */ }
+      try {
+        result.set(row.key, { payload: JSON.parse(row.payload), fresh: row.signature === signatures.get(row.key) });
+      } catch (_) { /* recomputed */ }
     }
     return result;
   }
