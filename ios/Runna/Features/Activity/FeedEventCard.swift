@@ -559,14 +559,14 @@ private struct FeedEventEmblems: View {
                 if destroyed > 0 {
                     ActivityEmblemRow(
                         systemImage: "hammer",
-                        text: destroyed == 1 ? "Ha derribado 1 fortaleza" : "Ha derribado \(destroyed) fortalezas",
+                        text: destroyed == 1 ? "Ha derribado 1 castillo" : "Ha derribado \(destroyed) castillos",
                         tint: Color.secondary
                     )
                 }
                 if layers > 0 {
                     ActivityEmblemRow(
                         systemImage: "shield.lefthalf.filled",
-                        text: "Ha reforzado \(Format.area(meta?.fortificationArea ?? 0)) (+\(layers) \(layers == 1 ? "capa" : "capas"))",
+                        text: "Ha reforzado \(Format.area(meta?.fortificationArea ?? 0)) (+\(layers) \(layers == 1 ? "castillo" : "castillos"))",
                         tint: Color.secondary
                     )
                 }

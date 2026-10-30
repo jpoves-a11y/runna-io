@@ -37,34 +37,120 @@ export function simplifyCoordinates(coords: Array<[number, number]>, maxPoints: 
   return simplified;
 }
 
+/** Pieces and holes smaller than this are GPS noise, not territory (also the minimum theft). */
+export const MIN_TERRITORY_PIECE_M2 = 100;
+
+/**
+ * Reduces a GPS track to at most `maxPoints` points keeping its shape (Douglas-Peucker, starting at
+ * ~3 m of tolerance), instead of keeping one point in N, which cut corners on long runs.
+ * Points are [lat, lng].
+ */
+export function simplifyTrack(coords: Array<[number, number]>, maxPoints: number = 150): Array<[number, number]> {
+  if (coords.length <= maxPoints) return coords;
+  const line = turf.lineString(coords.map((c) => [c[1], c[0]]));
+  let tolerance = 0.00003;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const simplified = turf.simplify(line, { tolerance, highQuality: false }).geometry.coordinates;
+    if (simplified.length <= maxPoints && simplified.length >= 4) {
+      return simplified.map((c) => [c[1], c[0]] as [number, number]);
+    }
+    if (simplified.length < 4) break;
+    tolerance *= 1.6;
+  }
+  return simplifyCoordinates(coords, maxPoints);
+}
+
+type AreaFeature = ReturnType<typeof turf.polygon> | ReturnType<typeof turf.multiPolygon>;
+
+/**
+ * A valid polygon from a ring that may cross itself (a figure eight, an out-and-back on another
+ * street): the ring is split where it crosses and the pieces are joined. Without this the area of a
+ * crossing loop cancels out and intersections/differences go wrong.
+ */
+export function validPolygon(ring: number[][]): AreaFeature | null {
+  const polygon = turf.polygon([ring]);
+  let pieces: AreaFeature[] = [];
+  try {
+    pieces = turf.unkinkPolygon(polygon).features as AreaFeature[];
+  } catch {
+    pieces = [polygon];
+  }
+  pieces = pieces.filter((piece) => turf.area(piece) >= MIN_TERRITORY_PIECE_M2);
+  if (pieces.length === 0) return null;
+  if (pieces.length === 1) return pieces[0];
+  try {
+    const joined = turf.union(turf.featureCollection(pieces as any));
+    return joined ? (joined as AreaFeature) : pieces[0];
+  } catch {
+    return pieces[0];
+  }
+}
+
+/**
+ * Territory geometry tidied after every union/difference: ~2 m simplification (vertices otherwise
+ * pile up run after run) and no pieces or holes under MIN_TERRITORY_PIECE_M2 (slivers left along
+ * borders). Returns null when nothing meaningful is left, the original if tidying fails.
+ */
+export function cleanGeometry(geometry: any): any | null {
+  if (!geometry || (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon')) return geometry;
+  try {
+    const polygons: number[][][][] = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+    const kept: number[][][][] = [];
+    for (const rings of polygons) {
+      if (!rings.length || turf.area(turf.polygon([rings[0]])) < MIN_TERRITORY_PIECE_M2) continue;
+      const holes = rings.slice(1).filter((hole) => hole.length >= 4 && turf.area(turf.polygon([hole])) >= MIN_TERRITORY_PIECE_M2);
+      const simplified = turf.simplify(turf.polygon([rings[0], ...holes]), { tolerance: 0.00002, highQuality: false });
+      kept.push(simplified.geometry.coordinates);
+    }
+    if (kept.length === 0) return null;
+    const cleaned = kept.length === 1 ? { type: 'Polygon', coordinates: kept[0] } : { type: 'MultiPolygon', coordinates: kept };
+    const before = turf.area(geometry);
+    const after = turf.area(cleaned as any);
+    // Simplifying must not change the territory: keep the original if the area moved more than 2 %
+    if (!isFinite(after) || after <= 0 || Math.abs(after - before) > before * 0.02 + MIN_TERRITORY_PIECE_M2 * kept.length) {
+      return geometry;
+    }
+    return cleaned;
+  } catch {
+    return geometry;
+  }
+}
+
 /**
  * Convert a GPS route to a closed polygon representing the enclosed area.
- * Always closes the route by connecting last point → first point.
- * Returns the polygon geometry, or null if the route has too few points.
+ * Always closes the route by connecting last point → first point; a route that crosses itself
+ * becomes the union of its loops. Returns null if the route has too few points or encloses nothing.
  */
-export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimplifyPoints: number = 150): ReturnType<typeof turf.polygon> | null {
+export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimplifyPoints: number = 150): AreaFeature | null {
   if (coords.length < 10) return null;
 
-  const simplified = simplifyCoordinates(coords, maxSimplifyPoints);
+  const simplified = simplifyTrack(coords, maxSimplifyPoints);
   // Flip [lat, lng] → [lng, lat] for GeoJSON convention
-  const ring = simplified.map((c: [number, number]) => [c[1], c[0]]);
+  const ring = simplified
+    .filter((c) => Number.isFinite(c[0]) && Number.isFinite(c[1]))
+    .map((c: [number, number]) => [c[1], c[0]]);
+  // Consecutive duplicates make degenerate edges
+  const deduped = ring.filter((p, i) => i === 0 || p[0] !== ring[i - 1][0] || p[1] !== ring[i - 1][1]);
+  if (deduped.length < 3) return null;
 
   // Close the ring: always connect last point to first point
-  const first = ring[0];
-  const last = ring[ring.length - 1];
+  const first = deduped[0];
+  const last = deduped[deduped.length - 1];
   if (first[0] !== last[0] || first[1] !== last[1]) {
-    ring.push([first[0], first[1]]);
+    deduped.push([first[0], first[1]]);
   }
+  if (deduped.length < 4) return null;
 
   try {
-    const poly = turf.polygon([ring]);
+    const poly = validPolygon(deduped);
+    if (!poly) return null;
     const area = turf.area(poly);
     if (!area || area <= 0 || !isFinite(area)) return null;
     return poly;
   } catch (e) {
     // Fallback: convex hull
     try {
-      const line = turf.lineString(ring.slice(0, -1));
+      const line = turf.lineString(deduped.slice(0, -1));
       const hull = turf.convex(turf.explode(line));
       if (hull && turf.area(hull) > 0) return hull;
     } catch (_) {}
@@ -72,19 +158,8 @@ export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimpl
   }
 }
 
-/** Parses a stored geometry (JSON text or already an object); null when it can't be read. */
-export function parseGeometry(geometry: unknown): any | null {
-  if (!geometry) return null;
-  if (typeof geometry === 'string') {
-    try { return JSON.parse(geometry); } catch { return null; }
-  }
-  return geometry;
-}
-
-export type Bbox = [number, number, number, number];
-
-/** [minLng, minLat, maxLng, maxLat] of a GeoJSON geometry, or null when it has no coordinates. */
-export function geometryBbox(geometry: any): Bbox | null {
+/** [minLng, minLat, maxLng, maxLat] of a geometry, or null. */
+export function geometryBbox(geometry: any): [number, number, number, number] | null {
   try {
     const box = turf.bbox(geometry);
     return box.every(Number.isFinite) ? [box[0], box[1], box[2], box[3]] : null;
@@ -93,65 +168,42 @@ export function geometryBbox(geometry: any): Bbox | null {
   }
 }
 
-/** Whether two bounding boxes touch. A cheap test that rules out most polygon intersections. */
-export function bboxesIntersect(a: Bbox, b: Bbox): boolean {
+export function bboxesOverlap(a: number[] | null, b: number[] | null): boolean {
+  if (!a || !b) return true;
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
-/** Area in m² shared by two polygons (0 when they don't overlap or can't be intersected). */
-export function intersectionArea(geometryA: any, geometryB: any): number {
-  try {
-    const a = geometryA.type === 'Feature' ? geometryA : turf.feature(geometryA);
-    const b = geometryB.type === 'Feature' ? geometryB : turf.feature(geometryB);
-    const overlap = turf.intersect(turf.featureCollection([a, b]));
-    return overlap ? turf.area(overlap) : 0;
-  } catch {
-    return 0;
-  }
+// ─── Privacy ─────────────────────────────────────────────────────────────────
+
+/** Other people don't see the part of a run this close to its start or its end (usually home). */
+export const PRIVATE_ZONE_RADIUS_M = 200;
+
+function metersBetween(a: [number, number], b: [number, number]): number {
+  const dLat = (b[0] - a[0]) * 111_320;
+  const dLng = (b[1] - a[1]) * 111_320 * Math.cos(((a[0] + b[0]) / 2) * Math.PI / 180);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
 }
 
 /**
- * Geometry ready to be stored: coordinates rounded to 6 decimals (~10 cm) and repeated points
- * removed. Unions and differences return 15-decimal coordinates and duplicate vertices, which
- * make every territory row (and the map download) several times bigger and every later turf
- * operation slower. Returns the input unchanged if cleaning fails.
+ * The run as shown to other people: without the stretch near its start and near its end
+ * (PRIVATE_ZONE_RADIUS_M), like Strava's privacy zones. Points are [lat, lng]. Empty when the whole
+ * run stays near home.
  */
-export function compactGeometry<T>(geometry: T): T {
-  try {
-    const rounded = turf.truncate(geometry as any, { precision: 6, coordinates: 2, mutate: false });
-    return turf.cleanCoords(rounded as any) as T;
-  } catch {
-    return geometry;
-  }
+export function hidePrivateEnds(coords: Array<[number, number]>, radius: number = PRIVATE_ZONE_RADIUS_M): Array<[number, number]> {
+  const range = visibleRange(coords, radius);
+  return range ? coords.slice(range[0], range[1] + 1) : [];
 }
 
-// ─── Treasures ───────────────────────────────────────────────────────────────
-
-/** A run collects a treasure when it passes within this many meters of it. */
-export const TREASURE_REACH_M = 250;
-
-/**
- * The treasures a route passes within `reachM` meters of. Every 5th point is checked (plus the
- * last one), with a plain haversine distance instead of building turf points for every pair.
- */
-export function treasuresAlongRoute<T extends { lat: number; lng: number }>(
-  treasures: T[],
-  routeCoordinates: Array<[number, number]>,
-  reachM: number = TREASURE_REACH_M
-): T[] {
-  if (treasures.length === 0 || routeCoordinates.length === 0) return [];
-  const last = routeCoordinates.length - 1;
-  const sampled = routeCoordinates.filter((c, i) => (i % 5 === 0 || i === last) && Number.isFinite(c[0]) && Number.isFinite(c[1]));
-  const toRad = Math.PI / 180;
-  const EARTH_RADIUS_M = 6371008.8;
-  const reachDeg = reachM / 111_000; // a little over the size of a degree of latitude
-  return treasures.filter((treasure) => sampled.some(([lat, lng]) => {
-    if (Math.abs(lat - treasure.lat) > reachDeg) return false;
-    const dLat = (treasure.lat - lat) * toRad;
-    const dLng = (treasure.lng - lng) * toRad;
-    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat * toRad) * Math.cos(treasure.lat * toRad) * Math.sin(dLng / 2) ** 2;
-    return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h))) <= reachM;
-  }));
+/** [first, last] indices of the points other people may see, or null when none (see hidePrivateEnds). */
+export function visibleRange(coords: Array<[number, number]>, radius: number = PRIVATE_ZONE_RADIUS_M): [number, number] | null {
+  if (coords.length < 2) return null;
+  const start = coords[0];
+  const end = coords[coords.length - 1];
+  let first = 0;
+  while (first < coords.length && metersBetween(coords[first], start) < radius) first++;
+  let last = coords.length - 1;
+  while (last >= first && metersBetween(coords[last], end) < radius) last--;
+  return last - first >= 1 ? [first, last] : null;
 }
 
 // ─── Anti-cheat ──────────────────────────────────────────────────────────────
@@ -163,7 +215,52 @@ const MIN_CHECKED_DISTANCE_M = 1000;
 /** Moving time can't exceed the time between start and end (slack for clock differences). */
 const ELAPSED_SLACK_S = 300;
 
-export type ImplausibleRunReason = 'too_fast' | 'invalid_duration';
+/** With the time of each point: no stretch this long may go faster than MAX_SEGMENT_SPEED_KMH. */
+const SEGMENT_CHECK_M = 400;
+/** A bike section inside a "run" (a sprint doesn't hold this over 400 m). */
+export const MAX_SEGMENT_SPEED_KMH = 30;
+
+export type ImplausibleRunReason = 'too_fast' | 'invalid_duration' | 'too_fast_segment';
+
+/** Parses a JSON array of numbers (or nulls) stored in a text column, or passes an array through. */
+export function parseNumberArray(value: unknown): Array<number | null> | null {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { return null; }
+  }
+  if (!Array.isArray(parsed)) return null;
+  return parsed.map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : null));
+}
+
+/**
+ * Fastest stretch of at least SEGMENT_CHECK_M, in km/h, given the time (s) of each point; null when the
+ * times can't be used (missing, wrong length, not increasing).
+ */
+export function fastestStretchKmh(coords: Array<[number, number]>, times: Array<number | null> | null): number | null {
+  if (!times || times.length !== coords.length || coords.length < 2) return null;
+  const cumulative: number[] = [0];
+  for (let i = 1; i < coords.length; i++) {
+    const [lat1, lng1] = coords[i - 1];
+    const [lat2, lng2] = coords[i];
+    const step = [lat1, lng1, lat2, lng2].every(Number.isFinite)
+      ? turf.distance([lng1, lat1], [lng2, lat2], { units: 'meters' })
+      : 0;
+    cumulative.push(cumulative[i - 1] + step);
+  }
+  let fastest = 0;
+  let j = 0;
+  for (let i = 0; i < coords.length; i++) {
+    if (j < i) j = i;
+    while (j < coords.length - 1 && cumulative[j] - cumulative[i] < SEGMENT_CHECK_M) j++;
+    if (cumulative[j] - cumulative[i] < SEGMENT_CHECK_M) break;
+    const t1 = times[i];
+    const t2 = times[j];
+    if (t1 == null || t2 == null || t2 <= t1) continue;
+    const kmh = ((cumulative[j] - cumulative[i]) / (t2 - t1)) * 3.6;
+    if (kmh > fastest) fastest = kmh;
+  }
+  return fastest;
+}
 
 export interface RunPlausibility {
   ok: boolean;
@@ -198,6 +295,8 @@ export function checkRunPlausibility(run: {
   startedAt?: string | null;
   completedAt?: string | null;
   coordinates?: Array<[number, number]> | null;
+  /** Seconds since the start of each point (JSON or array), when known. */
+  pointTimes?: unknown;
 }): RunPlausibility {
   const trackLength = run.coordinates && run.coordinates.length > 1 ? pathLengthMeters(run.coordinates) : 0;
   const distance = Math.max(Number(run.distance) || 0, trackLength);
@@ -222,6 +321,16 @@ export function checkRunPlausibility(run: {
   }
 
   const speedKmh = (distance / 1000) / (duration / 3600);
+  // A fast stretch (by bike, by car) inside an otherwise plausible run
+  if (run.coordinates && run.coordinates.length > 1) {
+    const fastest = fastestStretchKmh(run.coordinates, parseNumberArray(run.pointTimes));
+    if (fastest !== null && fastest > MAX_SEGMENT_SPEED_KMH) {
+      return {
+        ok: false, reason: 'too_fast_segment', speedKmh: fastest,
+        message: `Hay un tramo a ${fastest.toFixed(0)} km/h: es demasiado rápido para correr, así que la carrera no cuenta para el territorio. ¿Ibas en bici o en coche en algún momento?`,
+      };
+    }
+  }
   if (speedKmh > MAX_RUN_SPEED_KMH) {
     return {
       ok: false, reason: 'too_fast', speedKmh,

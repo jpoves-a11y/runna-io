@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
+import { Buffer } from 'node:buffer';
 import { createDb } from './db';
-import { WorkerStorage } from './storage';
+import { WorkerStorage, FORTIFICATION_TTL_DAYS, MAX_FORTIFICATION_LAYERS } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
 import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES, SIGNUP_CODE_MINUTES } from './email';
@@ -29,6 +30,10 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
+import { madridTime, madridWeekStart } from './cron';
+import { defendedFootprint, REST_DAYS_PER_YEAR, DAY_MS } from './decay';
+import { castleDefense, attackWithoutProtected, castleMarkerPoint, groupCastleZones, type CastleDefense, type CastleRecord } from './castles';
+import { connectionTimeMs, startedBeforeConnection } from './importCutoff';
 import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
@@ -40,13 +45,10 @@ import {
   decodePolyline,
   formatAreaNotification,
   checkRunPlausibility,
-  parseGeometry,
   geometryBbox,
-  bboxesIntersect,
-  intersectionArea,
-  compactGeometry,
-  treasuresAlongRoute,
-  type Bbox,
+  cleanGeometry,
+  hidePrivateEnds,
+  visibleRange,
   type ConquestVictimInfo,
 } from './territory';
 
@@ -325,11 +327,13 @@ export async function generateFeedEvents(
 
     // Ran together
     if (conquestResult.ranTogetherWith && conquestResult.ranTogetherWith.length > 0) {
-      const coRunners = new Map((await storage.getUsersByIds(conquestResult.ranTogetherWith)).map(u => [u.id, u]));
-      metadata.ranTogetherWith = conquestResult.ranTogetherWith.map((uid: string) => ({
-        id: uid,
-        name: coRunners.get(uid)?.name || uid,
-      }));
+      const ranNames = await Promise.all(
+        conquestResult.ranTogetherWith.map(async (uid: string) => {
+          const u = await storage.getUser(uid);
+          return { id: uid, name: u?.name || uid };
+        })
+      );
+      metadata.ranTogetherWith = ranNames;
     }
 
     // Treasures collected
@@ -358,7 +362,7 @@ export async function generateFeedEvents(
     if (!skipRecordsCheck) {
     try {
       if (distance && distance >= 500) {
-        const userRoutes = await storage.getRouteStatsByUserId(userId);
+        const userRoutes = await storage.getRoutesByUserIdChronological(userId);
         const previousRoutes = userRoutes.filter(r => r.id !== routeId);
 
         // Longest run (only if >1 km and the user has at least 1 previous route)
@@ -458,49 +462,62 @@ export async function autoCollectTreasuresAlongRoute(
     const activeTreasures = await storage.getActiveTreasures(competitionId);
     if (activeTreasures.length === 0) return treasuresCollected;
 
-    for (const treasure of treasuresAlongRoute(activeTreasures, routeCoordinates)) {
-      const result = await storage.collectTreasure(treasure.id, userId);
-      if (result && result.collectedBy === userId) {
-        // Create power for user
-        await storage.createUserPower({
-          id: crypto.randomUUID(),
-          userId,
-          competitionId,
-          powerType: treasure.powerType,
-          treasureId: treasure.id,
-          status: 'available',
-        });
-        treasuresCollected.push({
-          treasureId: treasure.id,
-          treasureName: treasure.name,
-          powerType: treasure.powerType,
-          rarity: treasure.rarity,
-          zone: (treasure as any).zone || null,
-        });
-        console.log(`[TREASURE] Auto-collected: ${treasure.name} (${treasure.powerType}) by ${userId}`);
-        
-        // Create feed event for treasure collection
-        try {
-          await storage.createFeedEvent({
-            userId,
-            eventType: 'treasure_found',
-            routeId: null,
-            distance: 0,
-            duration: 0,
-            newArea: 0,
-            metadata: JSON.stringify({
+    // Sample every 5th coordinate to reduce computation, but also always include first and last
+    const sampledCoords = routeCoordinates.filter((_, i) => i % 5 === 0 || i === routeCoordinates.length - 1);
+
+    for (const treasure of activeTreasures) {
+      for (const coord of sampledCoords) {
+        const dist = turf.distance(
+          turf.point([coord[1], coord[0]]), // [lng, lat]
+          turf.point([treasure.lng, treasure.lat]),
+          { units: 'meters' }
+        );
+        if (dist <= 250) {
+          const result = await storage.collectTreasure(treasure.id, userId);
+          if (result && result.collectedBy === userId) {
+            // Create power for user
+            await storage.createUserPower({
+              id: crypto.randomUUID(),
+              userId,
+              competitionId,
+              powerType: treasure.powerType,
+              treasureId: treasure.id,
+              status: 'available',
+            });
+            treasuresCollected.push({
               treasureId: treasure.id,
               treasureName: treasure.name,
               powerType: treasure.powerType,
               rarity: treasure.rarity,
-            }),
-          });
-        } catch (_) {}
-        
-        // Update competition stats
-        try {
-          await storage.incrementCompetitionStats(competitionId, userId, { treasures: 1 });
-        } catch (_) {}
+              zone: (treasure as any).zone || null,
+            });
+            console.log(`[TREASURE] Auto-collected: ${treasure.name} (${treasure.powerType}) by ${userId}`);
+            
+            // Create feed event for treasure collection
+            try {
+              await storage.createFeedEvent({
+                userId,
+                eventType: 'treasure_found',
+                routeId: null,
+                distance: 0,
+                duration: 0,
+                newArea: 0,
+                metadata: JSON.stringify({
+                  treasureId: treasure.id,
+                  treasureName: treasure.name,
+                  powerType: treasure.powerType,
+                  rarity: treasure.rarity,
+                }),
+              });
+            } catch (_) {}
+            
+            // Update competition stats
+            try {
+              await storage.incrementCompetitionStats(competitionId, userId, { treasures: 1 });
+            } catch (_) {}
+          }
+          break; // Move to next treasure
+        }
       }
     }
   } catch (err) {
@@ -510,7 +527,57 @@ export async function autoCollectTreasuresAlongRoute(
   return treasuresCollected;
 }
 
+/** Smaller overlaps with someone else's territory are border noise, not a theft. */
+export const MIN_STOLEN_AREA_M2 = 100;
+
+export type TerritoryConquestResult = Awaited<ReturnType<typeof runTerritoryConquest>> & {
+  /** The route had already been processed (a repeated queue message): nothing was changed. */
+  alreadyProcessed?: boolean;
+};
+
+/**
+ * Conquers the route's area: steals from the territories it covers and merges it into the user's
+ * territory. Each route is processed once (the queue delivers at least once); a failure releases
+ * the route so the retry can process it.
+ */
 export async function processTerritoryConquest(
+  storage: WorkerStorage,
+  userId: string,
+  routeId: string,
+  routeGeometry: any,
+  env?: any,
+  activityStartedAt?: string,
+  activityCompletedAt?: string,
+  routeCoordinates?: [number, number][]
+): Promise<TerritoryConquestResult> {
+  if (!(await storage.claimRouteTerritory(routeId))) {
+    console.log(`[TERRITORY] Route ${routeId} already processed: skipped`);
+    return {
+      territory: null,
+      totalArea: await storage.getUserTotalAreaFromTerritories(userId),
+      newAreaConquered: 0,
+      areaStolen: 0,
+      victimsNotified: [],
+      victims: [],
+      ranTogetherWith: [],
+      treasuresCollected: [],
+      powersUsed: [],
+      fortressesDestroyed: 0,
+      fortificationLayers: 0,
+      fortificationArea: 0,
+      castleDefenderIds: [],
+      alreadyProcessed: true,
+    };
+  }
+  try {
+    return await runTerritoryConquest(storage, userId, routeId, routeGeometry, env, activityStartedAt, activityCompletedAt, routeCoordinates);
+  } catch (error) {
+    await storage.releaseRouteTerritory(routeId).catch(() => {});
+    throw error;
+  }
+}
+
+async function runTerritoryConquest(
   storage: WorkerStorage,
   userId: string,
   routeId: string,
@@ -532,28 +599,17 @@ export async function processTerritoryConquest(
   fortressesDestroyed: number;
   fortificationLayers: number;
   fortificationArea: number;
+  /** Users who lost castles to this run (their castle zones changed even if nothing was stolen). */
+  castleDefenderIds: string[];
 }> {
   // Check if competition is active for ALL-VS-ALL mode
   const competition = await storage.getActiveCompetition();
   const isCompMode = !!(competition && isCompetitionActive(competition));
   
   const friendIds = await storage.getFriendIds(userId);
-  
-  let allTerritories: any[];
-  if (isCompMode) {
-    // Competition: ALL-VS-ALL - load ALL users' territories
-    console.log('[COMPETITION] All-vs-all mode active — loading ALL territories');
-    allTerritories = await storage.getAllTerritories();
-  } else {
-    // Normal mode: only friends
-    const relevantUserIds = [userId, ...friendIds];
-    allTerritories = await storage.getTerritoriesForUsers(relevantUserIds);
-  }
-  
-  const userTerritories = allTerritories.filter(t => t.userId === userId);
-  const enemyTerritories = isCompMode
-    ? allTerritories.filter(t => t.userId !== userId)
-    : allTerritories.filter(t => t.userId !== userId && friendIds.includes(t.userId));
+
+  // The user's own territory, all of it (the merge replaces it)
+  const userTerritories = await storage.getTerritoriesForUsers([userId]);
   
   // --- Competition power checks for attacker ---
   let hasDoubleAreaPower = false;
@@ -593,33 +649,32 @@ export async function processTerritoryConquest(
   if (isCompMode && (hasDoubleAreaPower || hasMagnetPower)) {
     try {
       let currentGeom = attackGeometry;
+      // Scaling the shape from its centre by √k multiplies its area by exactly k, whatever the shape
+      // (a buffer grows long thin runs much more than a round one)
       if (hasDoubleAreaPower) {
-        // Double area: expand radius by sqrt(2) ≈ 1.414x → ~2x area
         const area = turf.area(turf.feature(currentGeom));
-        const approxRadius = Math.sqrt(area / Math.PI);
-        const bufferDist = approxRadius * (Math.SQRT2 - 1);
-        const expanded = turf.buffer(turf.feature(currentGeom), bufferDist / 1000, { units: 'kilometers' });
-        if (expanded) {
-          currentGeom = expanded.geometry;
-          console.log(`[COMPETITION] DOUBLE AREA applied: ${(area/1e6).toFixed(4)} → ${(turf.area(expanded)/1e6).toFixed(4)} km²`);
-        }
+        const scaled = turf.transformScale(turf.feature(currentGeom), Math.SQRT2, { origin: 'centroid' });
+        currentGeom = scaled.geometry;
+        console.log(`[COMPETITION] DOUBLE AREA applied: ${(area/1e6).toFixed(4)} → ${(turf.area(scaled)/1e6).toFixed(4)} km²`);
       }
       if (hasMagnetPower) {
-        // Magnet: expand radius by sqrt(1.25) ≈ 1.118x → +25% area
-        const area = turf.area(turf.feature(currentGeom));
-        const approxRadius = Math.sqrt(area / Math.PI);
-        const bufferDist = approxRadius * (Math.sqrt(1.25) - 1);
-        const expanded = turf.buffer(turf.feature(currentGeom), bufferDist / 1000, { units: 'kilometers' });
-        if (expanded) {
-          currentGeom = expanded.geometry;
-          console.log(`[COMPETITION] MAGNET applied: +25% area`);
-        }
+        const scaled = turf.transformScale(turf.feature(currentGeom), Math.sqrt(1.25), { origin: 'centroid' });
+        currentGeom = scaled.geometry;
+        console.log(`[COMPETITION] MAGNET applied: +25% area`);
       }
       attackGeometry = currentGeom;
     } catch (err) {
       console.error('[COMPETITION] Error applying power geometry expansion:', err);
     }
   }
+
+  // Only the territories this run can touch (bounding boxes overlap): in the competition everyone's,
+  // otherwise the friends'. Far-away territories are neither loaded nor intersected.
+  const attackBox = geometryBbox(attackGeometry);
+  const enemyTerritories = attackBox
+    ? (await storage.getTerritoriesForConquest(attackBox, isCompMode ? null : friendIds)).filter((t) => t.userId !== userId)
+    : [];
+  if (isCompMode) console.log(`[COMPETITION] All-vs-all: ${enemyTerritories.length} territories near the run`);
 
   let totalStolenArea = 0;
   const victimsNotified: string[] = [];
@@ -685,7 +740,7 @@ export async function processTerritoryConquest(
   }
 
   // Step 1: Handle enemy territory conquest
-  console.log(`[TERRITORY] ${enemyTerritories.length} enemy territories loaded`);
+  console.log(`[TERRITORY] Processing ${enemyTerritories.length} enemy territories...`);
   
   // PRE-LOAD: Batch-fetch all active defensive powers for all enemy users in ONE query
   // This saves 2-5 subrequests PER enemy territory (shield, invisibility, time_bomb, sentinel checks)
@@ -724,31 +779,22 @@ export async function processTerritoryConquest(
   const pendingConquestMetrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string }> = [];
   const pendingSentinelAlerts: Array<{ userId: string; eventType: string; metadata: string }> = [];
   const pendingFortificationDeletes: string[] = [];
-  // Pre-compute attack bbox ONCE (for the overlap pre-filter and all fortification checks)
-  const attackBbox: Bbox | null = geometryBbox(attackGeometry);
-
-  // Only territories whose bounding box touches the run can lose area. Filtering them BEFORE the
-  // cap below matters: in competition mode every territory of every user is loaded, and the cap
-  // used to keep the 25 most recent ones wherever they were, so territories next to the run were
-  // left out and never stolen. Each territory's geometry is parsed once here and reused.
-  const overlappingEnemyTerritories: any[] = [];
-  for (const territory of enemyTerritories) {
-    const geometry = parseGeometry(territory.geometry);
-    if (!geometry) continue;
-    const box = geometryBbox(geometry);
-    if (attackBbox && box && !bboxesIntersect(attackBbox, box)) continue;
-    overlappingEnemyTerritories.push({ ...territory, geometry });
-  }
-  // Cap enemy territories per invocation to bound CPU and DB writes (each territory = 1 write)
+  // Cap enemy territories per invocation to avoid "Too many subrequests" (each territory = 1-3 DB calls)
   const MAX_ENEMY_TERRITORIES = 25;
-  const territoriesToProcess = overlappingEnemyTerritories.slice(0, MAX_ENEMY_TERRITORIES);
-  if (overlappingEnemyTerritories.length > MAX_ENEMY_TERRITORIES) {
-    console.warn(`[TERRITORY] Capping enemy territories: processing ${MAX_ENEMY_TERRITORIES} of ${overlappingEnemyTerritories.length} overlapping`);
+  const territoriesToProcess = enemyTerritories.slice(0, MAX_ENEMY_TERRITORIES);
+  if (enemyTerritories.length > MAX_ENEMY_TERRITORIES) {
+    console.warn(`[TERRITORY] Capping enemy territories: processing ${MAX_ENEMY_TERRITORIES} of ${enemyTerritories.length} (rest will be handled on next import)`);
   }
+  // Pre-compute attack bbox ONCE (for all fortification checks)
+  let attackBbox: number[] | null = null;
+  try { attackBbox = turf.bbox(attackGeometry); } catch (_) {}
 
-  // PRE-LOAD: Batch-fetch ALL fortifications for ALL enemy users in the attack bbox (1 query instead of 25)
-  let preloadedFortifications = new Map<string, Array<{ id: string; geometry: string; area: number }>>();
-  if (isCompMode && competition && !hasBulldozerPower && attackBbox) {
+  // PRE-LOAD: the castles of every enemy in the attack bbox (1 query instead of 25). Castles defend
+  // always, not only during a competition (the bulldozer power ignores them).
+  let preloadedFortifications = new Map<string, Array<{ id: string; geometry: string; area: number; createdAt: string }>>();
+  const castleDefenses = new Map<string, CastleDefense>();
+  const castlesLostByDefender = new Map<string, number>();
+  if (!hasBulldozerPower && attackBbox) {
     try {
       const enemyUserIdsForForts = [...new Set(territoriesToProcess.map(t => t.userId))];
       preloadedFortifications = await storage.getAllFortificationsInBbox(
@@ -795,71 +841,51 @@ export async function processTerritoryConquest(
         if (defenderPowers?.has('invisibility')) {
           continue;
         }
+      }
 
-        // Fortification defense: check how many layers protect this territory
-        if (!hasBulldozerPower && attackBbox) {
-          try {
-            if (enemyTerritory.geometry) {
-              // Use pre-loaded fortifications (0 DB calls — already fetched in bulk)
-              const fortRecords = preloadedFortifications.get(enemyTerritory.userId) || [];
-              if (fortRecords.length > 0) {
-                const attackFeature = turf.feature(attackGeometry);
-                let overlappingLayers = 0;
-                const layersToRemove: string[] = [];
-                for (const fort of fortRecords) {
-                  try {
-                    const fortGeom = JSON.parse(fort.geometry);
-                    const fortFeature = turf.feature(fortGeom);
-                    const overlap = turf.intersect(turf.featureCollection([attackFeature as any, fortFeature as any]));
-                    if (overlap && turf.area(overlap) > 10) {
-                      overlappingLayers++;
-                      layersToRemove.push(fort.id);
-                    }
-                  } catch (_) {}
-                }
-                // Base territory counts as layer 1; each fort record adds +0.5
-                // 1 run = level 1 (stealable), 2 runs = 1.5 (stealable), 3 runs = 2.0 (fortified)
-                const fortLevel = 1 + overlappingLayers * 0.5;
-                if (fortLevel >= 2) {
-                  // Break 2 records per attack (reduces level by 1.0); battering ram breaks up to 6
-                  const layersToBreak = hasBatteringRamPower ? Math.min(overlappingLayers, 6) : Math.min(overlappingLayers, 2);
-                  console.log(`[COMPETITION] FORTIFICATION level ${fortLevel} — breaking ${layersToBreak} layer(s) from ${enemyTerritory.userId}`);
-                  // BATCH: accumulate fortification deletes instead of individual calls
-                  for (let i = 0; i < layersToBreak && i < layersToRemove.length; i++) {
-                    pendingFortificationDeletes.push(layersToRemove[i]);
-                  }
-                  fortressesDestroyed += layersToBreak;
-                  continue;
-                }
-              }
-            }
-          } catch (err) {
-            console.error('[TERRITORY] Error checking fortification:', err);
+      // Castles: each zone the attack touches keeps its area and loses one castle (all of them with
+      // the battering ram). Computed once per defender, whatever the number of territory rows.
+      let attackForDefender: any = attackGeometry;
+      const fortRecords = preloadedFortifications.get(enemyTerritory.userId) || [];
+      if (fortRecords.length > 0) {
+        let defense = castleDefenses.get(enemyTerritory.userId);
+        if (!defense) {
+          const records: CastleRecord[] = [];
+          for (const fort of fortRecords) {
+            try { records.push({ id: fort.id, geometry: JSON.parse(fort.geometry), createdAt: fort.createdAt }); } catch (_) {}
           }
-        } else if (hasBulldozerPower) {
-          // Bulldozer ignores fortifications — no DB call needed
+          defense = castleDefense(attackGeometry, records, { breakAll: hasBatteringRamPower });
+          castleDefenses.set(enemyTerritory.userId, defense);
+          if (defense.destroyedIds.length > 0) {
+            pendingFortificationDeletes.push(...defense.destroyedIds);
+            fortressesDestroyed += defense.destroyedIds.length;
+            castlesLostByDefender.set(enemyTerritory.userId, defense.destroyedIds.length);
+            console.log(`[CASTLES] ${defense.destroyedIds.length} castle(s) of ${enemyTerritory.userId} destroyed in ${defense.zonesHit} zone(s)`);
+          }
         }
+        attackForDefender = attackWithoutProtected(attackGeometry, defense.protectedGeometry);
+        if (!attackForDefender) continue;
       }
       
-      // TIME BOMB: the damage is reflected back to the attacker and the defender keeps the
-      // territory, so nothing is subtracted (this used to subtract it anyway, so the defender lost
-      // the area AND the attacker got the penalty).
-      if (isCompMode && competition && enemyDefensivePowers.get(enemyTerritory.userId)?.has('time_bomb')) {
-        const bombArea = intersectionArea(attackGeometry, enemyTerritory.geometry);
-        if (bombArea > 0) {
-          console.log(`[COMPETITION] TIME BOMB triggered by ${enemyTerritory.userId}!`);
-          timeBombPenalty += bombArea;
-        }
-        continue;
-      }
-
       // Use subtractFromTerritoryDirect with pre-loaded territory (avoids redundant DB read)
       const result = await storage.subtractFromTerritoryDirect(
         enemyTerritory as any,
-        attackGeometry
+        attackForDefender
       );
 
-      if (result.stolenArea > 0) {
+      // Touching a neighbour's border leaves slivers of a few m² (geometry noise): the overlap is still
+      // removed above, but it isn't a theft (no victim, notification, metric or feed event)
+      if (result.stolenArea >= MIN_STOLEN_AREA_M2) {
+        // Check if defender has TIME BOMB — damage is reflected back to attacker (using pre-loaded data)
+        if (isCompMode && competition) {
+          const defenderPowers = enemyDefensivePowers.get(enemyTerritory.userId);
+          if (defenderPowers?.has('time_bomb')) {
+            console.log(`[COMPETITION] TIME BOMB triggered by ${enemyTerritory.userId}!`);
+            timeBombPenalty += result.stolenArea;
+            victimsToUpdate.add(enemyTerritory.userId);
+            continue;
+          }
+        }
         
         // Apply steal_boost multiplier for stats tracking
         const effectiveStolenArea = hasStealBoostPower
@@ -986,33 +1012,76 @@ export async function processTerritoryConquest(
   const fortificationMultiplier = (isCompMode && hasWallPower) ? 2 : 1;
   console.log('[TERRITORY] Merging with existing user territories...');
   
-  const result = await storage.addOrMergeTerritory(
-    userId,
-    routeId,
-    attackGeometry, // Use power-expanded geometry if applicable
-    userTerritories,
-    fortificationMultiplier
-  );
+  // Zones kept by their castles stay with their owner: the attacker doesn't get them either
+  let gainedGeometry: any = attackGeometry;
+  for (const defense of castleDefenses.values()) {
+    if (!defense.protectedGeometry) continue;
+    gainedGeometry = attackWithoutProtected(gainedGeometry, defense.protectedGeometry);
+    if (!gainedGeometry) break;
+  }
+  if (!gainedGeometry) {
+    console.log('[CASTLES] The whole run was inside castle zones: nothing gained');
+  }
+
+  const result = gainedGeometry
+    ? await storage.addOrMergeTerritory(
+      userId,
+      routeId,
+      gainedGeometry, // power-expanded geometry if applicable, without castle zones
+      userTerritories,
+      fortificationMultiplier
+    )
+    : {
+      territory: userTerritories[0] ?? null,
+      totalArea: await storage.getUserTotalAreaFromTerritories(userId),
+      newArea: 0,
+      existingArea: 0,
+      fortificationLayers: 0,
+      fortificationArea: 0,
+    };
 
   // In competition mode, new territory is worth 1.5x
   const effectiveNewArea = isCompMode ? result.newArea * 1.5 : result.newArea;
 
-  // Step 3: Update user's total area (accounting for time bomb penalty and new territory bonus)
-  let finalTotalArea = result.totalArea;
+  // Step 3: users.total_area is always the real territory. The competition score adds a bonus kept
+  // apart (competition_stats.bonus_area): +50% of the new area, minus time bombs. Mixing it into
+  // total_area made it vanish at the next recount of the territory.
+  const finalTotalArea = result.totalArea;
+  let competitionBonus = 0;
   if (isCompMode && result.newArea > 0) {
-    // Add the 50% bonus for truly new territory
-    const newTerritoryBonus = result.newArea * 0.5;
-    finalTotalArea += newTerritoryBonus;
-    console.log(`[COMPETITION] New territory bonus: +${(newTerritoryBonus/1e6).toFixed(4)} km² (1.5x on ${(result.newArea/1e6).toFixed(4)} km² new area)`);
+    competitionBonus += result.newArea * 0.5;
+    console.log(`[COMPETITION] New territory bonus: +${(result.newArea * 0.5 / 1e6).toFixed(4)} km² (1.5x on ${(result.newArea/1e6).toFixed(4)} km² new area)`);
   }
   if (result.fortificationLayers > 0) {
     console.log(`[COMPETITION] Fortification: ${result.fortificationLayers} layer(s) added (multiplier: ${fortificationMultiplier}x)`);
   }
-  if (timeBombPenalty > 0) {
-    finalTotalArea = Math.max(0, finalTotalArea - timeBombPenalty);
+  if (isCompMode && timeBombPenalty > 0) {
+    competitionBonus -= timeBombPenalty;
     console.log(`[COMPETITION] Time bomb penalty applied: -${(timeBombPenalty/1e6).toFixed(4)} km²`);
   }
   await storage.updateUserTotalArea(userId, finalTotalArea);
+
+  // The zones this run went through are defended again: they stop wearing away right away
+  try {
+    const footprint = routeCoordinates && routeCoordinates.length >= 2
+      ? defendedFootprint([routeCoordinates])
+      : attackGeometry;
+    await storage.clearDefendedFromDecay(userId, footprint);
+  } catch (error) {
+    console.error('[DECAY] Could not clear defended zones (non-critical):', error);
+  }
+
+  // Castles that fell: their owners are told (they kept the zone this time)
+  if (env && castlesLostByDefender.size > 0 && !isLateImport) {
+    try {
+      const { notifyCastlesDestroyed } = await import('./notifications');
+      for (const [defenderId, destroyed] of [...castlesLostByDefender].slice(0, 5)) {
+        await notifyCastlesDestroyed(storage, env, defenderId, userId, destroyed, castleDefenses.get(defenderId)?.remaining ?? 0);
+      }
+    } catch (error) {
+      console.error('[CASTLES] Notification failed (non-critical):', error);
+    }
+  }
 
   // Step 4: Send deferred emails/notifications (non-critical, best-effort)
   // CAP: Only send notifications for the top MAX_NOTIFICATIONS victims (by stolen area) to prevent subrequest explosion
@@ -1036,24 +1105,26 @@ export async function processTerritoryConquest(
 
       for (const notif of cappedNotifs) {
         try {
-          const emailService = emailServiceFromEnv(env, env.WORKER_URL);
-          
-          await emailService.sendTerritoryConqueredEmail(
-            notif.victimEmail,
-            attacker.name,
-            attacker.username,
-            notif.stolenArea
-          );
-          
-          await emailService.recordNotification(
-            storage,
-            notif.victimId,
-            'territory_conquered',
-            userId,
-            `¡${attacker.name} te conquistó ${formatAreaNotification(notif.stolenArea)}!`,
-            `${attacker.name} (@${attacker.username}) ha conquistado ${formatAreaNotification(notif.stolenArea)} de tu territorio.`,
-            notif.stolenArea
-          );
+          // Respect "Avisos de territorio" in the email preferences
+          const prefs = await storage.getEmailPreferences(notif.victimId);
+          if (!prefs || prefs.territoryConqueredNotifications) {
+            const emailService = emailServiceFromEnv(env, env.WORKER_URL);
+            await emailService.sendTerritoryConqueredEmail(
+              notif.victimEmail,
+              attacker.name,
+              attacker.username,
+              notif.stolenArea
+            );
+            await emailService.recordNotification(
+              storage,
+              notif.victimId,
+              'territory_conquered',
+              userId,
+              `¡${attacker.name} te conquistó ${formatAreaNotification(notif.stolenArea)}!`,
+              `${attacker.name} (@${attacker.username}) ha conquistado ${formatAreaNotification(notif.stolenArea)} de tu territorio.`,
+              notif.stolenArea
+            );
+          }
         } catch (emailErr) {
           console.error('[TERRITORY] Failed to send conquest email:', emailErr);
         }
@@ -1089,8 +1160,24 @@ export async function processTerritoryConquest(
     if (routeCoordinates && routeCoordinates.length > 0) {
       try {
         const activeTreasures = await storage.getActiveTreasures(competition.id);
+        // Sample every 5th coordinate to reduce computation
+        const sampledCoords = routeCoordinates.filter((_, i) => i % 5 === 0);
+        
         // First pass: identify treasures within range (pure computation, 0 DB calls)
-        const treasuresToCollect = treasuresAlongRoute(activeTreasures, routeCoordinates);
+        const treasuresToCollect: typeof activeTreasures = [];
+        for (const treasure of activeTreasures) {
+          for (const coord of sampledCoords) {
+            const dist = turf.distance(
+              turf.point([coord[1], coord[0]]),
+              turf.point([treasure.lng, treasure.lat]),
+              { units: 'meters' }
+            );
+            if (dist <= 250) {
+              treasuresToCollect.push(treasure);
+              break;
+            }
+          }
+        }
         
         // Second pass: collect each treasure atomically (must be sequential for atomicity)
         // but batch the power creation and feed events after
@@ -1187,10 +1274,11 @@ export async function processTerritoryConquest(
         areaStolen: totalStolenArea,
         treasures: treasuresCollected.length,
         ranTogether: ranTogetherWith.length,
+        bonusArea: competitionBonus,
       });
-      // Sync totalArea to competition stats (includes 1.5x new-territory bonus)
+      // Score = territory + bonus, for the runner and for everyone who lost territory to the run
       try {
-        await storage.updateCompetitionStats(competition.id, userId, { totalArea: finalTotalArea });
+        await storage.syncCompetitionAreas(competition.id, [userId, ...victimsToUpdate]);
       } catch (_) {}
       // Fix: compute truly unique victims from conquest_metrics (not per-run)
       try {
@@ -1215,6 +1303,7 @@ export async function processTerritoryConquest(
     fortressesDestroyed,
     fortificationLayers: result.fortificationLayers,
     fortificationArea: result.fortificationArea,
+    castleDefenderIds: [...castlesLostByDefender.keys()],
   };
 }
 
@@ -1232,9 +1321,76 @@ function safeUnion(geomA: any, geomB: any): any | null {
   }
 }
 
+/**
+ * After the user deletes a run: removes from their territory the area only that run covered.
+ * Area also covered by their other runs stays, and area other users stole from them is NOT given
+ * back (rebuilding from all remaining runs did, and left it overlapping the thief's territory).
+ * `route` is the deleted run (loaded before deleting it).
+ */
+export async function removeRouteFromTerritory(
+  storage: WorkerStorage,
+  userId: string,
+  route: { id: string; coordinates: any },
+): Promise<void> {
+  const parse = (value: any): [number, number][] => {
+    if (Array.isArray(value)) return value as [number, number][];
+    if (typeof value === 'string') {
+      try { return JSON.parse(value); } catch { return []; }
+    }
+    return [];
+  };
+  try { await storage.deleteFortificationsByRouteId(route.id); } catch (_) {}
+
+  const deletedCoords = parse(route.coordinates);
+  const deletedPoly = deletedCoords.length >= 10 ? routeToEnclosedPolygon(deletedCoords, 150) : null;
+  if (!deletedPoly) return;
+  const box = geometryBbox(deletedPoly.geometry);
+
+  // Union of the user's other runs that can overlap the deleted one (their bounding boxes touch)
+  let covered: any = null;
+  for (const other of await storage.getRoutesByUserIdChronological(userId)) {
+    if (other.id === route.id) continue;
+    const coords = parse(other.coordinates);
+    if (coords.length < 10 || !box) continue;
+    let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+    for (const [lat, lng] of coords) {
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+    }
+    if (minLng > box[2] || maxLng < box[0] || minLat > box[3] || maxLat < box[1]) continue;
+    if (!checkRunPlausibility({ ...other, coordinates: coords }).ok) continue;
+    const poly = routeToEnclosedPolygon(coords, 150);
+    if (!poly) continue;
+    covered = covered ? (safeUnion(covered, poly.geometry) ?? covered) : poly.geometry;
+  }
+
+  let onlyThisRun: any = deletedPoly.geometry;
+  if (covered) {
+    try {
+      const difference = turf.difference(turf.featureCollection([turf.feature(deletedPoly.geometry) as any, turf.feature(covered) as any]));
+      onlyThisRun = difference ? difference.geometry : null;
+    } catch (error) {
+      console.error('[DELETE ROUTE] Could not subtract the other runs:', error);
+    }
+  }
+  if (onlyThisRun) {
+    for (const territory of await storage.getTerritoriesForUsers([userId])) {
+      await storage.subtractFromTerritoryDirect(territory as any, onlyThisRun);
+    }
+  }
+
+  await storage.updateUserTotalArea(userId, await storage.getUserTotalAreaFromTerritories(userId));
+  const competition = await storage.getActiveCompetition();
+  if (competition && isCompetitionActive(competition)) {
+    await storage.syncCompetitionAreas(competition.id, [userId]);
+  }
+}
+
 // Rebuild territories for a user from all their remaining routes
 // Used after route deletion to recalculate territory accurately
-// SAFE: computes full geometry before replacing anything
+// SAFE: computes full geometry before deleting anything
 export async function reprocessUserTerritories(
   storage: WorkerStorage,
   userId: string
@@ -1278,66 +1434,22 @@ export async function reprocessUserTerritories(
   }
 
   if (currentGeometry) {
-    // The union of the user's routes also covers land that rivals stole from them afterwards.
-    // Without this the user got it back on every route deletion and both players then "owned"
-    // the same streets on the map.
-    currentGeometry = await subtractRivalTerritories(storage, userId, currentGeometry);
-  }
-
-  if (currentGeometry) {
     const totalArea = turf.area(currentGeometry);
     
     // Safety check: only proceed if the rebuilt area seems reasonable
     if (totalArea > 0 && isFinite(totalArea)) {
-      // Replaces the territories and updates users.total_area in one transaction
+      // Now safe to delete and replace
+      await storage.deleteTerritoriesByUserId(userId);
       await storage.updateTerritoryGeometry(userId, null, currentGeometry, totalArea);
+      await storage.updateUserTotalArea(userId, totalArea);
       console.log(`[REPROCESS] Rebuilt territory for user ${userId}: ${processedCount} routes, ${(totalArea/1000000).toFixed(4)} km²`);
     } else {
       console.error(`[REPROCESS] Invalid rebuilt area (${totalArea}), not replacing territories`);
     }
   } else {
-    // No valid routes (or everything is held by rivals now) — safe to clear
+    // No valid routes — safe to clear
     await storage.deleteTerritoriesByUserId(userId);
     await storage.updateUserTotalArea(userId, 0);
-  }
-}
-
-/**
- * Removes from `geometry` the land other players hold now: friends, or everyone during a
- * competition (the players who can steal from `userId`). Players who ran together with the user
- * are left out: they share the land of those runs on purpose. Returns null when nothing is left.
- */
-async function subtractRivalTerritories(storage: WorkerStorage, userId: string, geometry: any): Promise<any | null> {
-  try {
-    const competition = await storage.getActiveCompetition();
-    const isCompMode = !!(competition && isCompetitionActive(competition));
-    const [friendIds, coRunners] = await Promise.all([storage.getFriendIds(userId), storage.getCoRunnerIds(userId)]);
-    const rivalTerritories = isCompMode
-      ? await storage.getAllTerritories()
-      : await storage.getTerritoriesForUsers(friendIds);
-
-    let remaining = geometry;
-    let remainingBbox = geometryBbox(remaining);
-    for (const territory of rivalTerritories) {
-      if (territory.userId === userId || coRunners.has(territory.userId)) continue;
-      const rivalGeometry = parseGeometry(territory.geometry);
-      if (!rivalGeometry) continue;
-      const rivalBbox = geometryBbox(rivalGeometry);
-      if (remainingBbox && rivalBbox && !bboxesIntersect(remainingBbox, rivalBbox)) continue;
-      try {
-        const difference = turf.difference(turf.featureCollection([turf.feature(remaining), turf.feature(rivalGeometry)]));
-        if (!difference) return null;
-        remaining = difference.geometry;
-        remainingBbox = geometryBbox(remaining);
-      } catch (err) {
-        console.error(`[REPROCESS] Could not subtract territory ${territory.id}:`, err);
-      }
-    }
-    return remaining;
-  } catch (err) {
-    // Rivals unknown: keep the plain rebuild rather than failing the deletion
-    console.error('[REPROCESS] Rival territories not subtracted:', err);
-    return geometry;
   }
 }
 
@@ -1359,10 +1471,12 @@ export async function reprocessFriendGroupTerritoriesChronologically(
   const groupUserIds = [triggerUserId, ...friendIds];
   console.log(`[FRIEND REPROCESS] Friend group: ${groupUserIds.length} users`);
 
-  // 2. Get routes from group users only, oldest first. Everything is computed in memory first:
-  // the group's territories and metrics are only replaced at the end, so a failure halfway
-  // (CPU limit, a database error) leaves the map as it was instead of empty.
-  const pendingMetrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string }> = [];
+  // 2. Wipe territories and conquest metrics for this group (batch operations)
+  await storage.deleteTerritoriesForUsers(groupUserIds);
+  await storage.resetTotalAreaForUsers(groupUserIds);
+  await storage.deleteConquestMetricsForUsers(groupUserIds);
+
+  // 3. Get routes from group users only, oldest first
   const allRoutes = await storage.getRoutesForUsersChronological(groupUserIds);
   console.log(`[FRIEND REPROCESS] ${allRoutes.length} routes to process`);
 
@@ -1405,20 +1519,16 @@ export async function reprocessFriendGroupTerritoriesChronologically(
       const routeGeometry = enclosedPoly.geometry;
       routePolygonCache.set(route.id, routeGeometry);
       const routeOwnerFriends = friendshipMap.get(route.userId) || new Set();
-      const routeBbox = geometryBbox(routeGeometry);
-      const routeFeature = toFeature(routeGeometry);
 
       // --- Steal from FRIENDS only whose territory overlaps this route ---
       for (const [otherUserId, otherGeometry] of userGeometries) {
         if (otherUserId === route.userId) continue;
         // Only steal between friends
         if (!routeOwnerFriends.has(otherUserId)) continue;
-        // Bounding boxes apart: no overlap, skip the polygon intersection
-        const otherBbox = geometryBbox(otherGeometry);
-        if (routeBbox && otherBbox && !bboxesIntersect(routeBbox, otherBbox)) continue;
 
         try {
           const otherFeature = toFeature(otherGeometry);
+          const routeFeature = toFeature(routeGeometry);
 
           const intersection = turf.intersect(turf.featureCollection([otherFeature, routeFeature]));
           if (intersection) {
@@ -1468,7 +1578,14 @@ export async function reprocessFriendGroupTerritoriesChronologically(
                 userGeometries.delete(otherUserId);
               }
 
-              pendingMetrics.push({ attackerId: route.userId, defenderId: otherUserId, areaStolen: stolenArea, routeId: route.id });
+              try {
+                await storage.recordConquestMetric(
+                  route.userId,
+                  otherUserId,
+                  stolenArea,
+                  route.id
+                );
+              } catch (_e) { /* best-effort */ }
             }
           }
         } catch (_e) {
@@ -1481,7 +1598,8 @@ export async function reprocessFriendGroupTerritoriesChronologically(
       if (existing) {
         try {
           const existingFeature = toFeature(existing);
-          const union = turf.union(turf.featureCollection([existingFeature, routeFeature]));
+          const newFeature = toFeature(routeGeometry);
+          const union = turf.union(turf.featureCollection([existingFeature, newFeature]));
           if (union) {
             userGeometries.set(route.userId, union.geometry);
           }
@@ -1496,25 +1614,18 @@ export async function reprocessFriendGroupTerritoriesChronologically(
     }
   }
 
-  // 3. Replace the group's territories and conquest metrics with the rebuilt ones
-  await storage.deleteConquestMetricsForUsers(groupUserIds);
-  for (let i = 0; i < pendingMetrics.length; i += 100) {
-    try {
-      await storage.recordConquestMetricsBatch(pendingMetrics.slice(i, i + 100));
-    } catch (err) {
-      console.error('[FRIEND REPROCESS] Conquest metrics insert failed:', err);
-    }
-  }
-  // updateTerritoryGeometry replaces the user's territories and total area in one transaction
+  // 4. Persist final geometries
   for (const [uid, geometry] of userGeometries) {
-    await storage.updateTerritoryGeometry(uid, null, geometry, turf.area(geometry));
+    const totalArea = turf.area(geometry);
+    await storage.updateTerritoryGeometry(uid, null, geometry, totalArea);
+    await storage.updateUserTotalArea(uid, totalArea);
   }
 
-  // Users in the group with no territory left
-  const usersWithoutTerritory = groupUserIds.filter(uid => !userGeometries.has(uid));
-  if (usersWithoutTerritory.length > 0) {
-    await storage.deleteTerritoriesForUsers(usersWithoutTerritory);
-    await storage.resetTotalAreaForUsers(usersWithoutTerritory);
+  // Users in the group with no routes left
+  for (const uid of groupUserIds) {
+    if (!userGeometries.has(uid)) {
+      await storage.updateUserTotalArea(uid, 0);
+    }
   }
 
   console.log('[FRIEND REPROCESS] Chronological reprocessing complete');
@@ -2302,6 +2413,31 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // Upload avatar image
+  // Profile picture as an image, for the picture shown in notifications (the notification extension has
+  // no session). Avatars are already public through /api/leaderboard; ids are random.
+  app.get('/api/users/:userId/avatar', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const user = await storage.getUser(c.req.param('userId'));
+      const avatar = user?.avatar;
+      if (!avatar) return c.json({ error: 'No avatar' }, 404);
+      if (/^https?:\/\//.test(avatar)) return c.redirect(avatar, 302);
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/is.exec(avatar);
+      if (!match) return c.json({ error: 'No avatar' }, 404);
+      // Native decoding: a byte-by-byte loop over a picture of megabytes went over the CPU limit
+      const bytes = new Uint8Array(Buffer.from(match[2], 'base64'));
+      return new Response(bytes, {
+        headers: {
+          'Content-Type': match[1],
+          // The URL carries a version (?v=), so a new picture gets a new URL
+          'Cache-Control': 'public, max-age=86400',
+        },
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.post('/api/user/avatar', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
@@ -2388,7 +2524,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  app.get('/api/leaderboard', async (c) => {
+  app.get('/api/leaderboard', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -2438,6 +2574,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
         }
       }
       delete body.source;
+
+      // Time and altitude of each point (arrays parallel to the coordinates), kept only when they match
+      const pointCount = Array.isArray(body.coordinates) ? body.coordinates.length : -1;
+      for (const key of ['pointTimes', 'altitudes']) {
+        const values = body[key];
+        if (Array.isArray(values) && values.length === pointCount && values.every((v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v)))) {
+          body[key] = JSON.stringify(values.map((v: number | null) => (v === null ? null : Math.round(v * 10) / 10)));
+        } else {
+          delete body[key];
+        }
+      }
 
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
@@ -2541,7 +2688,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
               if (conquestResult.ranTogetherWith.length > 0) {
                 await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
               }
-              await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, conquestResult, false, earlyFeedEventId);
+              if (!conquestResult.alreadyProcessed) {
+                await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, conquestResult, false, earlyFeedEventId);
+              }
             }
           } catch (fallbackErr) {
             console.error('[QUEUE FALLBACK] Inline territory processing failed:', fallbackErr);
@@ -2620,12 +2769,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);
 
-      // Rebuild territories after delete — smart reprocess like Polar delete
-      // SAFETY: Only reprocess the affected user to avoid CPU timeout (error 1102).
-      // Friend-group reprocessing is too expensive and can wipe all territory data.
+      // Remove from the territory what only this run covered (stolen area is not given back)
       try {
-        console.log('[DELETE ROUTE] Reprocessing user territories only (safe mode)');
-        await reprocessUserTerritories(storage, userId);
+        await removeRouteFromTerritory(storage, userId, route);
       } catch (e) {
         console.error('[DELETE ROUTE] Error reprocessing territories:', e);
       }
@@ -3105,6 +3251,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
 
+      // Twice a day: fortifications older than 14 days stop counting and are deleted
+      try {
+        const purged = await storage.purgeExpiredFortifications();
+        if (purged > 0) console.log(`[FORTIFICATIONS] Purged ${purged} expired records`);
+      } catch (error) {
+        console.error('[FORTIFICATIONS] Purge failed:', error);
+      }
+
       const { checkAndSendInactivityReminders } = await import('./inactivityReminders');
       const result = await checkAndSendInactivityReminders(storage, c.env);
 
@@ -3284,7 +3438,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
 
           // DEDUPLICATE: Check if a route already exists for this user at this time/distance
-          let route = await storage.findSimilarRoute(userId, startedAtStr, activity.distance);
+          let route = await storage.findRouteByDateAndDistance(userId, startedAtStr, activity.distance);
           let routeAction = 'reused_existing';
 
           if (!route) {
@@ -3445,12 +3599,32 @@ export function registerRoutes(app: Hono<AppEnv>) {
     return c.json({ error: `Fase desconocida: ${phase}. Usa: diagnose, cleanup, process, reprocess, reset` }, 400);
   });
 
+  // Runs of a user: your own, or a friend's (without the stretch near their home). Anyone else's GPS
+  // tracks aren't served: they show where people live and run.
   app.get('/api/routes/:userId', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
+      const viewerId = c.get('authUserId');
+      if (userId !== viewerId) {
+        const isFriend = await storage.checkFriendship(viewerId, userId);
+        if (!isFriend) return c.json({ error: 'Solo puedes ver las carreras de tus amigos' }, 403);
+      }
       const routes = await storage.getRoutesByUserId(userId);
+      if (userId !== viewerId) {
+        return c.json(routes.map((route: any) => {
+          const coords = Array.isArray(route.coordinates) ? route.coordinates : [];
+          const range = visibleRange(coords);
+          const slice = (values: unknown) => (Array.isArray(values) && range ? values.slice(range[0], range[1] + 1) : null);
+          return {
+            ...route,
+            coordinates: range ? coords.slice(range[0], range[1] + 1) : [],
+            pointTimes: slice(route.pointTimes),
+            altitudes: slice(route.altitudes),
+          };
+        }));
+      }
       return c.json(routes);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -3528,11 +3702,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Parse metadata for victims and treasures
       let victims: any[] = [];
       let treasuresCollected: any[] = [];
+      let castlesBuilt = 0;
+      let castlesDestroyed = 0;
       if (feedEvent.metadata) {
         try {
           const meta = JSON.parse(feedEvent.metadata);
           victims = meta.victims || [];
           treasuresCollected = meta.treasures || [];
+          castlesBuilt = Number(meta.fortificationLayers) || 0;
+          castlesDestroyed = Number(meta.fortressesDestroyed) || 0;
         } catch (_) {}
       }
       // The activity event's own area_stolen column is never filled: the stolen total is the
@@ -3549,6 +3727,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         duration: feedEvent.duration || 0,
         victims,
         treasuresCollected,
+        castlesBuilt,
+        castlesDestroyed,
       });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -3612,99 +3792,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
         parentId: parentId || null,
       });
 
-      // Send push notifications (non-blocking)
-      c.executionCtx.waitUntil((async () => {
-        try {
-          const { sendPushToUser } = await import('./pushHelper');
-          const commenter = await storage.getUser(userId);
-          const commenterName = commenter?.name || 'Alguien';
-          const notifiedUserIds = new Set<string>([userId]); // track who we already notified
-
-          // Notify event owner
-          const event = await storage.getFeedEvent(eventId);
-          if (event && event.userId !== userId) {
-            notifiedUserIds.add(event.userId);
-            const subs = await storage.getPushSubscriptionsByUserId(event.userId);
-            if (subs.length > 0) {
-              await sendPushToUser(
-                subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
-                {
-                  title: `💬 ${commenterName} comentó tu actividad`,
-                  body: content.trim().substring(0, 100),
-                  tag: 'feed-comment',
-                  data: { url: '/activity', type: 'feed_comment' },
-                },
-                c.env.VAPID_PUBLIC_KEY || '',
-                c.env.VAPID_PRIVATE_KEY || '',
-                c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-              );
-            }
-          }
-
-          // Notify parent comment author for replies
-          if (parentId) {
-            const parentComment = await storage.getFeedCommentById(parentId);
-            if (parentComment && !notifiedUserIds.has(parentComment.userId)) {
-              notifiedUserIds.add(parentComment.userId);
-              const subs = await storage.getPushSubscriptionsByUserId(parentComment.userId);
-              if (subs.length > 0) {
-                await sendPushToUser(
-                  subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
-                  {
-                    title: `💬 ${commenterName} respondió tu comentario`,
-                    body: content.trim().substring(0, 100),
-                    tag: 'feed-reply',
-                    data: { url: '/activity', type: 'feed_reply' },
-                  },
-                  c.env.VAPID_PUBLIC_KEY || '',
-                  c.env.VAPID_PRIVATE_KEY || '',
-                  c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                );
-              }
-            }
-          }
-
-          // Notify @mentioned users
-          const mentionRegex = /@([\w\u00C0-\u024F]+(?:\s[\w\u00C0-\u024F]+)?)/g;
-          const mentions = [...content.matchAll(mentionRegex)].map((m: RegExpMatchArray) => m[1]);
-          if (mentions.length > 0) {
-            const friendIds = await storage.getFriendIds(userId);
-            for (const friendId of friendIds) {
-              const friend = await storage.getUser(friendId);
-              if (!friend || notifiedUserIds.has(friend.id)) continue;
-              const friendNameLower = friend.name?.toLowerCase() || '';
-              const friendUsernameLower = friend.username?.toLowerCase() || '';
-              const isMentioned = mentions.some((m: string) => {
-                const ml = m.toLowerCase();
-                // The pattern also captures the next word ("@Ana hola" -> "Ana hola"): try the first word too
-                const firstWord = ml.split(/\s/)[0];
-                return ml === friendNameLower || ml === friendUsernameLower
-                  || firstWord === friendNameLower || firstWord === friendUsernameLower;
-              });
-              if (isMentioned) {
-                notifiedUserIds.add(friend.id);
-                const subs = await storage.getPushSubscriptionsByUserId(friend.id);
-                if (subs.length > 0) {
-                  await sendPushToUser(
-                    subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
-                    {
-                      title: `📣 ${commenterName} te mencionó en un comentario`,
-                      body: content.trim().substring(0, 100),
-                      tag: 'feed-mention',
-                      data: { url: '/activity', type: 'feed_mention' },
-                    },
-                    c.env.VAPID_PUBLIC_KEY || '',
-                    c.env.VAPID_PRIVATE_KEY || '',
-                    c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                  );
-                }
-              }
-            }
-          }
-        } catch (e) {
-          console.error('[FEED] Error sending comment notification:', e);
-        }
-      })());
+      // Push to the post's owner, the replied comment's author and the friends mentioned, after the response
+      inBackground(c, 'comment notifications', async () => {
+        const { notifyFeedComment } = await import('./notifications');
+        await notifyFeedComment(storage, c.env, { commenterId: userId, eventId, parentId: parentId || null, content });
+      });
 
       return c.json(comment);
     } catch (error: any) {
@@ -3765,7 +3857,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
           }
           if (ownerId && ownerId !== userId) {
             const { notifyReaction } = await import('./notifications');
-            await notifyReaction(storage, userId, ownerId, reactionType, targetType, c.env);
+            await notifyReaction(storage, userId, ownerId, reactionType, targetType, c.env, {
+              targetId,
+              likeCount: result.likeCount,
+            });
           }
         });
       }
@@ -3803,7 +3898,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  app.get('/api/territories', async (c) => {
+  app.get('/api/territories', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -3874,7 +3969,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Push + email to the recipient, after the response
       inBackground(c, 'friend request notifications', async () => {
         const { notifyFriendRequest } = await import('./notifications');
-        await notifyFriendRequest(storage, friendId, userId, c.env);
+        await notifyFriendRequest(storage, friendId, userId, c.env, request.id);
 
         // Send email notification
         try {
@@ -4282,6 +4377,46 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
+  // Everything the iOS widgets show (league, your week, streak, zones to defend, light territory map)
+  app.get('/api/widget/summary', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const { widgetSummary } = await import('./widget');
+      const summary = await widgetSummary(storage, c.env, c.get('authUserId'));
+      if (!summary) return c.json({ error: 'Usuario no encontrado' }, 404);
+      return c.json(summary);
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // This week's ranking among friends (Monday 00:00 Madrid onwards): territory conquered, km and runs.
+  app.get('/api/leaderboard/friends/:userId/weekly', requireSelf('userId'), async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const weekStart = madridWeekStart(Date.now()).toISOString();
+      const entries = await storage.getWeeklyFriendsRanking(c.req.param('userId'), weekStart);
+      const nicknameMap = await storage.getActiveNicknamesForUsers(entries.map((entry) => entry.id));
+      return c.json({
+        weekStart,
+        entries: entries.map((entry) => {
+          const nn = nicknameMap.get(entry.id);
+          return {
+            ...toPublicUser(entry),
+            rank: entry.rank,
+            weekArea: entry.weekArea,
+            weekDistance: entry.weekDistance,
+            weekRuns: entry.weekRuns,
+            nickname: nn?.nickname || null,
+            nicknameExpiresAt: nn?.expiresAt || null,
+          };
+        }),
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.get('/api/territories/friends/:userId', requireSelf('userId'), async (c) => {
     try {
       const db = getDb(c.env);
@@ -4596,6 +4731,35 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // Notification diagnostics for the logged-in user (no secrets): is APNs configured on the server,
   // which devices are registered, and the last error Apple returned for them.
+  // Which kinds of notifications the user wants (all on until they change something)
+  app.get('/api/push/preferences', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const { PUSH_CATEGORIES } = await import('./notifications');
+      const settings = await storage.getNotificationSettings(c.get('authUserId'));
+      return c.json(Object.fromEntries(PUSH_CATEGORIES.map((category) => [category, settings[category] !== false])));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.put('/api/push/preferences', requireAuth, async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const storage = new WorkerStorage(getDb(c.env));
+      const { PUSH_CATEGORIES } = await import('./notifications');
+      const userId = c.get('authUserId');
+      const settings = await storage.getNotificationSettings(userId);
+      for (const category of PUSH_CATEGORIES) {
+        if (typeof body?.[category] === 'boolean') settings[category] = body[category];
+      }
+      await storage.setNotificationSettings(userId, settings);
+      return c.json(Object.fromEntries(PUSH_CATEGORIES.map((category) => [category, settings[category] !== false])));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.get('/api/push/status', requireAuth, async (c) => {
     try {
       const userId = c.get('authUserId');
@@ -4987,7 +5151,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
             if (activityResponse.ok) {
               const activity: any = await activityResponse.json();
               
-              if (['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+              // Only activities done after linking Strava are imported
+              const beforeConnection = startedBeforeConnection(Date.parse(activity.start_date), stravaAccount.createdAt);
+              if (beforeConnection) {
+                console.log(`[STRAVA WEBHOOK] Activity ${activity.id} started before Strava was linked: ignored`);
+              }
+              if (!beforeConnection && ['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
                 await storage.createStravaActivity({
                   stravaActivityId: activity.id,
                   userId: stravaAccount.userId,
@@ -5019,7 +5188,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                         const startedAt = startDate.toISOString();
                         const completedAt = new Date(startDate.getTime() + activity.moving_time * 1000).toISOString();
 
-                        let route = await storage.findSimilarRoute(userId, startedAt, activity.distance);
+                        let route = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
                         if (!route) {
                           route = await storage.createRoute({
                             userId,
@@ -5068,6 +5237,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
                           distance: activity.distance,
                           duration: activity.moving_time,
                           earlyFeedEventId,
+                          // The owner is told what the run conquered once the territory is processed
+                          importSource: 'strava',
                         });
 
                         // Mark as processed
@@ -5081,38 +5252,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
                         console.log(`[STRAVA WEBHOOK] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-                        // Send push notification
-                        try {
-                          const { sendPushToUser } = await import('./pushHelper');
-                          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-                          if (subscriptions.length > 0) {
-                            const distKm = (activity.distance / 1000).toFixed(1);
-                            const pushSubs = subscriptions.map((sub: any) => ({
-                              endpoint: sub.endpoint,
-                              keys: { p256dh: sub.p256dh, auth: sub.auth },
-                            }));
-                            await sendPushToUser(
-                              pushSubs,
-                              {
-                                title: '🏃 ¡Carrera registrada!',
-                                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                                tag: `strava-auto-${activity.id}`,
-                                data: { type: 'strava_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-                              },
-                              (c.env as any).VAPID_PUBLIC_KEY || '',
-                              (c.env as any).VAPID_PRIVATE_KEY || '',
-                              (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                            );
-                          }
-                        } catch (pushErr) {
-                          console.warn(`[STRAVA WEBHOOK] Push notification failed:`, pushErr);
-                        }
                       } else {
                         // Short route (<10 coords) — create route + feed event without territory
                         try {
                           const startedAt = startDate.toISOString();
                           const completedAt = new Date(startDate.getTime() + activity.moving_time * 1000).toISOString();
-                          let shortRoute = await storage.findSimilarRoute(stravaAccount.userId, startedAt, activity.distance);
+                          let shortRoute = await storage.findRouteByDateAndDistance(stravaAccount.userId, startedAt, activity.distance);
                           if (!shortRoute) {
                             shortRoute = await storage.createRoute({
                               userId: stravaAccount.userId,
@@ -5200,7 +5345,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             const completedAtStr = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
             
             // ANTI-DUPLICATE: Check if a route with same date+distance already exists
-            let route = await storage.findSimilarRoute(userId, startedAtStr, activity.distance);
+            let route = await storage.findRouteByDateAndDistance(userId, startedAtStr, activity.distance);
             if (route) {
               console.log(`[STRAVA PROCESS] Found existing route by date+distance: ${route.id} - reusing`);
             } else {
@@ -5243,43 +5388,77 @@ export function registerRoutes(app: Hono<AppEnv>) {
               console.error('[STRAVA] ❌ Early feed event creation failed:', earlyFeedErr);
             }
 
-            // Territory, treasures, feed metadata and notifications are done by the territory queue
-            // (queue-consumer.ts), like every other import: one message at a time, so two runs
-            // never steal from / merge the same territories at once.
-            let queued = false;
-            try {
-              await c.env.TERRITORY_QUEUE.send({
-                type: 'process_route_territory',
-                userId,
-                routeId: route.id,
-                startedAt: startedAtStr,
-                completedAt: completedAtStr,
-                distance: activity.distance,
-                duration: activity.duration,
-                earlyFeedEventId,
-              });
-              queued = true;
-            } catch (queueErr) {
-              console.error(`[STRAVA PROCESS] Queue enqueue failed for route ${route.id}:`, queueErr);
+            const plausibility = checkRunPlausibility({ ...route, coordinates });
+            if (!plausibility.ok) {
+              console.warn(`[STRAVA PROCESS] Route ${route.id} doesn't count for territory: ${plausibility.reason} (${plausibility.speedKmh.toFixed(1)} km/h)`);
             }
+            const enclosedPoly = plausibility.ok ? routeToEnclosedPolygon(coordinates, 150) : null;
 
-            await storage.updateStravaActivity(activity.id, {
-              processed: true,
-              processedAt: new Date(),
-              routeId: route.id,
-            });
+            if (enclosedPoly) {
+              // Pass env=undefined to skip inline notifications (saves subrequests)
+              const conquestResult = await processTerritoryConquest(
+                storage,
+                userId,
+                route.id,
+                enclosedPoly.geometry,
+                undefined, // skip notifications to reduce subrequests
+                startedAtStr,
+                completedAtStr,
+                coordinates
+              );
 
-            results.push({
-              activityId: activity.stravaActivityId,
-              routeId: route.id,
-              queued,
-            });
+              // Save ran together info to the route
+              if (conquestResult.ranTogetherWith.length > 0) {
+                await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
+              }
+
+              // Mark as processed BEFORE feed events
+              await storage.updateStravaActivity(activity.id, {
+                processed: true,
+                processedAt: new Date(),
+                routeId: route.id,
+                territoryId: conquestResult.territory?.id ?? null,
+              });
+
+              results.push({ 
+                activityId: activity.stravaActivityId, 
+                routeId: route.id, 
+                territoryId: conquestResult.territory?.id ?? null,
+                metrics: {
+                  totalArea: conquestResult.totalArea,
+                  newAreaConquered: conquestResult.newAreaConquered,
+                  areaStolen: conquestResult.areaStolen,
+                  ranTogetherWith: conquestResult.ranTogetherWith,
+                  victimsNotified: conquestResult.victimsNotified,
+                  victims: conquestResult.victims,
+                }
+              });
+
+              // Update early feed event with full conquest data
+              try {
+                if (!conquestResult.alreadyProcessed) await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, conquestResult, false, earlyFeedEventId);
+              } catch (feedErr) {
+                console.warn(`[STRAVA PROCESS] Feed events update failed (early event already exists):`, feedErr);
+              }
+            } else {
+              // No valid polygon — update early feed event with basic data
+              try {
+                await generateFeedEvents(storage, userId, route.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] }, false, earlyFeedEventId);
+              } catch (feedErr) {
+                console.warn('[STRAVA] Feed event update failed (early event already exists):', feedErr);
+              }
+              await storage.updateStravaActivity(activity.id, { 
+                routeId: route.id, 
+                processed: true, 
+                processedAt: new Date() 
+              });
+            }
           } else {
             // Short route (<10 coords) — still create route + activity feed event
             try {
               const startedAtShort = startDate.toISOString();
               const completedAtShort = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
-              let shortRoute = await storage.findSimilarRoute(userId, startedAtShort, activity.distance);
+              let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAtShort, activity.distance);
               if (!shortRoute) {
                 shortRoute = await storage.createRoute({
                   userId: activity.userId,
@@ -5353,8 +5532,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: 'La conexión con Strava ha caducado. Vuelve a conectar Strava.' }, 409);
       }
 
-      // Fetch recent activities from Strava (last 30 days) with pagination
-      const after = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      // Fetch recent activities from Strava (last 30 days, never before Strava was linked) with pagination
+      const connectedMs = connectionTimeMs(stravaAccount.createdAt);
+      const after = Math.floor(Math.max(Date.now() - 30 * 24 * 60 * 60 * 1000, connectedMs ?? 0) / 1000);
       const STRAVA_MAX_PAGES = 3; // Max pages to fetch per invocation
       const DETAIL_FETCH_BUDGET = 10; // Max detail fetches to stay under subrequest limits
       const STRAVA_SYNC_TIMEOUT = 20000; // 20s safety limit
@@ -5853,7 +6033,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // regardless of transaction commit state. Used to reimport deleted activities.
   // SAFETY: Bounded by MAX_EXERCISES and MAX_SYNC_TIME to prevent Cloudflare Worker timeout/subrequest saturation.
   const syncPolarExercisesDirect = async (
-    polarAccount: { polarUserId: number; accessToken: string },
+    polarAccount: { polarUserId: number; accessToken: string; createdAt?: string | null },
     userId: string,
     storage: WorkerStorage
   ) => {
@@ -5918,7 +6098,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             skipped++;
             continue;
           }
-          const permanentSkipReasons = ['before_competition', 'excluded_type'];
+          const permanentSkipReasons = ['before_competition', 'before_connection', 'excluded_type'];
           if (permanentSkipReasons.includes(existing.skipReason)) {
             // Permanently skipped — don't count against exercise limit
             skipped++;
@@ -5959,7 +6139,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             }
             // Only re-evaluate fixable skip reasons
             if (dupCheck && dupCheck.skipReason) {
-              const permanentSkipReasons = ['before_competition', 'excluded_type'];
+              const permanentSkipReasons = ['before_competition', 'before_connection', 'excluded_type'];
               if (permanentSkipReasons.includes(dupCheck.skipReason)) {
                 console.log(`[DIRECT SYNC]    ⏭️  Permanently skipped by attributes (${dupCheck.skipReason})`);
                 skipped++;
@@ -6010,6 +6190,21 @@ export function registerRoutes(app: Hono<AppEnv>) {
             if (activityDate < new Date(COMPETITION_MIN_DATE)) {
               console.log(`[DIRECT SYNC]    ❌ Activity before competition start (${startTime})`);
               await saveSkipped('before_competition');
+              skipped++;
+              continue;
+            }
+          }
+
+          // Only exercises done after linking Polar are imported (start_time is local time + utc offset)
+          if (startTime) {
+            const offsetMinutes = Number(exercise.start_time_utc_offset);
+            const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(String(startTime));
+            const startMs = !hasZone && Number.isFinite(offsetMinutes)
+              ? Date.parse(`${startTime}Z`) - offsetMinutes * 60 * 1000
+              : new Date(startTime).getTime();
+            if (startedBeforeConnection(startMs, polarAccount.createdAt)) {
+              console.log(`[DIRECT SYNC]    ❌ Activity before Polar was linked (${startTime})`);
+              await saveSkipped('before_connection');
               skipped++;
               continue;
             }
@@ -6132,7 +6327,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   const autoSyncPolarUser = async (
     env: Env,
     storage: WorkerStorage,
-    account: { userId: string; polarUserId: number; accessToken: string },
+    account: { userId: string; polarUserId: number; accessToken: string; createdAt?: string | null },
     deadline: number,
   ): Promise<{ imported: number; newActivities: number; processed: number }> => {
     const userId = account.userId;
@@ -6178,7 +6373,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         try {
           const startedAt = startDate.toISOString();
           const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
-          let shortRoute = await storage.findSimilarRoute(userId, startedAt, activity.distance);
+          let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
           if (!shortRoute) {
             shortRoute = await storage.createRoute({
               userId,
@@ -6205,7 +6400,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
         let route = activity.routeId ? await storage.getRouteById(activity.routeId) : null;
         if (!route) {
-          route = await storage.findSimilarRoute(userId, startedAt, activity.distance);
+          route = await storage.findRouteByDateAndDistance(userId, startedAt, activity.distance);
         }
         if (!route) {
           route = await storage.createRoute({
@@ -6251,6 +6446,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
           distance: activity.distance,
           duration: activity.duration,
           earlyFeedEventId,
+          // The owner is told what the run conquered once the territory is processed
+          importSource: 'polar',
         });
 
         await storage.updatePolarActivity(activity.id, {
@@ -6262,32 +6459,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
         processed++;
         console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-        // 3. Send push notification to user about the new activity
-        try {
-          const { sendPushToUser } = await import('./pushHelper');
-          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-          if (subscriptions.length > 0) {
-            const distKm = (activity.distance / 1000).toFixed(1);
-            const pushSubs = subscriptions.map((sub: any) => ({
-              endpoint: sub.endpoint,
-              keys: { p256dh: sub.p256dh, auth: sub.auth },
-            }));
-            await sendPushToUser(
-              pushSubs,
-              {
-                title: '🏃 ¡Carrera registrada!',
-                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                tag: `polar-auto-${activity.id}`,
-                data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-              },
-              env.VAPID_PUBLIC_KEY || '',
-              env.VAPID_PRIVATE_KEY || '',
-              env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-            );
-          }
-        } catch (pushErr) {
-          console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
-        }
       } catch (procErr) {
         console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
       }
@@ -6476,7 +6647,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         let matchedRoute = await storage.findRouteByAttributes(userId, activity.name, activity.distance);
         // Si no se encuentra, buscar por fecha y distancia (por si ha sido renombrada)
         if (!matchedRoute && activity.startDate) {
-          matchedRoute = await storage.findSimilarRoute(userId, activity.startDate, activity.distance);
+          matchedRoute = await storage.findRouteByDateAndDistance(userId, activity.startDate, activity.distance);
         }
         if (matchedRoute) {
           routeId = matchedRoute.id;
@@ -6485,6 +6656,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
           console.log(`[DELETE] No matching route found for activity ${activityId}`);
         }
       }
+
+      // The deleted run, for removing its area from the territory afterwards
+      const deletedRoute = routeId ? await storage.getRouteById(routeId) : null;
 
       // If we have a route, perform consistent cleanup similar to the /api/routes/:routeId handler
       if (routeId) {
@@ -6514,11 +6688,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         console.log(`[DELETE] Polar activity ${activityId} deleted (no route attached)`);
       }
 
-      // Rebuild territories after delete.
-      // SAFETY: Only reprocess the affected user to avoid CPU timeout (error 1102).
+      // Remove from the territory what only this run covered (stolen area is not given back)
       try {
-        console.log('[DELETE] Reprocessing user territories only (safe mode)');
-        await reprocessUserTerritories(storage, userId);
+        if (deletedRoute) await removeRouteFromTerritory(storage, userId, deletedRoute);
       } catch (e) {
         console.error('Error reprocessing territories after delete:', e);
       }
@@ -6633,7 +6805,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             try {
               const startedAtShort = startDate.toISOString();
               const completedAtShort = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
-              let shortRoute = await storage.findSimilarRoute(userId, startedAtShort, activity.distance);
+              let shortRoute = await storage.findRouteByDateAndDistance(userId, startedAtShort, activity.distance);
               if (!shortRoute) {
                 shortRoute = await storage.createRoute({
                   userId: activity.userId,
@@ -6667,7 +6839,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           }
           // ANTI-DUPLICATE: Check if a route with same date+distance already exists
           if (!route) {
-            route = await storage.findSimilarRoute(userId, startedAtStr, activity.distance);
+            route = await storage.findRouteByDateAndDistance(userId, startedAtStr, activity.distance);
             if (route) {
               console.log(`[PROCESS] Found existing route by date+distance: ${route.id} - reusing to avoid duplicate`);
             }
@@ -6953,27 +7125,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
       try {
         const sender = await storage.getUser(senderId);
         if (sender) {
-          const subs = await storage.getPushSubscriptionsByUserId(recipientId);
-          if (subs.length > 0) {
-            const { sendPushToUser } = await import('./pushHelper');
-            const pushSubs = subs.map(s => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }));
-            const areaText = areaStolen ? formatAreaNotification(areaStolen) : null;
-            const bodyText = areaText 
-              ? `${sender.name} te ha robado ${areaText} y te ha enviado una foto` 
-              : `${sender.name} te ha enviado una foto de conquista`;
-            await sendPushToUser(
-              pushSubs,
-              {
-                title: '📸 ¡Foto de conquista!',
-                body: bodyText,
-                tag: 'ephemeral-photo',
-                data: { url: '/', type: 'ephemeral-photo', photoId: photo.id },
-              },
-              c.env.VAPID_PUBLIC_KEY || '',
-              c.env.VAPID_PRIVATE_KEY || '',
-              c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-            );
-          }
+          const { pushToUser, formatArea, personImage } = await import('./notifications');
+          await pushToUser(storage, c.env, recipientId, 'social', {
+            image: personImage(c.env, sender),
+            title: `📸 ${sender.name} te ha enviado una foto`,
+            body: areaStolen
+              ? `Después de robarte ${formatArea(areaStolen)}. Solo podrás verla una vez.`
+              : 'Solo podrás verla una vez.',
+            tag: `ephemeral-photo-${photo.id}`,
+            threadId: 'social',
+            data: { type: 'ephemeral-photo', photoId: photo.id },
+          });
         }
       } catch (_) {}
 
@@ -7228,7 +7390,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // Helper: compute today's deterministic spawn hour for a competition
+  /** Treasures appear (and are announced) only between 9:00 and 21:00 Spanish time. */
+  const TREASURE_FIRST_HOUR = 9;
+  const TREASURE_LAST_HOUR = 20;
+
+  // Helper: compute today's deterministic spawn hour for a competition (Europe/Madrid, 9-20)
   function getTodaySpawnHour(competitionId: string): number {
     const today = new Date().toISOString().slice(0, 10);
     const seed = today + competitionId;
@@ -7236,7 +7402,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
     for (let i = 0; i < seed.length; i++) {
       hash = ((hash << 5) - hash + seed.charCodeAt(i)) | 0;
     }
-    return ((hash % 24) + 24) % 24; // 0-23 UTC
+    const span = TREASURE_LAST_HOUR - TREASURE_FIRST_HOUR + 1;
+    return TREASURE_FIRST_HOUR + (((hash % span) + span) % span);
   }
 
   // Helper: check if a treasure was already spawned today (checks ALL treasures, not just active)
@@ -7252,7 +7419,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
     const spot = pickRandomSpawnPoint();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString(); // 24h
-    const rarityLabel = pick.rarity === 'legendary' ? '💎 LEGENDARIO' : pick.rarity === 'epic' ? '✨ ÉPICO' : pick.rarity === 'rare' ? '🔵 RARO' : '🟤 COMÚN';
     const treasure = await storage.createTreasure({
       competitionId: comp.id,
       name: pick.name,
@@ -7286,29 +7452,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
       console.error(`[TREASURE ${source}] Feed event error:`, e);
     }
 
-    // Send push notifications (non-blocking)
+    // Push to the competition's participants
     try {
-      const allSubs = await storage.getAllPushSubscriptions();
-      const { sendPushToUser } = await import('./pushHelper');
-      const payload = {
-        title: `🗺️ ¡Nuevo tesoro en ${spot.zone}!`,
-        body: `Un ${pick.name} (${rarityLabel}) ha aparecido en ${spot.zone}. ¡Corre a por él!`,
-        tag: `treasure-${treasure.id}`,
-        data: { type: 'treasure_spawned', treasureId: treasure.id },
-      };
-      const subsByUser = new Map<string, any[]>();
-      for (const sub of allSubs) {
-        if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-        subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-      }
-      let sent = 0;
-      for (const [_, userSubs] of subsByUser) {
-        try {
-          await sendPushToUser(userSubs, payload, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
-          sent++;
-        } catch (_) {}
-      }
-      console.log(`[TREASURE ${source}] Notified ${sent} users`);
+      const { notifyTreasure } = await import('./notifications');
+      const sent = await notifyTreasure(storage, env, comp.id, {
+        id: treasure.id, name: pick.name, rarity: pick.rarity, zone: spot.zone, lat: spot.lat, lng: spot.lng, expiresAt,
+      });
+      console.log(`[TREASURE ${source}] Notified ${sent} participants`);
     } catch (e) {
       console.error(`[TREASURE ${source}] Push error:`, e);
     }
@@ -7337,8 +7487,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Use ?force=true to bypass hour check (admin use)
       const forceSpawn = c.req.query('force') === 'true' && isAdminRequest(c, { allowWithoutSecret: false });
       const spawnHour = getTodaySpawnHour(comp.id);
-      const currentHour = new Date().getUTCHours();
-      if (forceSpawn || currentHour >= spawnHour) {
+      const currentHour = madridTime(Date.now()).hour;
+      // Late opening of the app (cron missed): still not after 21:00
+      if (forceSpawn || (currentHour >= spawnHour && currentHour <= TREASURE_LAST_HOUR)) {
         const alreadySpawned = await wasTreasureSpawnedToday(storage, comp.id);
         if (!alreadySpawned) {
           try {
@@ -7378,31 +7529,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const active = await storage.getActiveTreasures(comp.id);
       if (active.length === 0) return c.json({ error: 'No active treasures' }, 404);
 
-      const allSubs = await storage.getAllPushSubscriptions();
-      if (allSubs.length === 0) return c.json({ error: 'No subscriptions' }, 404);
-
-      const { sendPushToUser } = await import('./pushHelper');
-      const subsByUser = new Map<string, any[]>();
-      for (const sub of allSubs) {
-        if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-        subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-      }
-
+      const { notifyTreasure } = await import('./notifications');
       let totalSent = 0;
       for (const t of active) {
-        const power = TREASURE_POWERS[t.powerType as keyof typeof TREASURE_POWERS];
-        const payload = {
-          title: `🗺️ ¡Tesoro disponible!`,
-          body: `${power?.name || t.name} (${t.rarity === 'legendary' ? '💎 LEGENDARIO' : t.rarity === 'epic' ? '✨ ÉPICO' : t.rarity === 'rare' ? '🔵 RARO' : '🟤 COMÚN'}) está en el mapa. ¡Corre a por él!`,
-          tag: `treasure-renotify-${t.id}`,
-          data: { type: 'treasure_spawned', treasureId: t.id },
-        };
-        for (const [_, userSubs] of subsByUser) {
-          try {
-            await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:runna.io.service@gmail.com');
-            totalSent++;
-          } catch (_) {}
-        }
+        totalSent += await notifyTreasure(storage, c.env, comp.id, t, { reminder: true });
       }
       return c.json({ success: true, sent: totalSent, treasures: active.length });
     } catch (error: any) {
@@ -7623,35 +7753,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
             console.error('[NICKNAME] Feed event error:', e);
           }
 
-          // Send push notification to ALL users (non-blocking via waitUntil)
-          const env = c.env;
-          (c.executionCtx as any).waitUntil?.((async () => {
-            try {
-              const allSubs = await storage.getAllPushSubscriptions();
-              const { sendPushToUser } = await import('./pushHelper');
-              const payload = {
-                title: `🎭 ¡Nuevo apodo en la competición!`,
-                body: `${attackerName} ha puesto el apodo "${nickname}" a ${targetName} durante 48h`,
-                tag: `nickname-${targetUserId}`,
-                data: { type: 'nickname_changed', targetUserId },
-              };
-              const subsByUser = new Map<string, any[]>();
-              for (const sub of allSubs) {
-                if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-                subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-              }
-              let sent = 0;
-              for (const [_, userSubs] of subsByUser) {
-                try {
-                  await sendPushToUser(userSubs, payload, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
-                  sent++;
-                } catch (_) {}
-              }
-              console.log(`[NICKNAME] Notified ${sent} users about nickname "${nickname}" for ${targetName}`);
-            } catch (e) {
-              console.error('[NICKNAME] Push error:', e);
-            }
-          })());
+          // Push to the person who got the nickname and to their friends, after the response
+          inBackground(c, 'nickname notifications', async () => {
+            const { notifyNickname } = await import('./notifications');
+            await notifyNickname(storage, c.env, { attackerName, attackerId: power.userId, targetName, targetUserId, nickname });
+          });
 
           return c.json({ success: true, message: `Apodo "${nickname}" asignado durante 48h` });
         }
@@ -7668,42 +7774,37 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // GET /api/territories/fortifications — Get all fortification records (for map overlay)
-  app.get('/api/territories/fortifications', async (c) => {
+  // GET /api/territories/fortifications — your castles and your friends' (map overlay), always on.
+  // `castles`: one entry per zone with its number of castles, a point inside it for the marker and
+  // when its castles expire. `fortifications`: the raw records grouped by user (older app versions).
+  app.get('/api/territories/fortifications', requireAuth, async (c) => {
     try {
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const comp = await storage.getActiveCompetition();
-      if (!comp || !isCompetitionActive(comp)) {
-        return c.json({ fortifications: [] });
-      }
-      const allForts = await storage.getAllFortifications();
-      // Group by userId and compute levels per zone
-      const byUser = new Map<string, Array<{ geometry: string; area: number }>>();
-      for (const fort of allForts) {
-        if (!byUser.has(fort.userId)) byUser.set(fort.userId, []);
-        byUser.get(fort.userId)!.push({ geometry: fort.geometry, area: fort.area });
-      }
-      // Return grouped data for the client
-      const fortifications: Array<{ userId: string; layers: number; records: Array<{ geometry: any; area: number }> }> = [];
-      for (const [uid, records] of byUser) {
+      const storage = new WorkerStorage(getDb(c.env));
+      const me = c.get('authUserId');
+      const userIds = [me, ...(await storage.getFriendIds(me))];
+      // Castle zones are worked out in the queue and cached per user (see derived.ts): the ones out of
+      // date are shown as they were and refreshed in the background
+      const { castleZonesOfUsers, requestDerivedRefresh } = await import('./derived');
+      const { zones: zonesByUser, stale } = await castleZonesOfUsers(storage, userIds);
+      if (stale.length > 0) await requestDerivedRefresh(c.env, stale);
+      const castles: any[] = [];
+      const fortifications: any[] = [];
+      for (const [uid, zones] of zonesByUser) {
+        for (const zone of zones) castles.push({ ...zone, userId: uid });
         fortifications.push({
           userId: uid,
-          layers: records.length,
-          records: records.map(r => ({
-            geometry: JSON.parse(r.geometry),
-            area: r.area,
-          })),
+          layers: zones.reduce((sum, zone) => sum + zone.layers, 0),
+          records: zones.map((zone) => ({ geometry: zone.geometry, area: zone.area })),
         });
       }
-      return c.json({ fortifications });
+      return c.json({ castles, fortifications });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
   });
 
   // GET /api/competition/participants — All users in the system (for nickname target selector etc.)
-  app.get('/api/competition/participants', async (c) => {
+  app.get('/api/competition/participants', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -7723,7 +7824,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // GET /api/competition/leaderboard — Competition leaderboard (with active nicknames)
-  app.get('/api/competition/leaderboard', async (c) => {
+  app.get('/api/competition/leaderboard', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -7850,10 +7951,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Determine today's random spawn hour
       const spawnHour = getTodaySpawnHour(comp.id);
-      const currentHour = new Date().getUTCHours();
+      const currentHour = madridTime(Date.now()).hour;
 
       if (currentHour !== spawnHour) {
-        return c.json({ skipped: true, reason: `Not spawn hour (today=${spawnHour}h UTC, now=${currentHour}h UTC)` });
+        return c.json({ skipped: true, reason: `Not spawn hour (today=${spawnHour}h, now=${currentHour}h Europe/Madrid)` });
       }
 
       // Check if a treasure was already spawned today (checks ALL treasures, not just active)
@@ -7871,6 +7972,131 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // POST /api/tasks/weekly-summary — Cron: generate weekly summary (Sundays 8PM)
+  // ===== CRON: territory decay (04:00 Europe/Madrid): one queue message per user with territory =====
+  app.post('/api/tasks/territory-decay', async (c) => {
+    try {
+      if (!(await isCronRequest(c))) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      // Nightly safety net: every total matches the user's territories
+      const synced = await storage.syncAllUserAreas();
+      if (synced > 0) console.log(`[AREAS] Fixed the total area of ${synced} user(s)`);
+      const userIds = await storage.getUserIdsWithTerritory();
+      const queue: any = (c.env as any).TERRITORY_QUEUE;
+      if (!queue) return c.json({ error: 'No queue' }, 500);
+      const messages = userIds.map((userId) => ({ body: { type: 'territory_decay', userId } }));
+      for (let i = 0; i < messages.length; i += 100) {
+        const chunk = messages.slice(i, i + 100);
+        if (typeof queue.sendBatch === 'function') await queue.sendBatch(chunk);
+        else for (const message of chunk) await queue.send(message.body);
+      }
+      return c.json({ success: true, queued: userIds.length });
+    } catch (error: any) {
+      console.error('[CRON DECAY] Error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Zones wearing away (yours and your friends') and, for you, the ones that start in two days
+  app.get('/api/territories/weak', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const me = c.get('authUserId');
+      const userIds = [me, ...(await storage.getFriendIds(me))];
+      const states = await storage.getDecayStates(userIds);
+      const rest = await storage.getRestMode(me);
+      const resting = !!rest && Date.now() < Date.parse(rest.until) && Date.now() >= Date.parse(rest.startedAt);
+      return c.json({
+        zones: states
+          .filter((state) => state.weak || (state.userId === me && state.atRisk))
+          .map((state) => ({
+            userId: state.userId,
+            weak: state.weak,
+            atRisk: state.userId === me ? state.atRisk : null,
+            lostToday: state.lostToday,
+          })),
+        resting,
+        restUntil: resting ? rest!.until : null,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Rest mode: the decay clock stops, up to REST_DAYS_PER_YEAR days a year
+  const restStatus = (rest: { startedAt: string; until: string; year: number; daysUsed: number } | null) => {
+    const now = Date.now();
+    const year = new Date(now).getUTCFullYear();
+    const used = rest && rest.year === year ? rest.daysUsed : 0;
+    const active = !!rest && now >= Date.parse(rest.startedAt) && now < Date.parse(rest.until);
+    return {
+      active,
+      startedAt: active ? rest!.startedAt : null,
+      until: active ? rest!.until : null,
+      daysLeft: Math.max(0, REST_DAYS_PER_YEAR - used),
+      maxDays: REST_DAYS_PER_YEAR,
+    };
+  };
+
+  app.get('/api/user/rest', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      return c.json(restStatus(await storage.getRestMode(c.get('authUserId'))));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  app.post('/api/user/rest', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const userId = c.get('authUserId');
+      const body = await c.req.json().catch(() => ({}));
+      const days = Math.floor(Number(body?.days));
+      const current = await storage.getRestMode(userId);
+      const status = restStatus(current);
+      if (status.active) return c.json({ error: 'Ya estás en modo descanso', ...status }, 409);
+      if (!Number.isFinite(days) || days < 1 || days > status.daysLeft) {
+        return c.json({ error: `Puedes descansar entre 1 y ${status.daysLeft} días`, ...status }, 400);
+      }
+      const now = Date.now();
+      const year = new Date(now).getUTCFullYear();
+      const used = current && current.year === year ? current.daysUsed : 0;
+      await storage.saveRestMode({
+        userId,
+        startedAt: new Date(now).toISOString(),
+        until: new Date(now + days * DAY_MS).toISOString(),
+        year,
+        daysUsed: used + days,
+      });
+      return c.json(restStatus(await storage.getRestMode(userId)));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Ends the rest early: the whole days not used are given back
+  app.delete('/api/user/rest', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const userId = c.get('authUserId');
+      const current = await storage.getRestMode(userId);
+      if (current && restStatus(current).active) {
+        const now = Date.now();
+        const unused = Math.floor((Date.parse(current.until) - now) / DAY_MS);
+        await storage.saveRestMode({
+          ...current,
+          until: new Date(now).toISOString(),
+          daysUsed: Math.max(0, current.daysUsed - unused),
+        });
+      }
+      return c.json(restStatus(await storage.getRestMode(userId)));
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
   app.post('/api/tasks/weekly-summary', async (c) => {
     try {
       if (!(await isUpstashAuthorized(c))) {
@@ -7950,25 +8176,23 @@ export function registerRoutes(app: Hono<AppEnv>) {
         data: JSON.stringify(summaryData),
       });
 
-      // Push notification to all users
+      // Personalised push to every participant: position, area, distance and the award they won
       try {
-        const allSubs = await storage.getAllPushSubscriptions();
-        const { sendPushToUser } = await import('./pushHelper');
-        const payload = {
-          title: `📊 Resumen Semanal — Semana ${weekNumber}`,
-          body: `¡El resumen de ${comp.name} está listo! Abre la app para ver los premios.`,
-          tag: `weekly-summary-${weekNumber}`,
-          data: { type: 'weekly_summary', weekNumber },
-        };
-        const subsByUser = new Map<string, any[]>();
-        for (const sub of allSubs) {
-          if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-          subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
+        const awardsByUser = new Map<string, string[]>();
+        for (const award of Object.values(summaryData.awards)) {
+          if (!award.user?.id || !award.value) continue;
+          const name = award.title.replace(/^\S+\s+/, ''); // without the emoji
+          awardsByUser.set(award.user.id, [...(awardsByUser.get(award.user.id) ?? []), name]);
         }
-        for (const [_, userSubs] of subsByUser) {
-          try { await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY!, c.env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com'); } catch (_) {}
-        }
-      } catch (_) {}
+        const { notifyWeeklySummary } = await import('./notifications');
+        await notifyWeeklySummary(storage, c.env, {
+          weekNumber,
+          ranking: byArea.map((entry) => ({ userId: entry.user.id, totalArea: entry.totalArea, totalDistance: entry.totalDistance })),
+          awardsByUser,
+        });
+      } catch (error) {
+        console.error('[WEEKLY SUMMARY] Push error:', error);
+      }
 
       return c.json({ success: true, weekNumber, summary: summaryData });
     } catch (error: any) {

@@ -106,10 +106,67 @@ import {
 } from '../../shared/schema';
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
-import { compactGeometry, geometryBbox, bboxesIntersect } from './territory';
+import { cleanGeometry, geometryBbox, hidePrivateEnds, parseNumberArray, MIN_TERRITORY_PIECE_M2 } from './territory';
+import { withoutDefended } from './decay';
 
-/** Less than this many m² taken from a territory is floating-point noise of turf.difference, not a steal. */
-const MIN_STOLEN_AREA_M2 = 1;
+/** Fortification layers kept per zone (a new run there renews the oldest). */
+export const MAX_FORTIFICATION_LAYERS = 3;
+/** Fortifications older than this no longer count and are purged. */
+export const FORTIFICATION_TTL_DAYS = 14;
+/** Pictures bigger than this (characters of the data URL, ~730 KB of image) aren't offered to the widgets. */
+export const WIDGET_AVATAR_MAX_LENGTH = 1_000_000;
+
+/** A player of the widgets' league, without their picture (`avatar` is a marker that changes with it). */
+export interface WidgetLeagueUser {
+  id: string;
+  name: string;
+  username: string;
+  color: string;
+  avatar: string | null;
+  totalArea: number;
+}
+
+export interface DecayState {
+  userId: string;
+  /** When the decay clock started for this user (nothing wears away before DECAY_GRACE_DAYS after it). */
+  trackingSince: string;
+  /** Day (YYYY-MM-DD) of the last decay pass (the queue may deliver twice). */
+  lastDay: string | null;
+  weak: any | null;
+  atRisk: any | null;
+  lostToday: number;
+  lostTotal: number;
+}
+
+export interface RestMode {
+  userId: string;
+  startedAt: string;
+  until: string;
+  year: number;
+  daysUsed: number;
+}
+
+function decayStateFromRow(row: any): DecayState {
+  const parse = (value: string | null) => { try { return value ? JSON.parse(value) : null; } catch { return null; } };
+  return {
+    userId: row.user_id,
+    trackingSince: row.tracking_since,
+    lastDay: row.last_day ?? null,
+    weak: parse(row.weak_geometry),
+    atRisk: parse(row.at_risk_geometry),
+    lostToday: Number(row.lost_today) || 0,
+    lostTotal: Number(row.lost_total) || 0,
+  };
+}
+
+/** bbox_* columns of a territory with this geometry (parsed or JSON). */
+function bboxColumns(geometry: any): { bboxMinLng: number | null; bboxMinLat: number | null; bboxMaxLng: number | null; bboxMaxLat: number | null } {
+  const parsed = typeof geometry === 'string' ? (() => { try { return JSON.parse(geometry); } catch { return null; } })() : geometry;
+  const box = parsed ? geometryBbox(parsed) : null;
+  return box
+    ? { bboxMinLng: box[0], bboxMinLat: box[1], bboxMaxLng: box[2], bboxMaxLat: box[3] }
+    : { bboxMinLng: null, bboxMinLat: null, bboxMaxLng: null, bboxMaxLat: null };
+}
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
 function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
@@ -218,6 +275,8 @@ export class WorkerStorage {
     await this.db.delete(territoryLossNotifications).where(eq(territoryLossNotifications.userId, userId));
     await this.db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, userId));
     await this.db.delete(emailPreferences).where(eq(emailPreferences.userId, userId));
+    await this.ensureNotificationTables();
+    await this.db.run(sql`DELETE FROM notification_preferences WHERE user_id = ${userId}`);
     await this.db.delete(emailNotifications).where(eq(emailNotifications.userId, userId));
     await this.db.delete(conquestMetrics).where(eq(conquestMetrics.attackerId, userId));
     await this.db.delete(conquestMetrics).where(eq(conquestMetrics.defenderId, userId));
@@ -248,7 +307,7 @@ export class WorkerStorage {
    */
   ensureSchemaUpgrades(): Promise<void> {
     if (!WorkerStorage.schemaUpgrades) {
-      WorkerStorage.schemaUpgrades = this.applySchemaUpgrades().catch((error) => {
+      WorkerStorage.schemaUpgrades = this.upgradeSchemaOnce().catch((error) => {
         WorkerStorage.schemaUpgrades = null; // retry on the next request
         console.error('[SCHEMA] Upgrade failed:', error);
       });
@@ -256,10 +315,76 @@ export class WorkerStorage {
     return WorkerStorage.schemaUpgrades;
   }
 
+  /**
+   * Fingerprint of the code that creates tables, columns and indexes at runtime: a deploy that changes
+   * any of it applies them again.
+   */
+  private static schemaFingerprint(): string {
+    const source = [
+      WorkerStorage.prototype['applySchemaUpgrades'],
+      WorkerStorage.prototype['ensureCompetitionTables'],
+      WorkerStorage.prototype['applyReadPathIndexes'],
+    ].map((method) => String(method)).join('\n');
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < source.length; index++) {
+      hash ^= source.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return `${hash.toString(16)}-${source.length}`;
+  }
+
+  /**
+   * The upgrades, the competition tables and the read-path indexes are ~40 statements, each one a
+   * subrequest to the database: run on every cold isolate they left too few of Cloudflare's 50
+   * subrequests per invocation for the request itself ("Too many subrequests", e.g. the widgets).
+   * They now run once per deploy; afterwards a cold isolate only reads the stored fingerprint.
+   */
+  private async upgradeSchemaOnce(): Promise<void> {
+    const fingerprint = WorkerStorage.schemaFingerprint();
+    try {
+      const rows = await this.db.all<{ value: string }>(sql`SELECT value FROM runtime_meta WHERE key = 'schema'`);
+      if (rows[0]?.value === fingerprint) {
+        WorkerStorage.competitionTablesEnsured = true;
+        WorkerStorage.indexesEnsured = Promise.resolve();
+        return;
+      }
+    } catch (_) { /* runtime_meta doesn't exist yet */ }
+
+    await this.applySchemaUpgrades();
+    await this.ensureCompetitionTables();
+    await this.ensureReadPathIndexes();
+    // Both swallow their errors: only remember the schema when everything was applied
+    if (!WorkerStorage.competitionTablesEnsured || !WorkerStorage.indexesEnsured) return;
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    await this.db.run(sql`INSERT INTO runtime_meta (key, value) VALUES ('schema', ${fingerprint})
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+  }
+
   private async applySchemaUpgrades(): Promise<void> {
     try {
       await this.db.run(sql`ALTER TABLE routes ADD COLUMN client_run_id TEXT`);
     } catch (_) { /* column already exists */ }
+    // Time and altitude of each point of a run
+    for (const column of ['point_times', 'altitudes']) {
+      try {
+        await this.db.run(sql.raw(`ALTER TABLE routes ADD COLUMN ${column} TEXT`));
+      } catch (_) { /* column already exists */ }
+    }
+    // Territory bounding boxes (filled in lazily for older rows, see getTerritoriesForConquest)
+    for (const column of ['bbox_min_lng', 'bbox_min_lat', 'bbox_max_lng', 'bbox_max_lat']) {
+      try {
+        await this.db.run(sql.raw(`ALTER TABLE territories ADD COLUMN ${column} REAL`));
+      } catch (_) { /* column already exists */ }
+    }
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_territories_bbox ON territories(bbox_min_lng, bbox_max_lng, bbox_min_lat, bbox_max_lat)`);
+    // Routes whose territory has been processed (the queue delivers at least once)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_territory_runs (
+      route_id TEXT PRIMARY KEY,
+      processed_at TEXT NOT NULL
+    )`);
+    try {
+      await this.db.run(sql`ALTER TABLE competition_stats ADD COLUMN bonus_area REAL NOT NULL DEFAULT 0`);
+    } catch (_) { /* column already exists, or the competition tables aren't created yet */ }
     await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_user_client_run ON routes(user_id, client_run_id)`);
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS reports (
       id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -278,6 +403,39 @@ export class WorkerStorage {
       PRIMARY KEY (blocker_id, blocked_id)
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+    // Totals left wrong (even negative) by older versions are recomputed from the territories
+    try {
+      await this.syncAllUserAreas();
+    } catch (_) { /* tables not created yet */ }
+    // Territory decay: per user, when the clock started, the zones wearing away and the ones at risk
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS territory_decay (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      tracking_since TEXT NOT NULL,
+      last_day TEXT,
+      weak_geometry TEXT,
+      at_risk_geometry TEXT,
+      lost_today REAL NOT NULL DEFAULT 0,
+      lost_total REAL NOT NULL DEFAULT 0,
+      updated_at TEXT
+    )`);
+    // Results of heavy geometry work (castle zones, the widgets' map), reused while their inputs
+    // don't change: recomputing them on every request went over the Worker's CPU limit
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS derived_cache (
+      kind TEXT NOT NULL,
+      key TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (kind, key)
+    )`);
+    // Rest mode: the decay clock stops (REST_DAYS_PER_YEAR days a year)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS rest_mode (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      until TEXT NOT NULL,
+      year INTEGER NOT NULL,
+      days_used INTEGER NOT NULL DEFAULT 0
+    )`);
     // migrations/0011_auth_attempts_password_resets.sql
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS auth_attempts (
       key TEXT PRIMARY KEY,
@@ -673,14 +831,6 @@ export class WorkerStorage {
       .orderBy(routes.completedAt); // oldest first (ASC)
   }
 
-  /** Distance and duration of every route of a user, without the (large) coordinates. */
-  async getRouteStatsByUserId(userId: string): Promise<Array<{ id: string; distance: number; duration: number }>> {
-    return await this.db
-      .select({ id: routes.id, distance: routes.distance, duration: routes.duration })
-      .from(routes)
-      .where(eq(routes.userId, userId));
-  }
-
   async getRoutesByUserIdChronologicalPaginated(userId: string, limit: number, offset: number): Promise<Route[]> {
     return await this.db
       .select()
@@ -822,6 +972,9 @@ export class WorkerStorage {
         return {
           ...route,
           coordinates: parsedCoordinates,
+          // Arrays parallel to the coordinates (null for runs without them)
+          pointTimes: parseNumberArray(route.pointTimes) as any,
+          altitudes: parseNumberArray(route.altitudes) as any,
           territory: territory || undefined,
           ranTogetherWithUsers,
         };
@@ -860,32 +1013,6 @@ export class WorkerStorage {
     return result;
   }
 
-  /**
-   * Users who ran together with `userId` at least once: listed on the user's own routes, or
-   * listing the user on theirs (the run processed second is the one that stores the pair).
-   */
-  async getCoRunnerIds(userId: string): Promise<Set<string>> {
-    const rows = await this.db
-      .select({ userId: routes.userId, ranTogetherWith: routes.ranTogetherWith })
-      .from(routes)
-      .where(and(
-        sql`${routes.ranTogetherWith} IS NOT NULL`,
-        or(eq(routes.userId, userId), sql`${routes.ranTogetherWith} LIKE ${'%"' + userId + '"%'}`),
-      ));
-    const ids = new Set<string>();
-    for (const row of rows) {
-      if (row.userId !== userId) {
-        ids.add(row.userId);
-        continue;
-      }
-      try {
-        const listed = JSON.parse(row.ranTogetherWith || '[]');
-        if (Array.isArray(listed)) for (const id of listed) if (typeof id === 'string' && id !== userId) ids.add(id);
-      } catch (_) { /* unreadable list: ignore */ }
-    }
-    return ids;
-  }
-
   async updateRouteRanTogether(routeId: string, ranTogetherWith: string[]): Promise<void> {
     await this.db
       .update(routes)
@@ -896,7 +1023,7 @@ export class WorkerStorage {
   async createTerritory(insertTerritory: InsertTerritory): Promise<Territory> {
     const [territory] = await this.db
       .insert(territories)
-      .values(insertTerritory)
+      .values({ ...insertTerritory, ...bboxColumns(insertTerritory.geometry) })
       .returning();
     return territory;
   }
@@ -1080,41 +1207,43 @@ export class WorkerStorage {
       return { updatedTerritory: territory, stolenArea: 0 };
     }
     
-    // One polygon operation instead of two: what remains is the difference, and what is stolen is
-    // the area that disappeared (an intersection followed by a difference cost twice the CPU).
-    let difference: ReturnType<typeof turf.difference>;
-    let originalArea: number;
-    try {
-      originalArea = turf.area(originalFeature);
-      difference = turf.difference(turf.featureCollection([originalFeature, subtractionFeature]));
-    } catch (err) {
-      console.error(`[TERRITORY] Could not subtract from territory ${territory.id}:`, err);
+    // Calculate the intersection (what's being stolen)
+    const intersection = turf.intersect(
+      turf.featureCollection([originalFeature, subtractionFeature])
+    );
+    
+    if (!intersection) {
+      // No overlap, return unchanged territory
       return { updatedTerritory: territory, stolenArea: 0 };
     }
-
-    if (!difference) {
+    
+    const stolenArea = turf.area(intersection);
+    
+    // Calculate the difference (what remains)
+    const difference = turf.difference(
+      turf.featureCollection([originalFeature, subtractionFeature])
+    );
+    
+    // Slivers left along the new border are dropped, vertices simplified
+    const remaining = difference ? cleanGeometry(difference.geometry) : null;
+    if (!remaining) {
       // Entire territory was conquered, delete it
       await this.db.delete(territories).where(eq(territories.id, territory.id));
-      return { updatedTerritory: null, stolenArea: originalArea };
-    }
-
-    const remainingArea = turf.area(difference);
-    const stolenArea = originalArea - remainingArea;
-    if (!(stolenArea > MIN_STOLEN_AREA_M2)) {
-      // No overlap (or only rounding noise): leave the territory untouched, no write
-      return { updatedTerritory: territory, stolenArea: 0 };
+      return { updatedTerritory: null, stolenArea };
     }
 
     // Update the territory with the remaining geometry as JSON string
+    const newArea = turf.area(remaining);
     const [updatedTerritory] = await this.db
       .update(territories)
       .set({
-        geometry: JSON.stringify(compactGeometry(difference.geometry)),
-        area: remainingArea,
+        geometry: JSON.stringify(remaining),
+        area: newArea,
+        ...bboxColumns(remaining),
       })
       .where(eq(territories.id, territory.id))
       .returning();
-
+    
     return { updatedTerritory, stolenArea };
   }
 
@@ -1137,17 +1266,13 @@ export class WorkerStorage {
     let newArea = turf.area(newGeometry);
     let existingAreaInBuffer = 0;
     const overlapGeometries: any[] = [];
-    const newBbox = geometryBbox(newGeometry);
 
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
       try {
         const parsedGeometry = safeParseGeometry(userTerritory.geometry);
         if (!parsedGeometry) continue;
-        // Far-away territory: no overlap, skip the polygon intersection
-        const territoryBbox = geometryBbox(parsedGeometry);
-        if (newBbox && territoryBbox && !bboxesIntersect(newBbox, territoryBbox)) continue;
-
+        
         const userFeature = geometryToFeature(parsedGeometry);
         const overlap = turf.intersect(
           turf.featureCollection([newFeature, userFeature])
@@ -1165,11 +1290,20 @@ export class WorkerStorage {
     // Save fortification records for overlap zones (batch insert)
     let fortificationLayers = 0;
     const fortRecords: Array<{userId: string; routeId: string; geometry: string; area: number; bboxMinLng: number; bboxMinLat: number; bboxMaxLng: number; bboxMaxLat: number}> = [];
+    const renewedFortifications: string[] = [];
     for (const overlapGeom of overlapGeometries) {
       const overlapArea = turf.area(overlapGeom);
-      if (overlapArea < 10) continue; // Skip tiny overlaps
+      if (overlapArea < MIN_TERRITORY_PIECE_M2) continue; // Skip tiny overlaps
       const bbox = turf.bbox(overlapGeom);
-      const recordsToCreate = fortificationMultiplier; // 1 normally, 2 with wall power
+      const recordsToCreate = Math.min(fortificationMultiplier, MAX_FORTIFICATION_LAYERS); // 1 normally, 2 with wall power
+      // At most MAX_FORTIFICATION_LAYERS per zone: running there again renews the oldest layers
+      try {
+        const zone = await this.getFortificationZone(userId, overlapGeom);
+        const excess = zone.length + recordsToCreate - MAX_FORTIFICATION_LAYERS;
+        if (excess > 0) renewedFortifications.push(...zone.slice(0, excess).map((record) => record.id));
+      } catch (err) {
+        console.error('[TERRITORY] Could not read the fortification zone:', err);
+      }
       for (let i = 0; i < recordsToCreate; i++) {
         fortRecords.push({
           userId, routeId,
@@ -1180,6 +1314,9 @@ export class WorkerStorage {
         });
         fortificationLayers++;
       }
+    }
+    if (renewedFortifications.length > 0) {
+      await this.deleteFortificationRecordsBatch(renewedFortifications);
     }
     if (fortRecords.length > 0) {
       try {
@@ -1219,6 +1356,11 @@ export class WorkerStorage {
       }
     }
 
+    // Tidy the union (vertices pile up run after run; slivers between runs)
+    if (mergeSucceeded) {
+      finalGeometry = cleanGeometry(finalGeometry) ?? finalGeometry;
+    }
+
     // Validate the final geometry before committing
     let finalArea: number;
     try {
@@ -1238,6 +1380,7 @@ export class WorkerStorage {
           geometry: JSON.stringify(newGeometry),
           area: newArea,
           conqueredAt: new Date(),
+          ...bboxColumns(newGeometry),
         })
         .returning();
 
@@ -1268,6 +1411,7 @@ export class WorkerStorage {
           geometry: JSON.stringify(newGeometry),
           area: newArea,
           conqueredAt: new Date(),
+          ...bboxColumns(newGeometry),
         })
         .returning();
 
@@ -1283,22 +1427,24 @@ export class WorkerStorage {
       };
     }
 
-    // === Everything validated - now safe to replace the old territories with the merged one ===
-    // Delete + insert in one batch (a single transaction): a failure between the two statements
-    // used to leave the user with no territory at all.
-    const [, [territory]] = await this.db.batch([
-      this.db.delete(territories).where(eq(territories.userId, userId)),
-      this.db
-        .insert(territories)
-        .values({
-          userId,
-          routeId,
-          geometry: JSON.stringify(compactGeometry(finalGeometry)),
-          area: finalArea,
-          conqueredAt: new Date(),
-        })
-        .returning(),
-    ]);
+    // === Everything validated - now safe to delete old and insert new ===
+    // Delete all old territories
+    await this.db
+      .delete(territories)
+      .where(eq(territories.userId, userId));
+
+    // Create new unified territory with geometry as JSON string
+    const [territory] = await this.db
+      .insert(territories)
+      .values({
+        userId,
+        routeId,
+        geometry: JSON.stringify(finalGeometry),
+        area: finalArea,
+        conqueredAt: new Date(),
+        ...bboxColumns(finalGeometry),
+      })
+      .returning();
 
     return {
       territory,
@@ -1316,23 +1462,21 @@ export class WorkerStorage {
     geometry: any,
     area: number
   ): Promise<Territory> {
-    // Replace all the user's territories with a single one holding the unified geometry, and
-    // keep users.total_area in step, in one batch (a single transaction): a failure halfway used
-    // to leave the user without territory.
-    const [, [territory]] = await this.db.batch([
-      this.db.delete(territories).where(eq(territories.userId, userId)),
-      this.db
-        .insert(territories)
-        .values({
-          userId,
-          routeId,
-          geometry: JSON.stringify(compactGeometry(geometry)),
-          area,
-          conqueredAt: new Date(),
-        })
-        .returning(),
-      this.db.update(users).set({ totalArea: area }).where(eq(users.id, userId)),
-    ]);
+    // Delete all existing territories for the user
+    await this.db.delete(territories).where(eq(territories.userId, userId));
+
+    // Create a single new territory with the unified geometry as JSON string
+    const [territory] = await this.db
+      .insert(territories)
+      .values({
+        userId,
+        routeId,
+        geometry: JSON.stringify(geometry),
+        area,
+        conqueredAt: new Date(),
+        ...bboxColumns(geometry),
+      })
+      .returning();
 
     return territory;
   }
@@ -2031,6 +2175,29 @@ export class WorkerStorage {
     return candidates.find((route) => Math.abs(route.distance - distance) <= Math.max(distance * 0.05, 50)) ?? null;
   }
 
+  async findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null> {
+    // Busca una ruta por userId, fecha de inicio y distancia aproximada (1% tolerancia)
+    // Compare by date prefix (YYYY-MM-DDTHH:MM) to avoid format mismatches (milliseconds, timezone)
+    const datePrefix = startDate.substring(0, 16); // "2026-01-15T10:30"
+    const userRoutes = await this.db
+      .select()
+      .from(routes)
+      .where(
+        and(
+          eq(routes.userId, userId),
+          sql`${routes.startedAt} LIKE ${datePrefix + '%'}`
+        )
+      );
+    for (const route of userRoutes) {
+      const distDiff = Math.abs(route.distance - distance);
+      const threshold = Math.max(distance * 0.01, 1);
+      if (distDiff <= threshold) {
+        return route;
+      }
+    }
+    return null;
+  }
+
   async getPolarActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {
     const [aggregate] = await this.db
       .select({
@@ -2518,6 +2685,112 @@ export class WorkerStorage {
       rank: i + 1,
       friendCount: friendCounts.get(friend.id) ?? 0,
     }));
+  }
+
+  /**
+   * This week's figures of the user and their friends: territory conquered (new area of each run),
+   * distance and number of runs since `since` (ISO date), best first.
+   */
+  async getWeeklyFriendsRanking(userId: string, since: string, until?: string): Promise<Array<UserWithStats & {
+    weekArea: number; weekDistance: number; weekRuns: number;
+  }>> {
+    const friends = await this.getLeaderboardFriends(userId);
+    if (friends.length === 0) return [];
+    const ids = friends.map((friend) => friend.id);
+    const rows = await this.db.all<{ user_id: string; runs: number; distance: number; area: number }>(sql`
+      SELECT r.user_id AS user_id,
+             COUNT(*) AS runs,
+             COALESCE(SUM(r.distance), 0) AS distance,
+             COALESCE(SUM((
+               SELECT MAX(COALESCE(fe.new_area, 0)) FROM feed_events fe
+               WHERE fe.route_id = r.id AND fe.event_type = 'activity'
+             )), 0) AS area
+      FROM routes r
+      WHERE r.user_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+        AND datetime(r.started_at) >= datetime(${since})
+        AND (${until ?? null} IS NULL OR datetime(r.started_at) < datetime(${until ?? null}))
+      GROUP BY r.user_id
+    `);
+    const byUser = new Map(rows.map((row) => [row.user_id, row]));
+    const entries = friends.map((friend) => {
+      const row = byUser.get(friend.id);
+      return {
+        ...friend,
+        weekArea: Number(row?.area) || 0,
+        weekDistance: Number(row?.distance) || 0,
+        weekRuns: Number(row?.runs) || 0,
+      };
+    });
+    entries.sort((a, b) => b.weekArea - a.weekArea || b.weekDistance - a.weekDistance);
+    return entries.map((entry, index) => ({ ...entry, rank: index + 1 }));
+  }
+
+  /**
+   * The widgets' league, light (same figures and order as getWeeklyFriendsRanking). The users' rows
+   * come without their pictures: `avatar` holds the whole image in base64 (up to megabytes), and
+   * reading it for you and every friend went over the Worker's CPU limit (503). A short marker that
+   * changes with the picture stands in for it (null without one, or when it's too big for a widget).
+   * This week's figures and those until `todayStart` (for yesterday's places) come from one query.
+   */
+  async getWidgetLeague(userId: string, since: string, todayStart: string): Promise<{
+    me: WidgetLeagueUser | undefined;
+    week: Array<WidgetLeagueUser & { weekArea: number; weekDistance: number; weekRuns: number; rank: number }>;
+    /** Places until `todayStart` of those who had conquered something by then. */
+    yesterdayRank: Map<string, number>;
+  }> {
+    const ids = [userId, ...(await this.getFriendIds(userId))];
+    const idList = sql.join(ids.map((id) => sql`${id}`), sql`, `);
+    const people = await this.db.all<{ id: string; name: string; username: string; color: string; total_area: number; avatar_marker: string | null }>(sql`
+      SELECT id, name, username, color, total_area,
+             CASE WHEN avatar IS NULL OR avatar = '' OR length(avatar) > ${WIDGET_AVATAR_MAX_LENGTH} THEN NULL
+                  ELSE 'v' || length(avatar) || '-' || substr(avatar, -12) END AS avatar_marker
+      FROM users WHERE id IN (${idList})
+      ORDER BY total_area DESC`);
+    const rows = await this.db.all<{ user_id: string; runs: number; distance: number; area: number; distance_before: number; area_before: number }>(sql`
+      SELECT user_id,
+             COUNT(*) AS runs,
+             COALESCE(SUM(distance), 0) AS distance,
+             COALESCE(SUM(area), 0) AS area,
+             COALESCE(SUM(CASE WHEN before_today THEN distance ELSE 0 END), 0) AS distance_before,
+             COALESCE(SUM(CASE WHEN before_today THEN area ELSE 0 END), 0) AS area_before
+      FROM (
+        SELECT r.user_id AS user_id, r.distance AS distance,
+               datetime(r.started_at) < datetime(${todayStart}) AS before_today,
+               (SELECT MAX(COALESCE(fe.new_area, 0)) FROM feed_events fe
+                WHERE fe.route_id = r.id AND fe.event_type = 'activity') AS area
+        FROM routes r
+        WHERE r.user_id IN (${idList}) AND datetime(r.started_at) >= datetime(${since})
+      )
+      GROUP BY user_id`);
+    const byUser = new Map(rows.map((row) => [row.user_id, row]));
+    const users: WidgetLeagueUser[] = people.map((person) => ({
+      id: person.id,
+      name: person.name,
+      username: person.username,
+      color: person.color,
+      avatar: person.avatar_marker,
+      totalArea: Number(person.total_area) || 0,
+    }));
+    // Best first; ties keep the order by total area (the sort is stable), as getWeeklyFriendsRanking
+    const ranked = (area: (id: string) => number, distance: (id: string) => number) =>
+      [...users].sort((a, b) => area(b.id) - area(a.id) || distance(b.id) - distance(a.id));
+    const week = ranked((id) => Number(byUser.get(id)?.area) || 0, (id) => Number(byUser.get(id)?.distance) || 0)
+      .map((user, index) => {
+        const row = byUser.get(user.id);
+        return {
+          ...user,
+          weekArea: Number(row?.area) || 0,
+          weekDistance: Number(row?.distance) || 0,
+          weekRuns: Number(row?.runs) || 0,
+          rank: index + 1,
+        };
+      });
+    const areaBefore = (id: string) => Number(byUser.get(id)?.area_before) || 0;
+    const yesterdayRank = new Map<string, number>();
+    ranked(areaBefore, (id) => Number(byUser.get(id)?.distance_before) || 0).forEach((user, index) => {
+      if (areaBefore(user.id) > 0) yesterdayRank.set(user.id, index + 1);
+    });
+    return { me: users.find((user) => user.id === userId), week, yesterdayRank };
   }
 
   /** Number of friendships of each user, in a single query. */
@@ -3161,9 +3434,11 @@ export class WorkerStorage {
           activityDate = route.startedAt;
           // Parse and downsample coordinates for feed animation (max 80 points)
           try {
-            const raw: [number, number][] = typeof route.coordinates === 'string'
+            const stored: [number, number][] = typeof route.coordinates === 'string'
               ? JSON.parse(route.coordinates)
               : (route.coordinates as any) || [];
+            // Other people's runs without the stretch near home (start and end)
+            const raw = event.userId === userId ? stored : hidePrivateEnds(stored);
             if (raw.length > 0) {
               if (raw.length <= 80) {
                 routeCoordinates = raw;
@@ -3467,6 +3742,7 @@ export class WorkerStorage {
       .values({
         userId,
         messageIndex,
+        sentAt: new Date().toISOString(),
       });
   }
 
@@ -3573,8 +3849,12 @@ export class WorkerStorage {
         area_stolen REAL NOT NULL DEFAULT 0,
         unique_victims INTEGER NOT NULL DEFAULT 0,
         ran_together_count INTEGER NOT NULL DEFAULT 0,
+        bonus_area REAL NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
+      try {
+        await this.db.run(sql`ALTER TABLE competition_stats ADD COLUMN bonus_area REAL NOT NULL DEFAULT 0`);
+      } catch (_) { /* column already exists */ }
       await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_competition_stats_unique ON competition_stats(competition_id, user_id)`);
       await this.db.run(sql`CREATE TABLE IF NOT EXISTS weekly_summaries (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -3773,6 +4053,93 @@ export class WorkerStorage {
     return await this.db.select().from(pushSubscriptions);
   }
 
+  // ===== Notification preferences and throttling (tables created at runtime) =====
+
+  private static notificationTables: Promise<void> | null = null;
+
+  ensureNotificationTables(): Promise<void> {
+    if (!WorkerStorage.notificationTables) {
+      WorkerStorage.notificationTables = (async () => {
+        // One row per user who changed something; missing row = everything on
+        await this.db.run(sql`CREATE TABLE IF NOT EXISTS notification_preferences (
+          user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          settings TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        // Last time a throttled notification went out, by key (e.g. "friend_activity:<runnerId>")
+        await this.db.run(sql`CREATE TABLE IF NOT EXISTS push_throttle (
+          key TEXT PRIMARY KEY,
+          sent_at TEXT NOT NULL
+        )`);
+      })().catch((error) => {
+        WorkerStorage.notificationTables = null;
+        throw error;
+      });
+    }
+    return WorkerStorage.notificationTables;
+  }
+
+  /** Categories the user turned off ({} when they never changed anything). */
+  async getNotificationSettings(userId: string): Promise<Record<string, boolean>> {
+    await this.ensureNotificationTables();
+    const rows = await this.db.all<{ settings: string }>(sql`SELECT settings FROM notification_preferences WHERE user_id = ${userId}`);
+    if (rows.length === 0) return {};
+    try {
+      const parsed = JSON.parse(rows[0].settings);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async setNotificationSettings(userId: string, settings: Record<string, boolean>): Promise<void> {
+    await this.ensureNotificationTables();
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO notification_preferences (user_id, settings, updated_at)
+      VALUES (${userId}, ${JSON.stringify(settings)}, ${now})
+      ON CONFLICT(user_id) DO UPDATE SET settings = excluded.settings, updated_at = excluded.updated_at`);
+  }
+
+  /**
+   * True (and the key is stamped) when nothing was sent under `key` in the last `windowMs`;
+   * false when it is still too soon.
+   */
+  async takePushThrottle(key: string, windowMs: number): Promise<boolean> {
+    await this.ensureNotificationTables();
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - windowMs).toISOString();
+    const rows = await this.db.all<{ sent_at: string }>(sql`SELECT sent_at FROM push_throttle WHERE key = ${key}`);
+    if (rows.length > 0 && rows[0].sent_at > cutoff) return false;
+    await this.db.run(sql`INSERT INTO push_throttle (key, sent_at) VALUES (${key}, ${now.toISOString()})
+      ON CONFLICT(key) DO UPDATE SET sent_at = excluded.sent_at`);
+    return true;
+  }
+
+  /** Inactivity reminders sent to the user after `since` (ISO). */
+  async countInactivityRemindersSince(userId: string, since: string): Promise<number> {
+    await this.ensureInactivityRemindersTable();
+    const rows = await this.db.all<{ count: number }>(
+      // julianday() reads both CURRENT_TIMESTAMP ("2026-10-28 10:00:00") and ISO ("2026-10-28T10:00:00.000Z")
+      sql`SELECT count(*) AS count FROM inactivity_reminders WHERE user_id = ${userId} AND julianday(sent_at) > julianday(${since})`
+    );
+    return Number(rows[0]?.count) || 0;
+  }
+
+  /** The friend who ran most since `since` (ISO), with how many runs, or null. */
+  async getMostActiveFriendSince(userId: string, since: string): Promise<{ name: string; runs: number } | null> {
+    const rows = await this.db.all<{ name: string; runs: number }>(sql`
+      SELECT u.name AS name, count(*) AS runs
+      FROM friendships f
+      JOIN routes r ON r.user_id = f.friend_id AND julianday(r.completed_at) > julianday(${since})
+      JOIN users u ON u.id = f.friend_id
+      WHERE f.user_id = ${userId}
+      GROUP BY f.friend_id
+      ORDER BY runs DESC
+      LIMIT 1`);
+    if (rows.length === 0) return null;
+    return { name: rows[0].name, runs: Number(rows[0].runs) || 0 };
+  }
+
   async usePower(powerId: string): Promise<void> {
     await this.ensureCompetitionTables();
     const now = new Date().toISOString();
@@ -3944,6 +4311,8 @@ export class WorkerStorage {
       treasures?: number;
       areaStolen?: number;
       ranTogether?: number;
+      /** Added to bonus_area (negative for a time bomb). */
+      bonusArea?: number;
     }
   ): Promise<void> {
     await this.ensureCompetitionTables();
@@ -3962,6 +4331,9 @@ export class WorkerStorage {
     }
     if (increments.treasures != null && increments.treasures > 0) {
       setParts.push(`treasures_collected = treasures_collected + ${increments.treasures}`);
+    }
+    if (increments.bonusArea != null && increments.bonusArea !== 0 && Number.isFinite(increments.bonusArea)) {
+      setParts.push(`bonus_area = bonus_area + ${increments.bonusArea}`);
     }
     if (increments.areaStolen != null && increments.areaStolen > 0) {
       setParts.push(`area_stolen = area_stolen + ${increments.areaStolen}`);
@@ -4129,21 +4501,22 @@ export class WorkerStorage {
 
   /** Batch-load fortifications for ALL enemy users in a bbox — single DB call instead of N.
    *  Returns a Map from userId to their fortification records. */
-  async getAllFortificationsInBbox(userIds: string[], minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Map<string, Array<{ id: string; geometry: string; area: number }>>> {
-    const result = new Map<string, Array<{ id: string; geometry: string; area: number }>>();
+  async getAllFortificationsInBbox(userIds: string[], minLng: number, minLat: number, maxLng: number, maxLat: number): Promise<Map<string, Array<{ id: string; geometry: string; area: number; createdAt: string }>>> {
+    const result = new Map<string, Array<{ id: string; geometry: string; area: number; createdAt: string }>>();
     if (userIds.length === 0) return result;
     await this.ensureCompetitionTables();
     const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
-    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number }>(
-      sql.raw(`SELECT id, user_id, geometry, area FROM territory_fortifications
+    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number; created_at: string }>(
+      sql.raw(`SELECT id, user_id, geometry, area, created_at FROM territory_fortifications
         WHERE user_id IN (${placeholders})
         AND bbox_max_lng >= ${minLng} AND bbox_min_lng <= ${maxLng}
-        AND bbox_max_lat >= ${minLat} AND bbox_min_lat <= ${maxLat}`)
+        AND bbox_max_lat >= ${minLat} AND bbox_min_lat <= ${maxLat}
+        AND julianday(created_at) > julianday('now', '-${FORTIFICATION_TTL_DAYS} days')`)
     );
     for (const row of rows) {
       const uid = row.user_id;
       if (!result.has(uid)) result.set(uid, []);
-      result.get(uid)!.push({ id: row.id, geometry: row.geometry, area: row.area });
+      result.get(uid)!.push({ id: row.id, geometry: row.geometry, area: row.area, createdAt: row.created_at });
     }
     return result;
   }
@@ -4161,6 +4534,185 @@ export class WorkerStorage {
       .where(eq(territoryFortifications.userId, userId));
   }
 
+  // ===== Territory decay =====
+
+  async getDecayState(userId: string): Promise<DecayState | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<any>(sql`SELECT * FROM territory_decay WHERE user_id = ${userId}`);
+    return rows[0] ? decayStateFromRow(rows[0]) : null;
+  }
+
+  async getDecayStates(userIds: string[]): Promise<DecayState[]> {
+    if (userIds.length === 0) return [];
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<any>(sql`SELECT * FROM territory_decay
+      WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
+    return rows.map(decayStateFromRow);
+  }
+
+  async saveDecayState(state: DecayState): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const weak = state.weak ? JSON.stringify(state.weak) : null;
+    const atRisk = state.atRisk ? JSON.stringify(state.atRisk) : null;
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO territory_decay (user_id, tracking_since, last_day, weak_geometry, at_risk_geometry, lost_today, lost_total, updated_at)
+      VALUES (${state.userId}, ${state.trackingSince}, ${state.lastDay}, ${weak}, ${atRisk}, ${state.lostToday}, ${state.lostTotal}, ${now})
+      ON CONFLICT(user_id) DO UPDATE SET tracking_since = excluded.tracking_since, last_day = excluded.last_day,
+        weak_geometry = excluded.weak_geometry, at_risk_geometry = excluded.at_risk_geometry,
+        lost_today = excluded.lost_today, lost_total = excluded.lost_total, updated_at = excluded.updated_at`);
+  }
+
+  /** A run went through these zones: they stop wearing away / being at risk right away. */
+  async clearDefendedFromDecay(userId: string, footprint: any): Promise<void> {
+    const state = await this.getDecayState(userId);
+    if (!state || (!state.weak && !state.atRisk) || !footprint) return;
+    await this.saveDecayState({
+      ...state,
+      weak: withoutDefended(state.weak, footprint),
+      atRisk: withoutDefended(state.atRisk, footprint),
+    });
+  }
+
+  /** Tracks of the user's runs started since `since` (newest first, at most `limit`). */
+  async getRecentTracks(userId: string, since: string, limit = 40): Promise<Array<{ startedAt: string; coordinates: Array<[number, number]> }>> {
+    const rows = await this.db.all<{ started_at: string; coordinates: string }>(sql`
+      SELECT started_at, coordinates FROM routes
+      WHERE user_id = ${userId} AND datetime(started_at) >= datetime(${since})
+      ORDER BY datetime(started_at) DESC LIMIT ${limit}`);
+    const tracks: Array<{ startedAt: string; coordinates: Array<[number, number]> }> = [];
+    for (const row of rows) {
+      try {
+        const coordinates = typeof row.coordinates === 'string' ? JSON.parse(row.coordinates) : row.coordinates;
+        if (Array.isArray(coordinates)) tracks.push({ startedAt: row.started_at, coordinates });
+      } catch { /* unreadable track */ }
+    }
+    return tracks;
+  }
+
+  /** The user's runs since `since` with the new area each one conquered (oldest first). */
+  async getRunsWithAreaSince(userId: string, since: string): Promise<Array<{ startedAt: string; area: number; distance: number }>> {
+    const rows = await this.db.all<{ started_at: string; distance: number; area: number }>(sql`
+      SELECT r.started_at AS started_at, r.distance AS distance,
+             COALESCE((SELECT MAX(COALESCE(fe.new_area, 0)) FROM feed_events fe
+                       WHERE fe.route_id = r.id AND fe.event_type = 'activity'), 0) AS area
+      FROM routes r
+      WHERE r.user_id = ${userId} AND datetime(r.started_at) >= datetime(${since})
+      ORDER BY datetime(r.started_at) ASC`);
+    return rows.map((row) => ({ startedAt: row.started_at, area: Number(row.area) || 0, distance: Number(row.distance) || 0 }));
+  }
+
+  async getUserIdsWithTerritory(): Promise<string[]> {
+    const rows = await this.db.all<{ user_id: string }>(sql`SELECT DISTINCT user_id FROM territories`);
+    return rows.map((row) => row.user_id);
+  }
+
+  /** Replaces one territory row's geometry (null deletes it); keeps its run and date. */
+  async setTerritoryRowGeometry(id: string, geometry: any | null): Promise<void> {
+    if (!geometry) {
+      await this.db.delete(territories).where(eq(territories.id, id));
+      return;
+    }
+    await this.db.update(territories).set({
+      geometry: JSON.stringify(geometry),
+      area: turf.area(geometry),
+      ...bboxColumns(geometry),
+    }).where(eq(territories.id, id));
+  }
+
+  async getRestMode(userId: string): Promise<RestMode | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<any>(sql`SELECT * FROM rest_mode WHERE user_id = ${userId}`);
+    const row = rows[0];
+    return row ? { userId: row.user_id, startedAt: row.started_at, until: row.until, year: Number(row.year), daysUsed: Number(row.days_used) || 0 } : null;
+  }
+
+  async saveRestMode(rest: RestMode): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO rest_mode (user_id, started_at, until, year, days_used)
+      VALUES (${rest.userId}, ${rest.startedAt}, ${rest.until}, ${rest.year}, ${rest.daysUsed})
+      ON CONFLICT(user_id) DO UPDATE SET started_at = excluded.started_at, until = excluded.until,
+        year = excluded.year, days_used = excluded.days_used`);
+  }
+
+  /** Castles still in force of these users, oldest first. */
+  async getFortificationsOfUsers(userIds: string[]): Promise<Array<{ id: string; userId: string; geometry: string; area: number; createdAt: string }>> {
+    if (userIds.length === 0) return [];
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ id: string; user_id: string; geometry: string; area: number; created_at: string }>(sql`
+      SELECT id, user_id, geometry, area, created_at FROM territory_fortifications
+      WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})
+        AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
+      ORDER BY julianday(created_at) ASC`);
+    return rows.map((row) => ({ id: row.id, userId: row.user_id, geometry: row.geometry, area: row.area, createdAt: row.created_at }));
+  }
+
+  /**
+   * What the castles of each user depend on (ids and dates of the castles in force), in one query:
+   * a cached result for that user is still valid while it doesn't change. Users without castles are absent.
+   */
+  async getFortificationSignatures(userIds: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (userIds.length === 0) return result;
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ user_id: string; ids: string }>(sql`
+      SELECT user_id, group_concat(id || '@' || created_at, ',') AS ids FROM (
+        SELECT user_id, id, created_at FROM territory_fortifications
+        WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})
+          AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
+        ORDER BY id
+      ) GROUP BY user_id`);
+    for (const row of rows) result.set(row.user_id, String(row.ids));
+    return result;
+  }
+
+  /**
+   * What the widgets' map of a user depends on: their territory (rows, area, last change), castles
+   * and wear. One query.
+   */
+  async getWidgetMapSignature(userId: string): Promise<string> {
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ t: string; f: string; d: string }>(sql`
+      SELECT
+        (SELECT count(*) || ':' || round(coalesce(sum(area), 0), 1) || ':' || coalesce(max(conquered_at), '')
+           FROM territories WHERE user_id = ${userId}) AS t,
+        (SELECT count(*) || ':' || coalesce(min(created_at), '') || ':' || coalesce(max(created_at), '')
+           FROM territory_fortifications WHERE user_id = ${userId}
+             AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})) AS f,
+        (SELECT coalesce(max(updated_at), '') FROM territory_decay WHERE user_id = ${userId}) AS d`);
+    const row = rows[0];
+    return row ? `${row.t}|${row.f}|${row.d}` : '';
+  }
+
+  /**
+   * Cached results of `kind` for these keys, with whether their signature still matches (`fresh`).
+   * Stale ones are returned too: a request shows them while the queue works out the new ones.
+   */
+  async getDerived(kind: string, signatures: Map<string, string>): Promise<Map<string, { payload: any; fresh: boolean }>> {
+    const result = new Map<string, { payload: any; fresh: boolean }>();
+    if (signatures.size === 0) return result;
+    const rows = await this.db.all<{ key: string; signature: string; payload: string }>(sql`
+      SELECT key, signature, payload FROM derived_cache
+      WHERE kind = ${kind} AND key IN (${sql.join([...signatures.keys()].map((key) => sql`${key}`), sql`, `)})`);
+    for (const row of rows) {
+      try {
+        result.set(row.key, { payload: JSON.parse(row.payload), fresh: row.signature === signatures.get(row.key) });
+      } catch (_) { /* recomputed */ }
+    }
+    return result;
+  }
+
+  /** Stores results of `kind` (one round trip). */
+  async saveDerived(kind: string, entries: Array<{ key: string; signature: string; payload: any }>): Promise<void> {
+    if (entries.length === 0) return;
+    const now = new Date().toISOString();
+    await this.db.batch(entries.map((entry) => this.db.run(sql`
+      INSERT INTO derived_cache (kind, key, signature, payload, updated_at)
+      VALUES (${kind}, ${entry.key}, ${entry.signature}, ${JSON.stringify(entry.payload)}, ${now})
+      ON CONFLICT(kind, key) DO UPDATE SET signature = excluded.signature, payload = excluded.payload,
+        updated_at = excluded.updated_at`)) as any);
+  }
+
+  /** Fortifications still in force (younger than FORTIFICATION_TTL_DAYS). */
   async getAllFortifications(): Promise<Array<{ id: string; userId: string; geometry: string; area: number }>> {
     await this.ensureCompetitionTables();
     return await this.db
@@ -4170,7 +4722,8 @@ export class WorkerStorage {
         geometry: territoryFortifications.geometry,
         area: territoryFortifications.area,
       })
-      .from(territoryFortifications);
+      .from(territoryFortifications)
+      .where(sql`julianday(${territoryFortifications.createdAt}) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})`);
   }
 
   async deleteFortificationsByRouteId(routeId: string): Promise<void> {
@@ -4181,6 +4734,95 @@ export class WorkerStorage {
   async deleteFortificationRecord(id: string): Promise<void> {
     await this.ensureCompetitionTables();
     await this.db.run(sql`DELETE FROM territory_fortifications WHERE id = ${id}`);
+  }
+
+  // ===== Territory processing helpers =====
+
+  /**
+   * Marks the route's territory as processed. False when it already was: the queue delivers
+   * at least once, and a second run would count the activity and its thefts twice.
+   */
+  async claimRouteTerritory(routeId: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const result: any = await this.db.run(sql`INSERT OR IGNORE INTO route_territory_runs (route_id, processed_at) VALUES (${routeId}, ${new Date().toISOString()})`);
+    return Number(result?.rowsAffected ?? result?.changes ?? 0) > 0;
+  }
+
+  /** Lets a failed processing be retried. */
+  async releaseRouteTerritory(routeId: string): Promise<void> {
+    await this.db.run(sql`DELETE FROM route_territory_runs WHERE route_id = ${routeId}`);
+  }
+
+  /**
+   * Territories that can touch `bbox` ([minLng, minLat, maxLng, maxLat]), optionally only of some
+   * users. Rows from before bounding boxes existed get theirs computed and stored on the way.
+   */
+  async getTerritoriesForConquest(bbox: number[], userIds: string[] | null): Promise<Territory[]> {
+    await this.ensureSchemaUpgrades();
+    if (userIds && userIds.length === 0) return [];
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    const touches = sql`(${territories.bboxMinLng} IS NULL OR (${territories.bboxMinLng} <= ${maxLng} AND ${territories.bboxMaxLng} >= ${minLng} AND ${territories.bboxMinLat} <= ${maxLat} AND ${territories.bboxMaxLat} >= ${minLat}))`;
+    const rows = await this.db
+      .select()
+      .from(territories)
+      .where(userIds ? and(inArray(territories.userId, userIds), touches) : touches)
+      .orderBy(desc(territories.conqueredAt));
+    const result: Territory[] = [];
+    for (const row of rows) {
+      if (row.bboxMinLng == null) {
+        const columns = bboxColumns(row.geometry);
+        if (columns.bboxMinLng != null) {
+          await this.db.update(territories).set(columns).where(eq(territories.id, row.id));
+          Object.assign(row, columns);
+          if (!(columns.bboxMinLng! <= maxLng && columns.bboxMaxLng! >= minLng && columns.bboxMinLat! <= maxLat && columns.bboxMaxLat! >= minLat)) continue;
+        }
+      }
+      result.push(row);
+    }
+    return result;
+  }
+
+  /**
+   * Competition score = territory + bonus, for these users (after any change to their territory:
+   * a run, a theft, a deleted run).
+   */
+  async syncCompetitionAreas(competitionId: string, userIds: string[]): Promise<void> {
+    const ids = [...new Set(userIds)].filter(Boolean);
+    if (ids.length === 0) return;
+    await this.ensureCompetitionTables();
+    await this.db.run(sql`UPDATE competition_stats SET total_area =
+      COALESCE((SELECT SUM(area) FROM territories WHERE territories.user_id = competition_stats.user_id), 0) + bonus_area
+      WHERE competition_id = ${competitionId} AND user_id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  /** Fortification records of the user overlapping `geometry`, oldest first (expired ones excluded). */
+  async getFortificationZone(userId: string, geometry: any): Promise<Array<{ id: string; createdAt: string }>> {
+    const box = geometryBbox(geometry);
+    if (!box) return [];
+    await this.ensureCompetitionTables();
+    const rows = await this.db.all<{ id: string; geometry: string; created_at: string }>(sql`
+      SELECT id, geometry, created_at FROM territory_fortifications
+      WHERE user_id = ${userId}
+        AND bbox_max_lng >= ${box[0]} AND bbox_min_lng <= ${box[2]}
+        AND bbox_max_lat >= ${box[1]} AND bbox_min_lat <= ${box[3]}
+        AND julianday(created_at) > julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})
+      ORDER BY julianday(created_at) ASC`);
+    const target = turf.feature(geometry);
+    const zone: Array<{ id: string; createdAt: string }> = [];
+    for (const row of rows) {
+      try {
+        const overlap = turf.intersect(turf.featureCollection([target as any, turf.feature(JSON.parse(row.geometry)) as any]));
+        if (overlap && turf.area(overlap) > 10) zone.push({ id: row.id, createdAt: row.created_at });
+      } catch (_) {}
+    }
+    return zone;
+  }
+
+  /** Deletes fortifications older than FORTIFICATION_TTL_DAYS. Returns how many. */
+  async purgeExpiredFortifications(): Promise<number> {
+    await this.ensureCompetitionTables();
+    const result: any = await this.db.run(sql`DELETE FROM territory_fortifications WHERE julianday(created_at) <= julianday('now', ${`-${FORTIFICATION_TTL_DAYS} days`})`);
+    return Number(result?.rowsAffected ?? result?.changes ?? 0);
   }
 
   /** Delete multiple fortification records in a single query */
@@ -4213,6 +4855,18 @@ export class WorkerStorage {
   }
 
   /** Batch update victim areas using subquery — single DB call for all victims */
+  /**
+   * users.total_area recomputed from the territories for everyone whose stored value drifted
+   * (older versions mixed the competition bonus and time-bomb penalties into it, leaving negative
+   * or wrong totals). Returns how many users were fixed.
+   */
+  async syncAllUserAreas(): Promise<number> {
+    const result: any = await this.db.run(sql`
+      UPDATE users SET total_area = COALESCE((SELECT SUM(area) FROM territories WHERE territories.user_id = users.id), 0)
+      WHERE ABS(COALESCE(total_area, 0) - COALESCE((SELECT SUM(area) FROM territories WHERE territories.user_id = users.id), 0)) > 1`);
+    return Number(result?.rowsAffected ?? result?.changes ?? 0);
+  }
+
   async updateVictimAreasBatch(victimIds: string[]): Promise<void> {
     if (victimIds.length === 0) return;
     const placeholders = victimIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');

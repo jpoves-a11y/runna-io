@@ -288,6 +288,9 @@ const callback = await call('GET', `/api/suunto/callback?code=good-code&state=${
 check('callback success redirects to the app', callback.status === 302 && callback.location === 'runnaio://oauth/suunto?suunto_connected=true', callback);
 const account = await one('select * from suunto_accounts where user_id = ?', [user.id]);
 check('account stored with Suunto username from the JWT', account?.suunto_username === SUUNTO_USER && account.access_token === currentAccessToken && account.refresh_token === 'refresh-1' && Date.parse(account.expires_at) > Date.now() + 23 * 3600 * 1000, account);
+// Only workouts after the account was linked are imported: the sample FIT files are older, so pretend
+// it was linked before them (the competition start)
+await db.execute({ sql: 'update suunto_accounts set connected_at = ? where user_id = ?', args: ['2026-03-01T00:00:00.000Z', user.id] });
 const tokenCall = calls.token.at(-1);
 check('token exchange used authorization_code + redirect_uri', tokenCall.grant_type === 'authorization_code' && tokenCall.code === 'good-code' && tokenCall.redirect_uri === 'http://127.0.0.1:8787/api/suunto/callback', tokenCall);
 

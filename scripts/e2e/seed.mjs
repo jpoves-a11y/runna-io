@@ -148,8 +148,8 @@ await db.execute({
 const weekly = await call('POST', '/api/tasks/weekly-summary', { token: cronSecret, body: {} });
 if (!weekly.success) throw new Error(`weekly summary was not generated: ${JSON.stringify(weekly)}`);
 
-const fortifications = (await call('GET', '/api/territories/fortifications')).fortifications;
-const leaderboard = (await call('GET', '/api/competition/leaderboard')).leaderboard;
+const fortifications = (await call('GET', '/api/territories/fortifications', { token: alice.token })).fortifications;
+const leaderboard = (await call('GET', '/api/competition/leaderboard', { token: alice.token })).leaderboard;
 const alicePowers = (await call('GET', `/api/users/${alice.id}/powers`, { token: alice.token })).powers;
 const treasures = (await call('GET', '/api/treasures/active')).treasures;
 console.error(

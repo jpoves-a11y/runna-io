@@ -222,9 +222,14 @@ struct RunRoute: Decodable, Identifiable, Hashable {
     let completedAt: String
     let territoryArea: Double?
     let ranTogetherWith: [String]
+    /// Seconds since the start of each point (runs recorded or imported since times are kept).
+    let pointTimes: [Double]?
+    /// Altitude of each point in metres (nil where unknown).
+    let altitudes: [Double?]?
 
     enum CodingKeys: String, CodingKey {
         case id, userId, name, coordinates, distance, duration, startedAt, completedAt, territory, ranTogetherWithUsers
+        case pointTimes, altitudes
     }
 
     private struct TerritorySummary: Decodable {
@@ -245,6 +250,16 @@ struct RunRoute: Decodable, Identifiable, Hashable {
         completedAt = c.string(.completedAt) ?? ""
         territoryArea = (try? c.decodeIfPresent(TerritorySummary.self, forKey: .territory))?.area
         ranTogetherWith = (try? c.decodeIfPresent([NameRef].self, forKey: .ranTogetherWithUsers))?.map(\.name) ?? []
+        // One value per point, or nothing
+        let pointCount = coordinates.count
+        let times = (c.jsonObject(.pointTimes) as? [Any])?.map { ($0 as? NSNumber)?.doubleValue }
+        if let times, times.count == pointCount, times.allSatisfy({ $0 != nil }) {
+            pointTimes = times.compactMap { $0 }
+        } else {
+            pointTimes = nil
+        }
+        let heights = (c.jsonObject(.altitudes) as? [Any])?.map { ($0 as? NSNumber)?.doubleValue }
+        altitudes = heights?.count == pointCount ? heights : nil
     }
 
     var startDate: Date? { APIDate.parse(startedAt) }
@@ -269,8 +284,11 @@ struct ConquestResult: Decodable {
     let victims: [Victim]
     /// Treasures the server collected along the route (and the ones collected live, once processed).
     let treasuresCollected: [CollectedTreasure]
+    /// Castles this run built on your territory, and castles of rivals it knocked down.
+    let castlesBuilt: Int
+    let castlesDestroyed: Int
 
-    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims, treasuresCollected }
+    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims, treasuresCollected, castlesBuilt, castlesDestroyed }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -279,6 +297,8 @@ struct ConquestResult: Decodable {
         areaStolen = c.double(.areaStolen) ?? 0
         victims = (try? c.decodeIfPresent([Victim].self, forKey: .victims)) ?? []
         treasuresCollected = (try? c.decodeIfPresent([CollectedTreasure].self, forKey: .treasuresCollected)) ?? []
+        castlesBuilt = c.int(.castlesBuilt) ?? 0
+        castlesDestroyed = c.int(.castlesDestroyed) ?? 0
     }
 
     /// Victims that actually lost territory.

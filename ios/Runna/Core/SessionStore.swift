@@ -83,6 +83,7 @@ final class SessionStore {
             return
         }
         api.sessionToken = token
+        WidgetSync.storeCredentials(token: token, userId: userId)
         // Cached API responses of another account are never shown
         ResponseCache.shared.setOwner(userId)
         if let data = UserDefaults.standard.data(forKey: cachedUserKey),
@@ -198,6 +199,10 @@ final class SessionStore {
         guard state == .loggedIn else { return }
         // Permission may have been granted in Settings meanwhile
         Task { await PushManager.shared.registerIfAuthorized() }
+        // The widgets always have the session (and pick up anything new)
+        if let token = api.sessionToken, let userId {
+            WidgetSync.storeCredentials(token: token, userId: userId)
+        }
     }
 
     // MARK: - Account
@@ -264,6 +269,7 @@ final class SessionStore {
         KeychainStore.set(token, for: tokenKey)
         KeychainStore.set(user.id, for: userIdKey)
         api.sessionToken = token
+        WidgetSync.storeCredentials(token: token, userId: user.id)
         setUser(user)
         state = .loggedIn
         Task {
@@ -282,6 +288,7 @@ final class SessionStore {
         // Assigning an identical user would redraw every screen that shows it
         guard self.user != stored else { return }
         self.user = stored
+        WidgetSync.update(user: stored)
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: cachedUserKey)
         }
@@ -319,6 +326,8 @@ final class SessionStore {
         // Apple Health auto-import is a device setting: the next account must opt in again,
         // otherwise the device owner's workouts would be uploaded to it.
         HealthImporter.shared.autoImport = false
+        HealthImporter.shared.saveRuns = false
+        WidgetSync.clear()
         AppRouter.shared.reset()
         PushManager.shared.clearDelivered()
     }

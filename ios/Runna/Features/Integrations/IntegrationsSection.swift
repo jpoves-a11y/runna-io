@@ -20,6 +20,7 @@ struct IntegrationsSection: View {
     @State private var providerToDisconnect: String?
     @State private var health = HealthImporter.shared
     @State private var healthAutoImport = HealthImporter.shared.autoImport
+    @State private var healthSaveRuns = HealthImporter.shared.saveRuns
 
     private static let stravaOrange = IntegrationBrandMark.stravaOrange
 
@@ -438,10 +439,19 @@ struct IntegrationsSection: View {
                     health.autoImport = enabled
                     if enabled { Task { await importFromHealth() } }
                 }
+            Toggle("Guardar mis carreras en Salud", isOn: $healthSaveRuns)
+                .font(.subheadline)
+                .tint(Color.brand)
+                .padding(.leading, Self.detailIndent)
+                .onChange(of: healthSaveRuns) { _, enabled in
+                    health.saveRuns = enabled
+                    if enabled { Task { try? await health.requestWriteAuthorization() } }
+                }
         }
         .onAppear {
             // The setting is reset on logout
             healthAutoImport = health.autoImport
+            healthSaveRuns = health.saveRuns
         }
         .padding(.vertical, 2)
     }
@@ -831,6 +841,7 @@ struct ProviderActivity: Decodable, Identifiable, Hashable {
         let reason = skipReason ?? ""
         switch reason {
         case "before_competition": return "Anterior a la competición"
+        case "before_connection": return "Anterior a la conexión"
         case "excluded_type": return "Tipo de actividad excluido"
         case "distance_too_short": return "Distancia demasiado corta"
         case "duration_too_short": return "Duración demasiado corta"

@@ -28,9 +28,9 @@ import { WorkerStorage } from './storage';
 import type { Env } from './index';
 import type { GarminAccount, GarminActivity, Route } from '../../shared/schema';
 import { fitTrack, type FitPoint } from './fit';
+import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
-import { generateFeedEvents, reprocessUserTerritories } from './routes';
-import { sendPushToUser } from './pushHelper';
+import { generateFeedEvents, removeRouteFromTerritory } from './routes';
 
 type AppContext = Context<AppEnv>;
 
@@ -51,10 +51,10 @@ const TRACK_MIN_SPACING_M = 5;
 const MAX_ROUTES_PER_NOTIFICATION = 3;
 
 /** Skip reasons a repeated notification must not re-evaluate (the app's "Reintentar" still can). */
-const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
+const PERMANENT_SKIP_REASONS = new Set(['before_competition', BEFORE_CONNECTION, 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
 
 /** Skip reasons from the competition rules, which "Reintentar" re-applies. */
-const RULE_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short']);
+const RULE_SKIP_REASONS = new Set(['before_competition', BEFORE_CONNECTION, 'excluded_type', 'distance_too_short', 'duration_too_short']);
 
 function getStorage(env: Env): WorkerStorage {
   return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
@@ -374,6 +374,7 @@ export async function importGarminActivity(storage: WorkerStorage, account: Garm
   if (!isGarminFootActivity(detail.activityType)) return skip('excluded_type');
   if (startMs === null || !Number.isFinite(startMs)) return skip('bad_date');
   if (startMs < COMPETITION_MIN_DATE.getTime()) return skip('before_competition');
+  if (startedBeforeConnection(startMs, account.connectedAt)) return skip(BEFORE_CONNECTION);
   if (distance < 100) return skip('distance_too_short');
   if (duration < 60) return skip('duration_too_short');
   if (track.length < 2) return skip('no_gps');
@@ -476,6 +477,8 @@ export async function processGarminActivity(env: Env, storage: WorkerStorage, ac
       distance: activity.distance,
       duration: activity.duration,
       earlyFeedEventId,
+      // The owner is told what the run conquered once the territory is processed
+      importSource: 'garmin',
     });
     queued = true;
   } catch (error) {
@@ -487,26 +490,10 @@ export async function processGarminActivity(env: Env, storage: WorkerStorage, ac
   return { routeId: route.id, queued, reused: false, skipReason: null };
 }
 
+/** Only when the territory couldn't be queued: otherwise the queue says what the run conquered. */
 async function notifyImported(env: Env, storage: WorkerStorage, activity: GarminActivity, routeId: string): Promise<void> {
-  try {
-    const subscriptions = await storage.getPushSubscriptionsByUserId(activity.userId);
-    if (subscriptions.length === 0) return;
-    const distKm = (activity.distance / 1000).toFixed(1);
-    await sendPushToUser(
-      subscriptions.map((sub) => ({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } })),
-      {
-        title: '🏃 ¡Carrera registrada!',
-        body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-        tag: `garmin-auto-${activity.id}`,
-        data: { type: 'garmin_auto_import', routeId, url: '/?showPendingAnimation=true' },
-      },
-      env.VAPID_PUBLIC_KEY || '',
-      env.VAPID_PRIVATE_KEY || '',
-      env.VAPID_SUBJECT || 'mailto:notifications@runna.io',
-    );
-  } catch (error) {
-    console.warn(`[GARMIN] Push notification failed for ${activity.userId}:`, error);
-  }
+  const { notifyImportedRunPending } = await import('./notifications');
+  await notifyImportedRunPending(storage, env, { userId: activity.userId, routeId, source: 'garmin', distance: activity.distance });
 }
 
 // ==================== Webhook ====================
@@ -638,7 +625,7 @@ async function handleNotification(env: Env, notification: GarminNotification): P
         const result = await processGarminActivity(env, storage, activity);
         if (result.routeId && !result.reused) {
           routes.push(result.routeId);
-          await notifyImported(env, storage, activity, result.routeId);
+          if (!result.queued) await notifyImported(env, storage, activity, result.routeId);
         }
       } catch (error) {
         console.error(`[GARMIN] Processing activity ${activity.id} failed:`, error);
@@ -908,6 +895,8 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
       if (activity.userId !== userId) return c.json({ error: 'No autorizado' }, 403);
 
       const routeId = activity.routeId;
+      // The deleted run, for removing its area from the territory afterwards
+      const deletedRoute = routeId ? await storage.getRouteById(routeId) : null;
       if (routeId) {
         await storage.markGarminActivityDeletedByRouteId(routeId);
         await storage.markSuuntoActivityDeletedByRouteId(routeId);
@@ -918,7 +907,8 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
         await storage.deleteStravaActivityByRouteId(routeId);
         await storage.deleteRouteById(routeId);
         try {
-          await reprocessUserTerritories(storage, userId);
+          // What only this run covered leaves the territory (stolen area is not given back)
+          if (deletedRoute) await removeRouteFromTerritory(storage, userId, deletedRoute);
         } catch (error) {
           console.error('[GARMIN] Territory rebuild after delete failed:', error);
         }

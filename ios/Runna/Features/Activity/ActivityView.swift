@@ -312,6 +312,20 @@ private struct FeedList: View {
     @State private var reportTarget: ReportTarget?
 
     var body: some View {
+        ScrollViewReader { proxy in
+            feedScroll
+                // A notification asked for a post: once it's loaded, scroll to it (and open its comments)
+                .task(id: "\(router.feedFocus?.eventId ?? "")-\(model.events.count)") {
+                    guard let focus = router.feedFocus,
+                          let event = model.events.first(where: { $0.id == focus.eventId }) else { return }
+                    router.feedFocus = nil
+                    withAnimation(.snappy) { proxy.scrollTo(event.id, anchor: .top) }
+                    if focus.openComments, !OptimisticCache.isLocal(event.id) { commentsFor = event }
+                }
+        }
+    }
+
+    private var feedScroll: some View {
         ScrollView {
             LazyVStack(spacing: DS.Spacing.m) {
                 if let message = model.errorMessage, !model.events.isEmpty {
@@ -322,6 +336,7 @@ private struct FeedList: View {
                 }
                 ForEach(model.events) { event in
                     card(for: event)
+                        .id(event.id)
                 }
                 footer
             }

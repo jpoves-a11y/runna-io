@@ -72,13 +72,23 @@ struct RunLiveActivityWidget: Widget {
                         .minimumScaleFactor(0.7)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    RunMetricsRow(state: state, valueSize: 22)
-                        .padding(.horizontal, 6)
-                        .padding(.top, 2)
+                    VStack(spacing: 6) {
+                        RunMetricsRow(state: state, valueSize: 22)
+                        if state.zoneText != nil {
+                            RunZoneLine(state: state)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.top, 2)
                 }
             } compactLeading: {
-                Image(systemName: state.isPaused ? "pause.fill" : "figure.run")
-                    .foregroundStyle(state.isPaused ? Color.secondary : Color.liveBrandBright)
+                if state.zoneIsRival && !state.isPaused {
+                    Image(systemName: "flag.fill")
+                        .foregroundStyle(Color(liveHex: state.zoneColorHex) ?? Color.orange)
+                } else {
+                    Image(systemName: state.isPaused ? "pause.fill" : "figure.run")
+                        .foregroundStyle(state.isPaused ? Color.secondary : Color.liveBrandBright)
+                }
             } compactTrailing: {
                 RunTimerText(state: state)
                     .font(Font.liveStat(15))
@@ -94,6 +104,36 @@ struct RunLiveActivityWidget: Widget {
 }
 
 // MARK: - Pieces
+
+private extension Color {
+    /// "#RRGGBB" → colour, nil when missing or unreadable.
+    init?(liveHex hex: String?) {
+        guard let hex else { return nil }
+        let digits = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
+        self = Color(uiColor: UIColor(liveRGB: value))
+    }
+}
+
+/// "En territorio de Ana" with a flag in the owner's colour (yours in the brand colour).
+private struct RunZoneLine: View {
+    let state: RunActivityAttributes.ContentState
+
+    var body: some View {
+        if let text = state.zoneText {
+            HStack(spacing: 6) {
+                Image(systemName: state.zoneIsRival ? "flag.fill" : "checkmark.seal.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(liveHex: state.zoneColorHex) ?? (state.zoneIsRival ? Color.orange : Color.liveBrand))
+                Text(text)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(state.zoneIsRival ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
 
 /// Counts by itself while running; static moving time while paused or finished.
 private struct RunTimerText: View {
@@ -204,6 +244,10 @@ private struct RunLockScreenView: View {
 
                 RunMetricsRow(state: state, valueSize: 24)
                     .frame(width: 168)
+            }
+
+            if state.zoneText != nil && !state.isFinished {
+                RunZoneLine(state: state)
             }
 
             if let hint {

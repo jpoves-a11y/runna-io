@@ -13,11 +13,42 @@ struct ConquestCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
             conqueredHero
+            if result.castlesBuilt > 0 || result.castlesDestroyed > 0 {
+                castlesSection
+            }
             let victims: [Victim] = result.stolenVictims
             if !victims.isEmpty {
                 stolenSection(victims)
             }
         }
+    }
+
+    /// "+2 castillos en tu territorio" / "Has derribado 1 castillo"
+    private var castlesSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            if result.castlesBuilt > 0 {
+                Label {
+                    Text(result.castlesBuilt == 1
+                         ? "+1 castillo en tu territorio: esa zona aguanta un ataque más."
+                         : "+\(result.castlesBuilt) castillos en tu territorio: aguanta más ataques.")
+                } icon: {
+                    Text("🏰")
+                }
+            }
+            if result.castlesDestroyed > 0 {
+                Label {
+                    Text(result.castlesDestroyed == 1
+                         ? "Has derribado 1 castillo rival: esa zona no se ha robado esta vez."
+                         : "Has derribado \(result.castlesDestroyed) castillos rivales: esas zonas no se han robado esta vez.")
+                } icon: {
+                    Image(systemName: "hammer")
+                        .foregroundStyle(Color.steal)
+                }
+            }
+        }
+        .font(.subheadline)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card(padding: DS.Spacing.l)
     }
 
     private var conqueredHero: some View {
@@ -307,11 +338,12 @@ struct TreasuresCard: View {
     }
 }
 
-/// Replays the route: the line grows from start to finish over a few seconds.
-struct RouteReplayView: View {
+/// Compact replay in the summary cards: the line grows from start to finish over a few seconds.
+struct RouteGrowthReplay: View {
     let coordinates: [CLLocationCoordinate2D]
     let color: Color
-    var duration: Double = 4
+    /// 1,7 times faster than the original 4 s.
+    var duration: Double = 4 / 1.7
     var height: CGFloat = 240
 
     @State private var progress: Double = 0

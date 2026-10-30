@@ -5,7 +5,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 ## Qué incluye
 
 - **Cuenta**: inicio de sesión, "He olvidado mi contraseña" (código por email), registro con código por email (la cuenta se crea al confirmar el email) (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez.
-- **Mapa**: tu territorio y el de tus amigos (MapKit), filtro por amigo, toca un territorio para ver de quién es, tus recorridos, fortificaciones y castillos.
+- **Mapa**: tu territorio y el de tus amigos (MapKit) con un estilo que cambia con el zoom, filtro por amigo, resaltar tu territorio o el de los rivales, territorio reciente con halo y el antiguo más apagado, fronteras en disputa, toca un territorio para ver de quién es y la carrera que lo conquistó, tus recorridos (o los de todos) como líneas o mapa de calor, fortificaciones con muralla según las capas, rayado y castillos con el número de capas, y leyenda. En el detalle de una carrera se puede reproducir la conquista.
 - **Competiciones**: banner con la cuenta atrás, cofres en el mapa (común, raro, épico y legendario) que se recogen corriendo, **poderes** que se activan desde el botón ⚡, apodos, ranking de la competición, **resumen semanal** y podio final.
 - **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, **Live Activity** en la pantalla bloqueada y la Dynamic Island (tiempo que corre solo, distancia, ritmo y aviso de pausa), pausa/reanudar, aviso si la ubicación no es exacta, recuperación si iOS cierra la app a mitad de carrera, y cola sin conexión: la carrera se guarda en el móvil y se sube después (sin duplicados).
 - **Después de correr**: territorio conquistado y robado, a quién se lo has robado, cofres recogidos, **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Strava, Polar o Apple Salud muestran el mismo resumen al abrir la app.
@@ -14,7 +14,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 - **Amigos**: solicitudes, búsqueda, perfiles con sus amigos y actividades, enlace de invitación para compartir (`/invite/<token>` abre la app y pide confirmar).
 - **Seguridad**: denunciar publicaciones, comentarios y usuarios; bloquear y desbloquear (Perfil → Usuarios bloqueados).
 - **Perfil**: foto, nombre, color del territorio, estadísticas de robos, apariencia clara/oscura, Strava, Polar y **Apple Salud** (importa las carreras del Apple Watch) en "Conectar dispositivos", notificaciones, soporte y enlaces legales.
-- **Notificaciones push** nativas (APNs): robos de territorio, solicitudes de amistad, comentarios, cofres, resumen semanal, importaciones automáticas, etc.
+- **Notificaciones push** nativas (APNs): robos de territorio, carreras importadas con lo conquistado, carreras de amigos, solicitudes de amistad, comentarios y me gusta, tesoros, apodos, resumen semanal y recordatorios. Se eligen por tipos (Perfil → Notificaciones → Tipos de notificaciones), tienen botones ("Correr ahora", "Aceptar", "Ver en el mapa") y abren la zona, el tesoro o la publicación concretos.
 
 ## Abrir y ejecutar (Mac)
 
@@ -24,6 +24,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
    - Cambia **Bundle Identifier** si quieres (ahora es `com.jpoves.runnaio`). Tiene que ser único en tu cuenta.
    - Xcode creará el App ID con las capacidades que ya trae el proyecto: Push Notifications, HealthKit y Background Modes (Location updates).
    - Haz lo mismo con el target **RunnaLive** (la extensión de la Live Activity): mismo Team. Su Bundle Identifier tiene que ser el de la app seguido de `.RunnaLive` (ahora `com.jpoves.runnaio.RunnaLive`).
+   - Y con el target **RunnaNotificationService** (añade la foto de perfil a las notificaciones): mismo Team, Bundle Identifier `com.jpoves.runnaio.NotificationService`.
 3. Elige tu iPhone y pulsa ▶︎.
 
 La app habla con la API de producción (`AppConfig.apiBaseURL` en `Runna/Core/AppConfig.swift`).
@@ -39,7 +40,7 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 Una sola vez:
 
 1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit** y **Push Notifications**.
-   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
+   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app. Lo mismo para la extensión de notificaciones, `com.jpoves.runnaio.NotificationService`.
 2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Runna" ya existe).
 3. App Store Connect → Usuarios y acceso → Integraciones → **App Store Connect API** → nueva clave con rol **Admin**. Descarga el `.p8` (solo se puede una vez) y apunta **Key ID** e **Issuer ID**.
 4. Tu **Team ID**: developer.apple.com → Membership.
@@ -81,6 +82,8 @@ El servidor envía las notificaciones directamente a Apple. Hay que darle una cl
    En `APNS_BUNDLE_ID` pon el Bundle Identifier de la app. En `APNS_PRIVATE_KEY` pega el contenido completo del `.p8`, con las líneas `BEGIN/END PRIVATE KEY`.
 
 Las builds de Xcode (Debug) se registran en el entorno *sandbox* de APNs. Las de TestFlight y App Store, en *production*. El servidor usa el que corresponda a cada dispositivo.
+
+Las notificaciones que tratan de una persona (quién te ha robado, quién te comenta…) llevan su foto de perfil a la derecha. El servidor manda `image: {url, name, color}` con `mutable-content`, y la extensión **RunnaNotificationService** (`ios/RunnaNotificationService/`) descarga la foto (`GET /api/users/:id/avatar`) y la adjunta antes de mostrarla. Si no hay foto o no llega a tiempo, dibuja las iniciales sobre su color.
 
 ## Live Activity (pantalla bloqueada y Dynamic Island)
 

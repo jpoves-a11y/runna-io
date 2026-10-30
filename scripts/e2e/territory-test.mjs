@@ -1,15 +1,16 @@
-// End-to-end test of territory conquest (merging, steals between friends, ran-together, duplicate
-// imports, route deletion) against the bundled Worker, with queue messages run in-process.
+// End-to-end test of territory processing (conquest, theft, merge, delete, competition scoring,
+// fortifications, powers) against the bundled Worker, with the territory queue run in-process.
 //
 //   npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
 //     --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --alias:cloudflare:sockets=./scripts/e2e/cloudflare-sockets-stub.mjs --external:@libsql/client
 //   rm -f scripts/e2e/.build/territory.db
 //   DATABASE_URL=file:scripts/e2e/.build/territory.db npx drizzle-kit push --force
 //   node scripts/e2e/territory-test.mjs
+//
+// Runs are synthetic GPS tracks in Zaragoza: squares and a figure eight, a point every ~10 m at 3 m/s.
 import { createClient } from '@libsql/client';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import * as turf from '@turf/turf';
 import { pendingSignup } from './signup.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -20,12 +21,73 @@ function check(name, condition, extra = '') {
   console.log(`${condition ? 'PASS' : 'FAIL'} ${name}${condition ? '' : ` ${typeof extra === 'string' ? extra : JSON.stringify(extra)}`}`);
   if (!condition) failures++;
 }
+const near = (value, expected, tolerance) => Math.abs(value - expected) <= expected * tolerance;
 
-globalThis.fetch = async (input) => {
-  throw new Error(`unexpected network call in test: ${input instanceof Request ? input.url : input}`);
-};
+// ---------- Synthetic runs ----------
 
-// ---------- Worker ----------
+const LAT0 = 41.65;
+const M_LAT = 1 / 111_000;
+const M_LNG = 1 / (111_000 * Math.cos((LAT0 * Math.PI) / 180));
+
+/** Square of `side` metres with its south-west corner `east`/`north` metres from the origin. */
+function square(east, north, side, step = 10) {
+  const corners = [[0, 0], [side, 0], [side, side], [0, side], [0, 0]];
+  const points = [];
+  for (let c = 0; c < 4; c++) {
+    const [x1, y1] = corners[c];
+    const [x2, y2] = corners[c + 1];
+    const n = Math.round(side / step);
+    for (let i = 0; i < n; i++) {
+      const x = x1 + ((x2 - x1) * i) / n;
+      const y = y1 + ((y2 - y1) * i) / n;
+      points.push([LAT0 + (north + y) * M_LAT, -0.89 + (east + x) * M_LNG]);
+    }
+  }
+  points.push(points[0]);
+  return points;
+}
+
+/** Figure eight: two squares of `side` sharing a corner, run as one self-crossing loop. */
+function figureEight(east, north, side) {
+  const p = (x, y) => [LAT0 + (north + y) * M_LAT, -0.89 + (east + x) * M_LNG];
+  const path = [[0, 0], [side, 0], [side, side], [2 * side, side], [2 * side, 2 * side], [side, 2 * side], [side, side], [0, side], [0, 0]];
+  const points = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    const [x1, y1] = path[i];
+    const [x2, y2] = path[i + 1];
+    const n = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / 10));
+    for (let k = 0; k < n; k++) points.push(p(x1 + ((x2 - x1) * k) / n, y1 + ((y2 - y1) * k) / n));
+  }
+  points.push(points[0]);
+  return points;
+}
+
+/** Bow tie: a loop whose path crosses itself in the middle (two triangles of side² / 2 each). */
+function bowTie(east, north, side) {
+  const p = (x, y) => [LAT0 + (north + y) * M_LAT, -0.89 + (east + x) * M_LNG];
+  const path = [[0, 0], [2 * side, side], [2 * side, 0], [0, side], [0, 0]];
+  const points = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    const [x1, y1] = path[i];
+    const [x2, y2] = path[i + 1];
+    const n = Math.max(1, Math.round(Math.hypot(x2 - x1, y2 - y1) / 10));
+    for (let k = 0; k < n; k++) points.push(p(x1 + ((x2 - x1) * k) / n, y1 + ((y2 - y1) * k) / n));
+  }
+  points.push(points[0]);
+  return points;
+}
+
+function lengthMeters(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dy = (points[i][0] - points[i - 1][0]) / M_LAT;
+    const dx = (points[i][1] - points[i - 1][1]) / M_LNG;
+    total += Math.hypot(dx, dy);
+  }
+  return total;
+}
+
+// ---------- Worker harness ----------
 
 const worker = (await import('./.build/worker.mjs')).default;
 const db = createClient({ url: databaseUrl });
@@ -36,27 +98,34 @@ const env = {
   ENVIRONMENT: 'test',
   UPSTASH_CRON_SECRET: 'e2e-cron-secret',
   FRONTEND_URL: 'http://localhost:5000',
-  WORKER_URL: 'http://127.0.0.1:8787',
+  WORKER_URL: 'https://api.example.test',
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
 const ctx = { waitUntil: (p) => { pending.push(Promise.resolve(p)); }, passThroughOnException() {} };
+const sentMessages = [];
 
-/** Waits for background work, then runs queued territory messages one at a time, like the queue consumer. */
+async function deliver(body) {
+  let retried = false;
+  await worker.queue({ messages: [{ body, ack() {}, retry() { retried = true; } }] }, env);
+  while (pending.length) await Promise.allSettled(pending.splice(0));
+  return retried;
+}
+
 async function flush() {
   while (pending.length) await Promise.allSettled(pending.splice(0));
   while (queued.length) {
     const body = queued.shift();
-    await worker.queue({ messages: [{ body, ack() {}, retry() { console.error('queue retry', body.type); } }] }, env);
-    while (pending.length) await Promise.allSettled(pending.splice(0));
+    sentMessages.push(body);
+    if (await deliver(body)) console.error('queue retry', body.type, body.routeId);
   }
 }
 
-async function call(method, route, { token, body } = {}) {
-  const headers = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+async function call(method, route, { token, body, headers = {} } = {}) {
+  const h = { ...headers };
+  if (token) h.Authorization = `Bearer ${token}`;
+  if (body !== undefined) h['Content-Type'] = 'application/json';
   const res = await worker.fetch(new Request(`http://127.0.0.1:8787${route}`, {
-    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: h, body: body === undefined ? undefined : JSON.stringify(body),
   }), env, ctx);
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -66,163 +135,458 @@ async function call(method, route, { token, body } = {}) {
 const one = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows[0];
 const all = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows;
 
-const stamp = Date.now() % 100000;
-async function register(name) {
-  const r = await call('POST', '/api/auth/register/confirm', { body: await pendingSignup(db, { username: `${name}${stamp}` }) });
-  return { id: r.data.id, token: r.data.token, name };
+async function register(username) {
+  const r = await call('POST', '/api/auth/register/confirm', { body: await pendingSignup(db, { username }) });
+  await flush();
+  return { id: r.data.id, token: r.data.token, username };
 }
+
+let minutes = 0;
+/** Uploads a run (as the iOS app does) and processes its territory. Returns the route id. */
+async function run(user, points, name = 'Carrera') {
+  const distance = lengthMeters(points);
+  const duration = Math.round(distance / 3);
+  // Each run a bit later than the previous one, all in the last hour
+  const start = new Date(Date.now() - 60 * 60 * 1000 + minutes++ * 60 * 1000);
+  const res = await call('POST', '/api/routes', {
+    token: user.token,
+    body: {
+      name, coordinates: points, distance, duration,
+      startedAt: start.toISOString(), completedAt: new Date(start.getTime() + duration * 1000).toISOString(),
+      clientRunId: `run-${user.username}-${minutes}`,
+    },
+  });
+  if (res.status !== 200 && res.status !== 201) console.error('run upload failed', res);
+  await flush();
+  return res.data?.route?.id ?? res.data?.id;
+}
+
+const territoryArea = async (userId) => Number((await one('select coalesce(sum(area), 0) a from territories where user_id = ?', [userId])).a);
+const userArea = async (userId) => Number((await one('select total_area a from users where id = ?', [userId])).a);
+const metricsCount = async (attackerId) => Number((await one('select count(*) n from conquest_metrics where attacker_id = ?', [attackerId])).n);
+
 async function befriend(a, b) {
   await db.execute({ sql: 'insert into friendships (user_id, friend_id) values (?, ?), (?, ?)', args: [a.id, b.id, b.id, a.id] });
 }
 
-// ---------- Runs ----------
+// ---------- Scenario ----------
 
-const ORIGIN = [41.6488, -0.8891]; // Zaragoza
-const M_LAT = 1 / 111320;
-const M_LNG = 1 / (111320 * Math.cos((ORIGIN[0] * Math.PI) / 180));
-const HOUR = 3600 * 1000;
+const stamp = Date.now() % 100000;
+const alice = await register(`ali${stamp}`);
+const bob = await register(`bob${stamp}`);
+const carol = await register(`car${stamp}`);
+await befriend(alice, bob);
+await befriend(alice, carol);
+await befriend(bob, carol);
+check('users registered', !!alice.token && !!bob.token && !!carol.token);
 
-/** A square loop of `side` meters, `east`/`north` meters from the origin, sampled every ~10 m at 3 m/s. */
-function squareRun({ east = 0, north = 0, side = 600, hoursAgo }) {
-  const coordinates = [];
-  for (let d = 0; d <= 4 * side; d += 10) {
-    const leg = Math.min(3, Math.floor(d / side));
-    const along = d - leg * side;
-    const [x, y] = leg === 0 ? [along, 0] : leg === 1 ? [side, along] : leg === 2 ? [side - along, side] : [0, side - along];
-    coordinates.push([ORIGIN[0] + (north + y) * M_LAT, ORIGIN[1] + (east + x) * M_LNG]);
-  }
-  const distance = 4 * side;
-  const duration = Math.round(distance / 3);
-  const startedAt = new Date(Date.now() - hoursAgo * HOUR);
-  return {
-    name: 'Test run',
-    coordinates,
-    distance,
-    duration,
-    startedAt: startedAt.toISOString(),
-    completedAt: new Date(startedAt.getTime() + duration * 1000).toISOString(),
-  };
-}
+// 1. A 400 m square: ~160.000 m² of territory
+const aliceRoute1 = await run(alice, square(0, 0, 400));
+const a1 = await territoryArea(alice.id);
+check('square run conquers its area', near(a1, 160_000, 0.05), a1);
+check('total area matches the territory', near(await userArea(alice.id), a1, 0.001), { user: await userArea(alice.id), a1 });
 
-async function upload(user, run) {
-  const res = await call('POST', '/api/routes', { token: user.token, body: { userId: user.id, ...run } });
-  await flush();
-  return { status: res.status, id: res.data?.route?.id, data: res.data };
-}
+// 2. Bob runs a square over the east half: steals ~80.000 m²
+const bobRoute1 = await run(bob, square(200, 0, 400));
+const a2 = await territoryArea(alice.id);
+check('theft: Alice keeps the west half', near(a2, 80_000, 0.08), a2);
+check('theft recorded once', await metricsCount(bob.id) === 1, await metricsCount(bob.id));
+check('victim total area updated', near(await userArea(alice.id), a2, 0.001));
 
-const territoryGeometry = async (user) => {
-  const rows = await all('select geometry from territories where user_id = ?', [user.id]);
-  return rows.map((r) => JSON.parse(r.geometry));
-};
-const territoryArea = async (user) => Number((await one('select coalesce(sum(area), 0) a from territories where user_id = ?', [user.id])).a);
-const userArea = async (user) => Number((await one('select total_area a from users where id = ?', [user.id])).a);
-function overlapArea(geometriesA, geometriesB) {
+// 3. The same queue message again (at-least-once delivery): nothing changes
+const bobMessage = sentMessages.find((m) => m.routeId === bobRoute1);
+const bobAreaBefore = await territoryArea(bob.id);
+await deliver(bobMessage);
+check('duplicate message: no second theft', await metricsCount(bob.id) === 1, await metricsCount(bob.id));
+check('duplicate message: areas unchanged', near(await territoryArea(alice.id), a2, 0.001) && near(await territoryArea(bob.id), bobAreaBefore, 0.001));
+
+// 4. A run that touches Bob's border (GPS drift of a couple of metres) isn't a theft
+const carolTouch = await run(carol, square(600, -2, 300));
+check('touching a border is not a theft', await metricsCount(carol.id) === 0, await metricsCount(carol.id));
+
+// 5. Loops that touch or cross themselves are valid polygons with the right area
+const carolBeforeEight = await territoryArea(carol.id);
+await run(carol, figureEight(1500, 1500, 200));
+const carolAfterEight = await territoryArea(carol.id);
+check('figure eight (touching lobes) conquers both lobes', near(carolAfterEight - carolBeforeEight, 80_000, 0.1), carolAfterEight - carolBeforeEight);
+await run(carol, bowTie(2500, 1500, 300));
+const bowTieGain = (await territoryArea(carol.id)) - carolAfterEight;
+check('crossing loop (bow tie) conquers both halves', near(bowTieGain, 90_000, 0.1), bowTieGain);
+
+// 6. Alice runs far away, then deletes that run: her robbed square is not given back
+const aliceFar = await run(alice, square(3000, 3000, 300));
+const aliceWithFar = await territoryArea(alice.id);
+check('far run adds its area', near(aliceWithFar - a2, 90_000, 0.08), aliceWithFar);
+const del = await call('DELETE', `/api/routes/${alice.id}/${aliceFar}`, { token: alice.token });
+await flush();
+const aliceAfterDelete = await territoryArea(alice.id);
+check('deleting a run removes only its area', del.status === 200 && near(aliceAfterDelete, a2, 0.08), { del: del.status, aliceAfterDelete, a2 });
+check('deleting a run does not give back stolen area', aliceAfterDelete < 100_000, aliceAfterDelete);
+check('after delete, Alice and Bob do not overlap', await overlapArea(alice.id, bob.id) < 100, await overlapArea(alice.id, bob.id));
+
+async function overlapArea(userA, userB) {
+  const r = await call('GET', `/api/territories/friends/${alice.id}`, { token: alice.token });
+  const turf = await import('../../node_modules/@turf/turf/dist/esm/index.js');
+  const geomOf = (id) => r.data.filter((t) => t.userId === id).map((t) => (typeof t.geometry === 'string' ? JSON.parse(t.geometry) : t.geometry));
   let total = 0;
-  for (const a of geometriesA) for (const b of geometriesB) {
-    const i = turf.intersect(turf.featureCollection([turf.feature(a), turf.feature(b)]));
-    if (i) total += turf.area(i);
+  for (const g1 of geomOf(userA)) for (const g2 of geomOf(userB)) {
+    const inter = turf.intersect(turf.featureCollection([turf.feature(g1), turf.feature(g2)]));
+    if (inter) total += turf.area(inter);
   }
   return total;
 }
-const near = (value, expected, tolerance) => Math.abs(value - expected) <= tolerance;
 
-// ---------- Scenario ----------
+// 7. Competition: new territory is worth 1.5x and the bonus survives later updates
+const comp = await call('POST', '/api/admin/competition', {
+  headers: { Authorization: 'Bearer e2e-cron-secret' },
+  body: { name: 'Test', slug: `test-${stamp}`, startsAt: new Date(Date.now() - DAY()).toISOString(), endsAt: new Date(Date.now() + 7 * DAY()).toISOString() },
+});
+check('competition created', comp.status === 200 && !!comp.data.id, comp);
+await db.execute({ sql: "update competitions set status = 'active' where id = ?", args: [comp.data.id] });
+function DAY() { return 24 * 3600 * 1000; }
 
-const ana = await register('ana');
-const ben = await register('ben');
-const eva = await register('eva');
-const far = await register('far');
-const stranger = await register('str');
-check('users registered', [ana, ben, eva, far, stranger].every((u) => !!u.token));
-await befriend(ana, ben);
-await befriend(ana, eva);
-await befriend(ben, eva);
-await befriend(ben, far);
+const bobCompRoute = await run(bob, square(0, 2000, 300));
+// Delivered twice (at-least-once queue): counted once
+const statsOnce = await one('select activities_count n from competition_stats where user_id = ? and competition_id = ?', [bob.id, comp.data.id]);
+await deliver(sentMessages.find((m) => m.routeId === bobCompRoute));
+const statsTwice = await one('select activities_count n from competition_stats where user_id = ? and competition_id = ?', [bob.id, comp.data.id]);
+check('duplicate message: competition stats counted once', Number(statsOnce?.n) === 1 && Number(statsTwice?.n) === 1, { statsOnce, statsTwice });
+const bobReal = await territoryArea(bob.id);
+const bobStats = await one('select total_area from competition_stats where user_id = ? and competition_id = ?', [bob.id, comp.data.id]);
+check('competition: users.total_area is the real area', near(await userArea(bob.id), bobReal, 0.001), { user: await userArea(bob.id), bobReal });
+check('competition: score = real area + 50% of the new area', near(Number(bobStats?.total_area), bobReal + 0.5 * 90_000, 0.05), { stats: bobStats, bobReal });
+// Carol steals part of it: Bob's score drops by what he lost, keeps the bonus
+await run(carol, square(150, 2000, 300));
+const bobRealAfter = await territoryArea(bob.id);
+const bobStatsAfter = await one('select total_area from competition_stats where user_id = ? and competition_id = ?', [bob.id, comp.data.id]);
+check('competition: victim score updated, bonus kept', near(Number(bobStatsAfter?.total_area), bobRealAfter + 0.5 * 90_000, 0.05), { stats: bobStatsAfter, bobRealAfter });
 
-// 1. First conquest
-const anaRun = squareRun({ hoursAgo: 48 });
-const anaPost = await upload(ana, anaRun);
-check('ana run accepted', anaPost.status === 200 && !!anaPost.id, anaPost.status);
-const anaRouteId = anaPost.id;
-const squareArea = 600 * 600;
-check('ana conquers the square', near(await territoryArea(ana), squareArea, squareArea * 0.03), await territoryArea(ana));
-check('ana total area matches her territory', near(await userArea(ana), await territoryArea(ana), 1));
-const anaFeed = await one('select * from feed_events where route_id = ?', [anaRouteId]);
-check('feed event filled with the conquest', !!anaFeed?.metadata && near(Number(anaFeed.new_area), squareArea, squareArea * 0.03), anaFeed);
-const result = await call('GET', `/api/conquest-result/${anaRouteId}`, { token: ana.token });
-check('conquest-result ready', result.data.ready === true && result.data.newAreaConquered > 0, result.data);
-const stored = (await one('select geometry from territories where user_id = ?', [ana.id])).geometry;
-check('stored geometry is compact (≤ 6 decimals)', !/\d\.\d{7,}/.test(stored), stored.slice(0, 200));
+// 8. Fortifications: Alice runs the same square 5 more times: at most 3 layers in that zone
+for (let i = 0; i < 5; i++) await run(alice, square(0, 0, 200));
+const forts = await all('select id, created_at from territory_fortifications where user_id = ?', [alice.id]);
+check('fortification capped at 3 layers', forts.length <= 3 && forts.length >= 1, forts.length);
+const fortList = await call('GET', '/api/territories/fortifications', { token: alice.token });
+const aliceForts = fortList.data.fortifications?.find((f) => f.userId === alice.id);
+check('fortifications listed', !!aliceForts && aliceForts.layers === forts.length, fortList.data);
+const aliceZones = (fortList.data.castles ?? []).filter((z) => z.userId === alice.id);
+check('castle zone with its castles', aliceZones.length === 1 && aliceZones[0].layers === forts.length && aliceZones[0].lat !== null, aliceZones);
+const fortListAgain = await call('GET', '/api/territories/fortifications', { token: alice.token });
+check('castle zones served from the cache', JSON.stringify(fortListAgain.data) === JSON.stringify(fortList.data)
+  && !!(await one("select 1 as ok from derived_cache where kind = 'castle-zones-v1' and key = ?", [alice.id])));
+await db.execute({ sql: 'update territory_fortifications set created_at = ? where user_id = ?', args: [new Date(Date.now() - 15 * DAY()).toISOString(), alice.id] });
+const fortListOld = await call('GET', '/api/territories/fortifications', { token: alice.token });
+check('fortifications expire after 14 days', !fortListOld.data.fortifications?.some((f) => f.userId === alice.id), fortListOld.data);
 
-// 2. The same route enqueued again (second import source, duplicate delivery): nothing changes
-const fortsBefore = Number((await one('select count(*) n from territory_fortifications')).n ?? 0);
-queued.push({ type: 'process_route_territory', userId: ana.id, routeId: anaRouteId, startedAt: anaRun.startedAt, completedAt: anaRun.completedAt, distance: anaRun.distance, duration: anaRun.duration });
-await flush();
-const anaFeedAgain = await one('select * from feed_events where route_id = ?', [anaRouteId]);
-check('duplicate message: feed area not overwritten with 0', Number(anaFeedAgain.new_area) === Number(anaFeed.new_area), { before: anaFeed.new_area, after: anaFeedAgain.new_area });
-check('duplicate message: no fortification of her own run', Number((await one('select count(*) n from territory_fortifications')).n ?? 0) === fortsBefore);
+// 9. Double area power: exactly about twice the area, whatever the shape (a long thin rectangle)
+await db.execute({
+  sql: "insert into user_powers (user_id, competition_id, power_type, treasure_id, status, activated_at) values (?, ?, 'double_area', 'test', 'active', ?)",
+  args: [carol.id, comp.data.id, new Date().toISOString()],
+});
+const carolBefore = await territoryArea(carol.id);
+const thin = [];
+{
+  // 1.000 x 100 m rectangle far from everyone
+  const corners = [[0, 0], [1000, 0], [1000, 100], [0, 100], [0, 0]];
+  for (let c = 0; c < 4; c++) {
+    const [x1, y1] = corners[c]; const [x2, y2] = corners[c + 1];
+    const n = Math.round(Math.hypot(x2 - x1, y2 - y1) / 10);
+    for (let i = 0; i < n; i++) thin.push([LAT0 + (5000 + y1 + ((y2 - y1) * i) / n) * M_LAT, -0.89 + (5000 + x1 + ((x2 - x1) * i) / n) * M_LNG]);
+  }
+  thin.push(thin[0]);
+}
+await run(carol, thin);
+const gained = (await territoryArea(carol.id)) - carolBefore;
+check('double area: about 2x for a thin shape', near(gained, 200_000, 0.1), gained);
 
-// 3. Many newer territories of a friend far away: they must not hide ana's territory from ben
-for (let i = 0; i < 30; i++) {
-  const lng = ORIGIN[1] + 0.2 + i * 0.01;
-  const poly = turf.polygon([[[lng, ORIGIN[0] + 0.1], [lng + 0.001, ORIGIN[0] + 0.1], [lng + 0.001, ORIGIN[0] + 0.101], [lng, ORIGIN[0] + 0.1]]]);
-  await db.execute({ sql: 'insert into territories (user_id, geometry, area, conquered_at) values (?, ?, ?, ?)', args: [far.id, JSON.stringify(poly.geometry), turf.area(poly), new Date().toISOString()] });
+// 10. First run of a new user is a crossing loop: the stored area is right (no union to fix it)
+const dave = await register(`dav${stamp}`);
+await run(dave, bowTie(8000, 8000, 300));
+const daveArea = await territoryArea(dave.id);
+check('first run, crossing loop: right area', near(daveArea, 90_000, 0.1) && near(await userArea(dave.id), daveArea, 0.001), daveArea);
+
+// 11. Vertices don't pile up: many overlapping runs keep the territory small
+for (let i = 0; i < 6; i++) await run(dave, square(8000 + i * 37, 8400 + (i % 2) * 23, 250));
+const daveGeometry = JSON.parse((await one('select geometry from territories where user_id = ?', [dave.id])).geometry);
+const vertexCount = JSON.stringify(daveGeometry.coordinates).split('],[').length;
+check('territory geometry stays simplified', vertexCount < 400, vertexCount);
+
+// 12. A territory stored before bounding boxes existed is still found (and gets its box)
+await befriend(dave, carol);
+await db.execute({ sql: 'update territories set bbox_min_lng = null, bbox_min_lat = null, bbox_max_lng = null, bbox_max_lat = null where user_id = ?', args: [dave.id] });
+const carolMetricsBefore = await metricsCount(carol.id);
+await run(carol, square(8000, 8000, 150));
+check('old territory without bbox can still be stolen from', await metricsCount(carol.id) === carolMetricsBefore + 1, await metricsCount(carol.id));
+const daveBox = await one('select bbox_min_lng from territories where user_id = ?', [dave.id]);
+check('its bounding box is filled in', daveBox && daveBox.bbox_min_lng !== null, daveBox);
+
+// 13. Privacy: your runs in full; a friend's without the stretch near home; a stranger's not at all
+const distanceM = (a, b) => Math.hypot((a[0] - b[0]) / M_LAT, (a[1] - b[1]) / M_LNG);
+const own = await call('GET', `/api/routes/${alice.id}`, { token: alice.token });
+const ownRun = own.data.find((r) => r.id === aliceRoute1);
+const fullStart = ownRun.coordinates[0];
+check('own runs: full track', own.status === 200 && ownRun.coordinates.length > 100, own.status);
+const asFriend = await call('GET', `/api/routes/${alice.id}`, { token: bob.token });
+const friendView = asFriend.data.find((r) => r.id === aliceRoute1);
+check("friend's runs: start and end hidden (200 m)", asFriend.status === 200 && friendView.coordinates.length > 10
+  && distanceM(friendView.coordinates[0], fullStart) >= 195 && distanceM(friendView.coordinates.at(-1), fullStart) >= 195,
+  { status: asFriend.status, first: friendView && distanceM(friendView.coordinates[0], fullStart) });
+const asStranger = await call('GET', `/api/routes/${alice.id}`, { token: dave.token });
+check("stranger can't download someone's runs", asStranger.status === 403, asStranger.status);
+const feed = await call('GET', `/api/feed/${bob.id}`, { token: bob.token });
+const aliceCard = (Array.isArray(feed.data) ? feed.data : feed.data.events ?? []).find((e) => e.routeId === aliceRoute1);
+check("feed: friend's run without the stretch near home", !!aliceCard && aliceCard.routeCoordinates.length > 0
+  && distanceM(aliceCard.routeCoordinates[0], fullStart) >= 195, aliceCard && { n: aliceCard.routeCoordinates.length });
+check('lists of everyone need a session', (await call('GET', '/api/leaderboard')).status === 401
+  && (await call('GET', '/api/territories')).status === 401 && (await call('GET', '/api/territories/fortifications')).status === 401);
+
+// 14. Time and altitude of each point: stored, trimmed with the track for friends, checked for bike stretches
+{
+  const points = square(10000, 0, 400);
+  const times = points.map((_, i) => i * 3.3); // ~3 m/s
+  const altitudes = points.map((_, i) => 200 + Math.sin(i / 10) * 5);
+  const start = new Date(Date.now() - 30 * 60 * 1000);
+  const distance = lengthMeters(points);
+  const up = await call('POST', '/api/routes', {
+    token: alice.token,
+    body: {
+      name: 'Con tiempos', coordinates: points, distance, duration: Math.round(times.at(-1)),
+      startedAt: start.toISOString(), completedAt: new Date(start.getTime() + times.at(-1) * 1000).toISOString(),
+      clientRunId: `times-${stamp}`, pointTimes: times, altitudes,
+    },
+  });
+  await flush();
+  const mine = (await call('GET', `/api/routes/${alice.id}`, { token: alice.token })).data.find((r) => r.id === up.data.route.id);
+  check('point times and altitudes stored', mine && mine.pointTimes?.length === points.length && mine.altitudes?.length === points.length
+    && Math.abs(mine.pointTimes[10] - times[10]) < 0.11, mine && { t: mine.pointTimes?.length, a: mine.altitudes?.length });
+  const friendsView = (await call('GET', `/api/routes/${alice.id}`, { token: bob.token })).data.find((r) => r.id === up.data.route.id);
+  check("friend's view: times trimmed with the track", friendsView && friendsView.pointTimes.length === friendsView.coordinates.length
+    && friendsView.coordinates.length < points.length, friendsView && { c: friendsView.coordinates.length, t: friendsView.pointTimes.length });
+
+  // 4 km running at 3 m/s with 1 km by bike at 11 m/s (40 km/h): plausible average, impossible stretch
+  const track = [];
+  const trackTimes = [];
+  let t = 0;
+  for (let i = 0; i <= 500; i++) {
+    track.push([LAT0 + (6000 + i * 10) * M_LAT, -0.89 + 6000 * M_LNG]);
+    trackTimes.push(t);
+    t += i >= 200 && i < 300 ? 10 / 11 : 10 / 3;
+  }
+  const bikeStart = new Date(Date.now() - 40 * 60 * 1000);
+  const bike = await call('POST', '/api/routes', {
+    token: alice.token,
+    body: {
+      name: 'Con bici', coordinates: track, distance: 5000, duration: Math.round(t),
+      startedAt: bikeStart.toISOString(), completedAt: new Date(bikeStart.getTime() + t * 1000).toISOString(),
+      clientRunId: `bike-${stamp}`, pointTimes: trackTimes,
+    },
+  });
+  check('a bike stretch inside a run is refused', bike.status === 422 && bike.data.reason === 'too_fast_segment', bike);
+  const noTimes = await call('POST', '/api/routes', {
+    token: alice.token,
+    body: {
+      name: 'Sin tiempos', coordinates: track, distance: 5000, duration: Math.round(t),
+      startedAt: bikeStart.toISOString(), completedAt: new Date(bikeStart.getTime() + t * 1000).toISOString(),
+      clientRunId: `notimes-${stamp}`,
+    },
+  });
+  check('same run without times: only the average is checked', noTimes.status === 200 || noTimes.status === 201, noTimes.status);
 }
 
-// 4. Ben runs over the east half of ana's square: steals it
-const benPost = await upload(ben, squareRun({ east: 300, hoursAgo: 24 }));
-const anaAfterSteal = await territoryArea(ana);
-check('ben steals the east half from ana (despite 30 newer far-away territories)', near(anaAfterSteal, squareArea / 2, squareArea * 0.05), anaAfterSteal);
-check('ana total area follows the steal', near(await userArea(ana), anaAfterSteal, 1));
-check('ana and ben territories do not overlap', overlapArea(await territoryGeometry(ana), await territoryGeometry(ben)) < 50);
-const metric = await one('select * from conquest_metrics where attacker_id = ? and defender_id = ?', [ben.id, ana.id]);
-check('conquest metric recorded', !!metric && near(Number(metric.area_stolen), squareArea / 2, squareArea * 0.05), metric);
-const benFeed = await one('select * from feed_events where route_id = ?', [benPost.id]);
-check('ben feed lists ana as victim', JSON.parse(benFeed.metadata || '{}').victims?.[0]?.userId === ana.id, benFeed?.metadata);
+// 15. Weekly ranking among friends: this week's conquered area, km and runs; strangers not included
+{
+  const weekly = await call('GET', `/api/leaderboard/friends/${alice.id}/weekly`, { token: alice.token });
+  const entries = weekly.data?.entries ?? [];
+  const me = entries.find((e) => e.id === alice.id);
+  check('weekly ranking: me and my friends only', weekly.status === 200 && !!me && !entries.some((e) => e.id === dave.id)
+    && entries.length === 3, weekly.data);
+  check('weekly ranking: area, km and runs of this week', me && me.weekRuns >= 1 && me.weekDistance > 0 && me.weekArea > 0, me);
+  check('weekly ranking: sorted by area', entries.every((e, i) => i === 0 || entries[i - 1].weekArea >= e.weekArea)
+    && entries.every((e, i) => e.rank === i + 1), entries.map((e) => [e.username, e.weekArea]));
+  const other = await call('GET', `/api/leaderboard/friends/${bob.id}/weekly`, { token: alice.token });
+  check("weekly ranking: not someone else's", other.status === 403, other.status);
+}
 
-// 5. A stranger (not a friend) runs over everything: steals nothing outside a competition
-await upload(stranger, squareRun({ east: 150, hoursAgo: 20 }));
-check('stranger steals nothing from ana', near(await territoryArea(ana), anaAfterSteal, 5));
+// Overlap (m²) between two users' territories, straight from the database
+async function overlapDb(userA, userB) {
+  const turf = await import('../../node_modules/@turf/turf/dist/esm/index.js');
+  const geoms = async (id) => (await all('select geometry from territories where user_id = ?', [id])).map((r) => JSON.parse(r.geometry));
+  let total = 0;
+  for (const g1 of await geoms(userA)) for (const g2 of await geoms(userB)) {
+    const inter = turf.intersect(turf.featureCollection([turf.feature(g1), turf.feature(g2)]));
+    if (inter) total += turf.area(inter);
+  }
+  return total;
+}
 
-// 6. Eva runs together with ana (same start, same loop): no steal between them
-const together = squareRun({ north: 900, hoursAgo: 10 });
-const anaTogether = await upload(ana, together);
-const evaTogether = await upload(eva, { ...together, startedAt: new Date(Date.parse(together.startedAt) + 60_000).toISOString(), completedAt: new Date(Date.parse(together.completedAt) + 60_000).toISOString() });
-const evaRoute = await one('select ran_together_with from routes where id = ?', [evaTogether.id]);
-check('ran together recorded', JSON.parse(evaRoute.ran_together_with || '[]').includes(ana.id), evaRoute);
-check('no steal between runners who ran together', overlapArea(await territoryGeometry(ana), await territoryGeometry(eva)) > squareArea * 0.9);
+// 16. Castles (no competition needed): each castle stops one attack on its zone, then it falls
+await db.execute({ sql: "update competitions set status = 'finished', ends_at = ? where id = ?", args: [new Date(Date.now() - DAY()).toISOString(), comp.data.id] });
+{
+  const eve = await register(`eve${stamp}`);
+  const fred = await register(`fre${stamp}`);
+  await befriend(eve, fred);
+  await run(eve, square(12000, 0, 300));
+  await run(eve, square(12000, 0, 300));
+  await run(eve, square(12000, 0, 300));
+  const castlesOf = async (user) => ((await call('GET', '/api/territories/fortifications', { token: fred.token })).data.castles || []).filter((z) => z.userId === user.id);
+  const zones = await castlesOf(eve);
+  check('castles: running your zone again builds castles (one zone, 2 castles), friends see them',
+    zones.length === 1 && zones[0].layers === 2 && Number.isFinite(zones[0].lat) && !!zones[0].expiresAt && !!zones[0].nextExpiryAt, zones);
+  const eveArea = await territoryArea(eve.id);
+  const fredMetrics = await metricsCount(fred.id);
+  await run(fred, square(12150, 0, 300));
+  check('castle stops the attack: nothing stolen', near(await territoryArea(eve.id), eveArea, 0.01) && await metricsCount(fred.id) === fredMetrics,
+    { eve: await territoryArea(eve.id), eveArea });
+  check('the attacker does not get the protected zone', await overlapDb(eve.id, fred.id) < 100, await overlapDb(eve.id, fred.id));
+  check('the attacker keeps the part outside the castles', near(await territoryArea(fred.id), 45_000, 0.12), await territoryArea(fred.id));
+  check('one castle fell', (await castlesOf(eve))[0]?.layers === 1, await castlesOf(eve));
+  await run(fred, square(12150, 0, 300));
+  check('second attack: the last castle falls, the zone holds', near(await territoryArea(eve.id), eveArea, 0.01) && (await castlesOf(eve)).length === 0);
+  await run(fred, square(12150, 0, 300));
+  check('without castles the zone is stolen', near(eveArea - await territoryArea(eve.id), 45_000, 0.12), eveArea - await territoryArea(eve.id));
+}
 
-// 7. Ana deletes a run: her rebuilt territory must not take back what ben stole, but keeps what she shares with eva
-const extra = await upload(ana, squareRun({ east: -3000, hoursAgo: 5 }));
-const del = await call('DELETE', `/api/routes/${ana.id}/${extra.id}`, { token: ana.token });
-check('route deleted', del.status === 200, del);
-const anaGeom = await territoryGeometry(ana);
-check('after delete: ana does not get ben\'s land back', overlapArea(anaGeom, await territoryGeometry(ben)) < 50, overlapArea(anaGeom, await territoryGeometry(ben)));
-check('after delete: ana keeps the land shared with eva', overlapArea(anaGeom, await territoryGeometry(eva)) > squareArea * 0.9);
-check('after delete: ana area = west half + shared square', near(await territoryArea(ana), squareArea / 2 + squareArea, squareArea * 0.06), await territoryArea(ana));
-check('after delete: total area matches territory', near(await userArea(ana), await territoryArea(ana), 1));
-check('after delete: ana has a single territory row', (await all('select id from territories where user_id = ?', [ana.id])).length === 1);
+// 17. Decay: zones not run over for 14 days wear away from the border, ~3 % a day
+{
+  const gus = await register(`gus${stamp}`);
+  const routeA = await run(gus, square(15000, 0, 400));
+  const routeB = await run(gus, square(16000, 0, 400));
+  const decayPass = async () => {
+    const r = await call('POST', '/api/tasks/territory-decay', { headers: { Authorization: 'Bearer e2e-cron-secret' } });
+    await flush();
+    return r;
+  };
+  const daysAgo = (days) => new Date(Date.now() - days * DAY()).toISOString();
+  const weakOf = async () => (await call('GET', '/api/territories/weak', { token: gus.token })).data;
+  const first = await decayPass();
+  const before = await territoryArea(gus.id);
+  const state = await one('select * from territory_decay where user_id = ?', [gus.id]);
+  check('decay: the first pass only starts the clock', first.status === 200 && !!state && near(before, 320_000, 0.05), { first, before });
 
-// 8. Friend group rebuild (on a new friendship) keeps ben's steal and the territories disjoint
-queued.push({ type: 'reprocess_friend_group', userId: ana.id });
-await flush();
-check('friend rebuild: ana keeps west half + shared square', near(await territoryArea(ana), squareArea / 2 + squareArea, squareArea * 0.06), await territoryArea(ana));
-check('friend rebuild: ana and ben do not overlap', overlapArea(await territoryGeometry(ana), await territoryGeometry(ben)) < 50);
-check('friend rebuild: steal metric rebuilt', !!(await one('select * from conquest_metrics where attacker_id = ? and defender_id = ?', [ben.id, ana.id])));
+  // A was run 20 days ago, B 5 days ago, the clock started 30 days ago
+  await db.execute({ sql: 'update routes set started_at = ? where id = ?', args: [daysAgo(20), routeA] });
+  await db.execute({ sql: 'update routes set started_at = ? where id = ?', args: [daysAgo(5), routeB] });
+  await db.execute({ sql: 'update territory_decay set tracking_since = ?, last_day = null where user_id = ?', args: [daysAgo(30), gus.id] });
+  await decayPass();
+  const after = await territoryArea(gus.id);
+  const lost = before - after;
+  check('decay: the undefended zone loses about 3 % a day', lost > 1_500 && lost < 9_000, lost);
+  check('decay: total area updated', near(await userArea(gus.id), after, 0.001));
+  const weak = await weakOf();
+  const turf = await import('../../node_modules/@turf/turf/dist/esm/index.js');
+  const gusWeak = weak.zones?.find((z) => z.userId === gus.id);
+  check('decay: the worn zone is listed as weak (only A)', !!gusWeak?.weak && near(turf.area(gusWeak.weak), 160_000 - lost, 0.1), gusWeak && turf.area(gusWeak.weak));
+  await decayPass();
+  check('decay: one pass a day (a repeated message changes nothing)', near(await territoryArea(gus.id), after, 0.0001));
 
-// 9. Competition (all vs all): the stranger can steal now; a defender's time bomb keeps her land
-await db.execute({ sql: "insert into competitions (name, slug, starts_at, ends_at, status) values ('Test', ?, ?, ?, 'active')", args: [`test-${stamp}`, new Date(Date.now() - 72 * HOUR).toISOString(), new Date(Date.now() + 72 * HOUR).toISOString()] });
-const competitionId = (await one('select id from competitions where slug = ?', [`test-${stamp}`])).id;
-await db.execute({ sql: "insert into user_powers (user_id, competition_id, power_type, treasure_id, status) values (?, ?, 'time_bomb', 't', 'active')", args: [eva.id, competitionId] });
-const evaBefore = await territoryArea(eva);
-const benBefore = await territoryArea(ben);
-await upload(stranger, squareRun({ east: 150, north: 450, hoursAgo: 2 }));
-check('competition: stranger steals from ben (no friendship needed)', await territoryArea(ben) < benBefore - 1000, { before: benBefore, after: await territoryArea(ben) });
-check('competition: eva\'s time bomb keeps her territory intact', near(await territoryArea(eva), evaBefore, 5), { before: evaBefore, after: await territoryArea(eva) });
-queued.push({ type: 'reprocess_friend_group', userId: ben.id });
-const benStolen = await territoryArea(ben);
-await flush();
-check('competition: friend rebuild skipped (stranger\'s steal not undone)', near(await territoryArea(ben), benStolen, 5), { before: benStolen, after: await territoryArea(ben) });
+  // B was last run 12,5 days ago: it starts wearing away in two days
+  await db.execute({ sql: 'update routes set started_at = ? where id = ?', args: [daysAgo(12.5), routeB] });
+  await db.execute({ sql: 'update territory_decay set last_day = null where user_id = ?', args: [gus.id] });
+  await decayPass();
+  const atRisk = (await weakOf()).zones?.find((z) => z.userId === gus.id)?.atRisk;
+  check('decay: zone at risk in two days', !!atRisk && near(turf.area(atRisk), 160_000, 0.1), atRisk && turf.area(atRisk));
 
-console.log(failures === 0 ? '\nAll territory checks passed' : `\n${failures} check(s) failed`);
+  // Running through A defends it at once
+  await run(gus, square(15000, 0, 400));
+  const afterRun = (await weakOf()).zones?.find((z) => z.userId === gus.id);
+  check('decay: running a weak zone defends it right away', !afterRun?.weak || turf.area(afterRun.weak) < 1_000, afterRun && afterRun.weak && turf.area(afterRun.weak));
+
+  // Rest mode: the clock stops
+  const rest = await call('POST', '/api/user/rest', { token: gus.token, body: { days: 3 } });
+  check('rest mode starts', rest.status === 200 && rest.data.active && rest.data.daysLeft === 11, rest);
+  check('rest mode: not twice at once', (await call('POST', '/api/user/rest', { token: gus.token, body: { days: 2 } })).status === 409);
+  await db.execute({ sql: 'update routes set started_at = ? where user_id = ?', args: [daysAgo(20), gus.id] });
+  await db.execute({ sql: 'update territory_decay set last_day = null where user_id = ?', args: [gus.id] });
+  const restingArea = await territoryArea(gus.id);
+  await decayPass();
+  check('rest mode: nothing wears away', near(await territoryArea(gus.id), restingArea, 0.0001));
+  const ended = await call('DELETE', '/api/user/rest', { token: gus.token });
+  check('rest mode ended early gives back the unused days', ended.status === 200 && !ended.data.active && ended.data.daysLeft === 13, ended);
+  check('rest mode: at most the days left', (await call('POST', '/api/user/rest', { token: gus.token, body: { days: 20 } })).status === 400);
+}
+
+// 18. A total left negative by an older version is fixed from the territories
+{
+  await db.execute({ sql: 'update users set total_area = ? where id = ?', args: [-13_342, alice.id] });
+  await call('POST', '/api/tasks/territory-decay', { headers: { Authorization: 'Bearer e2e-cron-secret' } });
+  await flush();
+  check('negative total area recomputed from the territories', near(await userArea(alice.id), await territoryArea(alice.id), 0.001) && await userArea(alice.id) > 0,
+    { user: await userArea(alice.id), territory: await territoryArea(alice.id) });
+}
+
+// 19. Widget summary: league, your week, castles and map in one request
+{
+  const w = await call('GET', '/api/widget/summary', { token: alice.token });
+  const d = w.data;
+  check('widget summary answers', w.status === 200 && d.me?.id === alice.id && Array.isArray(d.week?.entries), w.status);
+  check('widget: league with you marked and colours', d.week.entries.some((e) => e.isMe && e.name === 'Tú') && d.week.entries.every((e) => e.color && e.rank >= 1), d.week.entries);
+  check('widget: your week has 7 days and adds up', d.week.days.length === 7 && Math.abs(d.week.days.reduce((a, b) => a + b, 0) - d.week.myArea) < 1, { days: d.week.days, myArea: d.week.myArea });
+  check('widget: streak and last run', d.streakWeeks >= 1 && !!d.me.lastRunAt, { streak: d.streakWeeks, last: d.me.lastRunAt });
+  const points = d.map.territory ? JSON.stringify(d.map.territory.coordinates).split('],[').length : 0;
+  check('widget: light territory for the map', points > 3 && points <= 420 && d.map.bbox?.length === 4, points);
+  check('widget: not without a session', (await call('GET', '/api/widget/summary')).status === 401);
+
+  // The league is read without the users' pictures: same places and figures as the weekly ranking
+  const weekly = (await call('GET', `/api/leaderboard/friends/${alice.id}/weekly`, { token: alice.token })).data.entries;
+  check('widget: league matches the weekly ranking', d.week.players === weekly.length
+    && d.week.myRank === weekly.find((e) => e.id === alice.id)?.rank
+    && d.week.entries.every((e) => {
+      const w = weekly.find((x) => x.id === e.id);
+      return w && w.rank === e.rank && Math.abs(w.weekArea - e.area) < 0.01 && Math.abs(w.weekDistance - e.distance) < 0.01 && w.weekRuns === e.runs;
+    }), { league: d.week.entries, weekly });
+
+  // Pictures: offered by URL (its version changes with the picture), not when too big for a widget
+  const picture = Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 7) % 256));
+  const setAvatar = (user, value) => db.execute({ sql: 'update users set avatar = ? where id = ?', args: [value, user.id] });
+  await setAvatar(bob, `data:image/png;base64,${picture.toString('base64')}`);
+  await setAvatar(carol, `data:image/png;base64,${'A'.repeat(1_100_000)}`);
+  const withPictures = (await call('GET', '/api/widget/summary', { token: alice.token })).data.week.entries;
+  const bobUrl = withPictures.find((e) => e.id === bob.id)?.avatarUrl;
+  check('widget: friend picture offered by URL', typeof bobUrl === 'string' && bobUrl.includes(`/api/users/${bob.id}/avatar?v=`), withPictures);
+  check('widget: picture too big for a widget not offered', withPictures.find((e) => e.id === carol.id)?.avatarUrl === null, withPictures);
+  const served = await worker.fetch(new Request(`http://127.0.0.1:8787/api/users/${bob.id}/avatar`), env, ctx);
+  const servedBytes = Buffer.from(await served.arrayBuffer());
+  check('avatar endpoint returns the picture', served.status === 200 && served.headers.get('content-type') === 'image/png' && servedBytes.equals(picture), served.status);
+  await setAvatar(bob, `data:image/png;base64,${Buffer.from(picture.subarray(10)).toString('base64')}`);
+  const newUrl = (await call('GET', '/api/widget/summary', { token: alice.token })).data.week.entries.find((e) => e.id === bob.id)?.avatarUrl;
+  check('widget: new picture, new URL', typeof newUrl === 'string' && newUrl !== bobUrl, { bobUrl, newUrl });
+  await setAvatar(bob, null);
+  await setAvatar(carol, null);
+
+  // Yesterday's places (▲▼): a run of Bob's early this week counts until today, the rest are from today
+  const weekStartMs = Date.parse(d.week.start);
+  const todayStartMs = weekStartMs + Math.floor((Date.now() - weekStartMs) / DAY()) * DAY();
+  if (Date.now() - todayStartMs > 3 * 3600 * 1000 && todayStartMs > weekStartMs) {
+    const early = new Date(weekStartMs + 3600 * 1000);
+    const track = square(30000, 0, 200);
+    await call('POST', '/api/routes', {
+      token: bob.token,
+      body: {
+        name: 'Early', coordinates: track, distance: lengthMeters(track), duration: 400,
+        startedAt: early.toISOString(), completedAt: new Date(early.getTime() + 400 * 1000).toISOString(),
+        clientRunId: `early-${stamp}`,
+      },
+    });
+    await flush();
+    const league = (await call('GET', '/api/widget/summary', { token: alice.token })).data.week.entries;
+    check("widget: yesterday's places", league.find((e) => e.id === bob.id)?.rankYesterday === 1
+      && league.filter((e) => e.id !== bob.id).every((e) => e.rankYesterday === null), league);
+  } else {
+    console.log("SKIP widget: yesterday's places (too early in the day or the week)");
+  }
+  // Earlier steps changed the database directly: the queue works the map out again
+  await flush();
+  const current = (await call('GET', '/api/widget/summary', { token: alice.token })).data;
+  check('widget: map worked out by the queue, not pending', current.mapPending === false, current.mapPending);
+
+  // The territory changes: the request shows the previous map, flags it and asks the queue for a new one
+  await db.execute({ sql: 'update territories set area = area + 5000 where user_id = ?', args: [alice.id] });
+  queued.length = 0;
+  const stale = (await call('GET', '/api/widget/summary', { token: alice.token })).data;
+  check('widget: out of date map shown while it is refreshed', stale.mapPending === true && JSON.stringify(stale.map) === JSON.stringify(current.map));
+  check('widget: refresh enqueued', queued.some((m) => m.type === 'refresh_derived' && m.widgetUserIds.includes(alice.id)), queued);
+  await flush();
+  check('widget: fresh after the queue', (await call('GET', '/api/widget/summary', { token: alice.token })).data.mapPending === false);
+}
+
+console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

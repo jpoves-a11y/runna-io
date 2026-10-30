@@ -94,6 +94,7 @@ struct ProfileView: View {
                 rivalriesSection
             }
             IntegrationsSection()
+            territorySection
             notificationsSection
             appearanceSection
             privacySection
@@ -152,6 +153,11 @@ struct ProfileView: View {
             switch notificationStatus {
             case .authorized, .provisional, .ephemeral:
                 notificationStatusRow
+                NavigationLink {
+                    NotificationPreferencesView()
+                } label: {
+                    SocialSettingsLabel(title: "Tipos de notificaciones", systemImage: "slider.horizontal.3")
+                }
                 Button {
                     sendTestNotification()
                 } label: {
@@ -183,7 +189,7 @@ struct ProfileView: View {
         } header: {
             SocialSectionHeader(title: "Notificaciones")
         } footer: {
-            Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta.")
+            Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta. En \"Tipos de notificaciones\" eliges cuáles.")
         }
         .listRowBackground(Color.surface)
     }
@@ -244,6 +250,22 @@ struct ProfileView: View {
             return "Último error de Apple: \(error)"
         }
         return nil
+    }
+
+    private var territorySection: some View {
+        Section {
+            NavigationLink {
+                RestModeView()
+            } label: {
+                SocialSettingsLabel(title: "Modo descanso", systemImage: "moon.zzz")
+            }
+            WidgetStatusRow()
+        } header: {
+            SocialSectionHeader(title: "Territorio")
+        } footer: {
+            Text("Las zonas que no pisas en 14 días se desgastan. Si te vas de vacaciones o te lesionas, pausa el desgaste hasta 14 días al año.")
+        }
+        .listRowBackground(Color.surface)
     }
 
     private var appearanceSection: some View {

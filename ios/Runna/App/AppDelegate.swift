@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        NotificationAction.registerCategories()
         return true
     }
 
@@ -31,34 +32,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        let payload = Self.payload(from: notification.request.content.userInfo)
+        let payload = NotificationPayload(userInfo: notification.request.content.userInfo)
         Task { @MainActor in
-            AppRouter.shared.receivedNotificationInForeground(type: payload.type, routeId: payload.routeId)
+            AppRouter.shared.receivedNotificationInForeground(payload)
         }
         completionHandler([.banner, .sound, .list])
     }
 
-    // Tapping a notification opens the matching tab
+    // Tapping a notification opens the matching tab (or runs the button that was pressed)
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let payload = Self.payload(from: response.notification.request.content.userInfo)
+        let payload = NotificationPayload(userInfo: response.notification.request.content.userInfo)
+        let action = response.actionIdentifier
         Task { @MainActor in
-            AppRouter.shared.openNotification(type: payload.type, routeId: payload.routeId)
+            if action == UNNotificationDefaultActionIdentifier || action == UNNotificationDismissActionIdentifier {
+                AppRouter.shared.openNotification(payload)
+            } else {
+                await AppRouter.shared.handleNotificationAction(action, payload: payload)
+            }
+            completionHandler()
         }
-        completionHandler()
-    }
-
-    /// Reads "type" and data.routeId from the APNs payload ({aps, type, data: {type, url, routeId?, photoId?}}).
-    nonisolated private static func payload(from userInfo: [AnyHashable: Any]) -> (type: String?, routeId: String?) {
-        let data = userInfo["data"] as? [String: Any]
-        let type = (userInfo["type"] as? String) ?? (data?["type"] as? String)
-        var routeId = (data?["routeId"] as? String) ?? (userInfo["routeId"] as? String)
-        if routeId == nil, let number = data?["routeId"] as? NSNumber {
-            routeId = number.stringValue
-        }
-        return (type, routeId)
     }
 }

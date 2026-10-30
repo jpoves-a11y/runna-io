@@ -218,7 +218,7 @@ private struct ConquestInboxView: View {
                     if let route {
                         VStack(spacing: DS.Spacing.m) {
                             if route.locations.count >= 2 {
-                                RouteReplayView(
+                                RouteGrowthReplay(
                                     coordinates: route.locations,
                                     color: Color.brand,
                                     height: 220

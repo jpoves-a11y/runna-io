@@ -29,9 +29,9 @@ import { WorkerStorage } from './storage';
 import type { Env } from './index';
 import type { SuuntoAccount, SuuntoActivity, Route } from '../../shared/schema';
 import { parseFit, isFootSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPORT, type FitActivity } from './fit';
+import { BEFORE_CONNECTION, startedBeforeConnection } from './importCutoff';
 import { encodePolyline, decodePolyline } from './territory';
-import { generateFeedEvents, reprocessUserTerritories } from './routes';
-import { sendPushToUser } from './pushHelper';
+import { generateFeedEvents, removeRouteFromTerritory } from './routes';
 
 type AppContext = Context<AppEnv>;
 
@@ -50,7 +50,7 @@ const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const TRACK_MIN_SPACING_M = 5;
 
 /** Skip reasons that a new sync must not re-evaluate (the app's "Reintentar" still can). */
-const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
+const PERMANENT_SKIP_REASONS = new Set(['before_competition', BEFORE_CONNECTION, 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
 
 /**
  * Suunto App activity IDs (workout list `activityId`) that are clearly not on foot: skipped without
@@ -398,6 +398,10 @@ export async function importSuuntoWorkout(
     await save({ status: 'skipped', reason: 'before_competition' });
     return { kind: 'skipped', reason: 'before_competition' };
   }
+  if (startedBeforeConnection(summary.startTime, account.connectedAt)) {
+    await save({ status: 'skipped', reason: BEFORE_CONNECTION });
+    return { kind: 'skipped', reason: BEFORE_CONNECTION };
+  }
   if (summary.activityId !== null && NON_FOOT_ACTIVITY_IDS.has(summary.activityId)) {
     await save({ status: 'skipped', reason: 'excluded_type' });
     return { kind: 'skipped', reason: 'excluded_type' };
@@ -459,6 +463,10 @@ export async function importSuuntoWorkout(
   if (startMs < COMPETITION_MIN_DATE.getTime()) {
     await save({ status: 'skipped', reason: 'before_competition', ...details });
     return { kind: 'skipped', reason: 'before_competition' };
+  }
+  if (startedBeforeConnection(startMs, account.connectedAt)) {
+    await save({ status: 'skipped', reason: BEFORE_CONNECTION, ...details });
+    return { kind: 'skipped', reason: BEFORE_CONNECTION };
   }
   if (distance < 100) {
     await save({ status: 'skipped', reason: 'distance_too_short', ...details });
@@ -591,6 +599,8 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
       distance: activity.distance,
       duration: activity.duration,
       earlyFeedEventId,
+      // The owner is told what the run conquered once the territory is processed
+      importSource: 'suunto',
     });
     queued = true;
   } catch (error) {
@@ -602,26 +612,10 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
   return { routeId: route.id, queued, reused: false, skipReason: null };
 }
 
+/** Only when the territory couldn't be queued: otherwise the queue says what the run conquered. */
 async function notifyImported(env: Env, storage: WorkerStorage, activity: SuuntoActivity, routeId: string): Promise<void> {
-  try {
-    const subscriptions = await storage.getPushSubscriptionsByUserId(activity.userId);
-    if (subscriptions.length === 0) return;
-    const distKm = (activity.distance / 1000).toFixed(1);
-    await sendPushToUser(
-      subscriptions.map((sub) => ({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } })),
-      {
-        title: '🏃 ¡Carrera registrada!',
-        body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-        tag: `suunto-auto-${activity.id}`,
-        data: { type: 'suunto_auto_import', routeId, url: '/?showPendingAnimation=true' },
-      },
-      env.VAPID_PUBLIC_KEY || '',
-      env.VAPID_PRIVATE_KEY || '',
-      env.VAPID_SUBJECT || 'mailto:notifications@runna.io',
-    );
-  } catch (error) {
-    console.warn(`[SUUNTO] Push notification failed for ${activity.userId}:`, error);
-  }
+  const { notifyImportedRunPending } = await import('./notifications');
+  await notifyImportedRunPending(storage, env, { userId: activity.userId, routeId, source: 'suunto', distance: activity.distance });
 }
 
 /** Imports + processes workouts and notifies the user of each new route (webhook and cron path). */
@@ -650,7 +644,7 @@ async function importAndProcess(
       const result = await processSuuntoActivity(env, storage, activity);
       if (result.routeId && !result.reused) {
         routes.push(result.routeId);
-        await notifyImported(env, storage, activity, result.routeId);
+        if (!result.queued) await notifyImported(env, storage, activity, result.routeId);
       }
     } catch (error) {
       console.error(`[SUUNTO] Processing activity ${activity.id} failed:`, error);
@@ -1019,6 +1013,8 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
       if (activity.userId !== userId) return c.json({ error: 'No autorizado' }, 403);
 
       const routeId = activity.routeId;
+      // The deleted run, for removing its area from the territory afterwards
+      const deletedRoute = routeId ? await storage.getRouteById(routeId) : null;
       if (routeId) {
         await storage.markSuuntoActivityDeletedByRouteId(routeId);
         await storage.detachTerritoriesFromRoute(routeId);
@@ -1028,7 +1024,8 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
         await storage.deleteStravaActivityByRouteId(routeId);
         await storage.deleteRouteById(routeId);
         try {
-          await reprocessUserTerritories(storage, userId);
+          // What only this run covered leaves the territory (stolen area is not given back)
+          if (deletedRoute) await removeRouteFromTerritory(storage, userId, deletedRoute);
         } catch (error) {
           console.error('[SUUNTO] Territory rebuild after delete failed:', error);
         }

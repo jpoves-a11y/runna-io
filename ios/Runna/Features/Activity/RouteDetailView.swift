@@ -17,6 +17,12 @@ struct RouteDetailView: View {
     @State private var confirmDelete = false
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @State private var showReplay = false
+    @State private var showShare = false
+    /// The zones this run goes through: worked out once (it tests the route against every zone).
+    @State private var zones: [TerritoryShape] = []
+    /// Splits, pace and elevation (runs with the time of each point only).
+    @State private var analysis: RouteAnalysis?
 
     init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
         self.route = route
@@ -24,6 +30,7 @@ struct RouteDetailView: View {
         self.editable = editable
         self.onChange = onChange
         _name = State(initialValue: route.name)
+        _analysis = State(initialValue: RouteAnalysis(route: route))
     }
 
     private var lineColor: Color {
@@ -37,6 +44,7 @@ struct RouteDetailView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     titleBlock
                     statsSection
+                    analysisSections
                     conquestSection
                     companions
                     if editable {
@@ -52,7 +60,9 @@ struct RouteDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: shareText) {
+                Button {
+                    showShare = true
+                } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .accessibilityLabel("Compartir actividad")
@@ -78,14 +88,47 @@ struct RouteDetailView: View {
             Text("No se puede deshacer.")
         }
         .errorAlert($errorMessage)
+        .fullScreenCover(isPresented: $showReplay) {
+            RouteReplayView(locations: route.locations, color: lineColor, territories: zones, altitudes: route.altitudes, title: name, shareRun: shareRun)
+        }
+        .sheet(isPresented: $showShare) {
+            ShareStudioView(run: shareRun)
+        }
+        // Reads `shapes`: worked out again when the map's zones arrive or change
+        .task(id: MapModel.shared.shapes.count) {
+            zones = MapModel.shared.zones(crossedBy: route)
+        }
     }
+
+    /// This run for the share cards and video.
+    private var shareRun: ShareRun {
+        ShareRun(
+            routeId: route.id,
+            name: name,
+            date: route.startDate,
+            coordinates: route.locations,
+            distance: route.distance,
+            duration: route.duration,
+            colorHex: color ?? session.user?.color ?? "#16A34A",
+            territories: zones,
+            altitudes: route.altitudes
+        )
+    }
+
 
     // MARK: Map
 
     @ViewBuilder
     private var mapHeader: some View {
         if route.locations.count >= 2 {
-            RouteDetailMap(locations: route.locations, color: lineColor)
+            RouteDetailMap(
+                locations: route.locations,
+                color: lineColor,
+                // Only the zones this run goes through (a user's territory is one multipolygon)
+                territories: zones,
+                onReplay: { showReplay = true },
+                onShare: { showShare = true }
+            )
                 .frame(height: 320)
                 .overlay(alignment: .bottom) { HairlineDivider() }
         } else {
@@ -159,6 +202,26 @@ struct RouteDetailView: View {
                 }
             }
             .card()
+        }
+    }
+
+    // MARK: Splits and charts
+
+    @ViewBuilder
+    private var analysisSections: some View {
+        if let analysis {
+            if analysis.splits.count >= 2 {
+                RouteSplitsSection(splits: analysis.splits)
+            }
+            if analysis.pace.count >= 3 {
+                RoutePaceChart(
+                    samples: analysis.pace,
+                    averagePace: route.distance > 0 ? Double(route.duration) / (route.distance / 1000) : nil
+                )
+            }
+            if analysis.elevation.count >= 3 {
+                RouteElevationChart(samples: analysis.elevation, gain: analysis.elevationGain)
+            }
         }
     }
 
@@ -249,14 +312,6 @@ struct RouteDetailView: View {
         }
     }
 
-    private var shareText: String {
-        var text = "\(name): \(Format.distance(route.distance)) en \(Format.duration(route.duration))"
-        if let area = route.territoryArea, area > 0 {
-            text += " y +\(Format.area(area)) conquistados"
-        }
-        return text + " con Runna.io"
-    }
-
     // MARK: Requests
 
     private func rename() {
@@ -300,13 +355,38 @@ struct RouteDetailView: View {
 
 // MARK: - Pieces
 
-/// Interactive map of the route with start and finish markers.
+/// Map of the route with start and finish markers and the zones it goes through, fitted to the route
+/// (the zones can be much bigger). "Reproducir" opens the full-screen replay.
 private struct RouteDetailMap: View {
     let locations: [CLLocationCoordinate2D]
     let color: Color
+    let territories: [TerritoryShape]
+    let onReplay: () -> Void
+    let onShare: () -> Void
+
+    @State private var position: MapCameraPosition
+
+    init(locations: [CLLocationCoordinate2D], color: Color, territories: [TerritoryShape],
+         onReplay: @escaping () -> Void, onShare: @escaping () -> Void) {
+        self.locations = locations
+        self.color = color
+        self.territories = territories
+        self.onReplay = onReplay
+        self.onShare = onShare
+        if let rect = MapGeometry.fittingRect(locations) {
+            _position = State(initialValue: .rect(rect))
+        } else {
+            _position = State(initialValue: .automatic)
+        }
+    }
 
     var body: some View {
-        Map(initialPosition: .automatic) {
+        Map(position: $position) {
+            ForEach(territories) { shape in
+                MapPolygon(shape.polygon)
+                    .foregroundStyle(color.opacity(0.3))
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            }
             MapPolyline(coordinates: locations)
                 .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
             MapPolyline(coordinates: locations)
@@ -323,6 +403,28 @@ private struct RouteDetailMap: View {
             }
         }
         .mapStyle(.standard(emphasis: .muted, pointsOfInterest: .excludingAll))
+        .overlay(alignment: .bottomTrailing) {
+            HStack(spacing: DS.Spacing.s) {
+                // Cards and video straight away, without watching the replay first
+                Button(action: onShare) {
+                    Label("Compartir", systemImage: "square.and.arrow.up")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .glassSurface(Capsule(), interactive: true)
+                }
+                .buttonStyle(.plain)
+                Button(action: onReplay) {
+                    Label(territories.isEmpty ? "Reproducir" : "Reproducir conquista", systemImage: "play.fill")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .glassSurface(Capsule(), interactive: true)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(DS.Spacing.m)
+        }
     }
 }
 

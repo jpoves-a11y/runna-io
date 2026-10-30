@@ -7,6 +7,7 @@
  * Message types:
  * - process_route_territory: Process territory conquest + feed update for a new route
  * - reprocess_friend_group: Full chronological reprocess of a friend group's territories
+ * - territory_decay: nightly decay of one user's undefended territory
  */
 import { createDb } from './db';
 import { WorkerStorage } from './storage';
@@ -17,6 +18,7 @@ import {
   type ConquestVictimInfo,
 } from './territory';
 import type { Env } from './index';
+import type { RefreshDerivedMessage } from './derived';
 
 // Cloudflare Workers Queue types (provided by runtime, declared here for TS)
 interface QueueMessage<T> {
@@ -42,6 +44,8 @@ export interface ProcessRouteTerritoryMessage {
   distance: number;
   duration: number;
   earlyFeedEventId?: string;
+  /** Set for runs imported from a connected service: the owner is told what the run conquered. */
+  importSource?: 'strava' | 'polar' | 'suunto' | 'garmin';
 }
 
 export interface ReprocessFriendGroupMessage {
@@ -49,7 +53,13 @@ export interface ReprocessFriendGroupMessage {
   userId: string; // trigger user — friend group is derived from their friendships
 }
 
-export type TerritoryQueueMessage = ProcessRouteTerritoryMessage | ReprocessFriendGroupMessage;
+/** Nightly decay of one user's undefended territory (through the queue: never during a run's processing). */
+export interface TerritoryDecayMessage {
+  type: 'territory_decay';
+  userId: string;
+}
+
+export type TerritoryQueueMessage = ProcessRouteTerritoryMessage | ReprocessFriendGroupMessage | TerritoryDecayMessage | RefreshDerivedMessage;
 
 // ─── Queue Consumer ──────────────────────────────────────────────────────────
 
@@ -79,6 +89,22 @@ async function processMessage(msg: TerritoryQueueMessage, env: Env): Promise<voi
     case 'reprocess_friend_group':
       await handleReprocessFriendGroup(storage, msg);
       break;
+    case 'territory_decay': {
+      const { runTerritoryDecay } = await import('./decayTask');
+      const outcome = await runTerritoryDecay(storage, env, msg.userId);
+      if (outcome.lost > 0) {
+        console.log(`[DECAY] ${msg.userId}: -${outcome.lost.toFixed(0)} m²`);
+        const { requestDerivedRefresh } = await import('./derived');
+        await requestDerivedRefresh(env, [msg.userId], [msg.userId]);
+      }
+      break;
+    }
+    case 'refresh_derived': {
+      // Castle zones and widget maps: too heavy for a request, worked out here (see derived.ts)
+      const { refreshDerived } = await import('./derived');
+      await refreshDerived(storage, msg);
+      break;
+    }
     default:
       console.error(`[QUEUE] Unknown message type:`, (msg as any).type);
   }
@@ -91,9 +117,22 @@ async function handleProcessRouteTerritory(
   msg: ProcessRouteTerritoryMessage,
   env: Env
 ): Promise<void> {
-  const { userId, routeId, startedAt, completedAt, distance, duration } = msg;
-  let { earlyFeedEventId } = msg;
+  const { userId, routeId, startedAt, completedAt, distance, duration, earlyFeedEventId, importSource } = msg;
   console.log(`[QUEUE] Processing territory for route ${routeId} (user ${userId})`);
+
+  // Imported runs: "✅ Carrera de Strava importada · 8,2 km · +0,31 km² conquistados"
+  const notifyImport = async (newArea: number, victims: ConquestVictimInfo[]) => {
+    if (!importSource) return;
+    try {
+      const { notifyImportedRun } = await import('./notifications');
+      await notifyImportedRun(storage, env, {
+        userId, routeId, source: importSource, distance, newArea,
+        victimNames: victims.filter((v) => v.stolenArea > 0).map((v) => v.userName),
+      });
+    } catch (error) {
+      console.error('[QUEUE] Import notification failed (non-critical):', error);
+    }
+  };
 
   // Read coordinates from the routes table (not from the message) to stay
   // under the 128 KB Cloudflare Queue message-size limit.
@@ -102,24 +141,6 @@ async function handleProcessRouteTerritory(
     console.error(`[QUEUE] Route ${routeId} not found in DB, skipping`);
     return;
   }
-  if (route.userId !== userId) {
-    console.error(`[QUEUE] Route ${routeId} belongs to ${route.userId}, not ${userId}: skipping`);
-    return;
-  }
-
-  // Idempotency: a route is conquered once. The same route is enqueued again when a run arrives
-  // through a second source (Strava + Polar, a webhook and the cron poll...) and is matched to the
-  // existing route, or when a message is delivered twice. Processing it again recorded the steals
-  // twice, turned the whole run into "fortification" of the user's own territory and overwrote
-  // the feed event with 0 m² conquered. The feed event gets its metadata only once processing
-  // finished (a failed attempt is marked with territoryError and may be retried).
-  const feedEvent = await storage.getFeedEventByRouteId(routeId);
-  if (feedEvent?.metadata && !feedEvent.metadata.includes('"territoryError"')) {
-    console.log(`[QUEUE] Route ${routeId} already processed (feed event ${feedEvent.id}), skipping`);
-    return;
-  }
-  earlyFeedEventId = earlyFeedEventId || feedEvent?.id;
-
   const coords: [number, number][] = typeof route.coordinates === 'string'
     ? JSON.parse(route.coordinates)
     : route.coordinates;
@@ -130,6 +151,7 @@ async function handleProcessRouteTerritory(
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected: [],
     }, earlyFeedEventId);
+    await notifyImport(0, []);
     return;
   }
 
@@ -140,6 +162,7 @@ async function handleProcessRouteTerritory(
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected: [],
     }, earlyFeedEventId);
+    await notifyImport(0, []);
     return;
   }
 
@@ -162,6 +185,7 @@ async function handleProcessRouteTerritory(
     await updateFeedEventSafe(storage, userId, routeId, distance, duration, {
       newAreaConquered: 0, victims: [], ranTogetherWith: [], treasuresCollected,
     }, earlyFeedEventId);
+    await notifyImport(0, []);
     return;
   }
 
@@ -176,6 +200,8 @@ async function handleProcessRouteTerritory(
       storage, userId, routeId, enclosedPoly.geometry,
       undefined, startedAt, completedAt, coords
     );
+    // A repeated delivery of a route already processed: its feed, notifications and stats are done
+    if (conquestResult.alreadyProcessed) return;
 
     // Save ran-together info
     if (conquestResult.ranTogetherWith.length > 0) {
@@ -200,19 +226,47 @@ async function handleProcessRouteTerritory(
       }
     } catch (_) {}
 
-    // ── BEST-EFFORT: Send notifications (territory loss + friend activity) ──
+    // The runner's and the victims' castle zones and widget maps changed: worked out in their own message
+    {
+      const { requestDerivedRefresh } = await import('./derived');
+      const changed = [
+        userId,
+        ...conquestResult.victims.filter((v) => v.stolenArea > 0).map((v) => v.userId),
+        ...(conquestResult.castleDefenderIds ?? []),
+      ];
+      await requestDerivedRefresh(env, changed, changed);
+    }
+
+    // ── BEST-EFFORT: Send notifications (your import, territory loss, ranking, friends) ──
     // These can fail without affecting data integrity.
-    try {
-      // Territory loss notifications (previously done inside processTerritoryConquest)
-      if (conquestResult.victims.length > 0) {
+    await notifyImport(conquestResult.newAreaConquered, conquestResult.victims);
+
+    const victimIds = conquestResult.victims.filter((v) => v.stolenArea > 0).map((v) => v.userId);
+    // A run done more than a day ago (an old activity imported late, a backlog from a watch) changes the
+    // map, but telling friends "X te ha robado / ha corrido" about it now would be stale news
+    const completedMs = Date.parse(completedAt);
+    const isOldRun = Number.isFinite(completedMs) && Date.now() - completedMs > 24 * 60 * 60 * 1000;
+    if (isOldRun) {
+      console.log(`[QUEUE] Route ${routeId} completed ${completedAt}: no notifications to other users`);
+    }
+    if (!isOldRun) try {
+      // Territory loss: one notification per victim, pointing at the middle of the run
+      if (victimIds.length > 0) {
         const { notifyTerritoryLoss } = await import('./notifications');
         const MAX_NOTIFICATIONS = 3;
+        const center = coords.length > 0
+          ? {
+              lat: coords.reduce((sum, c) => sum + c[0], 0) / coords.length,
+              lng: coords.reduce((sum, c) => sum + c[1], 0) / coords.length,
+            }
+          : null;
         const topVictims = [...conquestResult.victims]
+          .filter((v) => v.stolenArea > 0)
           .sort((a, b) => b.stolenArea - a.stolenArea)
           .slice(0, MAX_NOTIFICATIONS);
         for (const victim of topVictims) {
           try {
-            await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea);
+            await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea, { routeId, center });
           } catch (_) {}
         }
       }
@@ -220,16 +274,19 @@ async function handleProcessRouteTerritory(
       console.error('[QUEUE] Territory loss notification error (non-critical):', notifErr);
     }
 
-    try {
+    if (!isOldRun) try {
       const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
-      const distanceKm = distance ? distance / 1000 : 0;
-      const newAreaKm2 = conquestResult.newAreaConquered / 1000000;
-      await notifyFriendNewActivity(storage, userId, distanceKm, newAreaKm2, env);
+      // Friends who lost territory to this run already got "⚔️ … te ha robado …"
+      await notifyFriendNewActivity(storage, userId, distance || 0, conquestResult.newAreaConquered, env, {
+        excludeUserIds: victimIds,
+        routeId,
+        eventId: earlyFeedEventId,
+      });
 
       // Check overtakes (top 10 friends) — batch load users in 1 query
       const friendIds = await storage.getFriendIds(userId);
-      const userAreaKm2 = conquestResult.totalArea / 1000000;
-      const previousAreaKm2 = (conquestResult.totalArea - conquestResult.newAreaConquered) / 1000000;
+      const userArea = conquestResult.totalArea;
+      const previousArea = conquestResult.totalArea - conquestResult.newAreaConquered;
       const MAX_FRIEND_CHECKS = 10;
       const friendIdsToCheck = friendIds.slice(0, MAX_FRIEND_CHECKS);
 
@@ -237,11 +294,8 @@ async function handleProcessRouteTerritory(
         try {
           const friends = await storage.getUsersByIds(friendIdsToCheck);
           for (const friend of friends) {
-            if (friend?.totalArea != null) {
-              const friendAreaKm2 = friend.totalArea / 1000000;
-              if (previousAreaKm2 < friendAreaKm2 && userAreaKm2 >= friendAreaKm2) {
-                await notifyAreaOvertake(storage, userId, friend.id, userAreaKm2, env);
-              }
+            if (friend?.totalArea != null && previousArea < friend.totalArea && userArea >= friend.totalArea) {
+              await notifyAreaOvertake(storage, userId, friend.id, userArea, friend.totalArea, env);
             }
           }
         } catch (_) {}
@@ -281,15 +335,6 @@ async function handleReprocessFriendGroup(
   storage: WorkerStorage,
   msg: ReprocessFriendGroupMessage
 ): Promise<void> {
-  // During a competition everybody steals from everybody: a friendship changes nothing, and the
-  // friend-group rebuild (friends-only steals) would undo the steals of players outside the group
-  // and erase the group's conquest metrics.
-  const competition = await storage.getActiveCompetition();
-  if (competition && isCompetitionActive(competition)) {
-    console.log(`[QUEUE] Competition active: friend group reprocess for ${msg.userId} not needed, skipping`);
-    return;
-  }
-
   console.log(`[QUEUE] Reprocessing friend group for user ${msg.userId}`);
 
   const { reprocessFriendGroupTerritoriesChronologically } = await import('./routes');

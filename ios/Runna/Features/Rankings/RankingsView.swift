@@ -5,13 +5,16 @@ struct RankingsView: View {
     @Environment(AppRouter.self) private var router
 
     enum Board: Hashable { case friends, competition }
+    enum Period: String, Hashable { case week, total }
 
     @State private var board: Board = .friends
+    @AppStorage("rankings_period") private var period: Period = .week
     @State private var model = RankingsModel.shared
     @State private var selectedUserId: String?
     @State private var showFinalResults = false
 
     private var friends: [AppUser] { model.friends }
+    private var weekly: [WeeklyRankingEntry] { model.weekly }
     private var competitionEntries: [CompetitionEntry] { model.competitionEntries }
     private var isLoading: Bool { model.isLoading }
     private var errorMessage: String? { model.errorMessage }
@@ -33,6 +36,7 @@ struct RankingsView: View {
                 .padding(.top, DS.Spacing.s)
                 .padding(.bottom, DS.Spacing.xxl)
                 .animation(.snappy, value: board)
+                .animation(.snappy, value: period)
             }
             .screenBackground()
             .navigationTitle("Ranking")
@@ -70,6 +74,14 @@ struct RankingsView: View {
             }
             .pickerStyle(.segmented)
             .sensoryFeedback(.selection, trigger: board)
+        }
+        if board == .friends {
+            Picker("Periodo", selection: $period) {
+                Text("Esta semana").tag(Period.week)
+                Text("Total").tag(Period.total)
+            }
+            .pickerStyle(.segmented)
+            .sensoryFeedback(.selection, trigger: period)
         }
     }
 
@@ -114,7 +126,14 @@ struct RankingsView: View {
                 if friends.count <= 1 {
                     inviteFriends
                 }
-                if !friends.isEmpty {
+                if period == .week, !weekly.isEmpty {
+                    RankingBoardView(
+                        items: weeklyItems,
+                        showsPosition: weekly.count > 1,
+                        footnote: "Territorio conquistado desde el lunes. Se reinicia cada lunes a las 00:00.",
+                        onSelect: { item in open(item.id) }
+                    )
+                } else if !friends.isEmpty {
                     RankingBoardView(
                         items: friendItems,
                         showsPosition: friends.count > 1,
@@ -167,6 +186,17 @@ struct RankingsView: View {
         return items
     }
 
+    private var weeklyItems: [RankingItem] {
+        weekly.map { entry in
+            let user = entry.user
+            return RankingItem(
+                id: user.id, rank: entry.rank, name: user.name, username: user.username, nickname: user.nickname,
+                avatar: user.avatar, color: user.color, area: entry.weekArea,
+                distance: entry.weekDistance, runs: entry.weekRuns, isMe: user.id == session.userId
+            )
+        }
+    }
+
     private var competitionItems: [RankingItem] {
         var items: [RankingItem] = []
         for (index, entry) in competitionEntries.enumerated() {
@@ -201,6 +231,8 @@ final class RankingsModel {
     static let shared = RankingsModel()
 
     private(set) var friends: [AppUser] = []
+    /// This week's board among friends.
+    private(set) var weekly: [WeeklyRankingEntry] = []
     private(set) var competitionEntries: [CompetitionEntry] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
@@ -209,6 +241,7 @@ final class RankingsModel {
 
     private var ownerId: String?
     private var friendsResource: CachedResource<[AppUser]>?
+    private var weeklyResource: CachedResource<WeeklyRankingResponse>?
     private let competitionResource = CachedResource<CompetitionLeaderboardResponse>("/api/competition/leaderboard")
 
     private var competition: CompetitionStore { CompetitionStore.shared }
@@ -217,8 +250,10 @@ final class RankingsModel {
     func reset() {
         ownerId = nil
         friendsResource = nil
+        weeklyResource = nil
         competitionResource.forget()
         friends = []
+        weekly = []
         competitionEntries = []
         isLoading = false
         errorMessage = nil
@@ -231,8 +266,9 @@ final class RankingsModel {
             reset()
             ownerId = userId
             friendsResource = CachedResource("/api/leaderboard/friends/\(userId)")
+            weeklyResource = CachedResource("/api/leaderboard/friends/\(userId)/weekly")
         }
-        guard let friendsResource else { return }
+        guard let friendsResource, let weeklyResource else { return }
 
         // 1. Last known boards, instantly
         competition.loadCachedIfNeeded()
@@ -240,10 +276,13 @@ final class RankingsModel {
             friends = cached
             hasLoaded = true
         }
+        if let cached = await weeklyResource.loadCached() {
+            weekly = cached.entries
+        }
         if hasCompetitionBoard, let cached = await competitionResource.loadCached() {
             competitionEntries = Self.sorted(cached)
         }
-        let fresh = friendsResource.isFresh && competition.isFresh && (!hasCompetitionBoard || competitionResource.isFresh)
+        let fresh = friendsResource.isFresh && weeklyResource.isFresh && competition.isFresh && (!hasCompetitionBoard || competitionResource.isFresh)
         if !force && hasLoaded && fresh { return }
 
         // 2. Refetch: friends board, competition state and (if known to exist) the competition board in parallel
@@ -256,6 +295,7 @@ final class RankingsModel {
         let store: CompetitionStore = competition
         let boardResource: CachedResource<CompetitionLeaderboardResponse> = competitionResource
         async let friendsResult: [AppUser]? = friendsResource.fetch()
+        async let weeklyResult: WeeklyRankingResponse? = try? weeklyResource.fetch()
         async let competitionRefresh: Void = store.refresh()
         async let competitionBoard: CompetitionLeaderboardResponse? = Self.fetchCompetitionBoard(boardResource, enabled: competitionKnown)
 
@@ -269,6 +309,10 @@ final class RankingsModel {
         } catch {
             // With a cached board on screen the refresh fails silently (it's retried on the next visit)
             errorMessage = friends.isEmpty ? error.localizedDescription : nil
+        }
+        if let loaded = await weeklyResult {
+            withAnimation(.snappy) { weekly = loaded.entries }
+            WidgetSync.update(weekly: loaded, myId: userId)
         }
         await competitionRefresh
         var board: CompetitionLeaderboardResponse? = await competitionBoard
@@ -296,6 +340,33 @@ final class RankingsModel {
 
     private static func sorted(_ response: CompetitionLeaderboardResponse) -> [CompetitionEntry] {
         response.leaderboard.sorted { $0.totalArea > $1.totalArea }
+    }
+}
+
+/// GET /api/leaderboard/friends/:userId/weekly
+struct WeeklyRankingResponse: Decodable {
+    let weekStart: String
+    let entries: [WeeklyRankingEntry]
+}
+
+struct WeeklyRankingEntry: Decodable, Identifiable {
+    let user: AppUser
+    let rank: Int
+    let weekArea: Double
+    let weekDistance: Double
+    let weekRuns: Int
+    var id: String { user.id }
+
+    enum CodingKeys: String, CodingKey { case rank, weekArea, weekDistance, weekRuns }
+
+    init(from decoder: Decoder) throws {
+        // The user's fields and the week's figures come in the same object
+        user = try AppUser(from: decoder)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rank = c.int(.rank) ?? 0
+        weekArea = c.double(.weekArea) ?? 0
+        weekDistance = c.double(.weekDistance) ?? 0
+        weekRuns = c.int(.weekRuns) ?? 0
     }
 }
 

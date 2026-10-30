@@ -9,7 +9,7 @@
 
 export const CRON_TIME_ZONE = 'Europe/Madrid';
 
-export type CronTask = 'polar-auto-sync' | 'suunto-auto-sync' | 'spawn-treasure' | 'inactivity-check' | 'weekly-summary';
+export type CronTask = 'polar-auto-sync' | 'suunto-auto-sync' | 'spawn-treasure' | 'inactivity-check' | 'weekly-summary' | 'territory-decay';
 
 /** The trigger fires every 5 minutes, so "at minute 0" means the run in [:00, :05). */
 const SLOT_MINUTES = 5;
@@ -47,12 +47,45 @@ export function madridTime(time: number): LocalTime {
   return { weekday, hour, minute };
 }
 
+let dateFormatter: Intl.DateTimeFormat | null = null;
+
+/**
+ * Monday 00:00 of the current week in Europe/Madrid, as a UTC Date. (In the week of a DST change the
+ * offset of "now" is used, so the boundary can be an hour off; harmless for a ranking.)
+ */
+export function madridWeekStart(time: number): Date {
+  if (!dateFormatter) {
+    dateFormatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: CRON_TIME_ZONE,
+      weekday: 'short',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+  }
+  const values: Record<string, string> = {};
+  for (const part of dateFormatter.formatToParts(new Date(time))) values[part.type] = part.value;
+  const year = Number(values.year);
+  const month = Number(values.month);
+  const day = Number(values.day);
+  const localAsUtc = Date.UTC(year, month - 1, day, Number(values.hour) % 24, Number(values.minute), Number(values.second));
+  const offset = localAsUtc - Math.floor(time / 1000) * 1000;
+  const weekday = WEEKDAYS[values.weekday] ?? 0;
+  const daysSinceMonday = (weekday + 6) % 7;
+  return new Date(Date.UTC(year, month - 1, day - daysSinceMonday) - offset);
+}
+
 /**
  * Tasks to run for a cron trigger scheduled at `scheduledTime` (ms since epoch):
  * - polar-auto-sync: every run (every 5 minutes)
  * - spawn-treasure: at minute 0 of every hour (the handler decides whether today's spawn hour has come)
  * - inactivity-check: 10:00 and 19:00
  * - weekly-summary: Sundays at 20:00
+ * - territory-decay: every day at 04:00 (undefended territory wears away)
  * - suunto-auto-sync: at minute 30 of every hour (fallback poll; Suunto's webhook is the primary path)
  */
 export function tasksDue(scheduledTime: number): CronTask[] {
@@ -62,6 +95,7 @@ export function tasksDue(scheduledTime: number): CronTask[] {
   if (topOfHour) tasks.push('spawn-treasure');
   if (topOfHour && (hour === 10 || hour === 19)) tasks.push('inactivity-check');
   if (topOfHour && weekday === 0 && hour === 20) tasks.push('weekly-summary');
+  if (topOfHour && hour === 4) tasks.push('territory-decay');
   if (minute >= 30 && minute < 30 + SLOT_MINUTES) tasks.push('suunto-auto-sync');
   // Last: it is the slowest (up to ~25 s) and runs every time anyway
   tasks.push('polar-auto-sync');

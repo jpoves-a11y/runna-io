@@ -313,6 +313,7 @@ enum UploadedRuns {
         ]
         OptimisticCache.prepend(routeJSON, toKey: "/api/routes/\(route.userId)")
         MyRoutesModel.shared.insertUploaded(route)
+        WidgetSync.didRun(at: route.startDate)
 
         guard let me = APIClient.shared.cached("/api/current-user/\(route.userId)", as: AppUser.self) else { return }
         let user: [String: Any] = [
