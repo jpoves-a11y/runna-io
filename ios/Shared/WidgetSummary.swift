@@ -70,13 +70,31 @@ struct WidgetSummary: Codable {
         let layers: Int
     }
 
+    /// The place the map shows: where you run the most (with territory in several cities or countries,
+    /// only this one is on the map).
+    struct Place: Codable {
+        let area: Double
+        let zones: Int
+        let lat: Double
+        let lng: Double
+    }
+
+    /// Your territory in other places, left out of the map.
+    struct Elsewhere: Codable {
+        let places: Int
+        let area: Double
+    }
+
     struct MapData: Codable {
         let territory: Shape?
         let weak: Shape?
         let atRisk: Shape?
         let castles: [Castle]
-        /// [minLng, minLat, maxLng, maxLat]
+        /// [minLng, minLat, maxLng, maxLat] of the place shown
         let bbox: [Double]?
+        /// Absent in answers of older servers and in summaries cached by older versions
+        var place: Place? = nil
+        var elsewhere: Elsewhere? = nil
     }
 
     /// GeoJSON Polygon / MultiPolygon as a list of polygons (rings of [lng, lat]).

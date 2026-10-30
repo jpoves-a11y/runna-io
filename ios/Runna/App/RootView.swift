@@ -98,6 +98,13 @@ struct MainTabView: View {
             }
         }
         .modifier(PendingPhotosModifier())
+        #if DEBUG
+        .overlay {
+            if let page = router.widgetGalleryPage {
+                WidgetGalleryView(page: page)
+            }
+        }
+        #endif
     }
 }
 

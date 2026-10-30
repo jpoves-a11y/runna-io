@@ -86,6 +86,9 @@ final class AppRouter {
     var feedFocus: FeedFocusRequest?
     /// Open the run screen ("Correr ahora" in a notification).
     var pendingRunStart = false
+    /// Page of the widget gallery shown over everything (runnaio://widgets/<page>, CI screenshots; only
+    /// DEBUG builds open it). Not inside #if: @Observable doesn't track properties declared there.
+    var widgetGalleryPage: Int?
 
     private init() {}
 
@@ -120,6 +123,9 @@ final class AppRouter {
             // runnaio://weekly-summary (e2e screenshots)
             selectedTab = .rankings
             showWeeklySummary = true
+        case "widgets":
+            // runnaio://widgets/<page> (e2e screenshots of the home and lock screen widgets)
+            widgetGalleryPage = parts.first.flatMap { Int($0) } ?? 1
         #endif
         case "run":
             // runnaio://run (the "Correr" button of the widgets): straight to the run screen

@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import ImageIO
 import MapKit
@@ -6,7 +7,8 @@ import UIKit
 
 // Data of the home / lock screen widgets: GET /api/widget/summary with the session the app shares
 // (WidgetSnapshotStore.loadCredentials), cached on disk so the widgets still draw offline, plus the
-// friends' pictures and a map image of your territory.
+// friends' pictures, a map image of your territory and the name of its city. In Shared: the app draws
+// the widgets too (DEBUG widget gallery).
 
 // MARK: - Loading
 
@@ -188,19 +190,24 @@ enum WidgetAvatars {
 // MARK: - Map image
 
 enum WidgetMapRenderer {
-    /// Your territory on a dark map: zones in your colour, zones wearing away dashed, zones at risk
-    /// dotted and a 🏰 on every castle zone. `focus` zooms on a point (the zone to defend).
-    static func render(_ summary: WidgetSummary, size: CGSize, focus: CLLocationCoordinate2D? = nil, focusMeters: Double = 900) async -> UIImage? {
+    /// Parts of the widget covered by text, as fractions of its size: the territory is framed in the rest.
+    struct Insets {
+        var top: Double = 0.12
+        var left: Double = 0.06
+        var bottom: Double = 0.12
+        var right: Double = 0.06
+    }
+
+    /// Your territory on a dark, muted map: zones in your colour, zones wearing away dashed, zones at risk
+    /// dotted and a badge on every castle zone. The server sends the place where you run the most (not
+    /// every city you ran in); `focus` zooms on a point instead (the zone to defend).
+    static func render(_ summary: WidgetSummary, size: CGSize, focus: CLLocationCoordinate2D? = nil, focusMeters: Double = 900, insets: Insets = Insets()) async -> UIImage? {
         guard size.width > 10, size.height > 10 else { return nil }
         let region: MKCoordinateRegion
         if let focus {
             region = MKCoordinateRegion(center: focus, latitudinalMeters: focusMeters, longitudinalMeters: focusMeters * Double(size.width / size.height))
         } else if let box = summary.map.bbox, box.count == 4 {
-            let center = CLLocationCoordinate2D(latitude: (box[1] + box[3]) / 2, longitude: (box[0] + box[2]) / 2)
-            region = MKCoordinateRegion(
-                center: center,
-                span: MKCoordinateSpan(latitudeDelta: max(0.004, (box[3] - box[1]) * 1.35), longitudeDelta: max(0.004, (box[2] - box[0]) * 1.35))
-            )
+            region = Self.region(for: box, size: size, insets: insets)
         } else {
             return nil
         }
@@ -210,8 +217,11 @@ enum WidgetMapRenderer {
         options.size = size
         options.scale = 2
         options.traitCollection = UITraitCollection(userInterfaceStyle: .dark)
-        options.pointOfInterestFilter = .excludingAll
-        options.showsBuildings = false
+        // Muted colours and no places or traffic: the territory is what stands out
+        let configuration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+        configuration.pointOfInterestFilter = .excludingAll
+        configuration.showsTraffic = false
+        options.preferredConfiguration = configuration
 
         let snapshot: MKMapSnapshotter.Snapshot? = await withCheckedContinuation { continuation in
             MKMapSnapshotter(options: options).start { snapshot, _ in
@@ -226,8 +236,6 @@ enum WidgetMapRenderer {
         return UIGraphicsImageRenderer(size: size, format: format).image { context in
             snapshot.image.draw(at: .zero)
             let cg = context.cgContext
-            cg.setLineJoin(.round)
-            cg.setLineCap(.round)
 
             func path(_ shape: WidgetSummary.Shape?) -> UIBezierPath? {
                 guard let shape else { return nil }
@@ -238,15 +246,24 @@ enum WidgetMapRenderer {
                     bezier.close()
                 }
                 bezier.usesEvenOddFillRule = true
+                bezier.lineJoinStyle = .round
+                bezier.lineCapStyle = .round
                 return bezier
             }
 
             if let territory = path(summary.map.territory) {
-                color.withAlphaComponent(0.38).setFill()
+                // Soft glow in your colour around the fill
+                cg.saveGState()
+                cg.setShadow(offset: .zero, blur: 12, color: color.withAlphaComponent(0.75).cgColor)
+                color.withAlphaComponent(0.36).setFill()
                 territory.fill()
+                cg.restoreGState()
+                // Dark halo under the border so it reads on any street
+                UIColor.black.withAlphaComponent(0.45).setStroke()
+                territory.lineWidth = 4.5
+                territory.stroke()
                 color.setStroke()
-                territory.lineWidth = 2
-                territory.lineJoinStyle = .round
+                territory.lineWidth = 2.2
                 territory.stroke()
             }
             if let weak = path(summary.map.weak) {
@@ -260,18 +277,103 @@ enum WidgetMapRenderer {
             if let atRisk = path(summary.map.atRisk) {
                 UIColor.systemOrange.setStroke()
                 atRisk.lineWidth = 2.2
-                atRisk.lineCapStyle = .round
                 atRisk.setLineDash([0.1, 5], count: 2, phase: 0)
                 atRisk.stroke()
             }
-            let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 13)]
+
+            // Castles: the emoji on a dark round badge with a ring in your colour
+            let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 11)]
+            let badge: CGFloat = 20
             for castle in summary.map.castles {
                 let point = snapshot.point(for: CLLocationCoordinate2D(latitude: castle.lat, longitude: castle.lng))
                 guard CGRect(origin: .zero, size: size).insetBy(dx: -10, dy: -10).contains(point) else { continue }
+                let circle = UIBezierPath(ovalIn: CGRect(x: point.x - badge / 2, y: point.y - badge / 2, width: badge, height: badge))
+                cg.saveGState()
+                cg.setShadow(offset: CGSize(width: 0, height: 1), blur: 3, color: UIColor.black.withAlphaComponent(0.6).cgColor)
+                UIColor(white: 0.08, alpha: 0.85).setFill()
+                circle.fill()
+                cg.restoreGState()
+                color.setStroke()
+                circle.lineWidth = 1.5
+                circle.stroke()
                 let text = "🏰" as NSString
                 let textSize = text.size(withAttributes: attributes)
                 text.draw(at: CGPoint(x: point.x - textSize.width / 2, y: point.y - textSize.height / 2), withAttributes: attributes)
             }
+        }
+    }
+
+    /// The region that shows `box` ([minLng, minLat, maxLng, maxLat]) in the part of a `size` map that the
+    /// widget's text leaves free (`insets`), filling at most 85 % of it and never closer than ~700 m.
+    static func region(for box: [Double], size: CGSize, insets: Insets) -> MKCoordinateRegion {
+        let centerLat = (box[1] + box[3]) / 2
+        let centerLng = (box[0] + box[2]) / 2
+        let metersPerDegreeLat = 111_320.0
+        let metersPerDegreeLng = max(1, 111_320.0 * cos(centerLat * .pi / 180))
+        let boxWidth = max(0, box[2] - box[0]) * metersPerDegreeLng
+        let boxHeight = max(0, box[3] - box[1]) * metersPerDegreeLat
+        let freeWidth = max(0.2, 1 - insets.left - insets.right)
+        let freeHeight = max(0.2, 1 - insets.top - insets.bottom)
+        let aspect = Double(size.width / size.height)
+        let height = min(4_000_000, max(boxHeight / (freeHeight * 0.85), boxWidth / (freeWidth * 0.85) / aspect, 700))
+        let width = height * aspect
+        // The centre moves so the box sits in the middle of the free part
+        let shiftRight = insets.left + freeWidth / 2 - 0.5
+        let shiftUp = 0.5 - (insets.top + freeHeight / 2)
+        let center = CLLocationCoordinate2D(
+            latitude: min(85, max(-85, centerLat - shiftUp * height / metersPerDegreeLat)),
+            longitude: centerLng - shiftRight * width / metersPerDegreeLng
+        )
+        return MKCoordinateRegion(center: center, latitudinalMeters: height, longitudinalMeters: width)
+    }
+}
+
+// MARK: - Place name
+
+/// City of the map widget's place ("Zaragoza"), from Apple's reverse geocoding, kept on the phone: it's
+/// asked once per place, and the widget shows "Mi territorio" when it can't be found out.
+enum WidgetPlaceNames {
+    static func name(for place: WidgetSummary.Place) async -> String? {
+        let key = String(format: "widget-place-%.2f,%.2f", place.lat, place.lng)
+        let defaults = UserDefaults.standard
+        if let cached = defaults.string(forKey: key) { return cached.isEmpty ? nil : cached }
+        guard let placemark = await reverseGeocode(CLLocation(latitude: place.lat, longitude: place.lng), timeout: 4) else {
+            return nil // not cached: asked again on the next refresh
+        }
+        let name = placemark.locality ?? placemark.subAdministrativeArea ?? placemark.administrativeArea ?? ""
+        defaults.set(name, forKey: key)
+        return name.isEmpty ? nil : name
+    }
+
+    private static func reverseGeocode(_ location: CLLocation, timeout: TimeInterval) async -> CLPlacemark? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<CLPlacemark?, Never>) in
+            let once = ResumeOnce(continuation)
+            let geocoder = CLGeocoder()
+            geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "es_ES")) { placemarks, _ in
+                once.resume(placemarks?.first)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                geocoder.cancelGeocode()
+                once.resume(nil)
+            }
+        }
+    }
+
+    /// Resumes the continuation the first time only (the geocoder's answer or the timeout).
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<CLPlacemark?, Never>?
+
+        init(_ continuation: CheckedContinuation<CLPlacemark?, Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ value: CLPlacemark?) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            pending?.resume(returning: value)
         }
     }
 }

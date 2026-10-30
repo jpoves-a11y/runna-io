@@ -133,7 +133,7 @@ jobs:
           shoot() {
             xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" || true
             SIMCTL_CHILD_RUNNA_TEST_DEEP_LINK="runnaio://$1" xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
-            sleep 12
+            sleep "${3:-12}"
             xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
           }
           shoot tab/map 1-map
@@ -145,6 +145,11 @@ jobs:
           # Competition screens (DEBUG-only deep links handled by AppRouter)
           shoot powers 7-powers
           shoot weekly-summary 8-weekly-summary
+          # Home and lock screen widgets, drawn by the app with the same views (DEBUG widget gallery);
+          # the map pages wait for the map snapshots
+          shoot widgets/1 9-widgets-territory 25
+          shoot widgets/2 10-widgets-league 15
+          shoot widgets/3 11-widgets-small-lock 25
           if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
             echo "App crashed while showing the screens"
             exit 1

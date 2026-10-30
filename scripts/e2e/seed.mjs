@@ -104,6 +104,9 @@ await run(alice, 'Ribera del Ebro', loop(centre[0] + 0.006, centre[1] - 0.012, 3
 // Bob's run below doesn't reach this one (attacks break fortifications).
 await run(alice, 'Ribera del Ebro otra vez', loop(centre[0] + 0.006, centre[1] - 0.012, 350), 25);
 await run(alice, 'Ribera, tercera vuelta', loop(centre[0] + 0.006, centre[1] - 0.012, 350), 24);
+// A holiday run in Lisbon: alice has territory in two countries, and the map widget shows Zaragoza
+// (where she runs the most) with "+1 lugar más"
+await run(alice, 'Vacaciones en Lisboa', loop(38.7139, -9.1394, 700), 72);
 await run(carol, 'Parque Grande', loop(centre[0] - 0.012, centre[1] - 0.004, 400), 20);
 const bobRoute = await run(bob, 'Asalto al centro', loop(centre[0] + 0.002, centre[1] + 0.003, 380), 2);
 
