@@ -613,5 +613,30 @@ await db.execute({ sql: "update competitions set status = 'finished', ends_at = 
   check('friendship: totals match the territories', near(await userArea(pia.id), await territoryArea(pia.id), 0.001) && near(await userArea(quim.id), await territoryArea(quim.id), 0.001));
 }
 
+// 21. Map widget with territory in two countries: it shows the place where you run the most, not both
+{
+  const vera = await register(`ver${stamp}`);
+  // At home: the same 400 m loop three times (4,8 km, 0,16 km²); on holiday ~800 km away: one 1 km loop (4 km, 1 km²)
+  for (let i = 0; i < 3; i++) await run(vera, square(50000, 0, 400));
+  await run(vera, square(-800000, -300000, 1000));
+  const mapOf = async () => {
+    await call('GET', '/api/widget/summary', { token: vera.token });
+    await flush(); // the queue works the map out
+    return (await call('GET', '/api/widget/summary', { token: vera.token })).data.map;
+  };
+  const map = await mapOf();
+  const homeLng = -0.89 + 50000 * M_LNG;
+  const spanKm = map.bbox ? Math.max((map.bbox[2] - map.bbox[0]) / M_LNG, (map.bbox[3] - map.bbox[1]) / M_LAT) / 1000 : Infinity;
+  check('widget map: framed on home, not on both countries', !!map.bbox && map.bbox[0] > homeLng - 0.01 && map.bbox[2] < homeLng + 0.02 && spanKm < 1, { bbox: map.bbox, spanKm });
+  const lngs = JSON.stringify(map.territory?.coordinates ?? []).match(/-?\d+\.\d+/g)?.map(Number).filter((_, i) => i % 2 === 0) ?? [];
+  check('widget map: only the home territory is drawn', lngs.length > 3 && lngs.every((lng) => Math.abs(lng - homeLng) < 0.02), lngs.slice(0, 6));
+  check('widget map: home place and what is elsewhere', near(map.place?.area ?? 0, 160_000, 0.1) && map.place?.zones === 1
+    && map.elsewhere?.places === 1 && near(map.elsewhere?.area ?? 0, 1_000_000, 0.1), { place: map.place, elsewhere: map.elsewhere });
+  // Five more runs on holiday: that becomes the place where you run the most
+  for (let i = 0; i < 5; i++) await run(vera, square(-800000, -300000, 1000));
+  const moved = await mapOf();
+  check('widget map: follows where you run the most', !!moved.bbox && moved.bbox[0] < homeLng - 5 && moved.elsewhere?.places === 1, { bbox: moved.bbox, elsewhere: moved.elsewhere });
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

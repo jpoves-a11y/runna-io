@@ -11,6 +11,10 @@ import { castleZonesOfUsers, requestDerivedRefresh } from './derived';
 const DAY_MS = 24 * 3600 * 1000;
 /** Most points of the territory sent to the map widget. */
 const MAX_MAP_POINTS = 400;
+/** Zones within this distance of a place's biggest zone belong to that place (a city and its outskirts). */
+const PLACE_RADIUS_M = 25_000;
+/** Runs of this period count in full to pick your main place; older ones a quarter. */
+const RECENT_RUNS_MS = 90 * DAY_MS;
 /** Players of the league in the widget (you are always added). */
 const LEAGUE_SIZE = 6;
 
@@ -56,6 +60,102 @@ function union(geometries: any[]): any | null {
     } catch { /* keep what we have */ }
   }
   return result;
+}
+
+function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const toRad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toRad;
+  const dLng = (lng2 - lng1) * toRad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLng / 2) ** 2;
+  return 2 * 6_371_008.8 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+export interface TerritoryPiece {
+  /** Rings of the polygon ([lng, lat]), outer ring first. */
+  polygon: number[][][];
+  area: number;
+  lat: number;
+  lng: number;
+}
+
+export interface Place {
+  pieces: TerritoryPiece[];
+  area: number;
+  /** Centre of the place's biggest zone. */
+  lat: number;
+  lng: number;
+  /** Km run there (recent runs in full, older ones a quarter). */
+  score: number;
+}
+
+/** The separate zones of a territory (the polygons of a MultiPolygon), each with its area and centre. */
+export function territoryPieces(territory: any): TerritoryPiece[] {
+  if (!territory) return [];
+  const polygons: number[][][][] = territory.type === 'Polygon' ? [territory.coordinates]
+    : territory.type === 'MultiPolygon' ? territory.coordinates : [];
+  const pieces: TerritoryPiece[] = [];
+  for (const polygon of polygons) {
+    try {
+      const shape = turf.polygon(polygon);
+      const area = turf.area(shape);
+      if (!(area > 0)) continue;
+      const [lng, lat] = turf.centroid(shape).geometry.coordinates;
+      pieces.push({ polygon, area, lat, lng });
+    } catch { /* unreadable polygon */ }
+  }
+  return pieces;
+}
+
+/**
+ * Groups the zones into places (zones within PLACE_RADIUS_M of a place's biggest zone) and picks your
+ * main place: where you ran the most km lately (by where runs started), else the one with the most
+ * territory. With territory in several cities or countries, the map widget shows only the main one.
+ */
+export function mainPlace(
+  pieces: TerritoryPiece[],
+  runs: Array<{ lat: number; lng: number; distance: number; startedAt: string }>,
+  now: number,
+): { main: Place; others: Place[] } | null {
+  const places: Place[] = [];
+  for (const piece of [...pieces].sort((a, b) => b.area - a.area)) {
+    const place = places.find((p) => distanceMeters(p.lat, p.lng, piece.lat, piece.lng) <= PLACE_RADIUS_M);
+    if (place) {
+      place.pieces.push(piece);
+      place.area += piece.area;
+    } else {
+      places.push({ pieces: [piece], area: piece.area, lat: piece.lat, lng: piece.lng, score: 0 });
+    }
+  }
+  if (places.length === 0) return null;
+  for (const run of runs) {
+    let nearest: Place | null = null;
+    let nearestDistance = PLACE_RADIUS_M;
+    for (const place of places) {
+      const d = distanceMeters(place.lat, place.lng, run.lat, run.lng);
+      if (d <= nearestDistance) { nearest = place; nearestDistance = d; }
+    }
+    if (!nearest) continue;
+    const recent = now - parseTime(run.startedAt) <= RECENT_RUNS_MS;
+    nearest.score += (run.distance / 1000) * (recent ? 1 : 0.25);
+  }
+  const ranked = [...places].sort((a, b) => b.score - a.score || b.area - a.area);
+  return { main: ranked[0], others: ranked.slice(1) };
+}
+
+/** The part of a geometry inside a [minLng, minLat, maxLng, maxLat] box (null when nothing is left). */
+function clipToBox(geometry: any | null, box: number[]): any | null {
+  if (!geometry || box.length !== 4) return geometry ?? null;
+  try {
+    const clipped = turf.bboxClip(turf.feature(geometry) as any, box as [number, number, number, number]).geometry as any;
+    const polygons: number[][][][] = clipped.type === 'Polygon' ? [clipped.coordinates] : clipped.coordinates;
+    const kept = polygons
+      .map((rings) => rings.filter((ring) => ring.length >= 4))
+      .filter((rings) => rings.length > 0 && turf.area(turf.polygon(rings)) >= 1);
+    if (kept.length === 0) return null;
+    return kept.length === 1 ? { type: 'Polygon', coordinates: kept[0] } : { type: 'MultiPolygon', coordinates: kept };
+  } catch {
+    return geometry;
+  }
 }
 
 /** Consecutive weeks (ending this one, or last one if you haven't run yet this week) with a run. */
@@ -151,11 +251,14 @@ export async function widgetSummary(storage: WorkerStorage, env: any, userId: st
   };
 }
 
-const WIDGET_MAP_KIND = 'widget-map-v1';
+// v2: the map shows your main place only (bbox, territory, wear) and says what's elsewhere
+const WIDGET_MAP_KIND = 'widget-map-v2';
+/** Previous format, shown while the queue works out the new one (better than an empty map). */
+const PREVIOUS_WIDGET_MAP_KIND = 'widget-map-v1';
 
 const EMPTY_WIDGET_MAP = {
   defense: { castles: 0, castleLayers: 0, atRiskArea: 0, atRisk: null, weakArea: 0, lostToday: 0 },
-  map: { territory: null, weak: null, atRisk: null, castles: [], bbox: null },
+  map: { territory: null, weak: null, atRisk: null, castles: [], bbox: null, place: null, elsewhere: null },
 };
 
 /** Queue: works out the widgets' map of a user if it's out of date. */
@@ -173,9 +276,13 @@ export async function refreshWidgetMap(storage: WorkerStorage, userId: string, n
  */
 async function widgetMap(storage: WorkerStorage, userId: string, resting: boolean, compute: boolean) {
   const signature = `${await storage.getWidgetMapSignature(userId)}|${resting ? 'rest' : ''}`;
-  const cached = (await storage.getDerived(WIDGET_MAP_KIND, new Map([[userId, signature]]))).get(userId);
+  const keys = new Map([[userId, signature]]);
+  const cached = (await storage.getDerived(WIDGET_MAP_KIND, keys)).get(userId);
   if (cached?.fresh) return { value: cached.payload as typeof EMPTY_WIDGET_MAP, stale: false };
-  if (!compute) return { value: (cached?.payload ?? EMPTY_WIDGET_MAP) as typeof EMPTY_WIDGET_MAP, stale: true };
+  if (!compute) {
+    const previous = cached ?? (await storage.getDerived(PREVIOUS_WIDGET_MAP_KIND, keys)).get(userId);
+    return { value: (previous?.payload ?? EMPTY_WIDGET_MAP) as typeof EMPTY_WIDGET_MAP, stale: true };
+  }
 
   const territories = await storage.getTerritoriesByUserId(userId);
   const territory = union(territories.map((t) => {
@@ -187,24 +294,41 @@ async function widgetMap(storage: WorkerStorage, userId: string, resting: boolea
     .map((zone) => ({ lat: zone.lat, lng: zone.lng, layers: zone.layers }));
   const decay = resting ? null : await storage.getDecayState(userId);
   const area = (g: any) => { try { return g ? turf.area(g) : 0; } catch { return 0; } };
+
+  // Territory in several cities or countries: the map shows the main place, where you run the most
+  const places = mainPlace(territoryPieces(territory), await storage.getRunStartPoints(userId), Date.now());
+  const shown = places
+    ? (places.main.pieces.length === 1
+      ? { type: 'Polygon', coordinates: places.main.pieces[0].polygon }
+      : { type: 'MultiPolygon', coordinates: places.main.pieces.map((piece) => piece.polygon) })
+    : territory;
   let box: number[] | null = null;
-  try { box = territory ? turf.bbox(territory) : null; } catch { box = null; }
+  try { box = shown ? turf.bbox(shown) : null; } catch { box = null; }
+  // What can appear around the place on the map (wear is drawn there only)
+  const view = box ? [box[0] - (box[2] - box[0]) * 0.6, box[1] - (box[3] - box[1]) * 0.6, box[2] + (box[2] - box[0]) * 0.6, box[3] + (box[3] - box[1]) * 0.6] : null;
+  const weakShown = view ? clipToBox(decay?.weak ?? null, view) : decay?.weak ?? null;
+  const atRiskShown = view ? clipToBox(decay?.atRisk ?? null, view) : decay?.atRisk ?? null;
 
   const result = {
     defense: {
       castles: castles.length,
       castleLayers: castles.reduce((sum, castle) => sum + castle.layers, 0),
       atRiskArea: area(decay?.atRisk),
-      atRisk: insidePoint(decay?.atRisk ?? null),
+      // The zone to defend in your main place first (one abroad can wait)
+      atRisk: insidePoint(atRiskShown) ?? insidePoint(decay?.atRisk ?? null),
       weakArea: area(decay?.weak),
       lostToday: decay?.lostToday ?? 0,
     },
     map: {
-      territory: lightGeometry(territory),
-      weak: lightGeometry(decay?.weak ?? null, 150),
-      atRisk: lightGeometry(decay?.atRisk ?? null, 150),
+      territory: lightGeometry(shown),
+      weak: lightGeometry(weakShown, 150),
+      atRisk: lightGeometry(atRiskShown, 150),
       castles,
       bbox: box,
+      place: places ? { area: places.main.area, zones: places.main.pieces.length, lat: places.main.lat, lng: places.main.lng } : null,
+      elsewhere: places && places.others.length > 0
+        ? { places: places.others.length, area: places.others.reduce((sum, place) => sum + place.area, 0) }
+        : null,
     },
   };
   await storage.saveDerived(WIDGET_MAP_KIND, [{ key: userId, signature, payload: result }]);

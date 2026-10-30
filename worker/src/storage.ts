@@ -4618,6 +4618,26 @@ export class WorkerStorage {
     return rows.map((row) => ({ startedAt: row.started_at, area: Number(row.area) || 0, distance: Number(row.distance) || 0 }));
   }
 
+  /**
+   * Where each of a user's runs started, with its distance and date. Only the first characters of the
+   * coordinates are read (the first point), not the whole track: a user's runs can be megabytes.
+   */
+  async getRunStartPoints(userId: string): Promise<Array<{ lat: number; lng: number; distance: number; startedAt: string }>> {
+    const rows = await this.db.all<{ head: string | null; distance: number; started_at: string }>(sql`
+      SELECT substr(coordinates, 1, 80) AS head, distance, started_at FROM routes WHERE user_id = ${userId}`);
+    const points: Array<{ lat: number; lng: number; distance: number; startedAt: string }> = [];
+    for (const row of rows) {
+      // "[[41.6488,-0.8891],..." (points are [lat, lng]); older double-encoded rows don't match
+      const match = /^\s*\[\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/.exec(row.head ?? '');
+      if (!match) continue;
+      const lat = Number(match[1]);
+      const lng = Number(match[2]);
+      if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue;
+      points.push({ lat, lng, distance: Number(row.distance) || 0, startedAt: row.started_at });
+    }
+    return points;
+  }
+
   async getUserIdsWithTerritory(): Promise<string[]> {
     const rows = await this.db.all<{ user_id: string }>(sql`SELECT DISTINCT user_id FROM territories`);
     return rows.map((row) => row.user_id);
