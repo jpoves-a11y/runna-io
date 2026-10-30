@@ -524,6 +524,55 @@ await db.execute({ sql: "update competitions set status = 'finished', ends_at = 
   const points = d.map.territory ? JSON.stringify(d.map.territory.coordinates).split('],[').length : 0;
   check('widget: light territory for the map', points > 3 && points <= 420 && d.map.bbox?.length === 4, points);
   check('widget: not without a session', (await call('GET', '/api/widget/summary')).status === 401);
+
+  // The league is read without the users' pictures: same places and figures as the weekly ranking
+  const weekly = (await call('GET', `/api/leaderboard/friends/${alice.id}/weekly`, { token: alice.token })).data.entries;
+  check('widget: league matches the weekly ranking', d.week.players === weekly.length
+    && d.week.myRank === weekly.find((e) => e.id === alice.id)?.rank
+    && d.week.entries.every((e) => {
+      const w = weekly.find((x) => x.id === e.id);
+      return w && w.rank === e.rank && Math.abs(w.weekArea - e.area) < 0.01 && Math.abs(w.weekDistance - e.distance) < 0.01 && w.weekRuns === e.runs;
+    }), { league: d.week.entries, weekly });
+
+  // Pictures: offered by URL (its version changes with the picture), not when too big for a widget
+  const picture = Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 7) % 256));
+  const setAvatar = (user, value) => db.execute({ sql: 'update users set avatar = ? where id = ?', args: [value, user.id] });
+  await setAvatar(bob, `data:image/png;base64,${picture.toString('base64')}`);
+  await setAvatar(carol, `data:image/png;base64,${'A'.repeat(1_100_000)}`);
+  const withPictures = (await call('GET', '/api/widget/summary', { token: alice.token })).data.week.entries;
+  const bobUrl = withPictures.find((e) => e.id === bob.id)?.avatarUrl;
+  check('widget: friend picture offered by URL', typeof bobUrl === 'string' && bobUrl.includes(`/api/users/${bob.id}/avatar?v=`), withPictures);
+  check('widget: picture too big for a widget not offered', withPictures.find((e) => e.id === carol.id)?.avatarUrl === null, withPictures);
+  const served = await worker.fetch(new Request(`http://127.0.0.1:8787/api/users/${bob.id}/avatar`), env, ctx);
+  const servedBytes = Buffer.from(await served.arrayBuffer());
+  check('avatar endpoint returns the picture', served.status === 200 && served.headers.get('content-type') === 'image/png' && servedBytes.equals(picture), served.status);
+  await setAvatar(bob, `data:image/png;base64,${Buffer.from(picture.subarray(10)).toString('base64')}`);
+  const newUrl = (await call('GET', '/api/widget/summary', { token: alice.token })).data.week.entries.find((e) => e.id === bob.id)?.avatarUrl;
+  check('widget: new picture, new URL', typeof newUrl === 'string' && newUrl !== bobUrl, { bobUrl, newUrl });
+  await setAvatar(bob, null);
+  await setAvatar(carol, null);
+
+  // Yesterday's places (▲▼): a run of Bob's early this week counts until today, the rest are from today
+  const weekStartMs = Date.parse(d.week.start);
+  const todayStartMs = weekStartMs + Math.floor((Date.now() - weekStartMs) / DAY()) * DAY();
+  if (Date.now() - todayStartMs > 3 * 3600 * 1000 && todayStartMs > weekStartMs) {
+    const early = new Date(weekStartMs + 3600 * 1000);
+    const track = square(30000, 0, 200);
+    await call('POST', '/api/routes', {
+      token: bob.token,
+      body: {
+        name: 'Early', coordinates: track, distance: lengthMeters(track), duration: 400,
+        startedAt: early.toISOString(), completedAt: new Date(early.getTime() + 400 * 1000).toISOString(),
+        clientRunId: `early-${stamp}`,
+      },
+    });
+    await flush();
+    const league = (await call('GET', '/api/widget/summary', { token: alice.token })).data.week.entries;
+    check("widget: yesterday's places", league.find((e) => e.id === bob.id)?.rankYesterday === 1
+      && league.filter((e) => e.id !== bob.id).every((e) => e.rankYesterday === null), league);
+  } else {
+    console.log("SKIP widget: yesterday's places (too early in the day or the week)");
+  }
   // Earlier steps changed the database directly: the queue works the map out again
   await flush();
   const current = (await call('GET', '/api/widget/summary', { token: alice.token })).data;

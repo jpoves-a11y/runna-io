@@ -113,6 +113,18 @@ import { withoutDefended } from './decay';
 export const MAX_FORTIFICATION_LAYERS = 3;
 /** Fortifications older than this no longer count and are purged. */
 export const FORTIFICATION_TTL_DAYS = 14;
+/** Pictures bigger than this (characters of the data URL, ~730 KB of image) aren't offered to the widgets. */
+export const WIDGET_AVATAR_MAX_LENGTH = 1_000_000;
+
+/** A player of the widgets' league, without their picture (`avatar` is a marker that changes with it). */
+export interface WidgetLeagueUser {
+  id: string;
+  name: string;
+  username: string;
+  color: string;
+  avatar: string | null;
+  totalArea: number;
+}
 
 export interface DecayState {
   userId: string;
@@ -2711,6 +2723,74 @@ export class WorkerStorage {
     });
     entries.sort((a, b) => b.weekArea - a.weekArea || b.weekDistance - a.weekDistance);
     return entries.map((entry, index) => ({ ...entry, rank: index + 1 }));
+  }
+
+  /**
+   * The widgets' league, light (same figures and order as getWeeklyFriendsRanking). The users' rows
+   * come without their pictures: `avatar` holds the whole image in base64 (up to megabytes), and
+   * reading it for you and every friend went over the Worker's CPU limit (503). A short marker that
+   * changes with the picture stands in for it (null without one, or when it's too big for a widget).
+   * This week's figures and those until `todayStart` (for yesterday's places) come from one query.
+   */
+  async getWidgetLeague(userId: string, since: string, todayStart: string): Promise<{
+    me: WidgetLeagueUser | undefined;
+    week: Array<WidgetLeagueUser & { weekArea: number; weekDistance: number; weekRuns: number; rank: number }>;
+    /** Places until `todayStart` of those who had conquered something by then. */
+    yesterdayRank: Map<string, number>;
+  }> {
+    const ids = [userId, ...(await this.getFriendIds(userId))];
+    const idList = sql.join(ids.map((id) => sql`${id}`), sql`, `);
+    const people = await this.db.all<{ id: string; name: string; username: string; color: string; total_area: number; avatar_marker: string | null }>(sql`
+      SELECT id, name, username, color, total_area,
+             CASE WHEN avatar IS NULL OR avatar = '' OR length(avatar) > ${WIDGET_AVATAR_MAX_LENGTH} THEN NULL
+                  ELSE 'v' || length(avatar) || '-' || substr(avatar, -12) END AS avatar_marker
+      FROM users WHERE id IN (${idList})
+      ORDER BY total_area DESC`);
+    const rows = await this.db.all<{ user_id: string; runs: number; distance: number; area: number; distance_before: number; area_before: number }>(sql`
+      SELECT user_id,
+             COUNT(*) AS runs,
+             COALESCE(SUM(distance), 0) AS distance,
+             COALESCE(SUM(area), 0) AS area,
+             COALESCE(SUM(CASE WHEN before_today THEN distance ELSE 0 END), 0) AS distance_before,
+             COALESCE(SUM(CASE WHEN before_today THEN area ELSE 0 END), 0) AS area_before
+      FROM (
+        SELECT r.user_id AS user_id, r.distance AS distance,
+               datetime(r.started_at) < datetime(${todayStart}) AS before_today,
+               (SELECT MAX(COALESCE(fe.new_area, 0)) FROM feed_events fe
+                WHERE fe.route_id = r.id AND fe.event_type = 'activity') AS area
+        FROM routes r
+        WHERE r.user_id IN (${idList}) AND datetime(r.started_at) >= datetime(${since})
+      )
+      GROUP BY user_id`);
+    const byUser = new Map(rows.map((row) => [row.user_id, row]));
+    const users: WidgetLeagueUser[] = people.map((person) => ({
+      id: person.id,
+      name: person.name,
+      username: person.username,
+      color: person.color,
+      avatar: person.avatar_marker,
+      totalArea: Number(person.total_area) || 0,
+    }));
+    // Best first; ties keep the order by total area (the sort is stable), as getWeeklyFriendsRanking
+    const ranked = (area: (id: string) => number, distance: (id: string) => number) =>
+      [...users].sort((a, b) => area(b.id) - area(a.id) || distance(b.id) - distance(a.id));
+    const week = ranked((id) => Number(byUser.get(id)?.area) || 0, (id) => Number(byUser.get(id)?.distance) || 0)
+      .map((user, index) => {
+        const row = byUser.get(user.id);
+        return {
+          ...user,
+          weekArea: Number(row?.area) || 0,
+          weekDistance: Number(row?.distance) || 0,
+          weekRuns: Number(row?.runs) || 0,
+          rank: index + 1,
+        };
+      });
+    const areaBefore = (id: string) => Number(byUser.get(id)?.area_before) || 0;
+    const yesterdayRank = new Map<string, number>();
+    ranked(areaBefore, (id) => Number(byUser.get(id)?.distance_before) || 0).forEach((user, index) => {
+      if (areaBefore(user.id) > 0) yesterdayRank.set(user.id, index + 1);
+    });
+    return { me: users.find((user) => user.id === userId), week, yesterdayRank };
   }
 
   /** Number of friendships of each user, in a single query. */

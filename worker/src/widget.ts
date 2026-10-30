@@ -72,19 +72,16 @@ export function weekStreak(runTimes: number[], now: number): number {
 }
 
 export async function widgetSummary(storage: WorkerStorage, env: any, userId: string, now = Date.now()) {
-  const me = await storage.getUser(userId);
-  if (!me) return null;
-
-  // --- This week's league (and yesterday's positions for the ▲▼ arrows)
+  // --- This week's league (and yesterday's positions for the ▲▼ arrows), without reading pictures
   const weekStart = madridWeekStart(now);
   const weekEnd = new Date(madridWeekStart(weekStart.getTime() + 8 * DAY_MS).getTime());
   const dayIndex = (madridTime(now).weekday + 6) % 7; // 0 = Monday
   const todayStart = new Date(weekStart.getTime() + dayIndex * DAY_MS);
-  const ranking = await storage.getWeeklyFriendsRanking(userId, weekStart.toISOString());
-  const yesterday = dayIndex > 0
-    ? await storage.getWeeklyFriendsRanking(userId, weekStart.toISOString(), todayStart.toISOString())
-    : [];
-  const yesterdayRank = new Map(yesterday.filter((e) => e.weekArea > 0).map((e) => [e.id, e.rank]));
+  const league = await storage.getWidgetLeague(userId, weekStart.toISOString(), todayStart.toISOString());
+  const me = league.me;
+  if (!me) return null;
+  const ranking = league.week;
+  const yesterdayRank = league.yesterdayRank;
   const shown = ranking.slice(0, LEAGUE_SIZE);
   const mine = ranking.find((e) => e.id === userId);
   if (mine && !shown.some((e) => e.id === userId)) shown[shown.length - 1] = mine;

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { Buffer } from 'node:buffer';
 import { createDb } from './db';
 import { WorkerStorage, FORTIFICATION_TTL_DAYS, MAX_FORTIFICATION_LAYERS } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
@@ -2423,9 +2424,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (/^https?:\/\//.test(avatar)) return c.redirect(avatar, 302);
       const match = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/is.exec(avatar);
       if (!match) return c.json({ error: 'No avatar' }, 404);
-      const binary = atob(match[2].replace(/\s+/g, ''));
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      // Native decoding: a byte-by-byte loop over a picture of megabytes went over the CPU limit
+      const bytes = new Uint8Array(Buffer.from(match[2], 'base64'));
       return new Response(bytes, {
         headers: {
           'Content-Type': match[1],

@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import MapKit
 import SwiftUI
 import UIKit
@@ -12,6 +13,8 @@ import UIKit
 enum WidgetDataLoader {
     /// Several widgets refresh together: within this time the cached answer is used.
     private static let freshFor: TimeInterval = 10 * 60
+    /// The same while the server is still working out the map (it's asked again sooner).
+    private static let pendingFreshFor: TimeInterval = 3 * 60
 
     private static func cacheURL(userId: String) -> URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -58,8 +61,8 @@ enum WidgetDataLoader {
         }
         let url = cacheURL(userId: credentials.userId)
         let cached = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(WidgetSummary.self, from: $0) }
-        if let cached, cached.mapPending != true,
-           let generated = WidgetDates.parse(cached.generatedAt), Date().timeIntervalSince(generated) < freshFor {
+        if let cached, let generated = WidgetDates.parse(cached.generatedAt),
+           Date().timeIntervalSince(generated) < (cached.mapPending == true ? pendingFreshFor : freshFor) {
             return .loaded(cached)
         }
         // A busy server (503) or a dropped connection: try again twice before giving up
@@ -133,18 +136,41 @@ enum WidgetAvatars {
         return result
     }
 
+    /// Pictures bigger than this aren't used (the server doesn't offer them either).
+    private static let maxBytes = 4_000_000
+
     private static func image(_ url: String) async -> UIImage? {
         let file = fileURL(for: url)
         if let data = try? Data(contentsOf: file), let image = UIImage(data: data) { return image }
         guard let remote = URL(string: url) else { return nil }
         var request = URLRequest(url: remote)
-        request.timeoutInterval = 8
+        request.timeoutInterval = 6
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
-              let picture = UIImage(data: data) else { return nil }
+              data.count <= maxBytes,
+              let picture = thumbnail(data) else { return nil }
         let small = squared(picture)
         if let jpeg = small.jpegData(compressionQuality: 0.8) { try? jpeg.write(to: file, options: .atomic) }
         return small
+    }
+
+    /// Decoded straight at widget size: decoding a big photo at full size (then shrinking it) went over
+    /// the memory a widget is allowed, and iOS stopped the widget.
+    private static func thumbnail(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
+        let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
+        // The shorter side at least `side` once shrunk: the square crop fills it
+        let ratio = min(width, height) > 0 ? max(width, height) / min(width, height) : 1
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int((side * min(ratio, 4)).rounded(.up)),
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
     }
 
     private static func squared(_ image: UIImage) -> UIImage {
