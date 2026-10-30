@@ -20,6 +20,8 @@ struct RouteReplayView: View {
     var shareRun: ShareRun? = nil
     /// Records a clean video straight away: opening card, the replay without controls, closing card.
     var autoRecord: Bool = false
+    /// Name of the recorded video ("RUNNA.IO-<run>").
+    var videoFileName: String = "RUNNA.IO-Carrera"
 
     @Environment(\.dismiss) private var dismiss
     @State private var state = RouteReplayState()
@@ -30,6 +32,7 @@ struct RouteReplayView: View {
     @State private var exportedVideo: SharedFile?
     @State private var exportError: String?
     @State private var showShare = false
+    @State private var savedToPhotos = false
     /// Opening / closing cards of the recorded video.
     @State private var card: VideoCard?
 
@@ -58,6 +61,19 @@ struct RouteReplayView: View {
                     .allowsHitTesting(false)
             } else {
                 controls
+            }
+
+            if savedToPhotos && exportedVideo != nil {
+                VStack {
+                    Label("Vídeo guardado en Fotos", systemImage: "checkmark.circle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, DS.Spacing.l)
+                        .padding(.vertical, DS.Spacing.s)
+                        .glassSurface(Capsule())
+                    Spacer()
+                }
+                .padding(.top, DS.Spacing.xl)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             if let card {
@@ -142,9 +158,16 @@ struct RouteReplayView: View {
             card = .closing
             try? await Task.sleep(nanoseconds: 2_200_000_000)
             do {
-                let url = try await recorder.stop()
+                let url = try await recorder.stop(fileName: videoFileName)
                 state.isExporting = false
                 card = nil
+                // Straight to the photo library, then the share sheet (Instagram, WhatsApp…)
+                do {
+                    try await PhotoSaver.saveVideo(at: url, fileName: "\(videoFileName).mp4")
+                    savedToPhotos = true
+                } catch {
+                    savedToPhotos = false
+                }
                 exportedVideo = SharedFile(url: url)
             } catch {
                 state.isExporting = false
@@ -157,15 +180,16 @@ struct RouteReplayView: View {
     /// While recording: the Runna.io mark and the distance, nothing else.
     private var recordingOverlay: some View {
         VStack {
-            HStack {
-                ShareWordmark(ink: .white, size: 16)
-                    .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
-                Spacer()
-            }
             Spacer()
             if state.phase == .following || state.phase == .finishing {
                 progressCard
             }
+            HStack {
+                Spacer()
+                ShareWordmark(ink: .white, size: 12)
+                    .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
+            }
+            .padding(.top, 6)
         }
         .padding(.horizontal, DS.Spacing.l)
         .padding(.top, DS.Spacing.xl)
@@ -200,9 +224,17 @@ struct RouteReplayView: View {
         VStack {
             HStack {
                 if shareRun != nil {
-                    GlassCircleButton(systemImage: "square.and.arrow.up", accessibilityLabel: "Compartir") {
+                    // Available from the first second: no need to watch the whole replay
+                    Button {
                         showShare = true
+                    } label: {
+                        Label("Compartir", systemImage: "square.and.arrow.up")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .frame(height: 40)
+                            .glassSurface(Capsule(), interactive: true)
                     }
+                    .buttonStyle(.plain)
                 }
                 Spacer()
                 GlassCircleButton(systemImage: "xmark", accessibilityLabel: "Cerrar") {
@@ -305,32 +337,34 @@ private struct ReplayVideoCard: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [color.opacity(0.55), ShareStyle.night, ShareStyle.night], startPoint: .top, endPoint: .bottom)
+            ShareStyle.night.ignoresSafeArea()
+            RadialGradient(colors: [color.opacity(0.4), Color.clear], center: .top, startRadius: 0, endRadius: 520)
                 .ignoresSafeArea()
-            VStack(spacing: 18) {
+            VStack(spacing: 10) {
                 Spacer()
                 if kind == .opening {
                     Text(title.isEmpty ? "Mi carrera" : title)
-                        .font(.system(size: 34, weight: .bold))
+                        .font(.system(size: 30, weight: .semibold))
                         .multilineTextAlignment(.center)
                     Text(Format.distance(distance))
-                        .font(ShareStyle.number(56))
+                        .font(ShareStyle.number(64, weight: .bold))
                         .foregroundStyle(color)
                 } else {
                     Image("RunnaMark")
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 96, height: 96)
-                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .frame(width: 84, height: 84)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                     Text("Runna.io")
-                        .font(.system(size: 34, weight: .bold).width(.condensed))
+                        .font(.system(size: 30, weight: .semibold))
+                        .padding(.top, 6)
                     Text("Conquista tu ciudad corriendo")
-                        .font(.system(size: 16, weight: .medium))
-                        .opacity(0.7)
+                        .font(.system(size: 15, weight: .regular))
+                        .opacity(0.6)
                 }
                 Spacer()
                 if kind == .opening {
-                    ShareWordmark(ink: .white, size: 16)
+                    ShareWordmark(ink: .white, size: 13)
                         .padding(.bottom, 40)
                 }
             }
@@ -703,9 +737,9 @@ final class ReplayVideoRecorder {
     }
 
     /// Stops and writes the video; returns its file.
-    func stop() async throws -> URL {
+    func stop(fileName: String = "RUNNA.IO-Carrera") async throws -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Runna-\(Int(Date().timeIntervalSince1970)).mp4")
+            .appendingPathComponent("\(fileName).mp4")
         try? FileManager.default.removeItem(at: url)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             recorder.stopRecording(withOutput: url) { error in

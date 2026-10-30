@@ -19,6 +19,7 @@ struct RouteDetailView: View {
     @State private var errorMessage: String?
     @State private var showReplay = false
     @State private var showShare = false
+    @State private var shareStartsWithVideo = false
     /// Splits, pace and elevation (runs with the time of each point only).
     @State private var analysis: RouteAnalysis?
 
@@ -89,8 +90,8 @@ struct RouteDetailView: View {
         .fullScreenCover(isPresented: $showReplay) {
             RouteReplayView(locations: route.locations, color: lineColor, territories: zones, title: name, shareRun: shareRun)
         }
-        .sheet(isPresented: $showShare) {
-            ShareStudioView(run: shareRun)
+        .sheet(isPresented: $showShare, onDismiss: { shareStartsWithVideo = false }) {
+            ShareStudioView(run: shareRun, startWithVideo: shareStartsWithVideo)
         }
     }
 
@@ -122,7 +123,11 @@ struct RouteDetailView: View {
                 color: lineColor,
                 // Only the zones this run goes through (a user's territory is one multipolygon)
                 territories: zones,
-                onReplay: { showReplay = true }
+                onReplay: { showReplay = true },
+                onVideo: {
+                    shareStartsWithVideo = true
+                    showShare = true
+                }
             )
                 .frame(height: 320)
                 .overlay(alignment: .bottom) { HairlineDivider() }
@@ -357,14 +362,17 @@ private struct RouteDetailMap: View {
     let color: Color
     let territories: [TerritoryShape]
     let onReplay: () -> Void
+    let onVideo: () -> Void
 
     @State private var position: MapCameraPosition
 
-    init(locations: [CLLocationCoordinate2D], color: Color, territories: [TerritoryShape], onReplay: @escaping () -> Void) {
+    init(locations: [CLLocationCoordinate2D], color: Color, territories: [TerritoryShape],
+         onReplay: @escaping () -> Void, onVideo: @escaping () -> Void) {
         self.locations = locations
         self.color = color
         self.territories = territories
         self.onReplay = onReplay
+        self.onVideo = onVideo
         if let rect = MapGeometry.fittingRect(locations) {
             _position = State(initialValue: .rect(rect))
         } else {
@@ -396,14 +404,25 @@ private struct RouteDetailMap: View {
         }
         .mapStyle(.standard(emphasis: .muted, pointsOfInterest: .excludingAll))
         .overlay(alignment: .bottomTrailing) {
-            Button(action: onReplay) {
-                Label(territories.isEmpty ? "Reproducir recorrido" : "Reproducir conquista", systemImage: "play.fill")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .glassSurface(Capsule(), interactive: true)
+            HStack(spacing: DS.Spacing.s) {
+                // The video straight away, without watching the replay first
+                Button(action: onVideo) {
+                    Label("Vídeo", systemImage: "film")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .glassSurface(Capsule(), interactive: true)
+                }
+                .buttonStyle(.plain)
+                Button(action: onReplay) {
+                    Label(territories.isEmpty ? "Reproducir" : "Reproducir conquista", systemImage: "play.fill")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .glassSurface(Capsule(), interactive: true)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             .padding(DS.Spacing.m)
         }
     }

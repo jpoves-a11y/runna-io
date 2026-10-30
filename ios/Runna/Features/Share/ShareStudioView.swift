@@ -3,11 +3,13 @@ import Photos
 import UniformTypeIdentifiers
 import UIKit
 
-/// Share a run: pick a card (sticker, map, conquest, league), choose what it shows, then copy it,
-/// save it or share it; or create a video (cinematic 2D, generated without recording the screen,
-/// or the 3D follow camera recorded cleanly), without having to watch the replay first.
+/// Share a run: swipe through the cards (sticker, map, conquest, league), choose what they show,
+/// then copy, save or share; or make a video (cinematic 2D or the 3D follow camera) and save it to
+/// the photo library, without watching the replay first.
 struct ShareStudioView: View {
     let run: ShareRun
+    /// Opened from the "Vídeo" button: the video section comes first.
+    var startWithVideo = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var context: ShareContext
@@ -17,6 +19,7 @@ struct ShareStudioView: View {
     @AppStorage("replay_speed") private var speed: Double = 1
     @State private var videoProgress: Double?
     @State private var videoTask: Task<Void, Never>?
+    @State private var video: SharedFile?
     @State private var sharedFile: SharedFile?
     @State private var show3DRecording = false
     @State private var toast: String?
@@ -28,29 +31,28 @@ struct ShareStudioView: View {
         var title: String { self == .cinematic ? "Cinemático 2D" : "3D" }
         var detail: String {
             self == .cinematic
-                ? "Se crea en unos segundos, sin grabar la pantalla."
-                : "La cámara detrás de ti. Se reproduce en pantalla mientras se graba (iOS pide permiso)."
+                ? "Se crea en unos segundos."
+                : "La cámara te sigue por detrás. Se reproduce en pantalla mientras se graba."
         }
     }
 
-    init(run: ShareRun, conquest: ConquestResult? = nil) {
+    init(run: ShareRun, conquest: ConquestResult? = nil, startWithVideo: Bool = false) {
         self.run = run
+        self.startWithVideo = startWithVideo
         _context = State(initialValue: ShareContext(run: run, conquest: conquest))
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: DS.Spacing.xl) {
-                    Picker("Plantilla", selection: $template) {
-                        ForEach(ShareTemplate.allCases) { Text($0.title).tag($0) }
+                VStack(spacing: 28) {
+                    if startWithVideo {
+                        videoSection
+                        imagesSection
+                    } else {
+                        imagesSection
+                        videoSection
                     }
-                    .pickerStyle(.segmented)
-
-                    preview
-                    optionsSection
-                    actions
-                    videoSection
                 }
                 .padding(.horizontal, DS.Spacing.screen)
                 .padding(.vertical, DS.Spacing.l)
@@ -65,7 +67,7 @@ struct ShareStudioView: View {
             }
             .overlay(alignment: .top) {
                 if let toast {
-                    Text(toast)
+                    Label(toast, systemImage: "checkmark.circle.fill")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, DS.Spacing.l)
                         .padding(.vertical, DS.Spacing.s)
@@ -75,10 +77,11 @@ struct ShareStudioView: View {
                 }
             }
             .animation(.snappy, value: toast)
+            .animation(.snappy, value: context.isLoading)
             .task { await context.load() }
             .onChange(of: template) { _, new in
-                // Stickers go over a photo; the other cards look best on dark
-                options.background = new == .sticker ? .transparent : (new.allowsTransparency ? options.background : .dark)
+                // The sticker goes over a photo; the conquest card looks best on dark
+                if new == .sticker { options.background = .transparent }
                 if new == .conquest && options.background == .transparent { options.background = .dark }
             }
             .sheet(item: $sharedFile) { file in
@@ -91,7 +94,8 @@ struct ShareStudioView: View {
                     color: run.color,
                     territories: run.territories,
                     title: run.name,
-                    autoRecord: true
+                    autoRecord: true,
+                    videoFileName: run.fileBaseName
                 )
             }
             .errorAlert($errorMessage)
@@ -99,43 +103,82 @@ struct ShareStudioView: View {
         }
     }
 
-    // MARK: Preview
+    // MARK: Images
 
-    private var preview: some View {
-        let size = template.size
-        let scale = min(300 / size.width, 420 / size.height)
-        return ZStack {
-            if template.allowsTransparency && options.background == .transparent {
-                Checkerboard()
+    private var imagesSection: some View {
+        VStack(spacing: DS.Spacing.l) {
+            carousel
+            optionChips
+            HStack(spacing: 28) {
+                circleAction("Copiar", systemImage: "doc.on.doc") { copy() }
+                circleAction("Guardar", systemImage: "arrow.down.to.line") { saveImage() }
+                circleAction("Compartir", systemImage: "square.and.arrow.up") { shareImage() }
             }
-            ShareCardView(template: template, context: context, options: options)
+            .padding(.top, 4)
+        }
+    }
+
+    /// The cards, side by side (swipe), each at its real proportions.
+    private var carousel: some View {
+        let templates = context.isLoading ? [ShareTemplate.sticker, .map] : context.templates
+        return VStack(spacing: 10) {
+            TabView(selection: $template) {
+                ForEach(templates) { item in
+                    preview(item)
+                        .tag(item)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .frame(height: 440)
+            HStack(spacing: 6) {
+                ForEach(templates) { item in
+                    Button {
+                        withAnimation(.snappy) { template = item }
+                    } label: {
+                        Text(item.title)
+                            .font(.footnote.weight(template == item ? .semibold : .regular))
+                            .foregroundStyle(template == item ? Color.primary : Color.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(template == item ? Color.primary.opacity(0.08) : Color.clear, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .onChange(of: context.templates) { _, available in
+            if !available.contains(template) { template = .sticker }
+        }
+    }
+
+    private func preview(_ item: ShareTemplate) -> some View {
+        let size = item.size
+        let scale = min(300 / size.width, 430 / size.height)
+        return ZStack {
+            if item.allowsTransparency && options.background == .transparent {
+                LinearGradient(colors: [Color(white: 0.55), Color(white: 0.3)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            ShareCardView(template: item, context: context, options: options)
                 .environment(\.colorScheme, .dark)
                 .scaleEffect(scale)
                 .frame(width: size.width * scale, height: size.height * scale)
         }
         .frame(width: size.width * scale, height: size.height * scale)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
-        .shadow(color: Color.black.opacity(0.15), radius: 12, x: 0, y: 6)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 8)
         .overlay {
             if context.isLoading { ProgressView() }
         }
-        .frame(maxWidth: .infinity)
-        .animation(.snappy, value: template)
     }
 
-    // MARK: Options
-
-    private var optionsSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            SectionHeader(title: "Qué mostrar")
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
-                chip("Distancia", isOn: $options.distance)
-                chip("Tiempo", isOn: $options.time)
-                chip("Ritmo", isOn: $options.pace)
-                chip("Territorio", isOn: $options.territory)
-                chip("Robos", isOn: $options.steals)
-                chip("Ranking", isOn: $options.ranking)
+    /// Only the options that change something for this run.
+    private var optionChips: some View {
+        let chips = availableChips
+        return VStack(spacing: 12) {
+            FlowChips(items: chips.map(\.0)) { index in
+                let keyPath = chips[index].1
+                return Binding(get: { options[keyPath: keyPath] }, set: { options[keyPath: keyPath] = $0 })
             }
             if template.allowsTransparency {
                 Picker("Fondo", selection: $options.background) {
@@ -146,42 +189,29 @@ struct ShareStudioView: View {
         }
     }
 
-    private func chip(_ title: String, isOn: Binding<Bool>) -> some View {
-        Button {
-            isOn.wrappedValue.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: isOn.wrappedValue ? "checkmark.circle.fill" : "circle")
+    private var availableChips: [(String, WritableKeyPath<ShareOptions, Bool>)] {
+        var chips: [(String, WritableKeyPath<ShareOptions, Bool>)] = [
+            ("Distancia", \.distance), ("Tiempo", \.time), ("Ritmo", \.pace),
+        ]
+        if context.hasTerritory { chips.append(("Territorio", \.territory)) }
+        if context.hasSteals { chips.append(("Robos", \.steals)) }
+        if context.hasRanking { chips.append(("Ranking", \.ranking)) }
+        return chips
+    }
+
+    private func circleAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .medium))
+                    .frame(width: 54, height: 54)
+                    .background(Color.primary.opacity(0.07), in: Circle())
                 Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(isOn.wrappedValue ? Color.onBrand : Color.primary)
-            .frame(maxWidth: .infinity, minHeight: 36)
-            .background(isOn.wrappedValue ? Color.brand : Color.primary.opacity(0.07), in: Capsule())
         }
         .buttonStyle(.plain)
-        .sensoryFeedback(.selection, trigger: isOn.wrappedValue)
-    }
-
-    // MARK: Image actions
-
-    private var actions: some View {
-        HStack(spacing: DS.Spacing.s) {
-            actionButton("Copiar", systemImage: "doc.on.doc") { copy() }
-            actionButton("Guardar", systemImage: "square.and.arrow.down") { save() }
-            actionButton("Compartir", systemImage: "square.and.arrow.up") { shareImage() }
-        }
-    }
-
-    private func actionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: systemImage).font(.title3)
-                Text(title).font(.caption.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity, minHeight: 60)
-        }
-        .buttonStyle(SecondaryButtonStyle(tint: Color.primary))
         .disabled(context.isLoading)
     }
 
@@ -193,25 +223,25 @@ struct ShareStudioView: View {
         guard let png = cardPNG else { return }
         UIPasteboard.general.setData(png, forPasteboardType: UTType.png.identifier)
         Haptics.success()
-        show("Copiada: pégala en Instagram o WhatsApp")
+        show("Copiada. Pégala en Instagram o WhatsApp")
     }
 
-    private func save() {
+    private func saveImage() {
         guard let png = cardPNG else { return }
         Task {
             do {
-                try await PhotoSaver.save(png, type: .photo)
+                try await PhotoSaver.save(png, type: .photo, fileName: "\(run.fileBaseName).png")
                 Haptics.success()
                 show("Guardada en Fotos")
             } catch {
-                errorMessage = "No se ha podido guardar en Fotos. Permite el acceso en Ajustes → Runna.io → Fotos."
+                errorMessage = PhotoSaver.deniedMessage
             }
         }
     }
 
     private func shareImage() {
         guard let png = cardPNG else { return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Runna-\(template.rawValue).png")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(run.fileBaseName).png")
         do {
             try png.write(to: url, options: .atomic)
             sharedFile = SharedFile(url: url)
@@ -231,8 +261,17 @@ struct ShareStudioView: View {
     // MARK: Video
 
     private var videoSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            SectionHeader(title: "Vídeo")
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Vídeo")
+                    .font(.headline)
+                Spacer()
+                Picker("Velocidad", selection: $speed) {
+                    ForEach(RouteReplayState.speeds, id: \.self) { Text(RouteReplayState.speedLabel($0)).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+            }
             Picker("Estilo", selection: $videoStyle) {
                 ForEach(VideoStyle.allCases) { Text($0.title).tag($0) }
             }
@@ -240,17 +279,26 @@ struct ShareStudioView: View {
             Text(videoStyle.detail)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            HStack {
-                Text("Velocidad")
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Picker("Velocidad", selection: $speed) {
-                    ForEach(RouteReplayState.speeds, id: \.self) { Text(RouteReplayState.speedLabel($0)).tag($0) }
+
+            if let video {
+                HStack(spacing: DS.Spacing.s) {
+                    Button {
+                        saveVideo(video.url)
+                    } label: {
+                        Label("Guardar en la galería", systemImage: "arrow.down.to.line")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                    Button {
+                        sharedFile = video
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(SecondaryButtonStyle(tint: .primary))
+                    .accessibilityLabel("Compartir vídeo")
                 }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-            }
-            if let videoProgress {
+            } else if let videoProgress {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: videoProgress)
                         .tint(run.color)
@@ -271,7 +319,9 @@ struct ShareStudioView: View {
             }
         }
         .padding(DS.Spacing.l)
-        .card()
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .onChange(of: videoStyle) { _, _ in video = nil }
+        .onChange(of: speed) { _, _ in video = nil }
     }
 
     private func createVideo() {
@@ -288,7 +338,8 @@ struct ShareStudioView: View {
                         videoProgress = progress
                     }
                     videoProgress = nil
-                    sharedFile = SharedFile(url: url)
+                    video = SharedFile(url: url)
+                    saveVideo(url)
                 } catch is CancellationError {
                     videoProgress = nil
                 } catch {
@@ -298,20 +349,42 @@ struct ShareStudioView: View {
             }
         }
     }
-}
 
-/// Light/dark squares behind transparent cards.
-private struct Checkerboard: View {
-    var body: some View {
-        Canvas { context, size in
-            let side: CGFloat = 10
-            for row in 0..<Int(size.height / side) + 1 {
-                for column in 0..<Int(size.width / side) + 1 where (row + column) % 2 == 0 {
-                    context.fill(Path(CGRect(x: CGFloat(column) * side, y: CGFloat(row) * side, width: side, height: side)), with: .color(Color.gray.opacity(0.25)))
-                }
+    private func saveVideo(_ url: URL) {
+        Task {
+            do {
+                try await PhotoSaver.saveVideo(at: url, fileName: "\(run.fileBaseName).mp4")
+                Haptics.success()
+                show("Vídeo guardado en Fotos")
+            } catch {
+                errorMessage = PhotoSaver.deniedMessage
             }
         }
-        .background(Color.gray.opacity(0.12))
+    }
+}
+
+/// Toggle chips that wrap onto several lines.
+private struct FlowChips: View {
+    let items: [String]
+    let binding: (Int) -> Binding<Bool>
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
+            ForEach(items.indices, id: \.self) { index in
+                let isOn = binding(index)
+                Button {
+                    isOn.wrappedValue.toggle()
+                } label: {
+                    Text(items[index])
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(isOn.wrappedValue ? Color(uiColor: .systemBackground) : Color.primary)
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .background(isOn.wrappedValue ? Color.primary : Color.primary.opacity(0.07), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .sensoryFeedback(.selection, trigger: isOn.wrappedValue)
+            }
+        }
     }
 }
 
@@ -321,7 +394,7 @@ struct SharedFile: Identifiable {
     var id: URL { url }
 }
 
-/// iOS share sheet (Guardar, Instagram, WhatsApp…).
+/// iOS share sheet (Instagram, WhatsApp…).
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
 
@@ -332,15 +405,32 @@ struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
-/// Saves a picture or a video to Photos (asks for "add only" access).
+/// Saves pictures and videos to the photo library ("add only" access), with their file name.
 enum PhotoSaver {
     struct Denied: Error {}
 
-    static func save(_ data: Data, type: PHAssetResourceType) async throws {
+    static let deniedMessage = "No se ha podido guardar en Fotos. Permite el acceso en Ajustes → Runna.io → Fotos."
+
+    static func save(_ data: Data, type: PHAssetResourceType, fileName: String) async throws {
+        try await authorize()
+        let options = PHAssetResourceCreationOptions()
+        options.originalFilename = fileName
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetCreationRequest.forAsset().addResource(with: type, data: data, options: options)
+        }
+    }
+
+    static func saveVideo(at url: URL, fileName: String) async throws {
+        try await authorize()
+        let options = PHAssetResourceCreationOptions()
+        options.originalFilename = fileName
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetCreationRequest.forAsset().addResource(with: .video, fileURL: url, options: options)
+        }
+    }
+
+    private static func authorize() async throws {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else { throw Denied() }
-        try await PHPhotoLibrary.shared().performChanges {
-            PHAssetCreationRequest.forAsset().addResource(with: type, data: data, options: nil)
-        }
     }
 }

@@ -29,6 +29,15 @@ struct ShareRun {
         return [coordinates + [first]]
     }
 
+    /// "RUNNA.IO-Carrera del 30 de octubre" (safe as a file name).
+    var fileBaseName: String {
+        let cleaned = name
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>\n\r"))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return "RUNNA.IO-\((cleaned.isEmpty ? "Carrera" : String(cleaned.prefix(60))))"
+    }
+
     var paceText: String? {
         guard distance >= 50, duration > 0 else { return nil }
         let perKm = Double(duration) / (distance / 1000)
@@ -108,6 +117,22 @@ final class ShareContext {
     var castlesBuilt: Int { conquest?.castlesBuilt ?? 0 }
     var weekRank: Int? { summary?.week.myRank }
     var weekPlayers: Int { summary?.week.players ?? 0 }
+
+    // What there is to show (the options and cards without data are hidden)
+    var hasTerritory: Bool { newArea >= 1 || castlesBuilt > 0 }
+    var hasSteals: Bool { !victims.isEmpty }
+    var hasRanking: Bool { weekRank != nil && weekPlayers > 1 && (summary?.week.myArea ?? 0) > 0 }
+
+    /// Templates worth offering for this run.
+    var templates: [ShareTemplate] {
+        ShareTemplate.allCases.filter { template in
+            switch template {
+            case .sticker, .map: return true
+            case .conquest: return hasTerritory || hasSteals
+            case .league: return weekPlayers > 1
+            }
+        }
+    }
 
     func load() async {
         isLoading = true

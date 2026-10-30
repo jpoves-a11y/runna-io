@@ -19,6 +19,14 @@ final class ShareGeometryTests: XCTestCase {
         XCTAssertLessThan(points[2].y, points[1].y)
     }
 
+    func testFileNameIsSafeAndBranded() {
+        func run(_ name: String) -> ShareRun {
+            ShareRun(routeId: nil, name: name, date: nil, coordinates: [], distance: 0, duration: 0, colorHex: "#16A34A")
+        }
+        XCTAssertEqual(run("Rodaje 10/2: río").fileBaseName, "RUNNA.IO-Rodaje 10-2- río")
+        XCTAssertEqual(run("  ").fileBaseName, "RUNNA.IO-Carrera")
+    }
+
     func testPrefixEndsBetweenPoints() {
         let points = [CGPoint(x: 0, y: 0), CGPoint(x: 10, y: 0), CGPoint(x: 20, y: 0)]
         let half = ShareMapRenderer.prefix(points, progress: 0.75)

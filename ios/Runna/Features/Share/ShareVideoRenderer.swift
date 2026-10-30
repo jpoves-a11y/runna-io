@@ -54,7 +54,7 @@ enum ShareVideoRenderer {
         guard let snapshot = await ShareMapRenderer.snapshot(run, size: points, scale: 4.5, bottomInset: 0.3) else {
             throw RenderError.map
         }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Runna-\(Int(Date().timeIntervalSince1970)).mp4")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(run.fileBaseName).mp4")
         try? FileManager.default.removeItem(at: url)
         let timeline = Timeline(distanceMeters: run.distance, speed: speed)
         let logo = UIImage(named: "RunnaMark")
@@ -199,17 +199,19 @@ enum ShareVideoRenderer {
             cg.fillEllipse(in: dot.insetBy(dx: 8, dy: 8))
         }
 
-        // Bottom shade for the text
-        drawGradient(cg, from: canvas.height * 0.55, to: canvas.height, alpha: 0.85)
-        drawWordmark(logo, at: CGPoint(x: 64, y: 96), size: 44, alpha: 1)
+        // Soft shade at the top and bottom for the text
+        drawGradient(cg, from: canvas.height * 0.6, to: canvas.height, alpha: 0.8)
+        drawPoweredBy(logo, right: canvas.width - 60, bottom: canvas.height - 70, size: 34, alpha: 1)
 
-        // Counters while running
+        // Counters while running: two figures with small labels
         if t < revealStart {
             let alpha = CGFloat(clamp((t - drawStart) / 0.4))
             let meters = script.run.distance * routeProgress
             let seconds = Int(Double(script.run.duration) * routeProgress)
-            drawText(Format.distance(meters), size: 120, weight: .bold, condensed: true, alpha: alpha, at: CGPoint(x: 64, y: canvas.height - 330))
-            drawText(Format.duration(seconds), size: 64, weight: .semibold, condensed: true, alpha: alpha * 0.8, at: CGPoint(x: 64, y: canvas.height - 190))
+            drawText("DISTANCIA", size: 26, weight: .semibold, alpha: alpha * 0.55, at: CGPoint(x: 64, y: canvas.height - 330), tracking: 4)
+            drawText(Format.distance(meters), size: 104, weight: .semibold, condensed: true, alpha: alpha, at: CGPoint(x: 60, y: canvas.height - 300))
+            drawText("TIEMPO", size: 26, weight: .semibold, alpha: alpha * 0.55, at: CGPoint(x: 620, y: canvas.height - 330), tracking: 4)
+            drawText(Format.duration(seconds), size: 104, weight: .semibold, condensed: true, alpha: alpha * 0.9, at: CGPoint(x: 616, y: canvas.height - 300))
         } else {
             drawReveal(script, since: t - revealStart)
         }
@@ -224,30 +226,38 @@ enum ShareVideoRenderer {
         }
     }
 
-    /// The figures, one line after another.
+    /// The figures, one line after another, each with a small colour dot.
     private static func drawReveal(_ script: Script, since: Double) {
-        var lines: [(String, UIColor, CGFloat)] = []
+        var lines: [(text: String, color: UIColor, size: CGFloat)] = []
         var stats = [Format.distance(script.run.distance), Format.duration(script.run.duration)]
         if let pace = script.run.paceText { stats.append("\(pace) /km") }
-        lines.append((stats.joined(separator: "  ·  "), .white, 54))
-        if script.newArea > 0 {
-            lines.append(("+\(Format.area(script.newArea)) conquistados", script.run.uiColor, 64))
+        lines.append((text: stats.joined(separator: "   "), color: .white, size: 56))
+        if script.newArea >= 1 {
+            lines.append((text: "+\(Format.area(script.newArea)) conquistados", color: script.run.uiColor, size: 50))
         }
         if !script.victims.isEmpty {
-            lines.append(("Robado a \(ShareStyle.names(script.victims))", UIColor(red: 1, green: 0.42, blue: 0.35, alpha: 1), 48))
+            lines.append((text: "Robado a \(ShareStyle.names(script.victims))", color: UIColor(red: 1, green: 0.42, blue: 0.35, alpha: 1), size: 44))
         }
         if script.castles > 0 {
-            lines.append((script.castles == 1 ? "+1 castillo" : "+\(script.castles) castillos", .white, 44))
+            lines.append((text: script.castles == 1 ? "+1 castillo" : "+\(script.castles) castillos", color: UIColor.white.withAlphaComponent(0.7), size: 44))
         }
         if let rank = script.rank, script.players > 1 {
-            lines.append(("\(rank).º de \(script.players) esta semana", UIColor(red: 1, green: 0.78, blue: 0.2, alpha: 1), 48))
+            lines.append((text: "\(rank).º de \(script.players) esta semana", color: UIColor(red: 1, green: 0.78, blue: 0.25, alpha: 1), size: 44))
         }
-        var y = canvas.height - 120 - CGFloat(lines.count) * 88
+        var y = canvas.height - 170 - CGFloat(lines.count) * 82
         for (index, line) in lines.enumerated() {
-            let appear = clamp((since - Double(index) * 0.3) / 0.45)
-            drawText(line.0, size: line.2, weight: .bold, condensed: true, color: line.1,
-                     alpha: CGFloat(appear), at: CGPoint(x: 64, y: y + CGFloat(1 - appear) * 30))
-            y += 88
+            let appear = CGFloat(clamp((since - Double(index) * 0.28) / 0.45))
+            let offset = (1 - appear) * 26
+            if index == 0 {
+                drawText(line.text, size: line.size, weight: .semibold, condensed: true, alpha: appear, at: CGPoint(x: 64, y: y + offset))
+            } else if let cg = UIGraphicsGetCurrentContext() {
+                cg.setFillColor(line.color.withAlphaComponent(appear).cgColor)
+                cg.fillEllipse(in: CGRect(x: 66, y: y + offset + line.size * 0.55, width: 16, height: 16))
+                drawText(line.text, size: line.size, weight: index == 1 ? .semibold : .medium,
+                         color: index == 1 ? line.color : .white, alpha: appear * (index == 1 ? 1 : 0.88),
+                         at: CGPoint(x: 100, y: y + offset))
+            }
+            y += 82
         }
     }
 
@@ -256,42 +266,63 @@ enum ShareVideoRenderer {
         guard alpha > 0, let cg = UIGraphicsGetCurrentContext() else { return }
         cg.saveGState()
         cg.setAlpha(alpha)
-        let colors = [run.uiColor.withAlphaComponent(0.85).cgColor, UIColor(red: 0.043, green: 0.051, blue: 0.063, alpha: 1).cgColor]
-        if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors as CFArray, locations: [0, 0.55]) {
-            cg.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 0, y: canvas.height), options: [.drawsAfterEndLocation])
+        cg.setFillColor(UIColor(red: 0.039, green: 0.039, blue: 0.043, alpha: 1).cgColor)
+        cg.fill(CGRect(origin: .zero, size: canvas))
+        let glow = [run.uiColor.withAlphaComponent(0.45).cgColor, run.uiColor.withAlphaComponent(0).cgColor]
+        if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: glow as CFArray, locations: [0, 1]) {
+            cg.drawRadialGradient(gradient, startCenter: CGPoint(x: canvas.width / 2, y: 0), startRadius: 0,
+                                  endCenter: CGPoint(x: canvas.width / 2, y: 0), endRadius: canvas.width * 1.1, options: [])
         }
         if closing {
-            logo?.draw(in: CGRect(x: canvas.width / 2 - 130, y: canvas.height / 2 - 260, width: 260, height: 260).insetBy(dx: 0, dy: 0))
-            drawText("Runna.io", size: 96, weight: .bold, condensed: true, at: CGPoint(x: 0, y: canvas.height / 2 + 40), centered: true)
-            drawText("Conquista tu ciudad corriendo", size: 44, weight: .medium, alpha: 0.75, at: CGPoint(x: 0, y: canvas.height / 2 + 170), centered: true)
+            let logoRect = CGRect(x: canvas.width / 2 - 110, y: canvas.height / 2 - 250, width: 220, height: 220)
+            cg.saveGState()
+            UIBezierPath(roundedRect: logoRect, cornerRadius: 52).addClip()
+            logo?.draw(in: logoRect)
+            cg.restoreGState()
+            drawText("Runna.io", size: 84, weight: .semibold, at: CGPoint(x: 0, y: canvas.height / 2 + 10), centered: true)
+            drawText("Conquista tu ciudad corriendo", size: 38, weight: .regular, alpha: 0.6, at: CGPoint(x: 0, y: canvas.height / 2 + 120), centered: true)
         } else {
-            drawText(run.name, size: 76, weight: .bold, at: CGPoint(x: 0, y: canvas.height / 2 - 200), centered: true)
             if let date = run.date {
-                drawText(ShareStyle.day(date), size: 44, weight: .medium, alpha: 0.7, at: CGPoint(x: 0, y: canvas.height / 2 - 90), centered: true)
+                drawText(ShareStyle.day(date).uppercased(), size: 28, weight: .semibold, alpha: 0.55,
+                         at: CGPoint(x: 0, y: canvas.height / 2 - 230), centered: true, tracking: 5)
             }
-            drawText(Format.distance(run.distance), size: 150, weight: .bold, condensed: true, color: run.uiColor, at: CGPoint(x: 0, y: canvas.height / 2 + 10), centered: true)
-            drawWordmark(logo, at: CGPoint(x: canvas.width / 2 - 130, y: canvas.height - 220), size: 52, alpha: 1)
+            drawText(run.name, size: 68, weight: .semibold, at: CGPoint(x: 0, y: canvas.height / 2 - 170), centered: true)
+            drawText(Format.distance(run.distance), size: 150, weight: .semibold, condensed: true, color: run.uiColor,
+                     at: CGPoint(x: 0, y: canvas.height / 2 - 40), centered: true)
+            drawPoweredBy(logo, right: canvas.width / 2 + 190, bottom: canvas.height - 140, size: 36, alpha: 1)
         }
         cg.restoreGState()
     }
 
     // MARK: Drawing helpers
 
-    private static func drawWordmark(_ logo: UIImage?, at origin: CGPoint, size: CGFloat, alpha: CGFloat) {
-        let logoRect = CGRect(x: origin.x, y: origin.y, width: size * 1.35, height: size * 1.35)
-        if let logo {
-            let clip = UIBezierPath(roundedRect: logoRect, cornerRadius: size * 0.32)
-            UIGraphicsGetCurrentContext()?.saveGState()
-            clip.addClip()
+    /// "powered by [logo] Runna.io", right-aligned at `right`, sitting on `bottom`.
+    private static func drawPoweredBy(_ logo: UIImage?, right: CGFloat, bottom: CGFloat, size: CGFloat, alpha: CGFloat) {
+        let smallFont = UIFont.systemFont(ofSize: size * 0.78, weight: .regular)
+        let nameFont = UIFont.systemFont(ofSize: size, weight: .semibold)
+        let small = ("powered by" as NSString).size(withAttributes: [.font: smallFont]).width
+        let name = ("Runna.io" as NSString).size(withAttributes: [.font: nameFont]).width
+        let logoSide = size * 1.25
+        let gap = size * 0.35
+        let total = small + gap + logoSide + gap + name
+        var x = right - total
+        let top = bottom - logoSide
+        drawText("powered by", size: size * 0.78, weight: .regular, alpha: alpha * 0.6, at: CGPoint(x: x, y: top + (logoSide - size * 0.78 * 1.2) / 2))
+        x += small + gap
+        let logoRect = CGRect(x: x, y: top, width: logoSide, height: logoSide)
+        if let logo, let cg = UIGraphicsGetCurrentContext() {
+            cg.saveGState()
+            UIBezierPath(roundedRect: logoRect, cornerRadius: size * 0.3).addClip()
             logo.draw(in: logoRect, blendMode: .normal, alpha: alpha)
-            UIGraphicsGetCurrentContext()?.restoreGState()
+            cg.restoreGState()
         }
-        drawText("Runna.io", size: size, weight: .semibold, condensed: true, alpha: alpha * 0.92,
-                 at: CGPoint(x: logoRect.maxX + size * 0.4, y: origin.y + (logoRect.height - size * 1.2) / 2))
+        x += logoSide + gap
+        drawText("Runna.io", size: size, weight: .semibold, alpha: alpha * 0.92, at: CGPoint(x: x, y: top + (logoSide - size * 1.2) / 2))
     }
 
     private static func drawText(_ text: String, size: CGFloat, weight: UIFont.Weight, condensed: Bool = false,
-                                 color: UIColor = .white, alpha: CGFloat = 1, at point: CGPoint, centered: Bool = false) {
+                                 color: UIColor = .white, alpha: CGFloat = 1, at point: CGPoint, centered: Bool = false,
+                                 tracking: CGFloat = 0) {
         guard alpha > 0.01 else { return }
         let font = condensed
             ? UIFont.systemFont(ofSize: size, weight: weight, width: .condensed)
@@ -308,6 +339,7 @@ enum ShareVideoRenderer {
             .foregroundColor: color.withAlphaComponent(alpha),
             .paragraphStyle: paragraph,
             .shadow: shadow,
+            .kern: tracking,
         ]
         let width = centered ? canvas.width : canvas.width - point.x - 48
         (text as NSString).draw(in: CGRect(x: centered ? 0 : point.x, y: point.y, width: width, height: size * 1.4), withAttributes: attributes)
