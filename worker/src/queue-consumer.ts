@@ -91,7 +91,8 @@ async function handleProcessRouteTerritory(
   msg: ProcessRouteTerritoryMessage,
   env: Env
 ): Promise<void> {
-  const { userId, routeId, startedAt, completedAt, distance, duration, earlyFeedEventId } = msg;
+  const { userId, routeId, startedAt, completedAt, distance, duration } = msg;
+  let { earlyFeedEventId } = msg;
   console.log(`[QUEUE] Processing territory for route ${routeId} (user ${userId})`);
 
   // Read coordinates from the routes table (not from the message) to stay
@@ -101,6 +102,24 @@ async function handleProcessRouteTerritory(
     console.error(`[QUEUE] Route ${routeId} not found in DB, skipping`);
     return;
   }
+  if (route.userId !== userId) {
+    console.error(`[QUEUE] Route ${routeId} belongs to ${route.userId}, not ${userId}: skipping`);
+    return;
+  }
+
+  // Idempotency: a route is conquered once. The same route is enqueued again when a run arrives
+  // through a second source (Strava + Polar, a webhook and the cron poll...) and is matched to the
+  // existing route, or when a message is delivered twice. Processing it again recorded the steals
+  // twice, turned the whole run into "fortification" of the user's own territory and overwrote
+  // the feed event with 0 m² conquered. The feed event gets its metadata only once processing
+  // finished (a failed attempt is marked with territoryError and may be retried).
+  const feedEvent = await storage.getFeedEventByRouteId(routeId);
+  if (feedEvent?.metadata && !feedEvent.metadata.includes('"territoryError"')) {
+    console.log(`[QUEUE] Route ${routeId} already processed (feed event ${feedEvent.id}), skipping`);
+    return;
+  }
+  earlyFeedEventId = earlyFeedEventId || feedEvent?.id;
+
   const coords: [number, number][] = typeof route.coordinates === 'string'
     ? JSON.parse(route.coordinates)
     : route.coordinates;
@@ -262,6 +281,15 @@ async function handleReprocessFriendGroup(
   storage: WorkerStorage,
   msg: ReprocessFriendGroupMessage
 ): Promise<void> {
+  // During a competition everybody steals from everybody: a friendship changes nothing, and the
+  // friend-group rebuild (friends-only steals) would undo the steals of players outside the group
+  // and erase the group's conquest metrics.
+  const competition = await storage.getActiveCompetition();
+  if (competition && isCompetitionActive(competition)) {
+    console.log(`[QUEUE] Competition active: friend group reprocess for ${msg.userId} not needed, skipping`);
+    return;
+  }
+
   console.log(`[QUEUE] Reprocessing friend group for user ${msg.userId}`);
 
   const { reprocessFriendGroupTerritoriesChronologically } = await import('./routes');

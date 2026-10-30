@@ -106,6 +106,10 @@ import {
 } from '../../shared/schema';
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
+import { compactGeometry, geometryBbox, bboxesIntersect } from './territory';
+
+/** Less than this many m² taken from a territory is floating-point noise of turf.difference, not a steal. */
+const MIN_STOLEN_AREA_M2 = 1;
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
 function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
@@ -669,6 +673,14 @@ export class WorkerStorage {
       .orderBy(routes.completedAt); // oldest first (ASC)
   }
 
+  /** Distance and duration of every route of a user, without the (large) coordinates. */
+  async getRouteStatsByUserId(userId: string): Promise<Array<{ id: string; distance: number; duration: number }>> {
+    return await this.db
+      .select({ id: routes.id, distance: routes.distance, duration: routes.duration })
+      .from(routes)
+      .where(eq(routes.userId, userId));
+  }
+
   async getRoutesByUserIdChronologicalPaginated(userId: string, limit: number, offset: number): Promise<Route[]> {
     return await this.db
       .select()
@@ -846,6 +858,32 @@ export class WorkerStorage {
       result.set(row.id, { startedAt: row.startedAt, completedAt: row.completedAt });
     }
     return result;
+  }
+
+  /**
+   * Users who ran together with `userId` at least once: listed on the user's own routes, or
+   * listing the user on theirs (the run processed second is the one that stores the pair).
+   */
+  async getCoRunnerIds(userId: string): Promise<Set<string>> {
+    const rows = await this.db
+      .select({ userId: routes.userId, ranTogetherWith: routes.ranTogetherWith })
+      .from(routes)
+      .where(and(
+        sql`${routes.ranTogetherWith} IS NOT NULL`,
+        or(eq(routes.userId, userId), sql`${routes.ranTogetherWith} LIKE ${'%"' + userId + '"%'}`),
+      ));
+    const ids = new Set<string>();
+    for (const row of rows) {
+      if (row.userId !== userId) {
+        ids.add(row.userId);
+        continue;
+      }
+      try {
+        const listed = JSON.parse(row.ranTogetherWith || '[]');
+        if (Array.isArray(listed)) for (const id of listed) if (typeof id === 'string' && id !== userId) ids.add(id);
+      } catch (_) { /* unreadable list: ignore */ }
+    }
+    return ids;
   }
 
   async updateRouteRanTogether(routeId: string, ranTogetherWith: string[]): Promise<void> {
@@ -1042,40 +1080,41 @@ export class WorkerStorage {
       return { updatedTerritory: territory, stolenArea: 0 };
     }
     
-    // Calculate the intersection (what's being stolen)
-    const intersection = turf.intersect(
-      turf.featureCollection([originalFeature, subtractionFeature])
-    );
-    
-    if (!intersection) {
-      // No overlap, return unchanged territory
+    // One polygon operation instead of two: what remains is the difference, and what is stolen is
+    // the area that disappeared (an intersection followed by a difference cost twice the CPU).
+    let difference: ReturnType<typeof turf.difference>;
+    let originalArea: number;
+    try {
+      originalArea = turf.area(originalFeature);
+      difference = turf.difference(turf.featureCollection([originalFeature, subtractionFeature]));
+    } catch (err) {
+      console.error(`[TERRITORY] Could not subtract from territory ${territory.id}:`, err);
       return { updatedTerritory: territory, stolenArea: 0 };
     }
-    
-    const stolenArea = turf.area(intersection);
-    
-    // Calculate the difference (what remains)
-    const difference = turf.difference(
-      turf.featureCollection([originalFeature, subtractionFeature])
-    );
-    
+
     if (!difference) {
       // Entire territory was conquered, delete it
       await this.db.delete(territories).where(eq(territories.id, territory.id));
-      return { updatedTerritory: null, stolenArea };
+      return { updatedTerritory: null, stolenArea: originalArea };
     }
-    
+
+    const remainingArea = turf.area(difference);
+    const stolenArea = originalArea - remainingArea;
+    if (!(stolenArea > MIN_STOLEN_AREA_M2)) {
+      // No overlap (or only rounding noise): leave the territory untouched, no write
+      return { updatedTerritory: territory, stolenArea: 0 };
+    }
+
     // Update the territory with the remaining geometry as JSON string
-    const newArea = turf.area(difference);
     const [updatedTerritory] = await this.db
       .update(territories)
       .set({
-        geometry: JSON.stringify(difference.geometry),
-        area: newArea,
+        geometry: JSON.stringify(compactGeometry(difference.geometry)),
+        area: remainingArea,
       })
       .where(eq(territories.id, territory.id))
       .returning();
-    
+
     return { updatedTerritory, stolenArea };
   }
 
@@ -1098,13 +1137,17 @@ export class WorkerStorage {
     let newArea = turf.area(newGeometry);
     let existingAreaInBuffer = 0;
     const overlapGeometries: any[] = [];
+    const newBbox = geometryBbox(newGeometry);
 
     // Calculate how much of the buffer overlaps with existing user territories
     for (const userTerritory of userTerritories) {
       try {
         const parsedGeometry = safeParseGeometry(userTerritory.geometry);
         if (!parsedGeometry) continue;
-        
+        // Far-away territory: no overlap, skip the polygon intersection
+        const territoryBbox = geometryBbox(parsedGeometry);
+        if (newBbox && territoryBbox && !bboxesIntersect(newBbox, territoryBbox)) continue;
+
         const userFeature = geometryToFeature(parsedGeometry);
         const overlap = turf.intersect(
           turf.featureCollection([newFeature, userFeature])
@@ -1240,23 +1283,22 @@ export class WorkerStorage {
       };
     }
 
-    // === Everything validated - now safe to delete old and insert new ===
-    // Delete all old territories
-    await this.db
-      .delete(territories)
-      .where(eq(territories.userId, userId));
-
-    // Create new unified territory with geometry as JSON string
-    const [territory] = await this.db
-      .insert(territories)
-      .values({
-        userId,
-        routeId,
-        geometry: JSON.stringify(finalGeometry),
-        area: finalArea,
-        conqueredAt: new Date(),
-      })
-      .returning();
+    // === Everything validated - now safe to replace the old territories with the merged one ===
+    // Delete + insert in one batch (a single transaction): a failure between the two statements
+    // used to leave the user with no territory at all.
+    const [, [territory]] = await this.db.batch([
+      this.db.delete(territories).where(eq(territories.userId, userId)),
+      this.db
+        .insert(territories)
+        .values({
+          userId,
+          routeId,
+          geometry: JSON.stringify(compactGeometry(finalGeometry)),
+          area: finalArea,
+          conqueredAt: new Date(),
+        })
+        .returning(),
+    ]);
 
     return {
       territory,
@@ -1274,20 +1316,23 @@ export class WorkerStorage {
     geometry: any,
     area: number
   ): Promise<Territory> {
-    // Delete all existing territories for the user
-    await this.db.delete(territories).where(eq(territories.userId, userId));
-
-    // Create a single new territory with the unified geometry as JSON string
-    const [territory] = await this.db
-      .insert(territories)
-      .values({
-        userId,
-        routeId,
-        geometry: JSON.stringify(geometry),
-        area,
-        conqueredAt: new Date(),
-      })
-      .returning();
+    // Replace all the user's territories with a single one holding the unified geometry, and
+    // keep users.total_area in step, in one batch (a single transaction): a failure halfway used
+    // to leave the user without territory.
+    const [, [territory]] = await this.db.batch([
+      this.db.delete(territories).where(eq(territories.userId, userId)),
+      this.db
+        .insert(territories)
+        .values({
+          userId,
+          routeId,
+          geometry: JSON.stringify(compactGeometry(geometry)),
+          area,
+          conqueredAt: new Date(),
+        })
+        .returning(),
+      this.db.update(users).set({ totalArea: area }).where(eq(users.id, userId)),
+    ]);
 
     return territory;
   }
@@ -1984,29 +2029,6 @@ export class WorkerStorage {
         sql`${routes.startedAt} BETWEEN ${new Date(start - toleranceMs).toISOString()} AND ${new Date(start + toleranceMs).toISOString()}`
       ));
     return candidates.find((route) => Math.abs(route.distance - distance) <= Math.max(distance * 0.05, 50)) ?? null;
-  }
-
-  async findRouteByDateAndDistance(userId: string, startDate: string, distance: number): Promise<Route | null> {
-    // Busca una ruta por userId, fecha de inicio y distancia aproximada (1% tolerancia)
-    // Compare by date prefix (YYYY-MM-DDTHH:MM) to avoid format mismatches (milliseconds, timezone)
-    const datePrefix = startDate.substring(0, 16); // "2026-01-15T10:30"
-    const userRoutes = await this.db
-      .select()
-      .from(routes)
-      .where(
-        and(
-          eq(routes.userId, userId),
-          sql`${routes.startedAt} LIKE ${datePrefix + '%'}`
-        )
-      );
-    for (const route of userRoutes) {
-      const distDiff = Math.abs(route.distance - distance);
-      const threshold = Math.max(distance * 0.01, 1);
-      if (distDiff <= threshold) {
-        return route;
-      }
-    }
-    return null;
   }
 
   async getPolarActivityStats(userId: string): Promise<{ total: number; unprocessed: number; lastStartDate: Date | null; }> {

@@ -53,6 +53,14 @@ node scripts/e2e/seed.mjs        # en otra terminal; imprime un token y un userI
 
 Con `E2E_RUN_CRON=1` (y opcionalmente `E2E_CRON_TIME`), `server.mjs` ejecuta una vez las tareas programadas al arrancar.
 
+Prueba end-to-end de la lógica de territorio (conquista, robos entre amigos, correr juntos, importaciones duplicadas, borrar una carrera, reconstrucción del grupo de amigos y competición), con el Worker compilado como arriba:
+
+```bash
+rm -f scripts/e2e/.build/territory.db
+DATABASE_URL=file:scripts/e2e/.build/territory.db npx drizzle-kit push --force
+node scripts/e2e/territory-test.mjs
+```
+
 Para apuntar la app del simulador a esta API, ver [`ios/README.md`](ios/README.md). El workflow `.github/workflows/ios.yml` hace exactamente esto en un Mac de GitHub Actions y saca capturas de cada pantalla.
 
 También puedes usar `wrangler dev` (`npm run worker:dev`, con wrangler instalado: `npm i -g wrangler` o `npx wrangler` desde `worker/`), que necesita los secretos en `.dev.vars`.

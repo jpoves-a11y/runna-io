@@ -72,6 +72,88 @@ export function routeToEnclosedPolygon(coords: Array<[number, number]>, maxSimpl
   }
 }
 
+/** Parses a stored geometry (JSON text or already an object); null when it can't be read. */
+export function parseGeometry(geometry: unknown): any | null {
+  if (!geometry) return null;
+  if (typeof geometry === 'string') {
+    try { return JSON.parse(geometry); } catch { return null; }
+  }
+  return geometry;
+}
+
+export type Bbox = [number, number, number, number];
+
+/** [minLng, minLat, maxLng, maxLat] of a GeoJSON geometry, or null when it has no coordinates. */
+export function geometryBbox(geometry: any): Bbox | null {
+  try {
+    const box = turf.bbox(geometry);
+    return box.every(Number.isFinite) ? [box[0], box[1], box[2], box[3]] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether two bounding boxes touch. A cheap test that rules out most polygon intersections. */
+export function bboxesIntersect(a: Bbox, b: Bbox): boolean {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
+/** Area in m² shared by two polygons (0 when they don't overlap or can't be intersected). */
+export function intersectionArea(geometryA: any, geometryB: any): number {
+  try {
+    const a = geometryA.type === 'Feature' ? geometryA : turf.feature(geometryA);
+    const b = geometryB.type === 'Feature' ? geometryB : turf.feature(geometryB);
+    const overlap = turf.intersect(turf.featureCollection([a, b]));
+    return overlap ? turf.area(overlap) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Geometry ready to be stored: coordinates rounded to 6 decimals (~10 cm) and repeated points
+ * removed. Unions and differences return 15-decimal coordinates and duplicate vertices, which
+ * make every territory row (and the map download) several times bigger and every later turf
+ * operation slower. Returns the input unchanged if cleaning fails.
+ */
+export function compactGeometry<T>(geometry: T): T {
+  try {
+    const rounded = turf.truncate(geometry as any, { precision: 6, coordinates: 2, mutate: false });
+    return turf.cleanCoords(rounded as any) as T;
+  } catch {
+    return geometry;
+  }
+}
+
+// ─── Treasures ───────────────────────────────────────────────────────────────
+
+/** A run collects a treasure when it passes within this many meters of it. */
+export const TREASURE_REACH_M = 250;
+
+/**
+ * The treasures a route passes within `reachM` meters of. Every 5th point is checked (plus the
+ * last one), with a plain haversine distance instead of building turf points for every pair.
+ */
+export function treasuresAlongRoute<T extends { lat: number; lng: number }>(
+  treasures: T[],
+  routeCoordinates: Array<[number, number]>,
+  reachM: number = TREASURE_REACH_M
+): T[] {
+  if (treasures.length === 0 || routeCoordinates.length === 0) return [];
+  const last = routeCoordinates.length - 1;
+  const sampled = routeCoordinates.filter((c, i) => (i % 5 === 0 || i === last) && Number.isFinite(c[0]) && Number.isFinite(c[1]));
+  const toRad = Math.PI / 180;
+  const EARTH_RADIUS_M = 6371008.8;
+  const reachDeg = reachM / 111_000; // a little over the size of a degree of latitude
+  return treasures.filter((treasure) => sampled.some(([lat, lng]) => {
+    if (Math.abs(lat - treasure.lat) > reachDeg) return false;
+    const dLat = (treasure.lat - lat) * toRad;
+    const dLng = (treasure.lng - lng) * toRad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat * toRad) * Math.cos(treasure.lat * toRad) * Math.sin(dLng / 2) ** 2;
+    return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h))) <= reachM;
+  }));
+}
+
 // ─── Anti-cheat ──────────────────────────────────────────────────────────────
 
 /** Average speeds above this aren't running (2:51 min/km is world-class pace even over 10 km). */

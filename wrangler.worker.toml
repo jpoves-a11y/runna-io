@@ -93,6 +93,10 @@ crons = ["*/5 * * * *"]
 [[queues.consumers]]
   queue = "territory-processing"
   max_batch_size = 1
+  # One message at a time: each one reads territories, steals and merges, then writes them back.
+  # Two runs processed at once (e.g. two friends finishing together) read the same territories and
+  # the last write won: a steal or a whole run's conquest was silently lost.
+  max_concurrency = 1
   max_retries = 2
   dead_letter_queue = "territory-dlq"
 
