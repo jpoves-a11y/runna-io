@@ -342,7 +342,8 @@ struct TreasuresCard: View {
 struct RouteGrowthReplay: View {
     let coordinates: [CLLocationCoordinate2D]
     let color: Color
-    var duration: Double = 4
+    /// 1,7 times faster than the original 4 s.
+    var duration: Double = 4 / 1.7
     var height: CGFloat = 240
 
     @State private var progress: Double = 0
