@@ -236,6 +236,9 @@ enum WidgetMapRenderer {
         return UIGraphicsImageRenderer(size: size, format: format).image { context in
             snapshot.image.draw(at: .zero)
             let cg = context.cgContext
+            // A darker map: its street and city names step back and the territory stands out
+            UIColor.black.withAlphaComponent(0.2).setFill()
+            cg.fill(CGRect(origin: .zero, size: size))
 
             func path(_ shape: WidgetSummary.Shape?) -> UIBezierPath? {
                 guard let shape else { return nil }

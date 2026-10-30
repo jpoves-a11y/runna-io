@@ -336,8 +336,9 @@ private struct LeagueRow: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .frame(width: 62, alignment: .trailing)
+            // Fixed height: an empty slot (Color.clear) stretched every row to the widget's height
             movement
-                .frame(width: 10)
+                .frame(width: 10, height: 10)
         }
         .padding(.vertical, entry.isMe ? 2 : 0)
         .background {
@@ -571,6 +572,8 @@ struct TerritoryView: View {
     }
 
     private var color: Color { WStyle.color(summary.me.color) }
+    /// Bottom margin of the text over the map: the snapshot's Apple Maps logo (bottom left) must stay visible.
+    private var mapLogoClearance: CGFloat { hasMap ? 30 : 14 }
 
     var body: some View {
         Group {
@@ -593,7 +596,7 @@ struct TerritoryView: View {
     }
 
     private var placeChip: some View {
-        Label(placeName ?? "Mi territorio", systemImage: placeName == nil ? "map.fill" : "mappin.and.ellipse")
+        Label(placeName ?? "Mi territorio", systemImage: placeName == nil ? "map.fill" : "mappin.circle.fill")
             .font(.system(size: 12, weight: .bold))
             .lineLimit(1)
             .padding(.horizontal, 9)
@@ -637,7 +640,7 @@ struct TerritoryView: View {
                 placeChip
                 Spacer(minLength: 4)
                 totalArea
-                Text("conquistados")
+                Text("de territorio")
                     .font(.system(size: 10, weight: .semibold))
                     .opacity(0.75)
                 Spacer(minLength: 4)
@@ -655,7 +658,9 @@ struct TerritoryView: View {
             }
             .frame(width: 160, alignment: .leading)
             .padding(.leading, 14)
-            .padding(.vertical, 14)
+            .padding(.top, 14)
+            // Clear of the Apple Maps logo the map image carries in its bottom-left corner
+            .padding(.bottom, mapLogoClearance)
             Spacer(minLength: 0)
         }
         .background {
@@ -692,7 +697,7 @@ struct TerritoryView: View {
             HStack(alignment: .bottom, spacing: 12) {
                 VStack(alignment: .leading, spacing: 1) {
                     totalArea
-                    Text("conquistados")
+                    Text("de territorio")
                         .font(.system(size: 11, weight: .semibold))
                         .opacity(0.75)
                     if summary.week.myArea > 0 {
@@ -716,7 +721,9 @@ struct TerritoryView: View {
                 .lineLimit(1)
             }
         }
-        .padding(14)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, mapLogoClearance)
         .background {
             if hasMap {
                 VStack(spacing: 0) {
@@ -801,9 +808,9 @@ struct DefendView: View {
                 .opacity(0.85)
                 .lineLimit(2)
         } else {
-            Text(summary.streakWeeks >= 2 ? "🔥 \(summary.streakWeeks) semanas" : "🏃 Tu racha")
+            Text(streakTitle)
                 .font(.subheadline.weight(.bold))
-            Text(summary.streakWeeks >= 2 ? "corriendo cada semana" : "Corre esta semana para empezarla")
+            Text(streakDetail)
                 .font(.caption2)
                 .opacity(0.85)
                 .lineLimit(2)
@@ -813,6 +820,24 @@ struct DefendView: View {
                 .lineLimit(1)
                 .padding(.top, 2)
         }
+    }
+
+    private var streakTitle: String {
+        let weeks = summary.streakWeeks
+        return weeks >= 1 ? "🔥 \(weeks) \(weeks == 1 ? "semana" : "semanas")" : "🏃 Tu racha"
+    }
+
+    /// The streak counts this week once you've run in it (until then, last week's).
+    private var streakDetail: String {
+        let weeks = summary.streakWeeks
+        guard weeks >= 1 else { return "Corre esta semana para empezarla" }
+        guard ranThisWeek else { return "Corre esta semana para no perderla" }
+        return weeks == 1 ? "Corre la semana que viene para seguirla" : "corriendo cada semana"
+    }
+
+    private var ranThisWeek: Bool {
+        guard let last = summary.lastRunDate, let start = WidgetDates.parse(summary.week.start) else { return false }
+        return last >= start
     }
 
     private var lastRunText: String {
