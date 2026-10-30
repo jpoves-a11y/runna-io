@@ -83,6 +83,7 @@ final class SessionStore {
             return
         }
         api.sessionToken = token
+        WidgetSync.storeCredentials(token: token, userId: userId)
         // Cached API responses of another account are never shown
         ResponseCache.shared.setOwner(userId)
         if let data = UserDefaults.standard.data(forKey: cachedUserKey),
@@ -264,6 +265,7 @@ final class SessionStore {
         KeychainStore.set(token, for: tokenKey)
         KeychainStore.set(user.id, for: userIdKey)
         api.sessionToken = token
+        WidgetSync.storeCredentials(token: token, userId: user.id)
         setUser(user)
         state = .loggedIn
         Task {

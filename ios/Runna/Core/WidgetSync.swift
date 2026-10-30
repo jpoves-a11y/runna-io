@@ -1,12 +1,22 @@
 import Foundation
 import WidgetKit
 
-/// Keeps the home screen widget's data (RunnaWidgetSnapshot) up to date: the user, this week's board
-/// and the last run. The widget is only reloaded when something it shows changed.
+/// Keeps the widgets up to date. They ask the server by themselves (GET /api/widget/summary every
+/// ~30 minutes) with the session the app shares with them; the app also hands them a small snapshot
+/// and reloads them when something they show changes (a run, the week's board, the user).
 @MainActor
 enum WidgetSync {
     private static var lastRefresh: Date?
     private static let refreshInterval: TimeInterval = 15 * 60
+
+    /// The session the widgets use (login and every launch).
+    static func storeCredentials(token: String, userId: String) {
+        let credentials = WidgetCredentials(token: token, userId: userId, baseURL: AppConfig.apiBaseURL.absoluteString)
+        guard WidgetSnapshotStore.loadCredentials() != credentials else { return }
+        if WidgetSnapshotStore.saveCredentials(credentials) {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
 
     /// Fresh user data (name, colour, total territory).
     static func update(user: AppUser) {
@@ -42,6 +52,11 @@ enum WidgetSync {
         }
         // The week's figures change with the run: refetch them on the next refresh
         lastRefresh = nil
+        // The widgets fetch the new league and map (the run's territory is processed in a few seconds)
+        Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            WidgetCenter.shared.reloadAllTimelines()
+        }
     }
 
     /// Refetches this week's board (at most every 15 minutes).

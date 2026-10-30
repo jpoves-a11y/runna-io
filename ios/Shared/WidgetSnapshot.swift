@@ -56,39 +56,72 @@ extension RunnaWidgetSnapshot {
     }
 }
 
+/// What the widgets need to ask the server by themselves: the session of the logged-in account.
+struct WidgetCredentials: Codable, Equatable {
+    let token: String
+    let userId: String
+    let baseURL: String
+}
+
 enum WidgetSnapshotStore {
     /// Keychain access group shared by the app and the widget (team prefix added at run time).
     static let groupSuffix = "com.jpoves.runnaio.shared"
     private static let service = "io.runna.widget"
-    private static let account = "snapshot"
+    private static let snapshotAccount = "snapshot"
+    private static let credentialsAccount = "credentials"
 
     static func load() -> RunnaWidgetSnapshot? {
-        guard let group = accessGroup else { return nil }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: group,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return try? JSONDecoder().decode(RunnaWidgetSnapshot.self, from: data)
+        read(snapshotAccount).flatMap { try? JSONDecoder().decode(RunnaWidgetSnapshot.self, from: $0) }
     }
 
     @discardableResult
     static func save(_ snapshot: RunnaWidgetSnapshot) -> Bool {
-        guard let group = accessGroup, let data = try? JSONEncoder().encode(snapshot) else { return false }
-        let query: [String: Any] = [
+        guard let data = try? JSONEncoder().encode(snapshot) else { return false }
+        return write(snapshotAccount, data)
+    }
+
+    static func loadCredentials() -> WidgetCredentials? {
+        read(credentialsAccount).flatMap { try? JSONDecoder().decode(WidgetCredentials.self, from: $0) }
+    }
+
+    @discardableResult
+    static func saveCredentials(_ credentials: WidgetCredentials) -> Bool {
+        guard let data = try? JSONEncoder().encode(credentials) else { return false }
+        return write(credentialsAccount, data)
+    }
+
+    /// Logout: the widgets forget the account and go back to "Abre Runna.io".
+    static func clear() {
+        delete(snapshotAccount)
+        delete(credentialsAccount)
+    }
+
+    // MARK: Keychain
+
+    private static func baseQuery(_ account: String) -> [String: Any]? {
+        guard let group = accessGroup else { return nil }
+        return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: group,
         ]
+    }
+
+    private static func read(_ account: String) -> Data? {
+        guard var query = baseQuery(account) else { return nil }
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
+        return item as? Data
+    }
+
+    private static func write(_ account: String, _ data: Data) -> Bool {
+        guard let query = baseQuery(account) else { return false }
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            // The widget refreshes while the phone is locked
+            // The widgets refresh while the phone is locked
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
@@ -100,14 +133,8 @@ enum WidgetSnapshotStore {
         return status == errSecSuccess
     }
 
-    static func clear() {
-        guard let group = accessGroup else { return }
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: group,
-        ]
+    private static func delete(_ account: String) {
+        guard let query = baseQuery(account) else { return }
         SecItemDelete(query as CFDictionary)
     }
 

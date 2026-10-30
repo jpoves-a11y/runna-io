@@ -121,6 +121,10 @@ final class AppRouter {
             selectedTab = .rankings
             showWeeklySummary = true
         #endif
+        case "run":
+            // runnaio://run (the "Correr" button of the widgets): straight to the run screen
+            selectedTab = .map
+            pendingRunStart = true
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)
             selectedTab = .profile
