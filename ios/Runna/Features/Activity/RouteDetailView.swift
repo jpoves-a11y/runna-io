@@ -18,6 +18,7 @@ struct RouteDetailView: View {
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var showReplay = false
+    @State private var showShare = false
     /// Splits, pace and elevation (runs with the time of each point only).
     @State private var analysis: RouteAnalysis?
 
@@ -57,7 +58,9 @@ struct RouteDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: shareText) {
+                Button {
+                    showShare = true
+                } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .accessibilityLabel("Compartir actividad")
@@ -84,8 +87,25 @@ struct RouteDetailView: View {
         }
         .errorAlert($errorMessage)
         .fullScreenCover(isPresented: $showReplay) {
-            RouteReplayView(locations: route.locations, color: lineColor, territories: zones)
+            RouteReplayView(locations: route.locations, color: lineColor, territories: zones, title: name, shareRun: shareRun)
         }
+        .sheet(isPresented: $showShare) {
+            ShareStudioView(run: shareRun)
+        }
+    }
+
+    /// This run for the share cards and video.
+    private var shareRun: ShareRun {
+        ShareRun(
+            routeId: route.id,
+            name: name,
+            date: route.startDate,
+            coordinates: route.locations,
+            distance: route.distance,
+            duration: route.duration,
+            colorHex: color ?? session.user?.color ?? "#16A34A",
+            territories: zones
+        )
     }
 
     private var zones: [TerritoryShape] {
@@ -285,14 +305,6 @@ struct RouteDetailView: View {
                 .frame(maxWidth: .infinity)
                 .multilineTextAlignment(.center)
         }
-    }
-
-    private var shareText: String {
-        var text = "\(name): \(Format.distance(route.distance)) en \(Format.duration(route.duration))"
-        if let area = route.territoryArea, area > 0 {
-            text += " y +\(Format.area(area)) conquistados"
-        }
-        return text + " con Runna.io"
     }
 
     // MARK: Requests

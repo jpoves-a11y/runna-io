@@ -14,6 +14,12 @@ struct RouteReplayView: View {
     let locations: [CLLocationCoordinate2D]
     let color: Color
     let territories: [TerritoryShape]
+    /// Run name, shown on the opening card of the video.
+    var title: String = ""
+    /// Opens "Compartir" (cards and video); nil hides the button.
+    var shareRun: ShareRun? = nil
+    /// Records a clean video straight away: opening card, the replay without controls, closing card.
+    var autoRecord: Bool = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var state = RouteReplayState()
@@ -21,8 +27,13 @@ struct RouteReplayView: View {
     /// Chosen speed (0,5×, 1× or 2×), kept between replays.
     @AppStorage("replay_speed") private var speed: Double = 1
     @State private var recorder = ReplayVideoRecorder()
-    @State private var exportedVideo: ExportedVideo?
+    @State private var exportedVideo: SharedFile?
     @State private var exportError: String?
+    @State private var showShare = false
+    /// Opening / closing cards of the recorded video.
+    @State private var card: VideoCard?
+
+    enum VideoCard { case opening, closing }
 
     var body: some View {
         ZStack {
@@ -43,33 +54,32 @@ struct RouteReplayView: View {
             .ignoresSafeArea()
 
             if state.isExporting {
-                RunnaWatermark()
+                recordingOverlay
                     .allowsHitTesting(false)
             } else {
                 controls
             }
 
-            if state.isExporting, state.phase == .following || state.phase == .finishing {
-                VStack {
-                    Spacer()
-                    progressCard
-                }
-                .padding(.horizontal, DS.Spacing.l)
-                .padding(.vertical, DS.Spacing.m)
-                .allowsHitTesting(false)
+            if let card {
+                ReplayVideoCard(kind: card, title: title, distance: state.totalDistance, color: color)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
             }
 
-            if state.phase == .loading {
+            if state.phase == .loading || (autoRecord && state.phase == .ready && !state.isExporting) {
                 loadingCover
                     .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.4), value: state.phase)
+        .animation(.easeInOut(duration: 0.5), value: card)
         .statusBarHidden(state.phase == .following || state.isExporting)
         .onAppear {
             state.speed = RouteReplayState.speeds.contains(speed) ? speed : 1
             if engine == nil {
-                engine = RouteReplayEngine(state: state, locations: locations, color: UIColor(color), territories: territories.map(\.polygon))
+                let engine = RouteReplayEngine(state: state, locations: locations, color: UIColor(color), territories: territories.map(\.polygon))
+                engine.holdAtStart = autoRecord
+                self.engine = engine
             }
         }
         .onDisappear {
@@ -77,57 +87,89 @@ struct RouteReplayView: View {
             recorder.cancel()
         }
         .onChange(of: state.phase) { _, phase in
-            if phase == .finished && state.isExporting { finishExport() }
+            if phase == .ready && autoRecord { startRecording() }
+            if phase == .finished && state.isExporting { finishRecording() }
         }
-        .sheet(item: $exportedVideo) { video in
+        .sheet(item: $exportedVideo, onDismiss: {
+            if autoRecord { dismiss() }
+        }) { video in
             ShareSheet(items: [video.url])
                 .presentationDetents([.medium, .large])
         }
-        .alert("No se ha podido exportar el vídeo", isPresented: Binding(
+        .sheet(isPresented: $showShare) {
+            if let shareRun { ShareStudioView(run: shareRun) }
+        }
+        .alert("No se ha podido grabar el vídeo", isPresented: Binding(
             get: { exportError != nil },
             set: { if !$0 { exportError = nil } }
         )) {
-            Button("Vale", role: .cancel) {}
+            Button("Vale", role: .cancel) {
+                if autoRecord { dismiss() }
+            }
         } message: {
             Text(exportError ?? "")
         }
     }
 
-    // MARK: Video export
+    // MARK: Clean recording (3D video)
 
-    /// Records the replay from the start (screen recording of the app, without the controls and with
-    /// the Runna.io watermark), then offers to share or save the video.
-    private func startExport() {
+    /// The start is drawn: ask iOS to record, show the opening card, then play.
+    private func startRecording() {
         guard recorder.isAvailable else {
-            exportError = "La grabación de pantalla no está disponible en este momento (por ejemplo, si ya estás grabando o duplicando la pantalla)."
+            exportError = "La grabación de pantalla no está disponible ahora (por ejemplo, si ya estás grabando o duplicando la pantalla)."
             return
         }
-        state.isExporting = true
         Task {
             do {
                 try await recorder.start()
             } catch {
-                state.isExporting = false
-                exportError = "Hace falta permitir la grabación para crear el vídeo."
+                exportError = "Hace falta permitir la grabación para crear el vídeo en 3D. También puedes elegir el estilo «Cinemático 2D», que no la necesita."
                 return
             }
-            engine?.restart(instant: true)
+            state.isExporting = true
+            card = .opening
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            card = nil
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            engine?.begin()
         }
     }
 
-    private func finishExport() {
+    /// The territory is shown: the closing card, then the video is written and offered.
+    private func finishRecording() {
         Task {
-            // Keep the conquered territory on screen for a moment at the end of the video
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            card = .closing
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
             do {
                 let url = try await recorder.stop()
                 state.isExporting = false
-                exportedVideo = ExportedVideo(url: url)
+                card = nil
+                exportedVideo = SharedFile(url: url)
             } catch {
                 state.isExporting = false
+                card = nil
                 exportError = error.localizedDescription
             }
         }
+    }
+
+    /// While recording: the Runna.io mark and the distance, nothing else.
+    private var recordingOverlay: some View {
+        VStack {
+            HStack {
+                ShareWordmark(ink: .white, size: 16)
+                    .shadow(color: Color.black.opacity(0.5), radius: 4, x: 0, y: 1)
+                Spacer()
+            }
+            Spacer()
+            if state.phase == .following || state.phase == .finishing {
+                progressCard
+            }
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.top, DS.Spacing.xl)
+        .padding(.bottom, DS.Spacing.m)
     }
 
     private var speedPicker: some View {
@@ -157,6 +199,11 @@ struct RouteReplayView: View {
     private var controls: some View {
         VStack {
             HStack {
+                if shareRun != nil {
+                    GlassCircleButton(systemImage: "square.and.arrow.up", accessibilityLabel: "Compartir") {
+                        showShare = true
+                    }
+                }
                 Spacer()
                 GlassCircleButton(systemImage: "xmark", accessibilityLabel: "Cerrar") {
                     engine?.stop()
@@ -164,7 +211,7 @@ struct RouteReplayView: View {
                 }
             }
             Spacer()
-            if state.phase == .finished {
+            if state.phase == .finished && !autoRecord {
                 VStack(spacing: DS.Spacing.m) {
                     HStack {
                         Text("Velocidad")
@@ -181,13 +228,15 @@ struct RouteReplayView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(SecondaryButtonStyle(tint: color))
-                        Button {
-                            startExport()
-                        } label: {
-                            Label("Vídeo", systemImage: "square.and.arrow.up")
-                                .frame(maxWidth: .infinity)
+                        if shareRun != nil {
+                            Button {
+                                showShare = true
+                            } label: {
+                                Label("Compartir", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SecondaryButtonStyle(tint: .primary))
                         }
-                        .buttonStyle(SecondaryButtonStyle(tint: .primary))
                     }
                 }
                 .padding(DS.Spacing.m)
@@ -239,10 +288,54 @@ struct RouteReplayView: View {
             VStack(spacing: DS.Spacing.m) {
                 ProgressView()
                     .controlSize(.large)
-                Text("Preparando la reproducción…")
+                Text(autoRecord ? "Preparando el vídeo…" : "Preparando la reproducción…")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// Opening and closing cards of the recorded 3D video (same look as the cinematic one).
+private struct ReplayVideoCard: View {
+    let kind: RouteReplayView.VideoCard
+    let title: String
+    let distance: Double
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [color.opacity(0.55), ShareStyle.night, ShareStyle.night], startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            VStack(spacing: 18) {
+                Spacer()
+                if kind == .opening {
+                    Text(title.isEmpty ? "Mi carrera" : title)
+                        .font(.system(size: 34, weight: .bold))
+                        .multilineTextAlignment(.center)
+                    Text(Format.distance(distance))
+                        .font(ShareStyle.number(56))
+                        .foregroundStyle(color)
+                } else {
+                    Image("RunnaMark")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 96, height: 96)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    Text("Runna.io")
+                        .font(.system(size: 34, weight: .bold).width(.condensed))
+                    Text("Conquista tu ciudad corriendo")
+                        .font(.system(size: 16, weight: .medium))
+                        .opacity(0.7)
+                }
+                Spacer()
+                if kind == .opening {
+                    ShareWordmark(ink: .white, size: 16)
+                        .padding(.bottom, 40)
+                }
+            }
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 32)
         }
     }
 }
@@ -251,7 +344,8 @@ struct RouteReplayView: View {
 @MainActor
 @Observable
 final class RouteReplayState {
-    enum Phase { case loading, following, finishing, finished }
+    /// `ready`: the start is drawn and the engine waits for `begin()` (clean recording).
+    enum Phase { case loading, ready, following, finishing, finished }
 
     var phase: Phase = .loading
     /// 0...1 of the run covered.
@@ -310,6 +404,8 @@ final class RouteReplayEngine: NSObject, MKMapViewDelegate {
     private var heading: Double = 0
     private var isFullyRendered = false
     private var startTask: Task<Void, Never>?
+    /// Wait in `ready` once the start is drawn instead of playing (clean recording).
+    var holdAtStart = false
 
     /// Follow camera.
     private let cameraDistance: Double = 480
@@ -373,9 +469,20 @@ final class RouteReplayEngine: NSObject, MKMapViewDelegate {
             let shown = Date().timeIntervalSince(started)
             if shown < 0.6 { try? await Task.sleep(nanoseconds: UInt64((0.6 - shown) * 1_000_000_000)) }
             guard let self, !Task.isCancelled else { return }
+            if self.holdAtStart {
+                self.state.phase = .ready
+                return
+            }
             self.state.phase = .following
             self.startDisplayLink()
         }
+    }
+
+    /// Starts playing after a `ready` hold.
+    func begin() {
+        guard state.phase == .ready else { return }
+        state.phase = .following
+        startDisplayLink()
     }
 
     /// Plays again from the start. `instant` jumps there (for the video) instead of swooping down.
@@ -439,7 +546,7 @@ final class RouteReplayEngine: NSObject, MKMapViewDelegate {
             follow(dt)
         case .finishing:
             fadeTerritory(dt)
-        case .loading, .finished:
+        case .loading, .ready, .finished:
             break
         }
     }
@@ -574,31 +681,6 @@ final class RouteReplayEngine: NSObject, MKMapViewDelegate {
 
 // MARK: - Video export
 
-/// The Runna.io mark on exported replays.
-private struct RunnaWatermark: View {
-    var body: some View {
-        VStack {
-            HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: "figure.run")
-                        .font(.system(size: 15, weight: .bold))
-                    Text("Runna.io")
-                        .font(.system(size: 17, weight: .bold))
-                }
-                .foregroundStyle(Color.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Color.black.opacity(0.45), in: Capsule())
-                .shadow(color: Color.black.opacity(0.25), radius: 4, x: 0, y: 2)
-                Spacer()
-            }
-            Spacer()
-        }
-        .padding(.horizontal, DS.Spacing.l)
-        .padding(.top, DS.Spacing.xl)
-    }
-}
-
 /// Screen recording of the app (ReplayKit) saved to a video file.
 @MainActor
 final class ReplayVideoRecorder {
@@ -642,20 +724,4 @@ final class ReplayVideoRecorder {
         guard recorder.isRecording else { return }
         recorder.stopRecording { _, _ in }
     }
-}
-
-private struct ExportedVideo: Identifiable {
-    let url: URL
-    var id: URL { url }
-}
-
-/// iOS share sheet (Guardar vídeo, Instagram, WhatsApp…).
-private struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

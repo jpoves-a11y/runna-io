@@ -14,6 +14,8 @@ struct RunSummaryView: View {
     @State private var sentVictimIds: Set<String> = []
     @State private var retrying = false
     @State private var retryMessage: String?
+    @State private var showShare = false
+    @State private var shareConquest: ConquestResult?
 
     private var run: FinishedRun { submission.run }
 
@@ -36,6 +38,16 @@ struct RunSummaryView: View {
                         RunStatsCard(distance: run.distance, duration: run.duration)
                     }
                     resultSection
+                    if case .done(let result) = submission.state, submission.routeId != nil {
+                        Button {
+                            shareConquest = result
+                            showShare = true
+                        } label: {
+                            Label("Compartir carrera", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(SecondaryButtonStyle(tint: Color.brand))
+                    }
                     let treasures: [TreasureLine] = treasureLines
                     if !treasures.isEmpty {
                         TreasuresCard(treasures: treasures)
@@ -55,6 +67,20 @@ struct RunSummaryView: View {
             .navigationTitle("Resumen")
             .navigationBarTitleDisplayMode(.inline)
             .errorAlert($errorMessage)
+            .sheet(isPresented: $showShare) {
+                ShareStudioView(
+                    run: ShareRun(
+                        routeId: submission.routeId,
+                        name: routeName.isEmpty ? run.defaultName : routeName,
+                        date: run.startedAt,
+                        coordinates: run.coordinates,
+                        distance: run.distance,
+                        duration: run.duration,
+                        colorHex: session.user?.color ?? "#16A34A"
+                    ),
+                    conquest: shareConquest
+                )
+            }
             .sheet(item: $tauntVictim) { victim in
                 TauntComposerView(victim: victim) {
                     sentVictimIds.insert(victim.userId)
