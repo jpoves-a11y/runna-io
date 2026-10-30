@@ -183,7 +183,7 @@ struct MapScreen: View {
             if let haloWidth = look.haloWidth {
                 MapPolygon(look.shape.polygon)
                     .foregroundStyle(Color.clear)
-                    .stroke(look.stroke.opacity(0.3), lineWidth: haloWidth)
+                    .stroke(look.stroke.opacity(0.3), style: StrokeStyle(lineWidth: haloWidth, lineCap: .round, lineJoin: .round))
             }
             MapPolygon(look.shape.polygon)
                 .foregroundStyle(look.fill)
@@ -212,15 +212,15 @@ struct MapScreen: View {
         ForEach(model.visibleFortifications) { fort in
             MapPolygon(fort.polygon)
                 .foregroundStyle(fort.color.opacity(fort.fillOpacity))
-                .stroke(fort.color, lineWidth: fort.wallWidth)
+                .stroke(fort.color, style: StrokeStyle(lineWidth: fort.wallWidth, lineCap: .round, lineJoin: .round))
             MapPolygon(fort.polygon)
                 .foregroundStyle(Color.clear)
-                .stroke(Color.white.opacity(0.55), lineWidth: max(1, fort.wallWidth / 3))
+                .stroke(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: max(1, fort.wallWidth / 3), lineCap: .round, lineJoin: .round))
         }
         if zoomStyle.showsDetail {
             ForEach(hatchLines) { line in
                 MapPolyline(coordinates: line.coordinates)
-                    .stroke(line.color.opacity(0.55), lineWidth: 1)
+                    .stroke(line.color.opacity(0.55), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
             }
         }
     }
@@ -249,10 +249,10 @@ struct MapScreen: View {
         if let territory = selectedTerritory {
             MapPolygon(territory.polygon)
                 .foregroundStyle(Color.clear)
-                .stroke(Color.white.opacity(0.9), lineWidth: 5)
+                .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             MapPolygon(territory.polygon)
                 .foregroundStyle(Color.clear)
-                .stroke(territory.color, lineWidth: 2.5)
+                .stroke(territory.color, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
             if let coordinates = selectedRouteCoordinates {
                 MapPolyline(coordinates: coordinates)
                     .stroke(Color.white.opacity(0.85), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))

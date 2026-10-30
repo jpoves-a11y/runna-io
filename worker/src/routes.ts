@@ -7987,6 +7987,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       const storage = new WorkerStorage(getDb(c.env));
+      // Nightly safety net: every total matches the user's territories
+      const synced = await storage.syncAllUserAreas();
+      if (synced > 0) console.log(`[AREAS] Fixed the total area of ${synced} user(s)`);
       const userIds = await storage.getUserIdsWithTerritory();
       const queue: any = (c.env as any).TERRITORY_QUEUE;
       if (!queue) return c.json({ error: 'No queue' }, 500);

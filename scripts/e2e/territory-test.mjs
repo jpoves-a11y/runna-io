@@ -499,5 +499,14 @@ await db.execute({ sql: "update competitions set status = 'finished', ends_at = 
   check('rest mode: at most the days left', (await call('POST', '/api/user/rest', { token: gus.token, body: { days: 20 } })).status === 400);
 }
 
+// 18. A total left negative by an older version is fixed from the territories
+{
+  await db.execute({ sql: 'update users set total_area = ? where id = ?', args: [-13_342, alice.id] });
+  await call('POST', '/api/tasks/territory-decay', { headers: { Authorization: 'Bearer e2e-cron-secret' } });
+  await flush();
+  check('negative total area recomputed from the territories', near(await userArea(alice.id), await territoryArea(alice.id), 0.001) && await userArea(alice.id) > 0,
+    { user: await userArea(alice.id), territory: await territoryArea(alice.id) });
+}
+
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

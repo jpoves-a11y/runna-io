@@ -346,6 +346,10 @@ export class WorkerStorage {
       PRIMARY KEY (blocker_id, blocked_id)
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`);
+    // Totals left wrong (even negative) by older versions are recomputed from the territories
+    try {
+      await this.syncAllUserAreas();
+    } catch (_) { /* tables not created yet */ }
     // Territory decay: per user, when the clock started, the zones wearing away and the ones at risk
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS territory_decay (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -4637,6 +4641,18 @@ export class WorkerStorage {
   }
 
   /** Batch update victim areas using subquery — single DB call for all victims */
+  /**
+   * users.total_area recomputed from the territories for everyone whose stored value drifted
+   * (older versions mixed the competition bonus and time-bomb penalties into it, leaving negative
+   * or wrong totals). Returns how many users were fixed.
+   */
+  async syncAllUserAreas(): Promise<number> {
+    const result: any = await this.db.run(sql`
+      UPDATE users SET total_area = COALESCE((SELECT SUM(area) FROM territories WHERE territories.user_id = users.id), 0)
+      WHERE ABS(COALESCE(total_area, 0) - COALESCE((SELECT SUM(area) FROM territories WHERE territories.user_id = users.id), 0)) > 1`);
+    return Number(result?.rowsAffected ?? result?.changes ?? 0);
+  }
+
   async updateVictimAreasBatch(victimIds: string[]): Promise<void> {
     if (victimIds.length === 0) return;
     const placeholders = victimIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');

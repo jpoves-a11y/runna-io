@@ -365,7 +365,7 @@ private struct RouteDetailMap: View {
             ForEach(territories) { shape in
                 MapPolygon(shape.polygon)
                     .foregroundStyle(color.opacity(0.3))
-                    .stroke(color, lineWidth: 2)
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
             MapPolyline(coordinates: locations)
                 .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))

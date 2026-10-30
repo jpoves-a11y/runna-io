@@ -109,7 +109,7 @@ struct RunView: View {
             ForEach(tracker.territoryShapes) { shape in
                 MapPolygon(shape.polygon)
                     .foregroundStyle(shape.color.opacity(0.18))
-                    .stroke(shape.color.opacity(0.5), lineWidth: 1)
+                    .stroke(shape.color.opacity(0.5), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
             }
             if tracker.isRecording, let preview = tracker.preview {
                 // What you'd conquer if you finished now

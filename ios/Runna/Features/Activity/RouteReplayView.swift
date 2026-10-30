@@ -418,6 +418,8 @@ final class RouteReplayEngine: NSObject, MKMapViewDelegate {
             renderer.fillColor = color.withAlphaComponent(0.3)
             renderer.strokeColor = color
             renderer.lineWidth = 2
+            // Round joins: sharp corners don't turn into long spikes when zoomed out
+            renderer.lineJoin = .round
             renderer.alpha = state.phase == .finished ? 1 : 0
             territoryRenderers.append(renderer)
             return renderer
