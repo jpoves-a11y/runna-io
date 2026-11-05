@@ -231,21 +231,34 @@ struct RouteShareOverlay: View {
     }
 }
 
-/// "Runna.io" with the brand dot.
+/// Watermark: a small brand tile with a runner and "runna.io" in a light rounded type, no box behind
+/// it; a soft shadow keeps it readable over any map.
 private struct ShareBrandMark: View {
     let unit: CGFloat
 
     var body: some View {
-        HStack(spacing: 5 * unit) {
-            Circle()
-                .fill(Color.brand)
-                .frame(width: 9 * unit, height: 9 * unit)
-            Text("Runna.io")
-                .font(.system(size: 14 * unit, weight: .heavy))
+        HStack(spacing: 6 * unit) {
+            RoundedRectangle(cornerRadius: 4.5 * unit, style: .continuous)
+                .fill(LinearGradient(colors: [Color.brandLime, Color.brand], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 17 * unit, height: 17 * unit)
+                .overlay {
+                    Image(systemName: "figure.run")
+                        .font(.system(size: 10 * unit, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                }
+            HStack(spacing: 0) {
+                Text("runna")
+                    .font(.system(size: 15 * unit, weight: .semibold, design: .rounded))
+                Text(".io")
+                    .font(.system(size: 15 * unit, weight: .regular, design: .rounded))
+                    .opacity(0.7)
+            }
+            .tracking(0.3 * unit)
         }
-        .padding(.horizontal, 10 * unit)
-        .padding(.vertical, 6 * unit)
-        .background(Color.black.opacity(0.35), in: Capsule())
+        .foregroundStyle(Color.white)
+        .shadow(color: .black.opacity(0.45), radius: 6 * unit, y: 1 * unit)
+        .opacity(0.95)
+        .accessibilityLabel("Runna.io")
     }
 }
 
