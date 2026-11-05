@@ -339,12 +339,18 @@ struct IntegrationsSection: View {
     private func loadingRow(name: String, mark: IntegrationBrandMark.Brand) -> some View {
         HStack(spacing: 12) {
             IntegrationBrandMark(brand: mark, size: Self.markSize)
-                .saturation(0)
+                // Polar's red "O" must always stay red (brand guidelines): only faded
+                .saturation(mark == .polar ? 1 : 0)
                 .opacity(0.45)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                if mark == .polar {
+                    PolarWordmark()
+                        .opacity(0.45)
+                } else {
+                    Text(name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
                 Text("Comprobando conexión")
                     .font(.footnote)
                     .redacted(reason: .placeholder)
@@ -362,8 +368,13 @@ struct IntegrationsSection: View {
             HStack(spacing: 12) {
                 IntegrationBrandMark(brand: mark, size: Self.markSize)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(.body.weight(.semibold))
+                    if mark == .polar {
+                        // The official logo instead of the name
+                        PolarWordmark()
+                    } else {
+                        Text(name)
+                            .font(.body.weight(.semibold))
+                    }
                     statusLine(connected: connected, detail: detail)
                 }
                 Spacer(minLength: 8)
@@ -1120,6 +1131,21 @@ struct ImportedActivitiesView: View {
 /// Third-party service marks for the connected-services rows: the official Garmin Connect tile and
 /// Apple Health icon, and the brand's colour tile with a white glyph for Strava, Polar and Suunto
 /// (they don't publish an icon for third-party apps).
+/// The official Polar logo where the provider's name goes: about as tall as the name's capitals,
+/// with a little room above and below (Polar's clear space).
+struct PolarWordmark: View {
+    var height: CGFloat = 13
+
+    var body: some View {
+        Image("PolarLogo")
+            .resizable()
+            .scaledToFit()
+            .frame(height: height)
+            .padding(.vertical, 3)
+            .accessibilityLabel("Polar")
+    }
+}
+
 struct IntegrationBrandMark: View {
     enum Brand {
         case strava, polar, suunto, garmin, appleHealth
