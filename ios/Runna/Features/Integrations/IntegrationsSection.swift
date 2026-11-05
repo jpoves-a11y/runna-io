@@ -1130,6 +1130,9 @@ struct IntegrationBrandMark: View {
 
     static let stravaOrange = Color(hex: "#FC4C02")
     static let polarRed = Color(hex: "#D10027")
+    /// The logo is 6.05 times as wide as it is tall and its "O" is as tall as the logo: with that clear
+    /// space on both sides it takes 6.05 / 8.05 of the tile's width.
+    static let polarLogoWidthRatio: CGFloat = 6.05 / 8.05
     static let suuntoBlack = Color(hex: "#16181A")
     static let garminBlue = Color(hex: "#007CC3")
     static let healthPink = Color(hex: "#FF2D55")
@@ -1148,11 +1151,14 @@ struct IntegrationBrandMark: View {
                     .fill(Color.white)
                     .frame(width: size * 0.62, height: size * 0.62)
             case .polar:
-                shape.fill(Self.polarRed)
-                Text("P")
-                    .font(.system(size: size * 0.56, weight: .heavy))
-                    .italic()
-                    .foregroundStyle(Color.white)
+                // Official Polar logo (Polar brand book), never redrawn or cropped: black on a light tile,
+                // white on a dark one, with the clear space Polar asks for (the height of the "O") on every side
+                shape.fill(Color(uiColor: .systemBackground))
+                shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+                Image("PolarLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size * Self.polarLogoWidthRatio)
             case .suunto:
                 shape.fill(Self.suuntoBlack)
                 // Hairline so the dark tile keeps its edge on dark backgrounds
