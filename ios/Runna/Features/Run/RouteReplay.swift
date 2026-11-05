@@ -115,7 +115,7 @@ struct RouteReplayPlan {
 
     /// Direction of the route around `distance` (degrees from north), looking `window` metres behind
     /// and ahead so the camera turns with the street, not with every small bend.
-    func bearing(at distance: Double, window: Double = 220) -> Double {
+    func bearing(at distance: Double, window: Double = 350) -> Double {
         let from = coordinate(at: distance - window * 0.4)
         let to = coordinate(at: distance + window)
         let lat1 = from.latitude * .pi / 180
@@ -150,7 +150,8 @@ struct ReplayCamera {
     /// From `a` to `b`: position eased, distance in log scale (a natural zoom), pitch later in the move.
     static func interpolate(_ a: ReplayCamera, _ b: ReplayCamera, _ t: Double) -> ReplayCamera {
         let u = min(1, max(0, t))
-        let eased = u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2
+        // Smootherstep: no jerk at either end
+        let eased = u * u * u * (u * (u * 6 - 15) + 10)
         let pitchT = min(1, max(0, (u - 0.35) / 0.65))
         let pitchEased = pitchT * pitchT * (3 - 2 * pitchT)
         return ReplayCamera(
@@ -181,16 +182,16 @@ struct RouteReplayTimeline {
     var speed: Double = 1
 
     /// Seconds: the far view holds, then flies in to the start.
-    let introHold: Double = 0.7
-    let flyIn: Double = 3.0
+    let introHold: Double = 0.8
+    let flyIn: Double = 4.2
     /// At the start before running.
-    let startHold: Double = 0.6
-    let finish: Double = 2.6
+    let startHold: Double = 0.8
+    let finish: Double = 3.4
     /// 3D only: slow turn around the whole route after the finish.
-    let orbit: Double = 12
+    let orbit: Double = 14
 
-    /// Longer routes play longer, between 8 and 18 seconds.
-    var run: Double { min(18, max(8, 6 + plan.length / 1000 * 0.9)) * min(2, max(0.4, speed)) }
+    /// Longer routes play longer: 14 s for a short run, up to 32 s.
+    var run: Double { min(32, max(14, 10 + plan.length / 1000 * 1.6)) * min(2, max(0.4, speed)) }
 
     var runStart: Double { introHold + flyIn + startHold }
     var runEnd: Double { runStart + run }
@@ -199,7 +200,7 @@ struct RouteReplayTimeline {
     /// Metres run after `time` seconds of the run phase: gentle start and stop, steady in between.
     func distance(atRunTime time: Double) -> Double {
         let u = min(1, max(0, time / run))
-        let ramp = 0.12
+        let ramp = 0.16
         let top = 1 / (1 - ramp)
         let eased: Double
         if u < ramp {
@@ -223,9 +224,9 @@ struct RouteReplayTimeline {
     func followCamera(at distance: Double, heading: Double) -> ReplayCamera {
         switch mode {
         case .threeD:
-            return ReplayCamera(center: plan.coordinate(at: distance), distance: min(1500, max(650, plan.length * 0.1)), pitch: 58, heading: heading)
+            return ReplayCamera(center: plan.coordinate(at: distance), distance: min(3200, max(1200, plan.length * 0.18)), pitch: 50, heading: heading)
         case .flat:
-            return ReplayCamera(center: plan.coordinate(at: distance), distance: min(4000, max(1300, plan.length * 0.3)), pitch: 0, heading: 0)
+            return ReplayCamera(center: plan.coordinate(at: distance), distance: min(7000, max(2200, plan.length * 0.5)), pitch: 0, heading: 0)
         }
     }
 
@@ -235,7 +236,7 @@ struct RouteReplayTimeline {
     }
 
     /// The whole route in view.
-    private var revealDistance: Double { max(900, plan.extent * (mode == .threeD ? 3.0 : 2.6)) }
+    private var revealDistance: Double { max(1400, plan.extent * (mode == .threeD ? 3.3 : 2.8)) }
 
     func revealCamera(heading: Double) -> ReplayCamera {
         switch mode {
@@ -428,9 +429,10 @@ struct RouteReplayView: View {
 
 // MARK: - Map (UIKit)
 
-/// The map of the replay, driven frame by frame by one clock (CADisplayLink): the camera, the runner
-/// and the line run so far move together, so the camera never lags behind the runner. The route
-/// line is added once and only its stroke end moves, so it never flickers.
+/// The map of the replay, driven frame by frame by one clock (CADisplayLink). The route, the area,
+/// the start, the finish and the runner are drawn by us in a layer over the map (each point
+/// projected with the current camera), not as MapKit overlays: MapKit redraws overlays tile by tile
+/// and late while the camera moves, so a line updated every frame kept vanishing for moments.
 private struct RouteReplayMapView: UIViewRepresentable {
     let plan: RouteReplayPlan?
     let color: UIColor
@@ -491,39 +493,36 @@ private struct RouteReplayMapView: UIViewRepresentable {
         var reduceMotion = false
         var playToken = -1
         var colorKey = ""
-        /// Stroke end and area opacity right now (also given to renderers MapKit creates later)
-        private var lineFraction: CGFloat = 0
-        private var areaAlpha: CGFloat = 0
         private(set) var mode: RouteReplayMode = .threeD
         private(set) var speed: Double = 1
-        private var color: UIColor = .systemGreen
         private var styleKey: String?
 
         private weak var mapView: MKMapView?
+        private let drawing = ReplayDrawingView(frame: .zero)
         private var timeline: RouteReplayTimeline?
+        /// Points drawn (at most ~400) and their distance along the route
+        private var drawPoints: [CLLocationCoordinate2D] = []
+        private var drawCumulative: [Double] = []
         private var displayLink: CADisplayLink?
         private var startTime: CFTimeInterval = 0
         private var lastTick: CFTimeInterval = 0
+        /// Camera state smoothed frame by frame
         private var heading: Double = 0
         private var finishHeading: Double = 0
+        private var smoothedCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        private var lastFollowCamera: ReplayCamera?
+        /// What is drawn right now
+        private var runDistance: Double = 0
+        private var areaAlpha: CGFloat = 0
         private var reportedFinish = false
         private var lastPublished: CFTimeInterval = 0
         private var userTookOver = false
 
-        // Overlays and their renderers (kept, so each frame only changes a stroke end)
-        private var ghostLine: MKPolyline?
-        private var casingLine: MKPolyline?
-        private var routeLine: MKPolyline?
-        private var area: MKPolygon?
-        private var casingRenderer: MKPolylineRenderer?
-        private var routeRenderer: MKPolylineRenderer?
-        private var areaRenderer: MKPolygonRenderer?
-        private let startPin = ReplayPin(kind: .start)
-        private let runnerPin = ReplayPin(kind: .runner)
-        private let finishPin = ReplayPin(kind: .finish)
-
         func attach(to mapView: MKMapView) {
             self.mapView = mapView
+            drawing.frame = mapView.bounds
+            drawing.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            mapView.addSubview(drawing)
             // Any touch after the finish stops the slow turn and leaves the map to the user
             let pan = UIPanGestureRecognizer(target: self, action: #selector(userGesture(_:)))
             pan.delegate = self
@@ -557,57 +556,52 @@ private struct RouteReplayMapView: UIViewRepresentable {
             stop()
             self.mode = mode
             self.speed = speed
-            self.color = color
             let timeline = RouteReplayTimeline(plan: plan, mode: mode, speed: speed)
             self.timeline = timeline
             reportedFinish = false
             userTookOver = false
-            lineFraction = 0
+            runDistance = 0
             areaAlpha = 0
+            lastFollowCamera = nil
             setInteractive(false)
+            drawing.setColor(color)
+            mapView.bringSubviewToFront(drawing)
 
-            // Overlays: the whole route faint, the line run so far (white casing + colour) and the enclosed area
-            mapView.removeOverlays(mapView.overlays)
-            mapView.removeAnnotations(mapView.annotations)
-            casingRenderer = nil
-            routeRenderer = nil
-            areaRenderer = nil
-            var points = plan.points
-            let ghost = MKPolyline(coordinates: &points, count: points.count)
-            let casing = MKPolyline(coordinates: &points, count: points.count)
-            let route = MKPolyline(coordinates: &points, count: points.count)
-            let polygon = MKPolygon(coordinates: &points, count: points.count)
-            ghostLine = ghost
-            casingLine = casing
-            routeLine = route
-            area = polygon
-            mapView.addOverlay(polygon, level: .aboveRoads)
-            mapView.addOverlay(ghost, level: .aboveRoads)
-            mapView.addOverlay(casing, level: .aboveRoads)
-            mapView.addOverlay(route, level: .aboveRoads)
-
-            startPin.coordinate = plan.points.first ?? plan.center
-            finishPin.coordinate = plan.points.last ?? plan.center
-            runnerPin.coordinate = plan.points.first ?? plan.center
-            mapView.addAnnotations([startPin, finishPin, runnerPin])
-            setAlpha(0, for: finishPin)
-            setAlpha(0, for: runnerPin)
+            // Points to draw: every route point up to ~400
+            let step = max(1, plan.points.count / 400)
+            var points: [CLLocationCoordinate2D] = []
+            var cumulative: [Double] = []
+            var index = 0
+            while index < plan.points.count {
+                points.append(plan.points[index])
+                cumulative.append(plan.cumulative[index])
+                index += step
+            }
+            if let last = plan.points.last, cumulative.last != plan.length {
+                points.append(last)
+                cumulative.append(plan.length)
+            }
+            drawPoints = points
+            drawCumulative = cumulative
 
             heading = plan.bearing(at: 0)
             finishHeading = heading
+            smoothedCenter = plan.coordinate(at: 0)
             publish(fraction: 0, finished: false, force: true)
 
             if reduceMotion {
                 // No flying around: the whole route, drawn at once
                 mapView.camera = timeline.revealCamera(heading: 0).mkCamera
-                apply(distance: plan.length, areaAlpha: 1)
+                runDistance = plan.length
+                areaAlpha = 1
+                redraw()
                 setInteractive(true)
                 reportFinish()
                 return
             }
 
             mapView.camera = timeline.overviewCamera.mkCamera
-            apply(distance: 0, areaAlpha: 0)
+            redraw()
             startTime = CACurrentMediaTime()
             lastTick = startTime
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
@@ -633,14 +627,22 @@ private struct RouteReplayMapView: UIViewRepresentable {
             let plan = timeline.plan
             let run = timeline.distance(atElapsed: elapsed)
 
-            // Camera heading: turns towards the route's direction slowly (time constant ~1.1 s, at most 30°/s)
+            // Heading: turns towards where the route goes next, slowly (time constant 2 s, at most 15°/s)
             if mode == .threeD && elapsed > timeline.introHold + timeline.flyIn * 0.5 && elapsed < timeline.runEnd {
-                let target = plan.bearing(at: run)
-                var turn = ReplayCamera.shortestTurn(from: heading, to: target) * (1 - exp(-dt / 1.1))
-                let maxTurn = 30 * dt
+                var turn = ReplayCamera.shortestTurn(from: heading, to: plan.bearing(at: run)) * (1 - exp(-dt / 2.0))
+                let maxTurn = 15 * dt
                 turn = min(maxTurn, max(-maxTurn, turn))
                 heading += turn
                 finishHeading = heading
+            }
+            // Centre: follows the runner with a little lag (time constant 0.7 s), so the camera glides
+            if elapsed >= timeline.runStart && elapsed < timeline.runEnd + 0.5 {
+                let target = plan.coordinate(at: run)
+                let k = 1 - exp(-dt / 0.7)
+                smoothedCenter = CLLocationCoordinate2D(
+                    latitude: smoothedCenter.latitude + (target.latitude - smoothedCenter.latitude) * k,
+                    longitude: smoothedCenter.longitude + (target.longitude - smoothedCenter.longitude) * k
+                )
             }
 
             let camera: ReplayCamera
@@ -650,22 +652,24 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 let t = (elapsed - timeline.introHold) / timeline.flyIn
                 camera = ReplayCamera.interpolate(timeline.overviewCamera, timeline.followCamera(at: 0, heading: heading), t)
             } else if elapsed < timeline.runEnd {
-                camera = timeline.followCamera(at: run, heading: heading)
+                var follow = timeline.followCamera(at: run, heading: heading)
+                follow.center = smoothedCenter
+                lastFollowCamera = follow
+                camera = follow
             } else if elapsed < timeline.total {
                 let t = (elapsed - timeline.runEnd) / timeline.finish
-                camera = ReplayCamera.interpolate(
-                    timeline.followCamera(at: plan.length, heading: finishHeading),
-                    timeline.revealCamera(heading: finishHeading + 20),
-                    t
-                )
+                let from = lastFollowCamera ?? timeline.followCamera(at: plan.length, heading: finishHeading)
+                camera = ReplayCamera.interpolate(from, timeline.revealCamera(heading: finishHeading + 20), t)
             } else if mode == .threeD && elapsed < timeline.total + timeline.orbit && !userTookOver {
                 // Slow turn around the route, speeding up gently
                 let t = elapsed - timeline.total
-                let ramp = min(1, t / 2)
-                camera = timeline.revealCamera(heading: finishHeading + 20 + 7 * (t - (1 - ramp)))
+                let ramp = min(1, t / 3)
+                camera = timeline.revealCamera(heading: finishHeading + 20 + 5 * (t - 1.5 * (1 - ramp)))
             } else {
                 // Done: the map is the user's
-                apply(distance: plan.length, areaAlpha: 1)
+                runDistance = plan.length
+                areaAlpha = 1
+                redraw()
                 if !reportedFinish { reportFinish() }
                 setInteractive(true)
                 stop()
@@ -675,9 +679,12 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 mapView.camera = camera.mkCamera
             }
 
-            let finished = elapsed >= timeline.total
+            runDistance = run
             // The enclosed area fades in during the reveal
-            apply(distance: run, areaAlpha: CGFloat(min(1, max(0, (elapsed - timeline.runEnd) / 1.4))))
+            areaAlpha = CGFloat(min(1, max(0, (elapsed - timeline.runEnd) / 1.6)))
+            redraw()
+
+            let finished = elapsed >= timeline.total
             if finished && !reportedFinish {
                 reportFinish()
                 setInteractive(true)
@@ -685,33 +692,33 @@ private struct RouteReplayMapView: UIViewRepresentable {
             publish(fraction: run / plan.length, finished: finished, force: false)
         }
 
-        /// Line run so far, runner position, finish flag and enclosed area for `distance` metres.
-        private func apply(distance: Double, areaAlpha newAreaAlpha: CGFloat) {
-            guard let timeline else { return }
+        /// Projects the route with the current camera and draws it.
+        private func redraw() {
+            guard let mapView, let timeline, !drawPoints.isEmpty else { return }
             let plan = timeline.plan
-            let fraction = CGFloat(min(1, max(0, distance / plan.length)))
-            if fraction != lineFraction {
-                lineFraction = fraction
-                for renderer in [casingRenderer, routeRenderer].compactMap({ $0 }) {
-                    renderer.strokeEnd = fraction
-                    renderer.setNeedsDisplay()
-                }
-            }
-            runnerPin.coordinate = plan.coordinate(at: distance)
-            setAlpha(distance > 0 && distance < plan.length ? 1 : 0, for: runnerPin)
-            setAlpha(distance >= plan.length ? 1 : 0, for: finishPin)
-            if abs(newAreaAlpha - areaAlpha) > 0.01 || (newAreaAlpha == 1 && areaAlpha != 1) {
-                areaAlpha = newAreaAlpha
-                if let areaRenderer {
-                    areaRenderer.alpha = newAreaAlpha
-                    areaRenderer.setNeedsDisplay()
-                }
-            }
-        }
+            let screen = drawPoints.map { mapView.convert($0, toPointTo: drawing) }
+            let runner = mapView.convert(plan.coordinate(at: runDistance), toPointTo: drawing)
 
-        private func setAlpha(_ alpha: CGFloat, for pin: ReplayPin) {
-            guard let view = mapView?.view(for: pin), view.alpha != alpha else { return }
-            UIView.animate(withDuration: 0.25) { view.alpha = alpha }
+            let ghost = ReplayDrawingView.path(screen)
+            var done: [CGPoint] = []
+            for (index, point) in screen.enumerated() where drawCumulative[index] < runDistance {
+                done.append(point)
+            }
+            if runDistance > 0 {
+                done.append(runner)
+            }
+            let line = ReplayDrawingView.path(done)
+            let area = areaAlpha > 0 ? ReplayDrawingView.path(screen, closed: true) : nil
+            let finished = runDistance >= plan.length
+            drawing.update(
+                ghost: ghost,
+                line: line,
+                area: area,
+                areaAlpha: areaAlpha,
+                start: screen.first,
+                runner: runDistance > 0 && !finished ? runner : nil,
+                finish: finished ? screen.last : nil
+            )
         }
 
         private func publish(fraction: Double, finished: Bool, force: Bool) {
@@ -745,43 +752,9 @@ private struct RouteReplayMapView: UIViewRepresentable {
 
         // MARK: MKMapViewDelegate
 
-        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            if let polygon = overlay as? MKPolygon {
-                let renderer = MKPolygonRenderer(polygon: polygon)
-                renderer.fillColor = color.withAlphaComponent(0.2)
-                renderer.strokeColor = color.withAlphaComponent(0.45)
-                renderer.lineWidth = 1
-                renderer.alpha = areaAlpha
-                areaRenderer = renderer
-                return renderer
-            }
-            guard let line = overlay as? MKPolyline else { return MKOverlayRenderer(overlay: overlay) }
-            let renderer = MKPolylineRenderer(polyline: line)
-            renderer.lineCap = .round
-            renderer.lineJoin = .round
-            if line === ghostLine {
-                renderer.strokeColor = color.withAlphaComponent(0.35)
-                renderer.lineWidth = 1.5
-                renderer.lineDashPattern = [2, 5]
-            } else if line === casingLine {
-                renderer.strokeColor = UIColor.white.withAlphaComponent(0.9)
-                renderer.lineWidth = 4.5
-                renderer.strokeEnd = lineFraction
-                casingRenderer = renderer
-            } else {
-                renderer.strokeColor = color
-                renderer.lineWidth = 2.6
-                renderer.strokeEnd = lineFraction
-                routeRenderer = renderer
-            }
-            return renderer
-        }
-
-        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            guard let pin = annotation as? ReplayPin else { return nil }
-            let view = ReplayPinView(annotation: pin, kind: pin.kind, color: color)
-            view.alpha = pin.kind == .start ? 1 : 0
-            return view
+        /// The user moves the map after the replay (or the map settles): keep the drawing on the route.
+        func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            redraw()
         }
     }
 }
@@ -792,86 +765,143 @@ extension RouteReplayMapView.Coordinator: UIGestureRecognizerDelegate {
     }
 }
 
-// MARK: - Markers
+// MARK: - Drawing over the map
 
-private final class ReplayPin: NSObject, MKAnnotation {
-    enum Kind {
-        case start, runner, finish
-    }
+/// The route (faint whole route, the part run so far with a white casing), the enclosed area and the
+/// start, runner and finish markers, in screen coordinates. Never intercepts touches.
+private final class ReplayDrawingView: UIView {
+    private let areaLayer = CAShapeLayer()
+    private let ghostLayer = CAShapeLayer()
+    private let casingLayer = CAShapeLayer()
+    private let lineLayer = CAShapeLayer()
+    private let startView = UIView(frame: CGRect(x: 0, y: 0, width: 13, height: 13))
+    private let runnerView = UIView(frame: CGRect(x: 0, y: 0, width: 40, height: 40))
+    private let runnerDot = UIView(frame: CGRect(x: 12, y: 12, width: 16, height: 16))
+    private let runnerHalo = CAShapeLayer()
+    private let finishView = UIView(frame: CGRect(x: 0, y: 0, width: 26, height: 26))
+    private var areaColor: UIColor = .systemGreen
 
-    let kind: Kind
-    @objc dynamic var coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
-
-    init(kind: Kind) {
-        self.kind = kind
-    }
-}
-
-/// Start ring, runner (dot with a breathing halo) and checkered finish flag.
-private final class ReplayPinView: MKAnnotationView {
-    init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor) {
-        super.init(annotation: annotation, reuseIdentifier: nil)
-        collisionMode = .none
-        displayPriority = .required
+    override init(frame: CGRect) {
+        super.init(frame: frame)
         isUserInteractionEnabled = false
-        switch kind {
-        case .start:
-            frame = CGRect(x: 0, y: 0, width: 13, height: 13)
-            let dot = UIView(frame: bounds)
-            dot.backgroundColor = .white
-            dot.layer.cornerRadius = 6.5
-            dot.layer.borderColor = color.cgColor
-            dot.layer.borderWidth = 3
-            addSubview(dot)
-            zPriority = .defaultUnselected
-        case .runner:
-            frame = CGRect(x: 0, y: 0, width: 40, height: 40)
-            let halo = CAShapeLayer()
-            halo.path = UIBezierPath(ovalIn: CGRect(x: 12, y: 12, width: 16, height: 16)).cgPath
-            halo.fillColor = color.withAlphaComponent(0.35).cgColor
-            halo.frame = bounds
-            layer.addSublayer(halo)
-            let pulse = CABasicAnimation(keyPath: "transform.scale")
-            pulse.fromValue = 1
-            pulse.toValue = 2.3
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 0.9
-            fade.toValue = 0
-            let group = CAAnimationGroup()
-            group.animations = [pulse, fade]
-            group.duration = 1.4
-            group.repeatCount = .infinity
-            halo.add(group, forKey: "pulse")
-            let dot = UIView(frame: CGRect(x: 12, y: 12, width: 16, height: 16))
-            dot.backgroundColor = color
-            dot.layer.cornerRadius = 8
-            dot.layer.borderColor = UIColor.white.cgColor
-            dot.layer.borderWidth = 3
-            dot.layer.shadowColor = UIColor.black.cgColor
-            dot.layer.shadowOpacity = 0.3
-            dot.layer.shadowRadius = 3
-            dot.layer.shadowOffset = CGSize(width: 0, height: 1)
-            addSubview(dot)
-            zPriority = .max
-        case .finish:
-            frame = CGRect(x: 0, y: 0, width: 26, height: 26)
-            let badge = UIView(frame: bounds)
-            badge.backgroundColor = color
-            badge.layer.cornerRadius = 13
-            badge.layer.borderColor = UIColor.white.cgColor
-            badge.layer.borderWidth = 2.5
-            let flag = UIImageView(image: UIImage(systemName: "flag.checkered", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)))
-            flag.tintColor = .white
-            flag.contentMode = .center
-            flag.frame = badge.bounds
-            badge.addSubview(flag)
-            addSubview(badge)
-            zPriority = .max
+        backgroundColor = .clear
+
+        for shape in [areaLayer, ghostLayer, casingLayer, lineLayer] {
+            shape.fillColor = UIColor.clear.cgColor
+            shape.lineCap = .round
+            shape.lineJoin = .round
+            layer.addSublayer(shape)
         }
+        ghostLayer.lineWidth = 1.5
+        ghostLayer.lineDashPattern = [2, 5]
+        casingLayer.lineWidth = 4.5
+        casingLayer.strokeColor = UIColor.white.withAlphaComponent(0.92).cgColor
+        lineLayer.lineWidth = 2.6
+
+        startView.backgroundColor = .white
+        startView.layer.cornerRadius = 6.5
+        startView.layer.borderWidth = 3
+        addSubview(startView)
+
+        runnerHalo.path = UIBezierPath(ovalIn: CGRect(x: 12, y: 12, width: 16, height: 16)).cgPath
+        runnerHalo.frame = runnerView.bounds
+        runnerView.layer.addSublayer(runnerHalo)
+        runnerDot.layer.cornerRadius = 8
+        runnerDot.layer.borderColor = UIColor.white.cgColor
+        runnerDot.layer.borderWidth = 3
+        runnerDot.layer.shadowColor = UIColor.black.cgColor
+        runnerDot.layer.shadowOpacity = 0.3
+        runnerDot.layer.shadowRadius = 3
+        runnerDot.layer.shadowOffset = CGSize(width: 0, height: 1)
+        runnerView.addSubview(runnerDot)
+        runnerView.isHidden = true
+        addSubview(runnerView)
+
+        finishView.layer.cornerRadius = 13
+        finishView.layer.borderColor = UIColor.white.cgColor
+        finishView.layer.borderWidth = 2.5
+        let flag = UIImageView(image: UIImage(systemName: "flag.checkered", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)))
+        flag.tintColor = .white
+        flag.contentMode = .center
+        flag.frame = finishView.bounds
+        finishView.addSubview(flag)
+        finishView.isHidden = true
+        addSubview(finishView)
     }
 
-    required init?(coder aDecoder: NSCoder) {
+    required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func setColor(_ color: UIColor) {
+        areaColor = color
+        ghostLayer.strokeColor = color.withAlphaComponent(0.4).cgColor
+        lineLayer.strokeColor = color.cgColor
+        startView.layer.borderColor = color.cgColor
+        runnerDot.backgroundColor = color
+        runnerHalo.fillColor = color.withAlphaComponent(0.35).cgColor
+        finishView.backgroundColor = color
+        startPulse()
+    }
+
+    private func startPulse() {
+        runnerHalo.removeAllAnimations()
+        let pulse = CABasicAnimation(keyPath: "transform.scale")
+        pulse.fromValue = 1
+        pulse.toValue = 2.3
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.9
+        fade.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [pulse, fade]
+        group.duration = 1.4
+        group.repeatCount = .infinity
+        runnerHalo.add(group, forKey: "pulse")
+    }
+
+    /// A path through `points`, broken where the projection isn't usable (behind the camera).
+    static func path(_ points: [CGPoint], closed: Bool = false) -> CGPath {
+        let path = CGMutablePath()
+        var drawing = false
+        for point in points {
+            guard point.x.isFinite, point.y.isFinite, abs(point.x) < 100_000, abs(point.y) < 100_000 else {
+                drawing = false
+                continue
+            }
+            if drawing {
+                path.addLine(to: point)
+            } else {
+                path.move(to: point)
+                drawing = true
+            }
+        }
+        if closed { path.closeSubpath() }
+        return path
+    }
+
+    func update(ghost: CGPath, line: CGPath, area: CGPath?, areaAlpha: CGFloat, start: CGPoint?, runner: CGPoint?, finish: CGPoint?) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        ghostLayer.path = ghost
+        casingLayer.path = line
+        lineLayer.path = line
+        areaLayer.path = area
+        areaLayer.fillColor = areaColor.withAlphaComponent(0.2 * areaAlpha).cgColor
+        areaLayer.strokeColor = areaColor.withAlphaComponent(0.45 * areaAlpha).cgColor
+        areaLayer.lineWidth = 1
+        place(startView, at: start)
+        place(runnerView, at: runner)
+        place(finishView, at: finish)
+        CATransaction.commit()
+    }
+
+    private func place(_ view: UIView, at point: CGPoint?) {
+        guard let point, point.x.isFinite, point.y.isFinite else {
+            view.isHidden = true
+            return
+        }
+        view.isHidden = false
+        view.center = point
     }
 }
 
