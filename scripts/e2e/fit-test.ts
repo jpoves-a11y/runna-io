@@ -6,7 +6,7 @@
 //                                                    # FITexamples.zip from apizone.suunto.com)
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { parseFit, isFootSport, fitTrack, FitParseError, FIT_SPORT } from '../../worker/src/fit';
+import { parseFit, isRunningSport, fitTrack, FitParseError, FIT_SPORT } from '../../worker/src/fit';
 
 let failures = 0;
 function check(name: string, condition: boolean, extra = ''): void {
@@ -96,7 +96,7 @@ function buildSyntheticFit(): { data: Uint8Array; start: number } {
   check('synthetic: session start', fit.startTime === (start + FIT_EPOCH_S) * 1000, String(fit.startTime));
   check('synthetic: timer time', fit.totalTimerTime === 95.25, String(fit.totalTimerTime));
   check('synthetic: distance', fit.totalDistance === 2660, String(fit.totalDistance));
-  check('synthetic: foot sport', isFootSport(fit.sport, fit.subSport));
+  check('synthetic: running', isRunningSport(fit.sport, fit.subSport));
   check('synthetic: track keeps distinct points', fitTrack(fit.points).length === 20, String(fitTrack(fit.points).length));
 
   // Truncated file: still decodes what's there
@@ -108,10 +108,10 @@ function buildSyntheticFit(): { data: Uint8Array; start: number } {
   check('non-FIT input throws FitParseError', threw);
 }
 
-check('treadmill is not a foot sport', !isFootSport(FIT_SPORT.running, 1));
-check('trail running is a foot sport', isFootSport(FIT_SPORT.running, 3));
-check('walking / hiking are foot sports', isFootSport(FIT_SPORT.walking, null) && isFootSport(FIT_SPORT.hiking, 0));
-check('cycling / swimming are not', !isFootSport(FIT_SPORT.cycling, null) && !isFootSport(FIT_SPORT.swimming, null));
+check('treadmill / indoor runs are not imported', !isRunningSport(FIT_SPORT.running, 1) && !isRunningSport(FIT_SPORT.running, 45));
+check('trail running is imported', isRunningSport(FIT_SPORT.running, 3));
+check('walking / hiking are not imported', !isRunningSport(FIT_SPORT.walking, null) && !isRunningSport(FIT_SPORT.hiking, 0));
+check('cycling / swimming are not', !isRunningSport(FIT_SPORT.cycling, null) && !isRunningSport(FIT_SPORT.swimming, null));
 
 // ---------- Example files ----------
 

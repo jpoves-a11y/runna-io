@@ -1,4 +1,5 @@
 import * as turf from '@turf/turf';
+import { isRunningActivityType, NOT_RUNNING_SKIP_REASON } from './sports';
 import {
   users,
   routes,
@@ -207,7 +208,7 @@ export class WorkerStorage {
     await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE victim_id = ${userId} OR attacker_id = ${userId}`);
     await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
-    await this.db.run(sql`DELETE FROM route_point_times WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
@@ -301,14 +302,23 @@ export class WorkerStorage {
       expires_at INTEGER NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0
     )`);
-    // migrations/0014_ran_together.sql
+    // migrations/0014_ran_together_profiles.sql
     try {
       await this.db.run(sql`ALTER TABLE conquest_metrics ADD COLUMN stolen_geometry TEXT`);
     } catch (_) { /* column already exists */ }
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_conquest_metrics_route_defender ON conquest_metrics(route_id, defender_id)`);
-    await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_point_times (
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_streams (
       route_id TEXT PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
-      times TEXT NOT NULL
+      times TEXT,
+      profile TEXT,
+      profile_checked_at TEXT
+    )`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS source_profiles (
+      source TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (source, source_id)
     )`);
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS pending_steal_notifications (
       id TEXT PRIMARY KEY,
@@ -745,13 +755,13 @@ export class WorkerStorage {
   /** Per-point times of a run (seconds since startedAt, same length as coordinates). */
   async saveRoutePointTimes(routeId: string, times: number[]): Promise<void> {
     await this.ensureSchemaUpgrades();
-    await this.db.run(sql`INSERT INTO route_point_times (route_id, times) VALUES (${routeId}, ${JSON.stringify(times)})
+    await this.db.run(sql`INSERT INTO route_streams (route_id, times) VALUES (${routeId}, ${JSON.stringify(times)})
       ON CONFLICT(route_id) DO UPDATE SET times = excluded.times`);
   }
 
   async getRoutePointTimes(routeId: string): Promise<string | null> {
     await this.ensureSchemaUpgrades();
-    const rows = await this.db.all<{ times: string }>(sql`SELECT times FROM route_point_times WHERE route_id = ${routeId}`);
+    const rows = await this.db.all<{ times: string }>(sql`SELECT times FROM route_streams WHERE route_id = ${routeId} AND times IS NOT NULL`);
     return rows[0]?.times ?? null;
   }
 
@@ -761,16 +771,75 @@ export class WorkerStorage {
     if (userIds.length === 0) return map;
     await this.ensureSchemaUpgrades();
     const rows = await this.db.all<{ route_id: string; times: string }>(sql`
-      SELECT t.route_id, t.times FROM route_point_times t JOIN routes r ON r.id = t.route_id
-      WHERE r.user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
+      SELECT t.route_id, t.times FROM route_streams t JOIN routes r ON r.id = t.route_id
+      WHERE t.times IS NOT NULL AND r.user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
     for (const row of rows) map.set(row.route_id, row.times);
     return map;
   }
 
   async deleteRanTogetherDataForRoute(routeId: string): Promise<void> {
     await this.ensureSchemaUpgrades();
-    await this.db.run(sql`DELETE FROM route_point_times WHERE route_id = ${routeId}`);
+    await this.db.run(sql`DELETE FROM route_streams WHERE route_id = ${routeId}`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id = ${routeId}`);
+  }
+
+  // ===== Activity profile (altitude/distance, pace, splits, climbs) =====
+
+  async getRouteProfile(routeId: string): Promise<{ profile: string | null; checkedAt: string | null } | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ profile: string | null; profile_checked_at: string | null }>(
+      sql`SELECT profile, profile_checked_at FROM route_streams WHERE route_id = ${routeId}`
+    );
+    return rows[0] ? { profile: rows[0].profile, checkedAt: rows[0].profile_checked_at } : null;
+  }
+
+  /** Saves the profile (or, with null, that none could be found now: retried later). */
+  async saveRouteProfile(routeId: string, profile: string | null): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO route_streams (route_id, profile, profile_checked_at) VALUES (${routeId}, ${profile}, ${now})
+      ON CONFLICT(route_id) DO UPDATE SET profile = COALESCE(excluded.profile, route_streams.profile), profile_checked_at = excluded.profile_checked_at`);
+  }
+
+  /** Profile captured when an activity was imported, before its route exists (Garmin, Suunto). */
+  async saveSourceProfile(source: string, sourceId: string, profile: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO source_profiles (source, source_id, profile, created_at) VALUES (${source}, ${sourceId}, ${profile}, ${new Date().toISOString()})
+      ON CONFLICT(source, source_id) DO UPDATE SET profile = excluded.profile`);
+  }
+
+  /** Where a route came from: the imported activities linked to it (any source). */
+  async getRouteSources(routeId: string): Promise<{
+    garmin: string | null;
+    suunto: string | null;
+    strava: { activityId: number; startDate: string } | null;
+    polar: { exerciseId: string } | null;
+  }> {
+    await this.ensureSchemaUpgrades();
+    const first = async <T>(query: any): Promise<T | null> => {
+      try {
+        const rows = await this.db.all<T>(query);
+        return rows[0] ?? null;
+      } catch (_) {
+        return null; // table not created yet (integration never used)
+      }
+    };
+    const garmin = await first<{ summary_id: string }>(sql`SELECT summary_id FROM garmin_activities WHERE route_id = ${routeId} LIMIT 1`);
+    const suunto = await first<{ workout_key: string }>(sql`SELECT workout_key FROM suunto_activities WHERE route_id = ${routeId} LIMIT 1`);
+    const strava = await first<{ strava_activity_id: number; start_date: string }>(sql`SELECT strava_activity_id, start_date FROM strava_activities WHERE route_id = ${routeId} LIMIT 1`);
+    const polar = await first<{ polar_exercise_id: string }>(sql`SELECT polar_exercise_id FROM polar_activities WHERE route_id = ${routeId} LIMIT 1`);
+    return {
+      garmin: garmin?.summary_id ?? null,
+      suunto: suunto?.workout_key ?? null,
+      strava: strava ? { activityId: Number(strava.strava_activity_id), startDate: strava.start_date } : null,
+      polar: polar ? { exerciseId: String(polar.polar_exercise_id) } : null,
+    };
+  }
+
+  async getSourceProfile(source: string, sourceId: string): Promise<string | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ profile: string }>(sql`SELECT profile FROM source_profiles WHERE source = ${source} AND source_id = ${sourceId}`);
+    return rows[0]?.profile ?? null;
   }
 
   /**
@@ -794,7 +863,7 @@ export class WorkerStorage {
       : sql``;
     const rows = await this.db.all<{ id: string; user_id: string; coordinates: string; started_at: string; completed_at: string; ran_together_with: string | null; times: string | null }>(sql`
       SELECT r.id, r.user_id, r.coordinates, r.started_at, r.completed_at, r.ran_together_with, t.times
-      FROM routes r LEFT JOIN route_point_times t ON t.route_id = r.id
+      FROM routes r LEFT JOIN route_streams t ON t.route_id = r.id
       WHERE r.user_id != ${excludeUserId} AND r.started_at <= ${to} AND r.completed_at >= ${from}${userFilter}
       ORDER BY r.started_at
       LIMIT ${limit}`);
@@ -1756,10 +1825,16 @@ export class WorkerStorage {
   }
 
   async getUnprocessedStravaActivities(userId: string): Promise<StravaActivity[]> {
-    return await this.db
+    const rows = await this.db
       .select()
       .from(stravaActivities)
       .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.processed} = 0`);
+    // Only runs become routes: walks, hikes etc. imported by older versions are closed here
+    const notRunning = rows.filter((a) => !isRunningActivityType(a.activityType));
+    for (const activity of notRunning) {
+      await this.db.update(stravaActivities).set({ processed: 1 as any, processedAt: new Date().toISOString() }).where(eq(stravaActivities.id, activity.id));
+    }
+    return rows.filter((a) => isRunningActivityType(a.activityType));
   }
 
   // Get activities that failed processing (route_id is NULL, regardless of processed flag)
@@ -1861,11 +1936,19 @@ export class WorkerStorage {
   }
 
   async getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]> {
-    return await this.db
+    const rows = await this.db
       .select()
       .from(polarActivities)
       .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = 0 AND ${polarActivities.skipReason} IS NULL`)
       .orderBy(desc(polarActivities.startDate));
+    // Only runs become routes: other sports imported by older versions are closed here
+    const notRunning = rows.filter((a) => !isRunningActivityType(a.activityType));
+    for (const activity of notRunning) {
+      await this.db.update(polarActivities)
+        .set({ processed: 1 as any, processedAt: new Date().toISOString(), skipReason: NOT_RUNNING_SKIP_REASON })
+        .where(eq(polarActivities.id, activity.id));
+    }
+    return rows.filter((a) => isRunningActivityType(a.activityType));
   }
 
   // Get activities that failed processing (route_id is NULL, regardless of processed flag)
@@ -2053,7 +2136,7 @@ export class WorkerStorage {
 
   async deleteAllRoutesByUserId(userId: string): Promise<void> {
     await this.ensureSchemaUpgrades();
-    await this.db.run(sql`DELETE FROM route_point_times WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(routes).where(eq(routes.userId, userId));
   }
@@ -4446,7 +4529,7 @@ export class WorkerStorage {
     const routeCount = await this.db.select({ count: sql<number>`count(*)` }).from(routes);
     const terrCount = await this.db.select({ count: sql<number>`count(*)` }).from(territories);
     await this.db.run(sql`DELETE FROM territories`);
-    try { await this.db.run(sql`DELETE FROM route_point_times`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM route_streams`); } catch (_) {}
     try { await this.db.run(sql`DELETE FROM pending_steal_notifications`); } catch (_) {}
     await this.db.run(sql`DELETE FROM routes`);
     // Reset users' totalArea

@@ -89,6 +89,20 @@ Dos amigos (o dos rivales en una competición) que corren juntos no se roban ter
 
 Prueba e2e: `scripts/e2e/ran-together-test.mjs`.
 
+### Qué se importa
+
+Solo carreras: **correr y trail running** al aire libre (`isRunningActivityType` en `worker/src/sports.ts`, `isRunningSport` para los FIT de Suunto). Las caminatas, el senderismo, la cinta, las carreras virtuales y el resto de deportes no se importan desde Strava, Polar, Garmin ni Suunto; Apple Health ya solo lee entrenamientos de carrera. Las actividades de otros deportes que quedaran pendientes de versiones anteriores se cierran sin crear ruta.
+
+### Pantalla de la actividad
+
+`GET /api/routes/:routeId/profile` devuelve lo que dibuja la app: perfil de altitud/distancia, gráfica de ritmo, parciales por km (ritmo y desnivel), subidas (desnivel, longitud, pendiente media y máxima, tiempo, VAM) y datos destacados (mejor km, 1.ª vs 2.ª mitad, tiempo en movimiento, pendiente máxima, desnivel por km). Se calcula en `worker/src/profile.ts` a partir del perfil guardado de cada ruta (`route_streams.profile`: distancia, hora y altitud de cada punto):
+
+- App de iOS y Apple Health: envían `pointTimes` y `altitudes` con la carrera.
+- Garmin y Suunto: se guardan al importar (`source_profiles`).
+- Strava (streams) y Polar (GPX): se piden la primera vez que se abre la actividad, también para actividades antiguas, y se guardan.
+
+Prueba e2e: `scripts/e2e/activity-profile-test.mjs`.
+
 ### Secretos y variables del Worker
 
 Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.worker.toml`.

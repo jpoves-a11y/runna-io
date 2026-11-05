@@ -12,6 +12,8 @@
 //
 // Secrets: SUUNTO_CLIENT_ID, SUUNTO_CLIENT_SECRET, SUUNTO_SUBSCRIPTION_KEY (Ocp-Apim-Subscription-Key),
 // optional SUUNTO_WEBHOOK_SECRET (verifies the notification's HMAC signature when Suunto sends one).
+import { isRunningActivityType } from './sports';
+import { buildProfile } from './profile';
 import type { Context, Hono } from 'hono';
 import {
   type AppEnv,
@@ -28,7 +30,7 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import type { Env } from './index';
 import type { SuuntoAccount, SuuntoActivity, Route } from '../../shared/schema';
-import { parseFit, isFootSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPORT, type FitActivity } from './fit';
+import { parseFit, isRunningSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPORT, type FitActivity } from './fit';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
 import { sendPushToUser } from './pushHelper';
@@ -53,13 +55,14 @@ const TRACK_MIN_SPACING_M = 5;
 const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', 'distance_too_short', 'duration_too_short', 'deleted_by_user']);
 
 /**
- * Suunto App activity IDs (workout list `activityId`) that are clearly not on foot: skipped without
- * downloading the FIT file. Everything else is decided by the FIT file's sport.
- * 2 cycling, 10 mountain biking, 21 swimming.
+ * Suunto App activity IDs (workout list `activityId`) that are clearly not runs: skipped without
+ * downloading the FIT file. Everything else is decided by the FIT file's sport (only running and
+ * trail running are imported).
+ * 0 walking, 2 cycling, 10 mountain biking, 11 hiking, 21 swimming, 24 nordic walking.
  */
-const NON_FOOT_ACTIVITY_IDS = new Set([2, 10, 21]);
-/** Suunto App activity IDs on foot (0 walking, 1 running, 11 hiking, 22 trail running, 24 nordic walking). */
-const FOOT_ACTIVITY_IDS = new Set([0, 1, 11, 22, 24]);
+const NON_FOOT_ACTIVITY_IDS = new Set([0, 2, 10, 11, 21, 24]);
+/** Suunto App activity IDs Runna.io imports (1 running, 22 trail running), when the FIT file has no sport. */
+const FOOT_ACTIVITY_IDS = new Set([1, 22]);
 
 function getStorage(env: Env): WorkerStorage {
   return new WorkerStorage(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
@@ -432,7 +435,7 @@ export async function importSuuntoWorkout(
 
   const fitSportKnown = fit.sport !== null && fit.sport !== FIT_SPORT.generic;
   const onFoot = fitSportKnown
-    ? isFootSport(fit.sport, fit.subSport)
+    ? isRunningSport(fit.sport, fit.subSport)
     : summary.activityId !== null && FOOT_ACTIVITY_IDS.has(summary.activityId);
   const startMs = fit.startTime ?? summary.startTime;
   const lastPoint = fit.points.length > 0 ? fit.points[fit.points.length - 1] : null;
@@ -474,6 +477,14 @@ export async function importSuuntoWorkout(
     return { kind: 'skipped', reason: 'no_gps' };
   }
 
+  // Altitude and time of each record, for the charts of the activity screen (the route doesn't exist yet)
+  try {
+    const profile = buildProfile(fit.points.map((p) => ({ lat: p.lat, lng: p.lng, time: p.time, ele: p.altitude ?? null, dist: p.distance })), startMs);
+    if (profile) await storage.saveSourceProfile('suunto', summary.workoutKey, JSON.stringify(profile));
+  } catch (error) {
+    console.warn('[SUUNTO] Could not save the activity profile:', error);
+  }
+
   const activity = await storage.createSuuntoActivity({
     workoutKey: summary.workoutKey,
     userId,
@@ -511,6 +522,8 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
     return { routeId: null, queued: false, reused: false, skipReason: reason };
   };
 
+  // Walks and hikes imported by older versions don't become routes
+  if (!isRunningActivityType(activity.activityType)) return skip('excluded_type');
   if (!activity.summaryPolyline) return skip('no_gps');
   const startDate = new Date(activity.startDate);
   if (Number.isNaN(startDate.getTime())) return skip('bad_date');

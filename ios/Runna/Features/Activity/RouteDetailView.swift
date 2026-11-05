@@ -1,7 +1,7 @@
 import SwiftUI
 import MapKit
 
-/// An activity: map, stats and, for your own activities, rename and delete.
+/// An activity: map, stats, charts (altitude, pace, splits, climbs) and, for your own activities, rename and delete.
 struct RouteDetailView: View {
     let route: RunRoute
     /// Route colour (the owner's territory colour); defaults to yours.
@@ -37,6 +37,10 @@ struct RouteDetailView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     titleBlock
                     statsSection
+                    if route.locations.count >= 2 {
+                        // Altitude profile, pace, km splits, climbs and highlights
+                        ActivityProfileSection(routeId: route.id, accent: lineColor)
+                    }
                     conquestSection
                     companions
                     if editable {

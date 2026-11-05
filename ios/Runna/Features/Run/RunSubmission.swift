@@ -105,6 +105,8 @@ enum PendingRuns {
         let completedAt: Date
         /// Seconds since startedAt of each coordinate (nil for runs saved by older versions).
         let pointTimes: [Double]?
+        /// Altitude of each coordinate, nil where unknown (nil for runs saved by older versions).
+        let altitudes: [Double?]?
         /// Days on which the server refused the run (validation error).
         var attempts: Int
         var lastAttemptDay: String?
@@ -121,6 +123,7 @@ enum PendingRuns {
             startedAt = run.startedAt
             completedAt = run.completedAt
             pointTimes = run.pointTimes
+            altitudes = run.altitudes
             attempts = 0
             lastAttemptDay = nil
             lastError = nil
@@ -128,7 +131,7 @@ enum PendingRuns {
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, ownerId, name, coordinates, distance, duration, startedAt, completedAt, pointTimes
+            case id, ownerId, name, coordinates, distance, duration, startedAt, completedAt, pointTimes, altitudes
             case attempts, lastAttemptDay, lastError, rejected
         }
 
@@ -142,6 +145,7 @@ enum PendingRuns {
             completedAt = try c.decode(Date.self, forKey: .completedAt)
             ownerId = try c.decodeIfPresent(String.self, forKey: .ownerId)
             pointTimes = try c.decodeIfPresent([Double].self, forKey: .pointTimes)
+            altitudes = try c.decodeIfPresent([Double?].self, forKey: .altitudes)
             attempts = try c.decodeIfPresent(Int.self, forKey: .attempts) ?? 0
             lastAttemptDay = try c.decodeIfPresent(String.self, forKey: .lastAttemptDay)
             lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
@@ -208,6 +212,13 @@ enum PendingRuns {
         // Lets the server compare runs at the same moment to tell who ran together (whole seconds are enough)
         if let times = entry.pointTimes, times.count == entry.coordinates.count {
             body["pointTimes"] = times.map { Int($0.rounded()) }
+        }
+        // Altitude profile and climbs of the activity screen (decimetres are enough)
+        if let altitudes = entry.altitudes, altitudes.count == entry.coordinates.count {
+            body["altitudes"] = altitudes.map { altitude -> Any in
+                guard let altitude, altitude.isFinite else { return NSNull() }
+                return (altitude * 10).rounded() / 10
+            }
         }
         return body
     }

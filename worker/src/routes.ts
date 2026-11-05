@@ -8,6 +8,8 @@ import { LIMITS, clientIp, lockedForSeconds, recordAttempt, clearAttempts, tooMa
 import { sql } from 'drizzle-orm';
 import { apnsSecretProblems } from './pushHelper';
 import { USER_COLORS } from '../../shared/colors';
+import { isRunningActivityType } from './sports';
+import { analyzeProfile, buildProfile, parseGpxPoints, parseStoredProfile, stravaStreamsToPoints, type StoredProfile } from './profile';
 import type { Env } from './index';
 import {
   type AppEnv,
@@ -1791,6 +1793,73 @@ function coerceDate(value: string | number | Date): Date | null {
 }
 
 // Helper to refresh Strava access token if expired
+/** Profiles that couldn't be found (no source, API down) are looked for again after this long. */
+const PROFILE_RETRY_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The stored profile of a route, or found now from where the run came from: captured at import
+ * (Garmin, Suunto), Strava streams or the Polar GPX (also for activities imported before profiles
+ * existed). Saved on the route, so the source is asked once.
+ */
+async function loadRouteProfile(storage: WorkerStorage, env: Env, route: Route): Promise<StoredProfile | null> {
+  const stored = await storage.getRouteProfile(route.id);
+  const parsed = parseStoredProfile(stored?.profile);
+  if (parsed) return parsed;
+  if (stored?.checkedAt && Date.now() - Date.parse(stored.checkedAt) < PROFILE_RETRY_MS) return null;
+
+  const startMs = Date.parse(route.startedAt);
+  let profile: StoredProfile | null = null;
+  try {
+    const sources = await storage.getRouteSources(route.id);
+    if (!profile && sources.garmin) profile = parseStoredProfile(await storage.getSourceProfile('garmin', sources.garmin));
+    if (!profile && sources.suunto) profile = parseStoredProfile(await storage.getSourceProfile('suunto', sources.suunto));
+    if (!profile && sources.strava) {
+      const account = await storage.getStravaAccountByUserId(route.userId);
+      const token = account ? await getValidStravaToken(account as any, storage, env) : null;
+      if (token) {
+        const response = await fetch(
+          `https://www.strava.com/api/v3/activities/${sources.strava.activityId}/streams?keys=latlng,time,altitude,distance&key_by_type=true`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (response.ok) {
+          const stravaStart = Date.parse(sources.strava.startDate);
+          profile = buildProfile(stravaStreamsToPoints(await response.json(), Number.isFinite(stravaStart) ? stravaStart : startMs), Number.isFinite(stravaStart) ? stravaStart : startMs);
+        } else {
+          console.log(`[PROFILE] Strava streams for route ${route.id}: ${response.status}`);
+        }
+      }
+    }
+    if (!profile && sources.polar) {
+      const account = await storage.getPolarAccountByUserId(route.userId);
+      if (account?.accessToken) {
+        const response = await fetch(`https://www.polaraccesslink.com/v3/exercises/${sources.polar.exerciseId}/gpx`, {
+          headers: { Authorization: `Bearer ${account.accessToken}`, Accept: 'application/gpx+xml' },
+        });
+        if (response.ok) {
+          profile = buildProfile(parseGpxPoints(await response.text()), startMs);
+        } else {
+          console.log(`[PROFILE] Polar GPX for route ${route.id}: ${response.status}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[PROFILE] Could not fetch the profile of route ${route.id}:`, err);
+  }
+
+  // Without a source, the route's own point times (iOS app) still give the pace
+  if (!profile) {
+    const times = parsePointTimes(await storage.getRoutePointTimes(route.id), parseCoordinates(route.coordinates).length);
+    if (times && Number.isFinite(startMs)) {
+      profile = buildProfile(parseCoordinates(route.coordinates).map(([lat, lng], i) => ({ lat, lng, time: startMs + times[i] * 1000 })), startMs);
+    }
+  }
+
+  // A profile needs times or altitudes to be worth drawing
+  if (profile && !profile.t && !profile.e) profile = null;
+  await storage.saveRouteProfile(route.id, profile ? JSON.stringify(profile) : null);
+  return profile;
+}
+
 async function getValidStravaToken(
   stravaAccount: {
     userId: string;
@@ -2670,6 +2739,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Seconds since startedAt of each GPS point (iOS app): lets "ran together" compare runs at the same moment
       const rawPointTimes = body.pointTimes;
       delete body.pointTimes;
+      // Altitude of each GPS point (null where unknown): altitude profile and climbs of the activity
+      const rawAltitudes = body.altitudes;
+      delete body.altitudes;
 
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
@@ -2709,10 +2781,23 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Before the territory is processed (the queue reads them)
       try {
-        const pointTimes = parsePointTimes(rawPointTimes, JSON.parse(routeData.coordinates).length);
+        const points: [number, number][] = JSON.parse(routeData.coordinates);
+        const pointTimes = parsePointTimes(rawPointTimes, points.length);
         if (pointTimes) await storage.saveRoutePointTimes(route.id, pointTimes.map((t) => Math.round(t)));
+        // Activity profile (charts of the activity screen)
+        const startMs = Date.parse(routeData.startedAt);
+        const altitudes = Array.isArray(rawAltitudes) && rawAltitudes.length === points.length ? rawAltitudes : null;
+        if (pointTimes || altitudes) {
+          const profile = buildProfile(points.map(([lat, lng], i) => ({
+            lat,
+            lng,
+            time: pointTimes && Number.isFinite(startMs) ? startMs + pointTimes[i] * 1000 : null,
+            ele: altitudes && typeof altitudes[i] === 'number' ? altitudes[i] : null,
+          })), startMs);
+          if (profile) await storage.saveRouteProfile(route.id, JSON.stringify(profile));
+        }
       } catch (err) {
-        console.error('[ROUTES] Could not save point times:', err);
+        console.error('[ROUTES] Could not save point times / profile:', err);
       }
       // The run is no longer being recorded: steal pushes against this user stop waiting for it
       try {
@@ -3712,6 +3797,25 @@ export function registerRoutes(app: Hono<AppEnv>) {
       return c.json(routes);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Activity screen: altitude/distance profile, pace chart, km splits, climbs and highlights
+  app.get('/api/routes/:routeId/profile', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const route = await storage.getRouteById(c.req.param('routeId'));
+      if (!route) return c.json({ error: 'Route not found' }, 404);
+      const viewer = c.get('authUserId');
+      if (viewer !== route.userId && (await storage.getBlockedUserIds(viewer)).includes(route.userId)) {
+        return c.json({ error: 'Route not found' }, 404);
+      }
+      const profile = await loadRouteProfile(storage, c.env, route);
+      if (!profile) return c.json({ available: false });
+      return c.json({ available: true, ...analyzeProfile(profile, route.distance) });
+    } catch (error: any) {
+      console.error('[ROUTES] GET /api/routes/:routeId/profile failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
     }
   });
 
@@ -5245,14 +5349,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
             if (activityResponse.ok) {
               const activity: any = await activityResponse.json();
               
-              if (['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+              // Only runs (road and trail): no walks, hikes or other sports
+              if (isRunningActivityType(activity.sport_type || activity.type)) {
                 await storage.createStravaActivity({
                   stravaActivityId: activity.id,
                   userId: stravaAccount.userId,
                   routeId: null,
                   territoryId: null,
                   name: activity.name,
-                  activityType: activity.type,
+                  activityType: activity.sport_type || activity.type,
                   distance: activity.distance,
                   duration: activity.moving_time,
                   startDate: new Date(activity.start_date),
@@ -5681,8 +5786,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         if (stravaActivitiesList.length === 0) break; // No more activities
 
         for (const activity of stravaActivitiesList) {
-          // Only process runs and walks
-          if (!['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+          // Only runs (road and trail): no walks, hikes or other sports
+          if (!isRunningActivityType(activity.sport_type || activity.type)) {
             continue;
           }
 
@@ -5730,7 +5835,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             routeId: null,
             territoryId: null,
             name: activity.name,
-            activityType: activity.type,
+            activityType: activity.sport_type || activity.type,
             distance: activity.distance,
             duration: activity.moving_time,
             startDate: new Date(activity.start_date),
@@ -6303,8 +6408,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
             }
           }
 
-          const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
-          const isExcluded = excludeTypes.some(t => activityType.includes(t));
+          // Only runs (road and trail): no walks, hikes, cycling or other sports
+          const isExcluded = !isRunningActivityType(activityType);
 
           if (isExcluded) {
             console.log(`[DIRECT SYNC]    ❌ Excluded type (${sport})`);

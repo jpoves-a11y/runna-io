@@ -58,6 +58,9 @@ async function run(user, name, coords, hoursAgo) {
       duration,
       startedAt: new Date(end.getTime() - duration * 1000).toISOString(),
       completedAt: end.toISOString(),
+      // Time and altitude of each point (a 40 m hill): charts of the activity screen
+      pointTimes: coords.map((_, i) => Math.round((i * duration) / (coords.length - 1))),
+      altitudes: coords.map((_, i) => Math.round((200 + 40 * Math.sin((Math.PI * i) / (coords.length - 1))) * 10) / 10),
     },
   });
   for (let i = 0; i < 60; i++) {

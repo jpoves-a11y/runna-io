@@ -67,6 +67,8 @@ final class RunTracker {
     private var pointTimes: [TimeInterval] = []
     /// False when the times can't be trusted to match the points (a run recovered from an older version).
     private var pointTimesValid = true
+    /// Altitude of each point in `coordinates` (nil when the fix had none): altitude profile and climbs.
+    private var altitudes: [Double?] = []
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
     private var lastAcceptedAt: Date?
@@ -204,6 +206,7 @@ final class RunTracker {
         coordinates = []
         pointTimes = []
         pointTimesValid = true
+        altitudes = []
         distance = 0
         pausedTotal = 0
         pausedAt = nil
@@ -271,6 +274,11 @@ final class RunTracker {
             pointTimes = []
             pointTimesValid = false
         }
+        if let savedAltitudes = saved.altitudes, savedAltitudes.count == coordinates.count {
+            altitudes = savedAltitudes
+        } else {
+            altitudes = Array(repeating: nil, count: coordinates.count)
+        }
         distance = saved.distance
         startDate = saved.startDate
         pausedTotal = saved.pausedTotal
@@ -323,7 +331,8 @@ final class RunTracker {
             startedAt: startDate ?? end,
             completedAt: end,
             treasures: collectedTreasures,
-            pointTimes: pointTimesValid && pointTimes.count == points.count ? pointTimes : nil
+            pointTimes: pointTimesValid && pointTimes.count == points.count ? pointTimes : nil,
+            altitudes: altitudes.count == points.count ? altitudes : nil
         )
         liveActivity.end(finalState: liveActivityState(at: end, finished: true), discarded: false)
         let queued = PendingRuns.add(PendingRuns.Entry(run: run))
@@ -351,6 +360,7 @@ final class RunTracker {
         coordinates = []
         pointTimes = []
         pointTimesValid = true
+        altitudes = []
         distance = 0
         startDate = nil
         pausedAt = nil
@@ -420,6 +430,7 @@ final class RunTracker {
         if let startDate {
             pointTimes.append(max(0, location.timestamp.timeIntervalSince(startDate)))
         }
+        altitudes.append(location.verticalAccuracy > 0 && location.verticalAccuracy <= 50 ? location.altitude : nil)
         lastAcceptedAt = location.timestamp
         if coordinates.count % 10 == 0 {
             persist()
@@ -513,7 +524,8 @@ final class RunTracker {
             id: runId,
             ownerId: ownerId,
             collectedTreasureIds: Array(collectedTreasureIds),
-            pointTimes: pointTimesValid && pointTimes.count == coordinates.count ? pointTimes : nil
+            pointTimes: pointTimesValid && pointTimes.count == coordinates.count ? pointTimes : nil,
+            altitudes: altitudes.count == coordinates.count ? altitudes : nil
         ))
     }
 }
@@ -532,6 +544,8 @@ struct FinishedRun {
     let treasures: [Treasure]
     /// Seconds since startedAt of each coordinate (nil when unknown).
     let pointTimes: [Double]?
+    /// Altitude of each coordinate, nil where the fix had none (nil when unknown).
+    let altitudes: [Double?]?
 
     var defaultName: String { "Carrera del \(Format.day(startedAt))" }
 }
@@ -567,6 +581,8 @@ struct SavedRun: Codable {
     let collectedTreasureIds: [String]?
     /// Seconds since startDate of each coordinate (nil in files written by older versions).
     let pointTimes: [Double]?
+    /// Altitude of each coordinate (nil in files written by older versions).
+    let altitudes: [Double?]?
 }
 
 enum RunPersistence {

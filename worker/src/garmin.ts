@@ -13,6 +13,8 @@
 // Secrets: GARMIN_CLIENT_ID, GARMIN_CLIENT_SECRET (consumer key / secret of the app in the developer portal),
 // optional GARMIN_WEBHOOK_SECRET: Garmin doesn't sign notifications, so when set the endpoint URL configured in
 // the portal must carry it as ?key=<secret> (anything else is rejected).
+import { isRunningActivityType } from './sports';
+import { buildProfile } from './profile';
 import type { Context, Hono } from 'hono';
 import {
   type AppEnv,
@@ -289,7 +291,13 @@ export function parseActivityDetail(raw: unknown): GarminActivityDetail | null {
       const lng = toNumber(sample.longitudeInDegree);
       if (lat === null || lng === null || Math.abs(lat) > 90 || Math.abs(lng) > 180 || (lat === 0 && lng === 0)) continue;
       const seconds = toNumber(sample.startTimeInSeconds);
-      points.push({ lat, lng, time: seconds !== null ? seconds * 1000 : null, distance: toNumber(sample.totalDistanceInMeters) });
+      points.push({
+        lat,
+        lng,
+        time: seconds !== null ? seconds * 1000 : null,
+        distance: toNumber(sample.totalDistanceInMeters),
+        altitude: toNumber(sample.elevationInMeters),
+      });
     }
   }
 
@@ -308,10 +316,9 @@ export function parseActivityDetail(raw: unknown): GarminActivityDetail | null {
   };
 }
 
-/** Running, walking and hiking outdoors (Runna.io's import filter). */
+/** Running and trail running outdoors only (Runna.io's import filter): no walks, hikes or treadmill runs. */
 export function isGarminFootActivity(activityType: string): boolean {
-  if (/TREADMILL|INDOOR|VIRTUAL/.test(activityType)) return false;
-  return /RUN|WALK|HIK/.test(activityType);
+  return isRunningActivityType(activityType);
 }
 
 function activityLabel(activityType: string): string {
@@ -378,6 +385,14 @@ export async function importGarminActivity(storage: WorkerStorage, account: Garm
   if (duration < 60) return skip('duration_too_short');
   if (track.length < 2) return skip('no_gps');
 
+  // Altitude and time of each sample, for the charts of the activity screen (the route doesn't exist yet)
+  try {
+    const profile = buildProfile(detail.points.map((p) => ({ lat: p.lat, lng: p.lng, time: p.time, ele: p.altitude ?? null, dist: p.distance })), startMs);
+    if (profile) await storage.saveSourceProfile('garmin', detail.summaryId, JSON.stringify(profile));
+  } catch (error) {
+    console.warn('[GARMIN] Could not save the activity profile:', error);
+  }
+
   const activity = await storage.createGarminActivity({ ...base, status: 'pending', processed: false, processedAt: null, skipReason: null });
   return { kind: 'imported', activity };
 }
@@ -400,6 +415,8 @@ export async function processGarminActivity(env: Env, storage: WorkerStorage, ac
     return { routeId: null, queued: false, reused: false, skipReason: reason };
   };
 
+  // Walks and hikes imported by older versions don't become routes
+  if (!isRunningActivityType(activity.activityType)) return skip('excluded_type');
   if (!activity.summaryPolyline) return skip('no_gps');
   const startDate = new Date(activity.startDate);
   if (Number.isNaN(startDate.getTime())) return skip('bad_date');

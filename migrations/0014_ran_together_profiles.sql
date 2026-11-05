@@ -1,14 +1,26 @@
--- "Ran together" independent of upload order, and delayed territory-loss pushes.
+-- "Ran together" independent of upload order, delayed territory-loss pushes and activity profiles.
 -- The Worker also applies these on demand (WorkerStorage.ensureSchemaUpgrades).
 
 -- Shape of each steal, so it can be undone if the victim turns out to have run with the attacker
 ALTER TABLE conquest_metrics ADD COLUMN stolen_geometry TEXT;
 CREATE INDEX IF NOT EXISTS idx_conquest_metrics_route_defender ON conquest_metrics(route_id, defender_id);
 
--- Seconds since started_at of each GPS point (runs recorded in the iOS app)
-CREATE TABLE IF NOT EXISTS route_point_times (
+-- Per route: seconds since started_at of each GPS point (iOS app, for "ran together") and the
+-- activity profile (distance, time and altitude of each point: charts of the activity screen)
+CREATE TABLE IF NOT EXISTS route_streams (
   route_id TEXT PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
-  times TEXT NOT NULL
+  times TEXT,
+  profile TEXT,
+  profile_checked_at TEXT
+);
+
+-- Profile captured when an activity is imported, before its route exists (Garmin, Suunto)
+CREATE TABLE IF NOT EXISTS source_profiles (
+  source TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  profile TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (source, source_id)
 );
 
 -- "Te han robado" pushes waiting to be sent by the cron (dropped if the steal is undone)

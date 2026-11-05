@@ -121,7 +121,7 @@ final class HealthImporter {
             }
 
             let distance = workout.totalDistance?.doubleValue(for: .meter()) ?? Self.length(of: coordinates)
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "name": "Carrera del \(Format.day(workout.startDate))",
                 "coordinates": coordinates.map { [$0.coordinate.latitude, $0.coordinate.longitude] },
                 "distance": distance,
@@ -132,6 +132,15 @@ final class HealthImporter {
                 // Idempotency key: the workout UUID (a retry after a lost response doesn't duplicate it)
                 "clientRunId": "healthkit-\(workoutId)",
             ]
+            // Time and altitude of each point: pace chart, altitude profile and climbs of the activity screen,
+            // and lets the server tell who ran together
+            body["pointTimes"] = coordinates.map { max(0, Int($0.timestamp.timeIntervalSince(workout.startDate).rounded())) }
+            body["altitudes"] = coordinates.map { location -> Any in
+                if location.verticalAccuracy > 0 && location.verticalAccuracy <= 50 {
+                    return (location.altitude * 10).rounded() / 10
+                }
+                return NSNull()
+            }
             do {
                 let response: CreateRouteResponse = try await APIClient.shared.request("POST", "/api/routes", body: body)
                 summary.imported += 1
