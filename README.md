@@ -103,6 +103,10 @@ Solo carreras: **correr y trail running** al aire libre (`isRunningActivityType`
 
 Prueba e2e: `scripts/e2e/activity-profile-test.mjs`.
 
+### Compartir el recorrido en vídeo
+
+Desde el detalle de una actividad (Compartir → Vídeo del recorrido), el resumen al terminar una carrera y el aviso de actividad importada se abre un editor (`ios/Runna/Features/Run/RouteShare.swift`): formato (historia 9:16, post 4:5, cuadrado), 3D/2D, satélite/mapa, velocidad, color de la ruta, título y qué datos se ven (título, fecha, distancia, tiempo, ritmo, territorio, resumen final, marca Runna.io). La vista previa es exactamente lo que se graba. «Grabar vídeo» reproduce la animación entera a pantalla completa y la graba con ReplayKit (iOS pide permiso para grabar la pantalla de la app), recortada y escalada a 1080 px de ancho en MP4; después se puede ver, compartir o guardar en Fotos.
+
 ### Secretos y variables del Worker
 
 Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.worker.toml`.

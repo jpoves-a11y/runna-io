@@ -14,6 +14,7 @@ struct RunSummaryView: View {
     @State private var sentVictimIds: Set<String> = []
     @State private var retrying = false
     @State private var retryMessage: String?
+    @State private var showsShareEditor = false
 
     private var run: FinishedRun { submission.run }
 
@@ -35,6 +36,15 @@ struct RunSummaryView: View {
                             duration: run.duration,
                             height: 260
                         )
+                        if run.coordinates.count >= 2 {
+                            Button {
+                                showsShareEditor = true
+                            } label: {
+                                Label("Compartir vídeo del recorrido", systemImage: "square.and.arrow.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SecondaryButtonStyle(tint: .primary))
+                        }
                         RunStatsCard(distance: run.distance, duration: run.duration)
                     }
                     resultSection
@@ -53,6 +63,17 @@ struct RunSummaryView: View {
             .screenBackground()
             .safeAreaInset(edge: .bottom) {
                 doneButton
+            }
+            .fullScreenCover(isPresented: $showsShareEditor) {
+                RouteShareEditor(
+                    coordinates: run.coordinates,
+                    distance: run.distance,
+                    duration: run.duration,
+                    title: routeName.trimmingCharacters(in: .whitespaces).isEmpty ? run.defaultName : routeName,
+                    date: run.startedAt,
+                    area: conqueredArea,
+                    color: Color.brand
+                )
             }
             .navigationTitle("Resumen")
             .navigationBarTitleDisplayMode(.inline)
@@ -198,6 +219,14 @@ struct RunSummaryView: View {
         }
         .buttonStyle(SecondaryButtonStyle(tint: Color.primary))
         .disabled(retrying)
+    }
+
+    /// m² conquered with this run, once the server has processed it.
+    private var conqueredArea: Double? {
+        if case .done(let result) = submission.state, let result, result.newAreaConquered > 0 {
+            return result.newAreaConquered
+        }
+        return nil
     }
 
     private var renameSection: some View {

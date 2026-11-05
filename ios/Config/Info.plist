@@ -15,6 +15,8 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Para guardar en Fotos los vídeos de tus carreras que compartes.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Runna.io usa la cámara para que hagas una foto y se la envíes a quien le has robado territorio.</string>
 	<key>NSHealthUpdateUsageDescription</key>

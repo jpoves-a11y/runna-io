@@ -106,6 +106,8 @@ enum RouteReplayMode: String {
 struct RouteReplayTimeline {
     let plan: RouteReplayPlan
     let mode: RouteReplayMode
+    /// Multiplies how long the runner takes (0.6 fast, 1 normal, 1.5 slow).
+    var speed: Double = 1
 
     /// Seconds: the far view holds, then flies in to the start.
     let introHold: Double = 0.7
@@ -115,7 +117,7 @@ struct RouteReplayTimeline {
     let finish: Double = 2.4
 
     /// Longer routes play longer, between 7 and 16 seconds.
-    var run: Double { min(16, max(7, 5 + plan.length / 1000 * 0.8)) }
+    var run: Double { min(16, max(7, 5 + plan.length / 1000 * 0.8)) * min(2, max(0.4, speed)) }
 
     var runStart: Double { introHold + flyIn + startHold }
     var runEnd: Double { runStart + run }
@@ -182,6 +184,14 @@ struct RouteReplayTimeline {
     }
 }
 
+/// How a replay looks when someone else controls it (the share editor): no chips on the map.
+struct RouteReplayConfig: Equatable {
+    var mode: RouteReplayMode = .threeD
+    var satellite = true
+    /// See RouteReplayTimeline.speed.
+    var speed: Double = 1
+}
+
 // MARK: - View
 
 /// Replays a run on the map: starts far away, flies in to the start, follows the runner (in 3D the
@@ -196,6 +206,14 @@ struct RouteReplayView: View {
     /// nil fills the available space (full screen).
     var height: CGFloat?
     var allowsFullScreen: Bool
+    /// Set by the share editor: fixed look, no chips.
+    var config: RouteReplayConfig?
+    /// Titles and figures drawn over the map in the shared video.
+    var share: RouteShareOptions?
+    /// Changing it plays the replay again from the start.
+    var restartToken: Int
+    /// Called when the runner reaches the finish and the whole route is shown.
+    var onFinished: (() -> Void)?
 
     @AppStorage("routeReplayMode") private var modeRaw = RouteReplayMode.threeD.rawValue
     @AppStorage("routeReplaySatellite") private var satellite = true
@@ -209,34 +227,64 @@ struct RouteReplayView: View {
     /// Computed once (the body is evaluated every frame while playing).
     @State private var plan: RouteReplayPlan?
 
-    init(coordinates: [CLLocationCoordinate2D], color: Color, distance: Double? = nil, duration: Int? = nil, height: CGFloat? = 240, allowsFullScreen: Bool = true) {
+    init(
+        coordinates: [CLLocationCoordinate2D],
+        color: Color,
+        distance: Double? = nil,
+        duration: Int? = nil,
+        height: CGFloat? = 240,
+        allowsFullScreen: Bool = true,
+        config: RouteReplayConfig? = nil,
+        share: RouteShareOptions? = nil,
+        restartToken: Int = 0,
+        onFinished: (() -> Void)? = nil
+    ) {
         self.coordinates = coordinates
         self.color = color
         self.distance = distance
         self.duration = duration
         self.height = height
         self.allowsFullScreen = allowsFullScreen
+        self.config = config
+        self.share = share
+        self.restartToken = restartToken
+        self.onFinished = onFinished
         _plan = State(initialValue: RouteReplayPlan(coordinates: coordinates))
     }
 
-    private var mode: RouteReplayMode { RouteReplayMode(rawValue: modeRaw) ?? .threeD }
+    private var mode: RouteReplayMode { config?.mode ?? RouteReplayMode(rawValue: modeRaw) ?? .threeD }
+    private var isSatellite: Bool { config?.satellite ?? satellite }
+    private var speed: Double { config?.speed ?? 1 }
+    /// Rounded card with a border, except when the share editor frames it.
+    private var isCard: Bool { height != nil && config == nil }
 
     var body: some View {
         let replayPlan = self.plan
-        let timeline = replayPlan.map { RouteReplayTimeline(plan: $0, mode: mode) }
+        let timeline = replayPlan.map { RouteReplayTimeline(plan: $0, mode: mode, speed: speed) }
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: isFinished || startDate == nil)) { context in
             let elapsed = startDate.map { context.date.timeIntervalSince($0) } ?? 0
             ZStack {
                 replayMap(plan: replayPlan, timeline: timeline, elapsed: elapsed)
-                overlays(plan: replayPlan, timeline: timeline, elapsed: elapsed)
+                if let share {
+                    let run = timeline?.distance(atElapsed: elapsed) ?? 0
+                    RouteShareOverlay(
+                        options: share,
+                        fraction: isFinished ? 1 : (replayPlan.map { run / $0.length } ?? 0),
+                        isFinished: isFinished,
+                        distance: distance ?? replayPlan?.length ?? 0,
+                        duration: duration
+                    )
+                } else if config == nil {
+                    overlays(plan: replayPlan, timeline: timeline, elapsed: elapsed)
+                }
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: height)
         .frame(maxHeight: height == nil ? .infinity : nil)
-        .clipShape(RoundedRectangle(cornerRadius: height == nil ? 0 : DS.Radius.card, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: isCard ? DS.Radius.card : 0, style: .continuous))
         .overlay {
-            if height != nil {
+            if isCard {
                 RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
             }
         }
@@ -247,6 +295,9 @@ struct RouteReplayView: View {
             plan = RouteReplayPlan(coordinates: coordinates)
             playToken += 1
         }
+        .onChange(of: restartToken) { playToken += 1 }
+        .onChange(of: config?.mode) { playToken += 1 }
+        .onChange(of: config?.speed) { playToken += 1 }
         .fullScreenCover(isPresented: $showsFullScreen) {
             RouteReplayFullScreen(coordinates: coordinates, color: color, distance: distance, duration: duration)
         }
@@ -304,7 +355,7 @@ struct RouteReplayView: View {
 
     private var mapStyle: MapStyle {
         let elevation: MapStyle.Elevation = mode == .threeD ? .realistic : .flat
-        return satellite
+        return isSatellite
             ? MapStyle.hybrid(elevation: elevation, pointsOfInterest: .excludingAll)
             : MapStyle.standard(elevation: elevation, emphasis: .muted, pointsOfInterest: .excludingAll)
     }
@@ -360,7 +411,7 @@ struct RouteReplayView: View {
             isFinished = true
             return
         }
-        let timeline = RouteReplayTimeline(plan: plan, mode: mode)
+        let timeline = RouteReplayTimeline(plan: plan, mode: mode, speed: speed)
         isFinished = false
         let firstHeading = plan.bearing(at: 0)
 
@@ -369,6 +420,7 @@ struct RouteReplayView: View {
             position = .camera(timeline.revealCamera(heading: 0))
             startDate = Date().addingTimeInterval(-timeline.total)
             isFinished = true
+            onFinished?()
             return
         }
 
@@ -411,6 +463,7 @@ struct RouteReplayView: View {
         }
         guard await wait(until: timeline.total, from: start) else { return }
         isFinished = true
+        onFinished?()
 
         // 5. In 3D, a slow turn around the route
         if mode == .threeD {

@@ -18,6 +18,7 @@ struct RouteDetailView: View {
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var showsReplay = false
+    @State private var showsShareEditor = false
 
     init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
         self.route = route
@@ -57,11 +58,38 @@ struct RouteDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: shareText) {
-                    Image(systemName: "square.and.arrow.up")
+                if route.locations.count >= 2 {
+                    Menu {
+                        Button {
+                            showsShareEditor = true
+                        } label: {
+                            Label("Vídeo del recorrido", systemImage: "film")
+                        }
+                        ShareLink(item: shareText) {
+                            Label("Solo texto", systemImage: "text.alignleft")
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Compartir actividad")
+                } else {
+                    ShareLink(item: shareText) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Compartir actividad")
                 }
-                .accessibilityLabel("Compartir actividad")
             }
+        }
+        .fullScreenCover(isPresented: $showsShareEditor) {
+            RouteShareEditor(
+                coordinates: route.locations,
+                distance: route.distance,
+                duration: route.duration,
+                title: name,
+                date: route.startDate,
+                area: route.territoryArea,
+                color: lineColor
+            )
         }
         .disabled(isWorking)
         .overlay {

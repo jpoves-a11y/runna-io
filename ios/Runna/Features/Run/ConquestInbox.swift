@@ -204,6 +204,7 @@ private struct ConquestInboxView: View {
     @State private var isLoading = true
     @State private var tauntVictim: Victim?
     @State private var sentVictimIds: Set<String> = []
+    @State private var showsShareEditor = false
 
     var body: some View {
         NavigationStack {
@@ -225,6 +226,13 @@ private struct ConquestInboxView: View {
                                     duration: route.duration,
                                     height: 260
                                 )
+                                Button {
+                                    showsShareEditor = true
+                                } label: {
+                                    Label("Compartir vídeo del recorrido", systemImage: "square.and.arrow.up")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(SecondaryButtonStyle(tint: .primary))
                             }
                             RunStatsCard(distance: route.distance, duration: route.duration)
                         }
@@ -238,6 +246,19 @@ private struct ConquestInboxView: View {
             .screenBackground()
             .safeAreaInset(edge: .bottom) {
                 doneButton
+            }
+            .fullScreenCover(isPresented: $showsShareEditor) {
+                if let route {
+                    RouteShareEditor(
+                        coordinates: route.locations,
+                        distance: route.distance,
+                        duration: route.duration,
+                        title: route.name,
+                        date: route.startDate,
+                        area: (result?.newAreaConquered ?? 0) > 0 ? result?.newAreaConquered : route.territoryArea,
+                        color: Color.brand
+                    )
+                }
             }
             .navigationTitle("Nueva actividad")
             .navigationBarTitleDisplayMode(.inline)
