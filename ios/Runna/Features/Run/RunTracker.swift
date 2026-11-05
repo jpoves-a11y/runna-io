@@ -63,6 +63,10 @@ final class RunTracker {
 
     var isLocationDenied: Bool { authorizationStatus == .denied || authorizationStatus == .restricted }
 
+    /// Seconds since startDate of each point in `coordinates` (lets the server tell who ran together).
+    private var pointTimes: [TimeInterval] = []
+    /// False when the times can't be trusted to match the points (a run recovered from an older version).
+    private var pointTimesValid = true
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
     private var lastAcceptedAt: Date?
@@ -79,6 +83,7 @@ final class RunTracker {
     @ObservationIgnored private var treasureRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
     @ObservationIgnored private var forgetObserver: NSObjectProtocol?
+    @ObservationIgnored private var ownerObserver: NSObjectProtocol?
     /// Lock screen / Dynamic Island tracker of the run.
     private let liveActivity = RunLiveActivity()
 
@@ -113,6 +118,14 @@ final class RunTracker {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.hasRecoverableRun = false
+            }
+        }
+        // Logout keeps the unfinished run (tagged with its account): show it again only to that account
+        ownerObserver = NotificationCenter.default.addObserver(
+            forName: RunOwner.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshRecoverableRun()
             }
         }
     }
@@ -189,6 +202,8 @@ final class RunTracker {
             requestFullAccuracy()
         }
         coordinates = []
+        pointTimes = []
+        pointTimesValid = true
         distance = 0
         pausedTotal = 0
         pausedAt = nil
@@ -210,6 +225,7 @@ final class RunTracker {
         persist()
         if let startDate {
             liveActivity.start(startedAt: startDate, state: liveActivityState())
+            ActiveRunReporter.started(at: startDate)
         }
     }
 
@@ -248,6 +264,13 @@ final class RunTracker {
             guard pair.count >= 2 else { return nil }
             return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
         }
+        if let savedTimes = saved.pointTimes, savedTimes.count == coordinates.count {
+            pointTimes = savedTimes
+            pointTimesValid = true
+        } else {
+            pointTimes = []
+            pointTimesValid = false
+        }
         distance = saved.distance
         startDate = saved.startDate
         pausedTotal = saved.pausedTotal
@@ -268,6 +291,7 @@ final class RunTracker {
         persist()
         if let startDate {
             liveActivity.start(startedAt: startDate, state: liveActivityState())
+            ActiveRunReporter.started(at: startDate)
         }
         isPresented = true
     }
@@ -275,6 +299,7 @@ final class RunTracker {
     func discardRecoveredRun() {
         RunPersistence.clear()
         hasRecoverableRun = false
+        ActiveRunReporter.discarded()
     }
 
     /// Number of GPS points recorded so far.
@@ -297,7 +322,8 @@ final class RunTracker {
             duration: movingTime,
             startedAt: startDate ?? end,
             completedAt: end,
-            treasures: collectedTreasures
+            treasures: collectedTreasures,
+            pointTimes: pointTimesValid && pointTimes.count == points.count ? pointTimes : nil
         )
         liveActivity.end(finalState: liveActivityState(at: end, finished: true), discarded: false)
         let queued = PendingRuns.add(PendingRuns.Entry(run: run))
@@ -310,6 +336,7 @@ final class RunTracker {
     func cancel() {
         liveActivity.end(finalState: nil, discarded: true)
         reset(clearSavedRun: true)
+        ActiveRunReporter.discarded()
     }
 
     private func reset(clearSavedRun: Bool) {
@@ -322,6 +349,8 @@ final class RunTracker {
         bannerTask = nil
         phase = .idle
         coordinates = []
+        pointTimes = []
+        pointTimesValid = true
         distance = 0
         startDate = nil
         pausedAt = nil
@@ -388,6 +417,9 @@ final class RunTracker {
         }
 
         coordinates.append(location.coordinate)
+        if let startDate {
+            pointTimes.append(max(0, location.timestamp.timeIntervalSince(startDate)))
+        }
         lastAcceptedAt = location.timestamp
         if coordinates.count % 10 == 0 {
             persist()
@@ -480,7 +512,8 @@ final class RunTracker {
             savedAt: Date(),
             id: runId,
             ownerId: ownerId,
-            collectedTreasureIds: Array(collectedTreasureIds)
+            collectedTreasureIds: Array(collectedTreasureIds),
+            pointTimes: pointTimesValid && pointTimes.count == coordinates.count ? pointTimes : nil
         ))
     }
 }
@@ -497,6 +530,8 @@ struct FinishedRun {
     let startedAt: Date
     let completedAt: Date
     let treasures: [Treasure]
+    /// Seconds since startedAt of each coordinate (nil when unknown).
+    let pointTimes: [Double]?
 
     var defaultName: String { "Carrera del \(Format.day(startedAt))" }
 }
@@ -530,6 +565,8 @@ struct SavedRun: Codable {
     let id: String?
     let ownerId: String?
     let collectedTreasureIds: [String]?
+    /// Seconds since startDate of each coordinate (nil in files written by older versions).
+    let pointTimes: [Double]?
 }
 
 enum RunPersistence {
@@ -568,7 +605,14 @@ enum RunPersistence {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    /// Forgets the unfinished run (called on logout).
+    /// Forgets the unfinished run if it has no owner (written by an older version): after a logout,
+    /// another account must never get it. A run with an owner is kept for that account.
+    static func forgetUnowned() {
+        guard let saved = load(), saved.ownerId == nil else { return }
+        forgetAll()
+    }
+
+    /// Forgets the unfinished run (account deleted).
     static func forgetAll() {
         clear()
         NotificationCenter.default.post(name: didForgetNotification, object: nil)

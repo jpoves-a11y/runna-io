@@ -32,8 +32,14 @@ import { publicBaseUrl } from './pages';
 import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
-  activitiesOverlapInTime,
-  geometriesOverlapByPercentage,
+  detectRanTogether,
+  sharedRunArea,
+  parseCoordinates,
+  parseUserIds,
+  unionGeometries,
+  differenceGeometries,
+  intersectGeometries,
+  parsePointTimes,
   isCompetitionActive,
   isCompetitionUpcoming,
   encodePolyline,
@@ -518,6 +524,229 @@ export async function autoCollectTreasuresAlongRoute(
   return treasuresCollected;
 }
 
+/** "Te han robado" pushes wait this long (the victim may have run with the attacker and upload later). */
+export const STEAL_NOTIFICATION_DELAY_MS = 30 * 60 * 1000;
+/** ...and keep waiting while the victim is recording a run in the app, up to this long. */
+export const STEAL_NOTIFICATION_MAX_HOLD_MS = 12 * 60 * 60 * 1000;
+
+type CoRun = {
+  userId: string;
+  routeId: string;
+  level: 'together' | 'partial';
+  /** Area both runs enclose (partial only). */
+  sharedArea: any | null;
+  /** The co-runner's route ran_together_with before this run. */
+  ranTogetherWith: string | null;
+  /** The co-runner's route didn't list this user yet. */
+  isNewPair: boolean;
+};
+
+/**
+ * Makes "ran together" independent of who uploads first. When this run turns out to have been run
+ * with routes that were processed before it, those routes' steals against this user are undone
+ * (all of them when together, the shared area when partial): the area goes back to this user,
+ * the conquest metric, the co-runner's feed event and competition stats are corrected, and the
+ * queued "te han robado" push is dropped. The co-runner's route also gets this user in its list.
+ */
+async function settleCoRuns(
+  storage: WorkerStorage,
+  userId: string,
+  territory: any,
+  coRuns: CoRun[],
+  knownTerritories: any[],
+  competitionId: string | null
+): Promise<{ territory: any; restoredArea: number }> {
+  const coRunByRoute = new Map(coRuns.map((r) => [r.routeId, r]));
+  const coRunnerIds = new Set(coRuns.map((r) => r.userId));
+  const revertedByRoute = new Map<string, number>();
+  let restore: any | null = null;
+  const deleteIds: string[] = [];
+
+  const metrics = await storage.getConquestMetricsByRoutesAgainst([...coRunByRoute.keys()], userId);
+  for (const metric of metrics) {
+    const run = coRunByRoute.get(metric.routeId);
+    if (!run) continue;
+    let stolen: any | null = null;
+    try { stolen = metric.stolenGeometry ? JSON.parse(metric.stolenGeometry) : null; } catch (_) { stolen = null; }
+    if (run.level === 'together') {
+      // Without the stolen shape (older steals) the metric is still dropped: this run's own area covers it
+      deleteIds.push(metric.id);
+      revertedByRoute.set(run.routeId, (revertedByRoute.get(run.routeId) || 0) + metric.areaStolen);
+      if (stolen) restore = restore ? (unionGeometries(restore, stolen) ?? restore) : stolen;
+      continue;
+    }
+    if (!stolen || !run.sharedArea) continue;
+    const back = intersectGeometries(stolen, run.sharedArea);
+    if (!back) continue;
+    let remaining: any | null;
+    try {
+      remaining = differenceGeometries(stolen, run.sharedArea);
+    } catch (err) {
+      console.error('[TERRITORY] Could not split a shared steal, leaving it:', err);
+      continue;
+    }
+    const backArea = turf.area(back);
+    const left = metric.areaStolen - backArea;
+    if (!remaining || left < 1) {
+      deleteIds.push(metric.id);
+      revertedByRoute.set(run.routeId, (revertedByRoute.get(run.routeId) || 0) + metric.areaStolen);
+    } else {
+      await storage.updateConquestMetricSteal(metric.id, left, remaining);
+      revertedByRoute.set(run.routeId, (revertedByRoute.get(run.routeId) || 0) + backArea);
+    }
+    restore = restore ? (unionGeometries(restore, back) ?? restore) : back;
+  }
+  await storage.deleteConquestMetricsByIds(deleteIds);
+
+  // Give the area back, except what someone else (not a co-runner) has taken since
+  let restoredArea = 0;
+  if (restore) {
+    for (const other of knownTerritories) {
+      if (!restore) break;
+      if (other.userId === userId || coRunnerIds.has(other.userId)) continue;
+      try {
+        const geometry = typeof other.geometry === 'string' ? JSON.parse(other.geometry) : other.geometry;
+        if (geometry) restore = differenceGeometries(restore, geometry);
+      } catch (_) { /* keep restoring the rest */ }
+    }
+    if (restore) {
+      const merged = await storage.unionIntoTerritory(territory, restore);
+      territory = merged.territory;
+      restoredArea = merged.addedArea;
+      console.log(`[TERRITORY] Gave back ${(restoredArea / 1e6).toFixed(4)} km² stolen by co-runners before this run was uploaded`);
+    }
+  }
+
+  // The co-runners' side
+  let myName: string | null = null;
+  for (const run of coRuns) {
+    const reverted = revertedByRoute.get(run.routeId) || 0;
+    try {
+      if (run.isNewPair) {
+        await storage.updateRouteRanTogether(run.routeId, [...new Set([...parseUserIds(run.ranTogetherWith), userId])]);
+      }
+      if (run.isNewPair || reverted > 0) {
+        if (myName == null) {
+          const me = await storage.getUser(userId);
+          myName = me?.name || me?.username || 'Usuario';
+        }
+        await addCoRunnerToFeedEvent(storage, run.routeId, userId, myName, reverted, run.level === 'together');
+      }
+      if (run.level === 'together') {
+        await storage.reducePendingStealNotification(run.routeId, userId, null);
+      } else if (reverted > 0) {
+        await storage.reducePendingStealNotification(run.routeId, userId, reverted);
+      }
+      if (competitionId && (run.isNewPair || reverted > 0)) {
+        await storage.incrementCompetitionStats(competitionId, run.userId, {
+          ranTogether: run.isNewPair ? 1 : 0,
+          areaStolen: reverted > 0 ? -reverted : 0,
+        });
+      }
+    } catch (err) {
+      console.error(`[TERRITORY] Error updating co-runner route ${run.routeId}:`, err);
+    }
+  }
+
+  return { territory, restoredArea };
+}
+
+/**
+ * Sends the queued territory-loss pushes that are due (one per victim and attacker, areas added up).
+ * A victim recording a run in the app that started before the attacker's run ended may be running
+ * with them: their push waits (up to STEAL_NOTIFICATION_MAX_HOLD_MS) until that run is uploaded,
+ * which undoes the steal and drops the push if they did run together.
+ */
+export async function sendDueStealNotifications(
+  storage: WorkerStorage,
+  env: any,
+  now: Date = new Date()
+): Promise<{ sent: number; postponed: number; dropped: number }> {
+  const due = await storage.getDuePendingStealNotifications(now.toISOString(), 100);
+  if (due.length === 0) return { sent: 0, postponed: 0, dropped: 0 };
+
+  const activeRuns = await storage.getActiveRunsForUsers([...new Set(due.map((n) => n.victimId))]);
+  const postpone: string[] = [];
+  const ready = new Map<string, { victimId: string; attackerId: string; area: number; ids: string[] }>();
+  const dropIds: string[] = [];
+  const staleActiveRuns = new Set<string>();
+  for (const notification of due) {
+    const active = activeRuns.get(notification.victimId);
+    if (active) {
+      const activeStart = Date.parse(active.startedAt);
+      const runEnd = Date.parse(notification.routeCompletedAt ?? notification.createdAt);
+      const heldFor = now.getTime() - Date.parse(notification.createdAt);
+      const activeAge = now.getTime() - activeStart;
+      if (!(activeAge <= STEAL_NOTIFICATION_MAX_HOLD_MS)) {
+        staleActiveRuns.add(notification.victimId); // forgotten: the app never uploaded nor discarded it
+      } else if (activeStart <= runEnd && heldFor < STEAL_NOTIFICATION_MAX_HOLD_MS) {
+        postpone.push(notification.id);
+        continue;
+      }
+    }
+    if (notification.stolenArea < 1) {
+      dropIds.push(notification.id);
+      continue;
+    }
+    const key = `${notification.victimId}:${notification.attackerId}`;
+    const entry = ready.get(key) ?? { victimId: notification.victimId, attackerId: notification.attackerId, area: 0, ids: [] };
+    entry.area += notification.stolenArea;
+    entry.ids.push(notification.id);
+    ready.set(key, entry);
+  }
+
+  if (postpone.length > 0) {
+    await storage.postponePendingStealNotifications(postpone, new Date(now.getTime() + 10 * 60 * 1000).toISOString());
+  }
+  for (const userId of staleActiveRuns) {
+    try { await storage.clearActiveRun(userId); } catch (_) {}
+  }
+
+  await storage.deletePendingStealNotifications(dropIds);
+
+  let sent = 0;
+  const { notifyTerritoryLoss } = await import('./notifications');
+  for (const entry of ready.values()) {
+    try {
+      await notifyTerritoryLoss(storage, entry.victimId, entry.attackerId, env, entry.area);
+      sent++;
+    } catch (err) {
+      console.error('[STEAL NOTIFICATIONS] Push failed:', err);
+    }
+    // Sent or not, never twice
+    await storage.deletePendingStealNotifications(entry.ids);
+  }
+  return { sent, postponed: postpone.length, dropped: dropIds.length };
+}
+
+/** Shows the co-runner in a route's feed event and takes the undone steal off its victims. */
+async function addCoRunnerToFeedEvent(
+  storage: WorkerStorage,
+  routeId: string,
+  coRunnerId: string,
+  coRunnerName: string,
+  revertedArea: number,
+  removeVictim: boolean
+): Promise<void> {
+  const event = await storage.getFeedEventByRouteId(routeId);
+  if (!event) return;
+  let metadata: any = {};
+  try { metadata = event.metadata ? JSON.parse(event.metadata) : {}; } catch (_) { metadata = {}; }
+  if (!metadata || typeof metadata !== 'object') metadata = {};
+  if (Array.isArray(metadata.victims)) {
+    metadata.victims = metadata.victims
+      .map((v: any) => v?.userId === coRunnerId
+        ? { ...v, stolenArea: removeVictim ? 0 : Math.max(0, (Number(v.stolenArea) || 0) - revertedArea) }
+        : v)
+      .filter((v: any) => (Number(v?.stolenArea) || 0) >= 1);
+    if (metadata.victims.length === 0) delete metadata.victims;
+  }
+  const coRunners: Array<{ id: string; name: string }> = Array.isArray(metadata.ranTogetherWith) ? metadata.ranTogetherWith : [];
+  if (!coRunners.some((u) => u?.id === coRunnerId)) coRunners.push({ id: coRunnerId, name: coRunnerName });
+  metadata.ranTogetherWith = coRunners;
+  await storage.updateFeedEvent(event.id, { metadata: JSON.stringify(metadata) });
+}
+
 export async function processTerritoryConquest(
   storage: WorkerStorage,
   userId: string,
@@ -631,55 +860,72 @@ export async function processTerritoryConquest(
 
   let totalStolenArea = 0;
   const victimsNotified: string[] = [];
-  const ranTogetherWith: string[] = []; // Track users who ran together
 
   const victimMap = new Map<string, ConquestVictimInfo>();
   const defenderCache = new Map<string, any>();
 
-  // Batch-load routes from enemy users that started within 15 min of this activity
-  // to check ran-together against the SPECIFIC route geometry, not accumulated territory
+  // --- Ran together ---
+  // Every friend's run (every rival's in a competition) recorded at the same time is compared with
+  // this one track against track (see detectRanTogether). Whoever uploads first, the result is the same:
+  //   - together: they don't steal from each other at all
+  //   - partial (shared a stretch): only the area both runs enclose is protected
+  // Steals the other run already made against this user, back when this run wasn't uploaded yet,
+  // are undone further down (see "Undo steals").
   const enemyUserIds = [...new Set(enemyTerritories.map(t => t.userId))];
-  let ranTogetherUserIds = new Set<string>();
+  const ranTogetherUserIds = new Set<string>();
+  const partialProtection = new Map<string, any>(); // userId -> geometry nobody steals between the two
+  const coRuns: Array<{ userId: string; routeId: string; level: 'together' | 'partial'; sharedArea: any | null; ranTogetherWith: string | null; isNewPair: boolean }> = [];
+  let ownRoute: Route | null = null;
+  try { ownRoute = await storage.getRouteById(routeId); } catch (_) { /* processed without it */ }
+  const previousCoRunners = parseUserIds(ownRoute?.ranTogetherWith);
 
-  if (activityStartedAt && activityCompletedAt && enemyUserIds.length > 0) {
+  if (activityStartedAt && activityCompletedAt) {
     try {
-      const nearbyRoutes = await storage.getRoutesInTimeWindow(enemyUserIds, activityStartedAt);
-      for (const enemyRoute of nearbyRoutes) {
-        if (!enemyRoute.startedAt || !enemyRoute.completedAt) continue;
-        const timeOverlap = activitiesOverlapInTime(
-          activityStartedAt, activityCompletedAt,
-          enemyRoute.startedAt, enemyRoute.completedAt
-        );
-        if (!timeOverlap) continue;
-
-        // Compute the specific enemy route's enclosed polygon
-        const enemyCoords: [number, number][] = Array.isArray(enemyRoute.coordinates)
-          ? enemyRoute.coordinates as [number, number][]
-          : typeof enemyRoute.coordinates === 'string'
-            ? JSON.parse(enemyRoute.coordinates)
-            : [];
-        if (enemyCoords.length < 10) continue;
-        const enemyPoly = routeToEnclosedPolygon(enemyCoords, 150);
-        if (!enemyPoly) continue;
-
-        // Check area overlap against the SPECIFIC route's polygon
-        const areaOverlap = geometriesOverlapByPercentage(
-          bufferedGeometry,
-          enemyPoly.geometry,
-          0.90
-        );
-        if (areaOverlap) {
-          console.log(`[TERRITORY] Ran together with user ${enemyRoute.userId} (route ${enemyRoute.id}) - will skip stealing from this user`);
-          ranTogetherUserIds.add(enemyRoute.userId);
-          if (!ranTogetherWith.includes(enemyRoute.userId)) {
-            ranTogetherWith.push(enemyRoute.userId);
+      const thisRun = {
+        coordinates: routeCoordinates ?? ownRoute?.coordinates,
+        startedAt: activityStartedAt,
+        completedAt: activityCompletedAt,
+        pointTimes: await storage.getRoutePointTimes(routeId).catch(() => null),
+      };
+      const candidates = await storage.getRoutesOverlappingInterval(
+        isCompMode ? null : friendIds,
+        userId,
+        activityStartedAt,
+        activityCompletedAt
+      );
+      for (const other of candidates) {
+        const match = detectRanTogether(thisRun, other);
+        if (match.level === 'none') continue;
+        console.log(`[TERRITORY] Ran ${match.level} with user ${other.userId} (route ${other.id}): shares ${match.shareA.toFixed(2)}/${match.shareB.toFixed(2)}, ${Math.round(match.sharedMeters)} m${match.timed ? ', timed' : ''}`);
+        let sharedArea: any | null = null;
+        if (match.level === 'together') {
+          ranTogetherUserIds.add(other.userId);
+        } else {
+          const otherCoords = parseCoordinates(other.coordinates);
+          const otherPoly = otherCoords.length >= 10 ? routeToEnclosedPolygon(otherCoords, 150) : null;
+          sharedArea = otherPoly ? sharedRunArea(bufferedGeometry, otherPoly.geometry) : null;
+          if (sharedArea) {
+            const current = partialProtection.get(other.userId);
+            partialProtection.set(other.userId, current ? (unionGeometries(current, sharedArea) ?? current) : sharedArea);
           }
         }
+        coRuns.push({
+          userId: other.userId,
+          routeId: other.id,
+          level: match.level,
+          sharedArea,
+          ranTogetherWith: other.ranTogetherWith,
+          isNewPair: !parseUserIds(other.ranTogetherWith).includes(userId),
+        });
       }
     } catch (err) {
       console.error('[TERRITORY] Error checking ran-together routes:', err);
     }
   }
+  const ranTogetherWith: string[] = [...new Set([...previousCoRunners, ...coRuns.map((r) => r.userId)])];
+  const newCoRunners = ranTogetherWith.filter((id) => !previousCoRunners.includes(id));
+  // Attack shape used against each partially-shared co-runner (cached per user)
+  const partialAttackCache = new Map<string, any | null>();
 
   // Late-import guard: only applies when the route being processed is genuinely old
   // (completed >2 hours ago). In that case, skip stealing from territories that were
@@ -715,21 +961,12 @@ export async function processTerritoryConquest(
     }
   }
 
-  // Collect deferred notifications/emails to send after the main loop
-  const deferredNotifications: Array<{
-    victimId: string;
-    attackerName: string;
-    attackerUsername: string;
-    victimEmail: string;
-    stolenArea: number;
-  }> = [];
-
   // Track which victims need area recalculation
   const victimsToUpdate = new Set<string>();
   let timeBombPenalty = 0; // Area penalty from triggered time bombs
 
   // === SUBREQUEST OPTIMIZATION: Accumulate operations for batch execution ===
-  const pendingConquestMetrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string }> = [];
+  const pendingConquestMetrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string; stolenGeometry?: any }> = [];
   const pendingSentinelAlerts: Array<{ userId: string; eventType: string; metadata: string }> = [];
   const pendingFortificationDeletes: string[] = [];
   // Cap enemy territories per invocation to avoid "Too many subrequests" (each territory = 1-3 DB calls)
@@ -761,10 +998,31 @@ export async function processTerritoryConquest(
 
   for (const enemyTerritory of territoriesToProcess) {
     try {
-      // Skip if this user was identified as "ran together" (checked above against specific routes)
+      // Skip if this user ran together with this run (checked above against their specific routes)
       if (ranTogetherUserIds.has(enemyTerritory.userId)) {
         console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - ran together`);
         continue;
+      }
+      // Shared only part of the run: the area both runs enclose isn't stolen from them
+      let stealGeometry = attackGeometry;
+      const protectedArea = partialProtection.get(enemyTerritory.userId);
+      if (protectedArea) {
+        if (!partialAttackCache.has(enemyTerritory.userId)) {
+          let reduced: any | null = attackGeometry;
+          try {
+            reduced = differenceGeometries(attackGeometry, protectedArea);
+          } catch (err) {
+            console.error('[TERRITORY] Could not cut the shared area out of the attack, not stealing from this co-runner:', err);
+            reduced = null;
+          }
+          partialAttackCache.set(enemyTerritory.userId, reduced);
+        }
+        const reduced = partialAttackCache.get(enemyTerritory.userId);
+        if (!reduced) {
+          console.log(`[TERRITORY] Skipping territory ${enemyTerritory.id} from user ${enemyTerritory.userId} - inside the stretch run together`);
+          continue;
+        }
+        stealGeometry = reduced;
       }
 
       // Late-import guard: skip territories created AFTER this route's completion time
@@ -843,7 +1101,7 @@ export async function processTerritoryConquest(
       // Use subtractFromTerritoryDirect with pre-loaded territory (avoids redundant DB read)
       const result = await storage.subtractFromTerritoryDirect(
         enemyTerritory as any,
-        attackGeometry
+        stealGeometry
       );
 
       if (result.stolenArea > 0) {
@@ -876,6 +1134,7 @@ export async function processTerritoryConquest(
           defenderId: enemyTerritory.userId,
           areaStolen: result.stolenArea,
           routeId,
+          stolenGeometry: result.stolenGeometry,
         });
 
         // BATCH: accumulate sentinel alerts instead of inserting individually
@@ -921,16 +1180,6 @@ export async function processTerritoryConquest(
           currentVictim.stolenArea += result.stolenArea;
         }
 
-        // Defer email/notification instead of sending inline
-        if (defender?.email) {
-          deferredNotifications.push({
-            victimId: enemyTerritory.userId,
-            attackerName: '',
-            attackerUsername: '',
-            victimEmail: defender.email,
-            stolenArea: result.stolenArea,
-          });
-        }
       }
     } catch (err) {
       console.error('[TERRITORY] Error processing enemy territory:', err);
@@ -994,8 +1243,21 @@ export async function processTerritoryConquest(
   // In competition mode, new territory is worth 1.5x
   const effectiveNewArea = isCompMode ? result.newArea * 1.5 : result.newArea;
 
+  // Undo steals: co-runners who uploaded first stole from this user before their run was known
+  let mergedTerritory = result.territory;
+  let restoredArea = 0;
+  if (coRuns.length > 0) {
+    try {
+      const settled = await settleCoRuns(storage, userId, mergedTerritory, coRuns, allTerritories, isCompMode && competition ? competition.id : null);
+      mergedTerritory = settled.territory;
+      restoredArea = settled.restoredArea;
+    } catch (err) {
+      console.error('[TERRITORY] Error settling ran-together runs:', err);
+    }
+  }
+
   // Step 3: Update user's total area (accounting for time bomb penalty and new territory bonus)
-  let finalTotalArea = result.totalArea;
+  let finalTotalArea = result.totalArea + restoredArea;
   if (isCompMode && result.newArea > 0) {
     // Add the 50% bonus for truly new territory
     const newTerritoryBonus = result.newArea * 0.5;
@@ -1011,60 +1273,23 @@ export async function processTerritoryConquest(
   }
   await storage.updateUserTotalArea(userId, finalTotalArea);
 
-  // Step 4: Send deferred emails/notifications (non-critical, best-effort)
-  // CAP: Only send notifications for the top MAX_NOTIFICATIONS victims (by stolen area) to prevent subrequest explosion
-  const MAX_NOTIFICATIONS = 5;
-  if (deferredNotifications.length > 0 && env) {
-    const attacker = await storage.getUser(userId);
-    if (attacker) {
-      // Import notifications module ONCE
-      let notifyFn: any = null;
-      try {
-        const mod = await import('./notifications');
-        notifyFn = mod.notifyTerritoryLoss;
-      } catch (_e) { /* notifications not available */ }
-
-      // Sort by stolen area descending and cap at MAX_NOTIFICATIONS
-      const sortedNotifs = [...deferredNotifications].sort((a, b) => b.stolenArea - a.stolenArea);
-      const cappedNotifs = sortedNotifs.slice(0, MAX_NOTIFICATIONS);
-      if (deferredNotifications.length > MAX_NOTIFICATIONS) {
-        console.log(`[TERRITORY] Capping notifications: ${deferredNotifications.length} victims, sending to top ${MAX_NOTIFICATIONS}`);
-      }
-
-      for (const notif of cappedNotifs) {
-        try {
-          const emailService = emailServiceFromEnv(env, env.WORKER_URL);
-          
-          await emailService.sendTerritoryConqueredEmail(
-            notif.victimEmail,
-            attacker.name,
-            attacker.username,
-            notif.stolenArea
-          );
-          
-          await emailService.recordNotification(
-            storage,
-            notif.victimId,
-            'territory_conquered',
-            userId,
-            `¡${attacker.name} te conquistó ${formatAreaNotification(notif.stolenArea)}!`,
-            `${attacker.name} (@${attacker.username}) ha conquistado ${formatAreaNotification(notif.stolenArea)} de tu territorio.`,
-            notif.stolenArea
-          );
-        } catch (emailErr) {
-          console.error('[TERRITORY] Failed to send conquest email:', emailErr);
-        }
-
-        // Push notification
-        if (notifyFn && !victimsNotified.includes(notif.victimId)) {
-          try {
-            await notifyFn(storage, notif.victimId, userId, env, notif.stolenArea);
-            victimsNotified.push(notif.victimId);
-          } catch (notifErr) {
-            console.error('[TERRITORY] Failed to send notification:', notifErr);
-          }
-        }
-      }
+  // Step 4: "Te han robado" pushes are queued, not sent: the victim may have run with this user
+  // and not have uploaded yet (then the steal is undone and the push dropped). The cron sends them
+  // (sendDueStealNotifications), later still while the victim is recording a run in the app.
+  if (victimMap.size > 0) {
+    try {
+      await storage.schedulePendingStealNotifications(
+        Array.from(victimMap.values()).map((v) => ({
+          victimId: v.userId,
+          attackerId: userId,
+          routeId,
+          stolenArea: v.stolenArea,
+          routeCompletedAt: activityCompletedAt ?? null,
+        })),
+        STEAL_NOTIFICATION_DELAY_MS
+      );
+    } catch (err) {
+      console.error('[TERRITORY] Could not queue territory-loss notifications:', err);
     }
   }
 
@@ -1199,7 +1424,7 @@ export async function processTerritoryConquest(
         duration: routeDuration,
         areaStolen: totalStolenArea,
         treasures: treasuresCollected.length,
-        ranTogether: ranTogetherWith.length,
+        ranTogether: newCoRunners.length,
       });
       // Sync totalArea to competition stats (includes 1.5x new-territory bonus)
       try {
@@ -1215,8 +1440,17 @@ export async function processTerritoryConquest(
     }
   }
 
+  // Both runs list each other (the other side is updated in settleCoRuns)
+  if (newCoRunners.length > 0) {
+    try {
+      await storage.updateRouteRanTogether(routeId, ranTogetherWith);
+    } catch (err) {
+      console.error('[TERRITORY] Could not save ran-together users:', err);
+    }
+  }
+
   return {
-    territory: result.territory,
+    territory: mergedTerritory,
     totalArea: finalTotalArea,
     newAreaConquered: effectiveNewArea,
     areaStolen: totalStolenArea,
@@ -1317,6 +1551,55 @@ export async function reprocessUserTerritories(
 // Reprocess territories chronologically for a user and their friends only.
 // Since territory stealing only happens between friends, a delete/reimport
 // only needs to recalculate the territory of the affected friend group.
+/**
+ * Ran-together lookups for the chronological reprocesses, with the same rules as
+ * processTerritoryConquest. Every route of the other user is considered (also those run later),
+ * so the result doesn't depend on which of the two runs is processed first.
+ */
+function makeCoRunChecker(
+  routesByUser: Map<string, Array<{ id: string; userId: string; coordinates: any; startedAt: any; completedAt: any }>>,
+  pointTimes: Map<string, string>,
+  polygonCache: Map<string, any>
+): (route: { id: string; coordinates: any; startedAt: any; completedAt: any }, routeGeometry: any, otherUserId: string) => { level: 'together' | 'partial' | 'none'; sharedArea: any | null } {
+  const levels = new Map<string, 'together' | 'partial' | 'none'>();
+  const polygonOf = (route: { id: string; coordinates: any }): any | null => {
+    if (polygonCache.has(route.id)) return polygonCache.get(route.id);
+    const coords = parseCoordinates(route.coordinates);
+    const polygon = coords.length >= 10 ? routeToEnclosedPolygon(coords, 150)?.geometry ?? null : null;
+    polygonCache.set(route.id, polygon);
+    return polygon;
+  };
+  return (route, routeGeometry, otherUserId) => {
+    if (!route.startedAt || !route.completedAt) return { level: 'none', sharedArea: null };
+    let level: 'partial' | 'none' = 'none';
+    let sharedArea: any | null = null;
+    for (const other of routesByUser.get(otherUserId) || []) {
+      const key = route.id < other.id ? `${route.id}|${other.id}` : `${other.id}|${route.id}`;
+      let pairLevel = levels.get(key);
+      if (!pairLevel) {
+        pairLevel = detectRanTogether(
+          { coordinates: route.coordinates, startedAt: route.startedAt, completedAt: route.completedAt, pointTimes: pointTimes.get(route.id) },
+          { coordinates: other.coordinates, startedAt: other.startedAt, completedAt: other.completedAt, pointTimes: pointTimes.get(other.id) }
+        ).level;
+        levels.set(key, pairLevel);
+      }
+      if (pairLevel === 'together') {
+        console.log(`[REPROCESS] Ran together: route ${route.id} and route ${other.id} (${otherUserId}) - no steal`);
+        return { level: 'together', sharedArea: null };
+      }
+      if (pairLevel === 'partial') {
+        const otherPolygon = polygonOf(other);
+        const area = otherPolygon ? sharedRunArea(routeGeometry, otherPolygon) : null;
+        if (area) {
+          level = 'partial';
+          sharedArea = sharedArea ? (unionGeometries(sharedArea, area) ?? sharedArea) : area;
+        }
+      }
+    }
+    return { level, sharedArea };
+  };
+}
+
 export async function reprocessFriendGroupTerritoriesChronologically(
   storage: WorkerStorage,
   triggerUserId: string,
@@ -1350,8 +1633,9 @@ export async function reprocessFriendGroupTerritoriesChronologically(
     routesByUser.get(r.userId)!.push(r);
   }
 
-  // Pre-compute enclosed polygons for all routes (for ran-together area checks)
+  // Ran-together lookups between any two routes of the group, whichever was run first
   const routePolygonCache = new Map<string, any>();
+  const checkCoRun = makeCoRunChecker(routesByUser, await storage.getPointTimesForUsers(groupUserIds), routePolygonCache);
 
   // Helper to convert geometry to turf feature
   const toFeature = (geom: any) => geom.type === 'MultiPolygon'
@@ -1387,48 +1671,23 @@ export async function reprocessFriendGroupTerritoriesChronologically(
           const otherFeature = toFeature(otherGeometry);
           const routeFeature = toFeature(routeGeometry);
 
-          const intersection = turf.intersect(turf.featureCollection([otherFeature, routeFeature]));
+          let stealFeature: any = routeFeature;
+          let intersection = turf.intersect(turf.featureCollection([otherFeature, stealFeature]));
           if (intersection) {
-            // --- Ran-together exception: BOTH conditions must be met ---
-            // 1. Start times within 15 minutes
-            // 2. Area overlap >= 90%
-            // If both conditions are met, they "ran together" → no stealing
-            if (route.startedAt && route.completedAt) {
-              const otherRoutes = routesByUser.get(otherUserId) || [];
-              let ranTogether = false;
-              // Time check is very cheap, area check is expensive → check time first
-              for (const otherRoute of otherRoutes) {
-                if (!otherRoute.startedAt || !otherRoute.completedAt) continue;
-                const timeOverlap = activitiesOverlapInTime(
-                  route.startedAt,
-                  route.completedAt,
-                  otherRoute.startedAt,
-                  otherRoute.completedAt
-                );
-                if (timeOverlap) {
-                  // Check area overlap against the SPECIFIC route's enclosed polygon, not accumulated territory
-                  const otherRoutePolygon = routePolygonCache.get(otherRoute.id);
-                  if (otherRoutePolygon) {
-                    const areaOverlap = geometriesOverlapByPercentage(
-                      routeGeometry,
-                      otherRoutePolygon,
-                      0.90
-                    );
-                    if (areaOverlap) {
-                      console.log(`[FRIEND REPROCESS] Ran together: route ${route.id} (${route.userId}) and route ${otherRoute.id} (${otherUserId}) - skipping steal`);
-                      ranTogether = true;
-                      break;
-                    }
-                  }
-                  // Continue checking other routes from this user that might also match in time
-                }
-              }
-              if (ranTogether) continue;
+            // Ran together (same rules as processTerritoryConquest): no steal, or none in the shared area
+            const coRun = checkCoRun(route, routeGeometry, otherUserId);
+            if (coRun.level === 'together') continue;
+            if (coRun.sharedArea) {
+              const reduced = differenceGeometries(routeGeometry, coRun.sharedArea);
+              if (!reduced) continue;
+              stealFeature = toFeature(reduced);
+              intersection = turf.intersect(turf.featureCollection([otherFeature, stealFeature]));
+              if (!intersection) continue;
             }
 
             const stolenArea = turf.area(intersection);
             if (stolenArea > 0) {
-              const remaining = turf.difference(turf.featureCollection([otherFeature, routeFeature]));
+              const remaining = turf.difference(turf.featureCollection([otherFeature, stealFeature]));
               if (remaining) {
                 userGeometries.set(otherUserId, remaining.geometry);
               } else {
@@ -1440,7 +1699,8 @@ export async function reprocessFriendGroupTerritoriesChronologically(
                   route.userId,
                   otherUserId,
                   stolenArea,
-                  route.id
+                  route.id,
+                  intersection.geometry
                 );
               } catch (_e) { /* best-effort */ }
             }
@@ -2407,6 +2667,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
       delete body.source;
 
+      // Seconds since startedAt of each GPS point (iOS app): lets "ran together" compare runs at the same moment
+      const rawPointTimes = body.pointTimes;
+      delete body.pointTimes;
+
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
         body.coordinates = JSON.stringify(body.coordinates);
@@ -2442,6 +2706,18 @@ export function registerRoutes(app: Hono<AppEnv>) {
         }
         throw createError;
       }
+
+      // Before the territory is processed (the queue reads them)
+      try {
+        const pointTimes = parsePointTimes(rawPointTimes, JSON.parse(routeData.coordinates).length);
+        if (pointTimes) await storage.saveRoutePointTimes(route.id, pointTimes.map((t) => Math.round(t)));
+      } catch (err) {
+        console.error('[ROUTES] Could not save point times:', err);
+      }
+      // The run is no longer being recorded: steal pushes against this user stop waiting for it
+      try {
+        await storage.clearActiveRunForRoute(routeData.userId, routeData.startedAt);
+      } catch (_) { /* non-critical */ }
 
       // CRITICAL FIX: Create a basic feed event IMMEDIATELY after route creation.
       // This guarantees the feed event exists even if territory processing exhausts
@@ -2506,9 +2782,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 storage, routeData.userId, route.id, enclosedPoly.geometry,
                 c.env, routeData.startedAt, routeData.completedAt, coords
               );
-              if (conquestResult.ranTogetherWith.length > 0) {
-                await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
-              }
               await generateFeedEvents(storage, routeData.userId, route.id, routeData.distance, routeData.duration, conquestResult, false, earlyFeedEventId);
             }
           } catch (fallbackErr) {
@@ -2522,6 +2795,52 @@ export function registerRoutes(app: Hono<AppEnv>) {
       console.error('[ROUTES] POST /api/routes failed:', error);
       // Not a validation problem (those return 400 above): the client must keep the run and retry
       return c.json({ error: error?.message || 'Error interno' }, 500);
+    }
+  });
+
+  // The app is recording a run (sent when it starts or resumes one): "te han robado" pushes to this
+  // user wait until the run is uploaded, in case the attacker ran with them (see sendDueStealNotifications)
+  app.post('/api/runs/active', requireAuth, async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const startedAt = typeof body?.startedAt === 'string' ? body.startedAt : '';
+      const started = Date.parse(startedAt);
+      if (!Number.isFinite(started) || started > Date.now() + 5 * 60 * 1000) {
+        return c.json({ error: 'startedAt no válido' }, 400);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.setActiveRun(c.get('authUserId'), new Date(started).toISOString());
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[ROUTES] POST /api/runs/active failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // The run was thrown away
+  app.delete('/api/runs/active', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.clearActiveRun(c.get('authUserId'));
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[ROUTES] DELETE /api/runs/active failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // Cron (every 5 minutes): sends the queued "te han robado" pushes that are due
+  app.post('/api/tasks/steal-notifications', async (c) => {
+    try {
+      if (!(await isCronRequest(c))) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      const result = await sendDueStealNotifications(storage, c.env);
+      return c.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error('[CRON STEAL NOTIFICATIONS] Error:', error);
+      return c.json({ error: error.message }, 500);
     }
   });
 
@@ -2826,13 +3145,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Build friendship lookup
       const friendshipMap = await storage.getFriendshipMap(groupUserIds);
 
-      // Pre-build route polygon cache for ran-together checks
+      // Ran-together lookups between any two routes of the group, whichever was run first
       const routePolygonCache = new Map<string, any>();
       const routesByUser = new Map<string, typeof allRoutes>();
       for (const r of allRoutes) {
         if (!routesByUser.has(r.userId)) routesByUser.set(r.userId, []);
         routesByUser.get(r.userId)!.push(r);
       }
+      const checkCoRun = makeCoRunChecker(routesByUser, await storage.getPointTimesForUsers(groupUserIds), routePolygonCache);
 
       const toFeature = (geom: any) => geom.type === 'MultiPolygon'
         ? turf.multiPolygon(geom.coordinates)
@@ -2842,9 +3162,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const batchEnd = Math.min(offset + batchSize, totalRoutes);
       let processed = 0;
 
-      // NOTE: We do NOT pre-compute polygons for routes before offset.
-      // That would use too much CPU with turf.buffer(). Instead, ran-together
-      // polygon checks compute lazily only when a time overlap is detected.
+      // NOTE: We do NOT pre-compute polygons for routes before offset (CPU).
+      // checkCoRun computes them lazily, only for runs found to be run together.
 
       for (let i = offset; i < batchEnd; i++) {
         const route = allRoutes[i];
@@ -2875,59 +3194,30 @@ export function registerRoutes(app: Hono<AppEnv>) {
               const otherFeature = toFeature(otherGeometry);
               const routeFeature = toFeature(routeGeometry);
 
-              const intersection = turf.intersect(turf.featureCollection([otherFeature, routeFeature]));
+              let stealFeature: any = routeFeature;
+              let intersection = turf.intersect(turf.featureCollection([otherFeature, stealFeature]));
               if (intersection) {
-                // Ran-together exception
-                if (route.startedAt && route.completedAt) {
-                  const otherRoutes = routesByUser.get(otherUserId) || [];
-                  let ranTogether = false;
-                  for (const otherRoute of otherRoutes) {
-                    if (!otherRoute.startedAt || !otherRoute.completedAt) continue;
-                    const timeOverlap = activitiesOverlapInTime(
-                      route.startedAt, route.completedAt,
-                      otherRoute.startedAt, otherRoute.completedAt
-                    );
-                    if (timeOverlap) {
-                      // Lazy-compute polygon for older route if not cached
-                      let otherRoutePolygon = routePolygonCache.get(otherRoute.id);
-                      if (!otherRoutePolygon) {
-                        try {
-                          const otherCoords: [number, number][] = Array.isArray(otherRoute.coordinates)
-                            ? otherRoute.coordinates
-                            : typeof otherRoute.coordinates === 'string'
-                              ? JSON.parse(otherRoute.coordinates)
-                              : [];
-                          if (otherCoords.length >= 10) {
-                            const otherPoly = routeToEnclosedPolygon(otherCoords, 150);
-                            if (otherPoly) {
-                              otherRoutePolygon = otherPoly.geometry;
-                              routePolygonCache.set(otherRoute.id, otherRoutePolygon);
-                            }
-                          }
-                        } catch (_) { /* skip */ }
-                      }
-                      if (otherRoutePolygon) {
-                        const areaOverlap = geometriesOverlapByPercentage(routeGeometry, otherRoutePolygon, 0.90);
-                        if (areaOverlap) {
-                          ranTogether = true;
-                          break;
-                        }
-                      }
-                    }
-                  }
-                  if (ranTogether) continue;
+                // Ran together (same rules as processTerritoryConquest): no steal, or none in the shared area
+                const coRun = checkCoRun(route, routeGeometry, otherUserId);
+                if (coRun.level === 'together') continue;
+                if (coRun.sharedArea) {
+                  const reduced = differenceGeometries(routeGeometry, coRun.sharedArea);
+                  if (!reduced) continue;
+                  stealFeature = toFeature(reduced);
+                  intersection = turf.intersect(turf.featureCollection([otherFeature, stealFeature]));
+                  if (!intersection) continue;
                 }
 
                 const stolenArea = turf.area(intersection);
                 if (stolenArea > 0) {
-                  const remaining = turf.difference(turf.featureCollection([otherFeature, routeFeature]));
+                  const remaining = turf.difference(turf.featureCollection([otherFeature, stealFeature]));
                   if (remaining) {
                     userGeometries.set(otherUserId, remaining.geometry);
                   } else {
                     userGeometries.delete(otherUserId);
                   }
                   try {
-                    await storage.recordConquestMetric(route.userId, otherUserId, stolenArea, route.id);
+                    await storage.recordConquestMetric(route.userId, otherUserId, stolenArea, route.id, intersection.geometry);
                   } catch (_e) { /* best-effort */ }
                 }
               }
@@ -5230,10 +5520,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 coordinates
               );
 
-              // Save ran together info to the route
-              if (conquestResult.ranTogetherWith.length > 0) {
-                await storage.updateRouteRanTogether(route.id, conquestResult.ranTogetherWith);
-              }
 
               // Mark as processed BEFORE feed events
               await storage.updateStravaActivity(activity.id, {

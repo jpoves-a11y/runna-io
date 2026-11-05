@@ -69,6 +69,7 @@ npx wrangler deploy -c wrangler.worker.toml
 | Tarea | Cuándo |
 |---|---|
 | polar-auto-sync | cada 5 minutos |
+| steal-notifications | cada 5 minutos (envía los avisos de "te han robado" pendientes; ver más abajo) |
 | spawn-treasure | en el minuto 0 de cada hora (la tarea elige la hora del día) |
 | inactivity-check | 10:00 y 19:00 |
 | weekly-summary | domingos a las 20:00 |
@@ -76,6 +77,17 @@ npx wrangler deploy -c wrangler.worker.toml
 **Upstash QStash ya no hace falta**: borra las programaciones antiguas. Los endpoints `/api/tasks/*` siguen aceptando `Authorization: Bearer <UPSTASH_CRON_SECRET>` (o una firma de QStash) para lanzarlos a mano.
 
 La cola `territory-processing` (y su DLQ `territory-dlq`) se crea una vez con `npx wrangler queues create ...`.
+
+### Correr juntos
+
+Dos amigos (o dos rivales en una competición) que corren juntos no se roban territorio, suba primero quien suba (`detectRanTogether` en `worker/src/territory.ts`):
+
+- Se comparan los recorridos punto a punto en el mismo momento (hora de cada punto si la app la envía, `pointTimes`; si no, interpolada a lo largo del recorrido). Da igual quién empezó o paró antes de grabar, o si uno siguió grabando la vuelta a casa.
+- **Juntos** (≥ 70 % de cada carrera al lado del otro): no se roban nada. **Parcial** (≥ 800 m juntos): solo se protege el área que encierran las dos carreras.
+- Si el primero en subir ya le robó al otro, al subir el segundo se deshace el robo: se le devuelve el área, se corrige la métrica, el feed y la competición del primero, y ambas rutas quedan marcadas como corridas juntas.
+- Los avisos de "te han robado" no salen al momento: esperan 30 minutos en `pending_steal_notifications` y se descartan si el robo se deshace. Mientras la víctima está grabando una carrera en la app (`POST /api/runs/active`), esperan a que la suba (máximo 12 horas).
+
+Prueba e2e: `scripts/e2e/ran-together-test.mjs`.
 
 ### Secretos y variables del Worker
 

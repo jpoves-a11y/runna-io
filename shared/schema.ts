@@ -49,6 +49,8 @@ export const conquestMetrics = sqliteTable("conquest_metrics", {
   defenderId: text("defender_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   areaStolen: real("area_stolen").notNull(), // square meters
   routeId: text("route_id").references(() => routes.id, { onDelete: 'set null' }),
+  // GeoJSON of the area taken, so the steal can be undone if the victim turns out to have run with the attacker
+  stolenGeometry: text("stolen_geometry"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

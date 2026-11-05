@@ -238,14 +238,17 @@ final class SessionStore {
     }
 
     func logout() async {
-        // Last chance to upload runs recorded offline (they're deleted from the device on logout)
+        // Upload runs recorded offline while there's a session. Those that can't be uploaded now
+        // aren't lost: they stay on the device for this account and go up when it logs in again
+        // (a friend who ran with this user then gets back what their run took, see ran-together).
         if PendingRuns.pendingCount > 0 {
             _ = await PendingRuns.uploadAll()
         }
         await PushManager.shared.unregisterDevice()
         try? await api.send("POST", "/api/auth/logout")
         AppRouter.shared.pendingInviteToken = nil
-        endSession(clearDeviceData: true)
+        PendingRuns.forgetUnowned()
+        endSession()
     }
 
     /// Permanently deletes the account and all its data (required by the App Store).
@@ -266,6 +269,7 @@ final class SessionStore {
         api.sessionToken = token
         setUser(user)
         state = .loggedIn
+        NotificationCenter.default.post(name: RunOwner.didChangeNotification, object: nil)
         Task {
             // Before the onboarding is done, its last page asks for permission in context
             if UserDefaults.standard.bool(forKey: OnboardingView.doneKey) {
@@ -302,6 +306,7 @@ final class SessionStore {
         if clearDeviceData {
             PendingRuns.forgetAll()
         }
+        NotificationCenter.default.post(name: RunOwner.didChangeNotification, object: nil)
         // Cached screens and API responses belong to this account
         ResponseCache.shared.removeAll()
         ResponseCache.shared.clearOwner()

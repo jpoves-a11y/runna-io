@@ -158,10 +158,7 @@ async function handleProcessRouteTerritory(
       undefined, startedAt, completedAt, coords
     );
 
-    // Save ran-together info
-    if (conquestResult.ranTogetherWith.length > 0) {
-      await storage.updateRouteRanTogether(routeId, conquestResult.ranTogetherWith);
-    }
+    // (processTerritoryConquest saves the ran-together users on both routes)
 
     // ── CRITICAL: Update feed event FIRST (before notifications) ──
     // This is the most important write — it populates the emblems in the feed.
@@ -181,26 +178,9 @@ async function handleProcessRouteTerritory(
       }
     } catch (_) {}
 
-    // ── BEST-EFFORT: Send notifications (territory loss + friend activity) ──
-    // These can fail without affecting data integrity.
-    try {
-      // Territory loss notifications (previously done inside processTerritoryConquest)
-      if (conquestResult.victims.length > 0) {
-        const { notifyTerritoryLoss } = await import('./notifications');
-        const MAX_NOTIFICATIONS = 3;
-        const topVictims = [...conquestResult.victims]
-          .sort((a, b) => b.stolenArea - a.stolenArea)
-          .slice(0, MAX_NOTIFICATIONS);
-        for (const victim of topVictims) {
-          try {
-            await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea);
-          } catch (_) {}
-        }
-      }
-    } catch (notifErr) {
-      console.error('[QUEUE] Territory loss notification error (non-critical):', notifErr);
-    }
-
+    // ── BEST-EFFORT: Send notifications (friend activity, overtakes) ──
+    // Territory-loss pushes are queued by processTerritoryConquest and sent by the cron
+    // (sendDueStealNotifications), so a victim who ran with this user gets none.
     try {
       const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
       const distanceKm = distance ? distance / 1000 : 0;
