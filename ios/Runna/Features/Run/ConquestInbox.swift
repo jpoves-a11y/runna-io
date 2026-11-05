@@ -221,7 +221,9 @@ private struct ConquestInboxView: View {
                                 RouteReplayView(
                                     coordinates: route.locations,
                                     color: Color.brand,
-                                    height: 220
+                                    distance: route.distance,
+                                    duration: route.duration,
+                                    height: 260
                                 )
                             }
                             RunStatsCard(distance: route.distance, duration: route.duration)

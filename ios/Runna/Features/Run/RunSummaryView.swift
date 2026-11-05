@@ -31,7 +31,9 @@ struct RunSummaryView: View {
                         RouteReplayView(
                             coordinates: run.coordinates,
                             color: Color.brand,
-                            height: 220
+                            distance: run.distance,
+                            duration: run.duration,
+                            height: 260
                         )
                         RunStatsCard(distance: run.distance, duration: run.duration)
                     }

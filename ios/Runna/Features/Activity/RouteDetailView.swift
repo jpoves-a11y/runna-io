@@ -17,6 +17,7 @@ struct RouteDetailView: View {
     @State private var confirmDelete = false
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @State private var showsReplay = false
 
     init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
         self.route = route
@@ -92,6 +93,23 @@ struct RouteDetailView: View {
             RouteDetailMap(locations: route.locations, color: lineColor)
                 .frame(height: 320)
                 .overlay(alignment: .bottom) { HairlineDivider() }
+                .overlay(alignment: .bottomTrailing) {
+                    Button {
+                        showsReplay = true
+                    } label: {
+                        Label("Ver animación", systemImage: "play.fill")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 14)
+                            .frame(height: 36)
+                            .glassSurface(Capsule(), interactive: true)
+                    }
+                    .buttonStyle(.pressable)
+                    .padding(DS.Spacing.m)
+                }
+                .fullScreenCover(isPresented: $showsReplay) {
+                    RouteReplayFullScreen(coordinates: route.locations, color: lineColor, distance: route.distance, duration: route.duration)
+                }
         } else {
             EmptyStateView(
                 systemImage: "location.slash",
