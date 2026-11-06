@@ -6,11 +6,14 @@ import UIKit
 
 /// The route prepared for the replay: resampled evenly and smoothed (GPS zigzags out, corners
 /// rounded a little), with the distance along it, where the runner is after any distance and
-/// which way the route goes there.
+/// which way the route goes there. It also has a much smoother copy of itself for the camera
+/// to follow: the camera glides through turns but stays close to the runner, with no time lag.
 struct RouteReplayPlan {
     let points: [CLLocationCoordinate2D]
     /// metres from the start to each point
     let cumulative: [Double]
+    /// The route averaged over ±70-380 m, point by point with `points` (same distances): the camera's path
+    let cameraPoints: [CLLocationCoordinate2D]
     let length: Double
     let center: CLLocationCoordinate2D
     /// largest side of the route's bounding box, in metres
@@ -80,8 +83,34 @@ struct RouteReplayPlan {
         let height = (maxLat - minLat) * 111_320
         let width = (maxLng - minLng) * 111_320 * cos(middleLat * .pi / 180)
 
+        // 3. The camera's path: a moving average over ±2.5% of the route (70-380 m), with prefix sums;
+        //    the window narrows near both ends so the camera starts and finishes on the route
+        let cameraHalfWindow = min(380, max(70, total * 0.025))
+        let cameraHalf = max(1, Int((cameraHalfWindow / spacing).rounded()))
+        var prefixLat: [Double] = [0]
+        var prefixLng: [Double] = [0]
+        prefixLat.reserveCapacity(smoothed.count + 1)
+        prefixLng.reserveCapacity(smoothed.count + 1)
+        for point in smoothed {
+            prefixLat.append(prefixLat[prefixLat.count - 1] + point.latitude)
+            prefixLng.append(prefixLng[prefixLng.count - 1] + point.longitude)
+        }
+        var camera: [CLLocationCoordinate2D] = []
+        camera.reserveCapacity(smoothed.count)
+        for index in 0..<smoothed.count {
+            let half = min(cameraHalf, index, smoothed.count - 1 - index)
+            let from = index - half
+            let to = index + half
+            let count = Double(to - from + 1)
+            camera.append(CLLocationCoordinate2D(
+                latitude: (prefixLat[to + 1] - prefixLat[from]) / count,
+                longitude: (prefixLng[to + 1] - prefixLng[from]) / count
+            ))
+        }
+
         points = smoothed
         cumulative = distances
+        cameraPoints = camera
         length = total
         center = CLLocationCoordinate2D(latitude: middleLat, longitude: (minLng + maxLng) / 2)
         extent = max(height, width, 200)
@@ -102,22 +131,40 @@ struct RouteReplayPlan {
         return low
     }
 
-    /// Where the runner is after `distance` metres.
-    func coordinate(at distance: Double) -> CLLocationCoordinate2D {
+    /// `along` at `distance` metres (linear between its points).
+    private func interpolate(_ along: [CLLocationCoordinate2D], at distance: Double) -> CLLocationCoordinate2D {
         let d = min(max(0, distance), length)
         let index = segment(at: d)
-        let a = points[index]
-        let b = points[min(index + 1, points.count - 1)]
+        let a = along[index]
+        let b = along[min(index + 1, along.count - 1)]
         let span = cumulative[min(index + 1, cumulative.count - 1)] - cumulative[index]
         let f = span > 0 ? (d - cumulative[index]) / span : 0
         return CLLocationCoordinate2D(latitude: a.latitude + (b.latitude - a.latitude) * f, longitude: a.longitude + (b.longitude - a.longitude) * f)
     }
 
+    /// Where the runner is after `distance` metres.
+    func coordinate(at distance: Double) -> CLLocationCoordinate2D {
+        interpolate(points, at: distance)
+    }
+
+    /// Where the camera looks when the runner is at `distance` metres (on the smoothed route).
+    func cameraCoordinate(at distance: Double) -> CLLocationCoordinate2D {
+        interpolate(cameraPoints, at: distance)
+    }
+
     /// Direction of the route around `distance` (degrees from north), looking `window` metres behind
     /// and ahead so the camera turns with the street, not with every small bend.
     func bearing(at distance: Double, window: Double = 350) -> Double {
-        let from = coordinate(at: distance - window * 0.4)
-        let to = coordinate(at: distance + window)
+        Self.bearing(from: coordinate(at: distance - window * 0.4), to: coordinate(at: distance + window))
+    }
+
+    /// Direction the camera faces when the runner is at `distance` metres: along the smoothed route,
+    /// looking well ahead so turns are anticipated.
+    func cameraBearing(at distance: Double) -> Double {
+        Self.bearing(from: cameraCoordinate(at: distance - 100), to: cameraCoordinate(at: distance + 350))
+    }
+
+    static func bearing(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
         let lat1 = from.latitude * .pi / 180
         let lat2 = to.latitude * .pi / 180
         let dLng = (to.longitude - from.longitude) * .pi / 180
@@ -220,13 +267,25 @@ struct RouteReplayTimeline {
         return distance(atRunTime: elapsed - runStart)
     }
 
-    /// Camera following the runner: a bit far back so the surroundings show.
+    /// Easing of the following camera (seconds, each of its two stages): 0.2 s, less on very fast
+    /// replays (long routes) so the runner stays well inside the frame.
+    var cameraEasing: Double { min(0.2, max(0.1, 120 / max(1, plan.length / run))) }
+
+    /// How far the following camera is from the ground point it looks at (metres).
+    var followDistance: Double {
+        switch mode {
+        case .threeD: return min(3200, max(1200, plan.length * 0.18))
+        case .flat: return min(7000, max(2200, plan.length * 0.5))
+        }
+    }
+
+    /// Camera following the runner (looking at the smoothed route): a bit far back so the surroundings show.
     func followCamera(at distance: Double, heading: Double) -> ReplayCamera {
         switch mode {
         case .threeD:
-            return ReplayCamera(center: plan.coordinate(at: distance), distance: min(3200, max(1200, plan.length * 0.18)), pitch: 50, heading: heading)
+            return ReplayCamera(center: plan.cameraCoordinate(at: distance), distance: followDistance, pitch: 50, heading: heading)
         case .flat:
-            return ReplayCamera(center: plan.coordinate(at: distance), distance: min(7000, max(2200, plan.length * 0.5)), pitch: 0, heading: 0)
+            return ReplayCamera(center: plan.cameraCoordinate(at: distance), distance: followDistance, pitch: 0, heading: 0)
         }
     }
 
@@ -343,16 +402,29 @@ struct RouteReplayView: View {
                 onFinished: onFinished
             )
             .accessibilityLabel("Animación del recorrido")
+            // The views that read the progress (several times a second) are separate views, so
+            // SwiftUI re-renders only them while the replay plays, never the map
             if let share {
-                RouteShareOverlay(
+                ReplayShareLayer(
+                    progress: progress,
                     options: share,
-                    fraction: progress.fraction,
-                    isFinished: progress.isFinished,
                     distance: distance ?? plan?.length ?? 0,
                     duration: duration
                 )
             } else if config == nil {
-                chrome
+                ReplayChrome(
+                    progress: progress,
+                    totalDistance: distance ?? plan?.length ?? 0,
+                    duration: duration,
+                    allowsFullScreen: allowsFullScreen,
+                    topInset: height == nil ? DS.Spacing.xxxl + DS.Spacing.l : 0,
+                    mode: mode,
+                    satellite: satellite,
+                    onFullScreen: { showsFullScreen = true },
+                    onMode: { newMode in modeRaw = newMode.rawValue },
+                    onSatellite: { on in satellite = on },
+                    onReplay: { playToken += 1 }
+                )
             }
         }
         .frame(maxWidth: .infinity)
@@ -364,7 +436,6 @@ struct RouteReplayView: View {
                 RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
             }
         }
-        .animation(.snappy, value: progress.isFinished)
         .onChange(of: coordinates.count) {
             // A different route in the same place on screen
             plan = RouteReplayPlan(coordinates: coordinates)
@@ -375,26 +446,38 @@ struct RouteReplayView: View {
             RouteReplayFullScreen(coordinates: coordinates, color: color, distance: distance, duration: duration)
         }
     }
+}
 
-    // MARK: Chips, counters
+/// Counters and switches over the map. Reads the replay's progress in its own body, so these
+/// re-render several times a second while playing and the map doesn't.
+private struct ReplayChrome: View {
+    let progress: RouteReplayProgress
+    let totalDistance: Double
+    let duration: Int?
+    let allowsFullScreen: Bool
+    let topInset: CGFloat
+    let mode: RouteReplayMode
+    let satellite: Bool
+    let onFullScreen: () -> Void
+    let onMode: (RouteReplayMode) -> Void
+    let onSatellite: (Bool) -> Void
+    let onReplay: () -> Void
 
-    private var chrome: some View {
+    var body: some View {
         let fraction = progress.fraction
         let finished = progress.isFinished
-        return VStack {
+        VStack {
             HStack(alignment: .top) {
                 if fraction > 0 || finished {
                     ReplayCounter(
-                        meters: (distance ?? plan?.length ?? 0) * (finished ? 1 : fraction),
+                        meters: totalDistance * (finished ? 1 : fraction),
                         seconds: duration.map { Double($0) * (finished ? 1 : fraction) }
                     )
                     .transition(.opacity)
                 }
                 Spacer(minLength: 0)
                 if allowsFullScreen {
-                    ReplayIconButton(systemImage: "arrow.up.left.and.arrow.down.right", label: "Pantalla completa") {
-                        showsFullScreen = true
-                    }
+                    ReplayIconButton(systemImage: "arrow.up.left.and.arrow.down.right", label: "Pantalla completa", action: onFullScreen)
                 }
             }
             Spacer(minLength: 0)
@@ -404,37 +487,60 @@ struct RouteReplayView: View {
                     selected: mode == .threeD ? 1 : 0,
                     label: "Vista"
                 ) { index in
-                    modeRaw = (index == 1 ? RouteReplayMode.threeD : .flat).rawValue
+                    onMode(index == 1 ? .threeD : .flat)
                 }
                 ReplaySegmented(
                     options: ["Mapa", "Satélite"],
                     selected: satellite ? 1 : 0,
                     label: "Tipo de mapa"
                 ) { index in
-                    satellite = index == 1
+                    onSatellite(index == 1)
                 }
                 Spacer(minLength: 0)
                 if finished {
-                    ReplayIconButton(systemImage: "arrow.counterclockwise", label: "Repetir") {
-                        playToken += 1
-                    }
-                    .transition(.opacity)
+                    ReplayIconButton(systemImage: "arrow.counterclockwise", label: "Repetir", action: onReplay)
+                        .transition(.opacity)
                 }
             }
         }
         .padding(DS.Spacing.m)
-        .padding(.top, height == nil ? DS.Spacing.xxxl + DS.Spacing.l : 0)
+        .padding(.top, topInset)
+        .animation(.snappy, value: finished)
+    }
+}
+
+/// Titles and figures of the shared video, reading the progress in its own body (see ReplayChrome).
+private struct ReplayShareLayer: View {
+    let progress: RouteReplayProgress
+    let options: RouteShareOptions
+    let distance: Double
+    let duration: Int?
+
+    var body: some View {
+        RouteShareOverlay(
+            options: options,
+            fraction: progress.fraction,
+            isFinished: progress.isFinished,
+            distance: distance,
+            duration: duration
+        )
     }
 }
 
 // MARK: - Map (UIKit)
 
-/// The map of the replay, driven frame by frame by one clock (CADisplayLink): camera and runner move
-/// together. The route is drawn with MapKit overlays, so it lies on the map (and on the 3D terrain)
-/// whatever the camera does. The line grows continuously: every frame adds a tiny static piece from
-/// where the line ended to the runner (a few metres, under a point on screen), and a piece is never
-/// redrawn (redrawing one growing line every frame made it vanish for moments while MapKit
-/// re-rendered it). Every ~half second the pieces are merged into one overlay.
+/// The map of the replay, driven frame by frame by one clock (CADisplayLink, at the screen's refresh
+/// rate). Each frame is computed for the moment it will be on screen, and the runner, the camera and
+/// the route line advance together:
+/// - The route run so far is ONE MapKit overlay (white casing and coloured line drawn in the same
+///   pass, lying on the map and on the 3D terrain). Each frame its renderer redraws only the few
+///   tiles around the advancing tip: no overlay is added or removed while running, so MapKit stays
+///   light (no dropped frames) and nothing flickers or lags behind.
+/// - The line is drawn a few hundredths of a second ahead of the runner, about the time MapKit takes
+///   to show a redrawn tile, so its end stays under the runner's dot instead of trailing behind it.
+/// - The camera looks at a much smoother copy of the route at the runner's distance (it glides
+///   through turns, with no time lag) and is never more than 12% of its distance from the runner,
+///   so the runner can't leave the frame.
 private struct RouteReplayMapView: UIViewRepresentable {
     let plan: RouteReplayPlan?
     let color: UIColor
@@ -505,31 +611,27 @@ private struct RouteReplayMapView: UIViewRepresentable {
         private var displayLink: CADisplayLink?
         private var startTime: CFTimeInterval = 0
         private var lastTick: CFTimeInterval = 0
-        /// Camera state smoothed frame by frame
+        /// Camera state, eased frame by frame (the centre in two stages: a critically damped glide)
         private var heading: Double = 0
         private var finishHeading: Double = 0
-        private var smoothedCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        private var cameraCenterStage = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+        private var cameraCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
         private var lastFollowCamera: ReplayCamera?
         private var reportedFinish = false
         private var lastPublished: CFTimeInterval = 0
         private var userTookOver = false
-        /// Bumped on every restart: pending merges of an older replay are ignored
-        private var generation = 0
 
-        // The line run so far: the points drawn (route points passed + where the runner was each frame)
-        private var pathSoFar: [CLLocationCoordinate2D] = []
-        private var drawnDistance: Double = 0
-        private var nextPlanIndex = 1
-        /// Overlays of each frame's piece not merged yet, and where the next merged chunk starts in pathSoFar
-        private var pieceOverlays: [[MKOverlay]] = []
-        private var chunkStart = 0
+        /// The faint whole route and the route run so far
+        private var ghostLine: MKPolyline?
+        private var trail: ReplayTrail?
+        /// Distance the trail is drawn up to, and the margin (map points) redrawn around its tip
+        private var trailDrawn: Double = 0
+        private var trailPadding: Double = 0
         private var areaAdded = false
-        /// Casings go below it, lines above it (see play)
-        private var anchor: ReplayLine?
-        /// Frames' pieces merged into one overlay (~half a second)
-        private static let piecesPerChunk = 30
-        /// Shortest piece added (metres)
-        private static let minPieceMeters = 1.0
+
+        /// The line is drawn this many seconds ahead of the runner: about the time MapKit takes to put
+        /// a redrawn tile on screen, so the end of the line is under the runner's dot, not behind it.
+        private static let trailLead: Double = 0.05
 
         private let startPin = ReplayPin(kind: .start)
         private let runnerPin = ReplayPin(kind: .runner)
@@ -568,7 +670,6 @@ private struct RouteReplayMapView: UIViewRepresentable {
 
         func play(plan: RouteReplayPlan, mode: RouteReplayMode, speed: Double, color: UIColor, on mapView: MKMapView) {
             stop()
-            generation += 1
             self.mode = mode
             self.speed = speed
             self.color = color
@@ -577,31 +678,24 @@ private struct RouteReplayMapView: UIViewRepresentable {
             reportedFinish = false
             userTookOver = false
             lastFollowCamera = nil
+            areaAdded = false
             setInteractive(false)
 
             mapView.removeOverlays(mapView.overlays)
             mapView.removeAnnotations(mapView.annotations)
 
-            pathSoFar = [plan.points.first ?? plan.center]
-            drawnDistance = 0
-            nextPlanIndex = 1
-            pieceOverlays = []
-            chunkStart = 0
-            areaAdded = false
-
-            // The whole route, faint and dashed
+            // The whole route, faint and dashed, then the route run so far on top of it
             var points = plan.points
-            let ghost = ReplayLine(coordinates: &points, count: points.count)
-            ghost.role = .ghost
+            let ghost = MKPolyline(coordinates: &points, count: points.count)
+            ghostLine = ghost
             mapView.addOverlay(ghost, level: .aboveRoads)
-            // Invisible marker right above the ghost: white casings are inserted below it and coloured
-            // lines added on top, so every casing stays under every line, all in the same level
-            // (the coloured line in .aboveLabels was drawn late, or not at all, with 3D terrain)
-            var anchorPoints = [plan.points.first ?? plan.center, plan.points.first ?? plan.center]
-            let anchor = ReplayLine(coordinates: &anchorPoints, count: anchorPoints.count)
-            anchor.role = .anchor
-            mapView.addOverlay(anchor, level: .aboveRoads)
-            self.anchor = anchor
+            let trail = ReplayTrail(plan: plan)
+            self.trail = trail
+            trailDrawn = 0
+            // Margin redrawn around the tip: the line's width and round end, even on the coarser
+            // tiles MapKit uses further from the camera
+            trailPadding = (40 + timeline.followDistance * 0.06) * MKMapPointsPerMeterAtLatitude(plan.center.latitude)
+            mapView.addOverlay(trail, level: .aboveRoads)
 
             startPin.coordinate = plan.points.first ?? plan.center
             finishPin.coordinate = plan.points.last ?? plan.center
@@ -610,15 +704,18 @@ private struct RouteReplayMapView: UIViewRepresentable {
             setAlpha(0, for: finishPin)
             setAlpha(0, for: runnerPin)
 
-            heading = plan.bearing(at: 0)
+            heading = plan.cameraBearing(at: 0)
             finishHeading = heading
-            smoothedCenter = plan.coordinate(at: 0)
+            cameraCenter = plan.cameraCoordinate(at: 0)
+            cameraCenterStage = cameraCenter
             publish(fraction: 0, finished: false, force: true)
 
             if reduceMotion {
                 // No flying around: the whole route, drawn at once
                 mapView.camera = timeline.revealCamera(heading: 0).mkCamera
-                show(distance: plan.length, revealArea: true)
+                drawTrail(to: plan.length)
+                setAlpha(1, for: finishPin)
+                addArea()
                 setInteractive(true)
                 reportFinish()
                 return
@@ -628,7 +725,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
             startTime = CACurrentMediaTime()
             lastTick = startTime
             let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            // Every frame the screen shows (120 Hz on ProMotion iPhones)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
             link.add(to: .main, forMode: .common)
             displayLink = link
         }
@@ -643,29 +741,40 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 stop()
                 return
             }
-            let now = CACurrentMediaTime()
+            // Computed for the moment this frame will be on screen, so motion is even frame to frame
+            let now = link.targetTimestamp
             let elapsed = now - startTime
             let dt = min(0.1, max(0, now - lastTick))
             lastTick = now
             let plan = timeline.plan
             let run = timeline.distance(atElapsed: elapsed)
+            let runner = plan.coordinate(at: run)
 
-            // Heading: turns towards where the route goes next, slowly (time constant 2 s, at most 15°/s)
+            // Heading (3D): towards where the smoothed route goes next, eased (time constant 1.4 s, at most 24°/s)
             if mode == .threeD && elapsed > timeline.introHold + timeline.flyIn * 0.5 && elapsed < timeline.runEnd {
-                var turn = ReplayCamera.shortestTurn(from: heading, to: plan.bearing(at: run)) * (1 - exp(-dt / 2.0))
-                let maxTurn = 15 * dt
+                var turn = ReplayCamera.shortestTurn(from: heading, to: plan.cameraBearing(at: run)) * (1 - exp(-dt / 1.4))
+                let maxTurn = 24 * dt
                 turn = min(maxTurn, max(-maxTurn, turn))
                 heading += turn
                 finishHeading = heading
             }
-            // Centre: follows the runner with a little lag (time constant 0.7 s), so the camera glides
-            if elapsed >= timeline.runStart && elapsed < timeline.runEnd + 0.5 {
-                let target = plan.coordinate(at: run)
-                let k = 1 - exp(-dt / 0.7)
-                smoothedCenter = CLLocationCoordinate2D(
-                    latitude: smoothedCenter.latitude + (target.latitude - smoothedCenter.latitude) * k,
-                    longitude: smoothedCenter.longitude + (target.longitude - smoothedCenter.longitude) * k
+            // Centre: the smoothed route, eased in two stages (its velocity changes smoothly, no jolts
+            // at turns) and aimed where the runner will be after the easing delay, so on straights it
+            // sits on the runner; never more than 12% of the camera distance from the runner, so the
+            // runner can't leave the frame (tuned by simulation: the runner stays within 70% of that)
+            if elapsed >= timeline.runStart && elapsed < timeline.runEnd {
+                let easing = timeline.cameraEasing
+                let target = plan.cameraCoordinate(at: timeline.distance(atElapsed: elapsed + 2 * easing))
+                let k = 1 - exp(-dt / easing)
+                cameraCenterStage = CLLocationCoordinate2D(
+                    latitude: cameraCenterStage.latitude + (target.latitude - cameraCenterStage.latitude) * k,
+                    longitude: cameraCenterStage.longitude + (target.longitude - cameraCenterStage.longitude) * k
                 )
+                cameraCenter = CLLocationCoordinate2D(
+                    latitude: cameraCenter.latitude + (cameraCenterStage.latitude - cameraCenter.latitude) * k,
+                    longitude: cameraCenter.longitude + (cameraCenterStage.longitude - cameraCenter.longitude) * k
+                )
+                cameraCenter = Self.limit(cameraCenter, within: timeline.followDistance * 0.12, of: runner)
             }
 
             let camera: ReplayCamera
@@ -674,9 +783,11 @@ private struct RouteReplayMapView: UIViewRepresentable {
             } else if elapsed < timeline.introHold + timeline.flyIn {
                 let t = (elapsed - timeline.introHold) / timeline.flyIn
                 camera = ReplayCamera.interpolate(timeline.overviewCamera, timeline.followCamera(at: 0, heading: heading), t)
+            } else if elapsed < timeline.runStart {
+                camera = timeline.followCamera(at: 0, heading: heading)
             } else if elapsed < timeline.runEnd {
                 var follow = timeline.followCamera(at: run, heading: heading)
-                follow.center = smoothedCenter
+                follow.center = cameraCenter
                 lastFollowCamera = follow
                 camera = follow
             } else if elapsed < timeline.total {
@@ -690,17 +801,27 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 camera = timeline.revealCamera(heading: finishHeading + 20 + 5 * (t - 1.5 * (1 - ramp)))
             } else {
                 // Done: the map is the user's
-                show(distance: plan.length, revealArea: true)
+                drawTrail(to: plan.length)
+                addArea()
                 if !reportedFinish { reportFinish() }
                 setInteractive(true)
                 stop()
                 return
             }
+
+            // Runner first, then the camera, then the line: all for the same frame
+            runnerPin.coordinate = runner
+            setAlpha(run > 0 && run < plan.length ? 1 : 0, for: runnerPin)
+            setAlpha(run >= plan.length ? 1 : 0, for: finishPin)
             if !userTookOver {
                 mapView.camera = camera.mkCamera
             }
-
-            show(distance: run, revealArea: elapsed >= timeline.runEnd)
+            if elapsed >= timeline.runEnd {
+                drawTrail(to: plan.length)
+                addArea()
+            } else if elapsed > timeline.runStart {
+                drawTrail(to: timeline.distance(atElapsed: elapsed + Self.trailLead))
+            }
 
             let finished = elapsed >= timeline.total
             if finished && !reportedFinish {
@@ -710,65 +831,41 @@ private struct RouteReplayMapView: UIViewRepresentable {
             publish(fraction: run / plan.length, finished: finished, force: false)
         }
 
-        /// Runner, finish flag and route pieces for `distance` metres run; the enclosed area once revealed.
-        private func show(distance: Double, revealArea: Bool) {
-            guard let mapView, let timeline else { return }
-            let plan = timeline.plan
-            runnerPin.coordinate = plan.coordinate(at: distance)
-            setAlpha(distance > 0 && distance < plan.length ? 1 : 0, for: runnerPin)
-            setAlpha(distance >= plan.length ? 1 : 0, for: finishPin)
-
-            // This frame's piece: from where the line ended to the runner
-            let reachedEnd = distance >= plan.length && drawnDistance < plan.length
-            if distance - drawnDistance >= Self.minPieceMeters || reachedEnd {
-                let pieceStart = pathSoFar.count - 1
-                while nextPlanIndex < plan.points.count && plan.cumulative[nextPlanIndex] < distance {
-                    pathSoFar.append(plan.points[nextPlanIndex])
-                    nextPlanIndex += 1
-                }
-                pathSoFar.append(plan.coordinate(at: distance))
-                drawnDistance = distance
-                pieceOverlays.append(addLine(Array(pathSoFar[pieceStart...]), on: mapView))
-            }
-            // Merge the last pieces into one overlay; the small ones go a moment later
-            // (so nothing is ever missing while MapKit draws the new one)
-            if pieceOverlays.count >= Self.piecesPerChunk || (reachedEnd && pieceOverlays.count > 1) {
-                _ = addLine(Array(pathSoFar[chunkStart...]), on: mapView)
-                let old = pieceOverlays.flatMap { $0 }
-                pieceOverlays = []
-                chunkStart = pathSoFar.count - 1
-                let currentGeneration = generation
-                Task { @MainActor [weak self, weak mapView] in
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard let self, self.generation == currentGeneration else { return }
-                    mapView?.removeOverlays(old)
-                }
-            }
-
-            if revealArea && !areaAdded {
-                areaAdded = true
-                var points = plan.points
-                let polygon = MKPolygon(coordinates: &points, count: points.count)
-                // Under the route lines
-                mapView.insertOverlay(polygon, at: 0, level: .aboveRoads)
-            }
+        /// Draws the route up to `distance` metres: the trail's renderer redraws only the tiles around
+        /// the stretch added since the last frame (the rest of the line stays as it is on screen).
+        private func drawTrail(to distance: Double) {
+            guard let mapView, let trail else { return }
+            let geometry = trail.geometry
+            let target = min(max(0, distance), geometry.length)
+            guard abs(target - trailDrawn) > 0.01 else { return }
+            let changed = geometry.mapRect(from: trailDrawn, to: target).insetBy(dx: -trailPadding, dy: -trailPadding)
+            trailDrawn = target
+            geometry.drawnDistance = target
+            mapView.renderer(for: trail)?.setNeedsDisplay(changed)
         }
 
-        /// White casing (under every coloured line) and coloured line (on top) through `coordinates`.
-        private func addLine(_ coordinates: [CLLocationCoordinate2D], on mapView: MKMapView) -> [MKOverlay] {
-            guard coordinates.count >= 2 else { return [] }
-            var points = coordinates
-            let casing = ReplayLine(coordinates: &points, count: points.count)
-            casing.role = .casing
-            let line = ReplayLine(coordinates: &points, count: points.count)
-            line.role = .line
-            if let anchor {
-                mapView.insertOverlay(casing, below: anchor)
-            } else {
-                mapView.addOverlay(casing, level: .aboveRoads)
-            }
-            mapView.addOverlay(line, level: .aboveRoads)
-            return [casing, line]
+        /// The area the route encloses, under the lines (once, at the reveal).
+        private func addArea() {
+            guard !areaAdded, let mapView, let timeline else { return }
+            areaAdded = true
+            var points = timeline.plan.points
+            let polygon = MKPolygon(coordinates: &points, count: points.count)
+            mapView.insertOverlay(polygon, at: 0, level: .aboveRoads)
+        }
+
+        /// `center` moved towards `runner` so it's at most `maxMeters` from it.
+        private static func limit(_ center: CLLocationCoordinate2D, within maxMeters: Double, of runner: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+            let kx = cos(runner.latitude * .pi / 180) * 111_320
+            let ky = 110_574.0
+            let dx = (center.longitude - runner.longitude) * kx
+            let dy = (center.latitude - runner.latitude) * ky
+            let offset = (dx * dx + dy * dy).squareRoot()
+            guard offset > maxMeters, offset > 0 else { return center }
+            let f = maxMeters / offset
+            return CLLocationCoordinate2D(
+                latitude: runner.latitude + (center.latitude - runner.latitude) * f,
+                longitude: runner.longitude + (center.longitude - runner.longitude) * f
+            )
         }
 
         private func setAlpha(_ alpha: CGFloat, for pin: ReplayPin) {
@@ -778,8 +875,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
 
         private func publish(fraction: Double, finished: Bool, force: Bool) {
             let now = CACurrentMediaTime()
-            // SwiftUI overlays at ~15 Hz: enough for the counters, light on the main thread
-            guard force || finished != (progress?.isFinished ?? false) || now - lastPublished > 1.0 / 15 else { return }
+            // SwiftUI overlays at ~12 Hz: enough for the counters, light on the main thread
+            guard force || finished != (progress?.isFinished ?? false) || now - lastPublished > 1.0 / 12 else { return }
             lastPublished = now
             progress?.fraction = fraction
             progress?.isFinished = finished
@@ -808,6 +905,9 @@ private struct RouteReplayMapView: UIViewRepresentable {
         // MARK: MKMapViewDelegate
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let trail = overlay as? ReplayTrail {
+                return ReplayTrailRenderer(trail: trail, color: color)
+            }
             if let polygon = overlay as? MKPolygon {
                 let renderer = MKPolygonRenderer(polygon: polygon)
                 renderer.fillColor = color.withAlphaComponent(0.2)
@@ -815,26 +915,15 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 renderer.lineWidth = 1
                 return renderer
             }
-            guard let line = overlay as? ReplayLine else { return MKOverlayRenderer(overlay: overlay) }
-            let renderer = MKPolylineRenderer(polyline: line)
-            renderer.lineCap = .round
-            renderer.lineJoin = .round
-            switch line.role {
-            case .ghost:
+            if let line = overlay as? MKPolyline, line === ghostLine {
+                let renderer = MKPolylineRenderer(polyline: line)
                 renderer.strokeColor = color.withAlphaComponent(0.4)
                 renderer.lineWidth = 1.5
+                renderer.lineCap = .round
                 renderer.lineDashPattern = [2, 5]
-            case .casing:
-                renderer.strokeColor = UIColor.white.withAlphaComponent(0.92)
-                renderer.lineWidth = 4.5
-            case .line:
-                renderer.strokeColor = color
-                renderer.lineWidth = 2.6
-            case .anchor:
-                renderer.strokeColor = .clear
-                renderer.lineWidth = 0
+                return renderer
             }
-            return renderer
+            return MKOverlayRenderer(overlay: overlay)
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
@@ -852,18 +941,149 @@ extension RouteReplayMapView.Coordinator: UIGestureRecognizerDelegate {
     }
 }
 
-// MARK: - Route overlays and markers
+// MARK: - The route run so far (one overlay, redrawn only around its tip)
 
-/// A piece of route line with what it draws.
-private final class ReplayLine: MKPolyline {
-    enum Role {
-        case ghost, casing, line
-        /// Invisible: marks where casings end and lines begin
-        case anchor
+/// The route in map points with the distance it's drawn up to. Read by the renderer on MapKit's
+/// drawing threads, written on the main thread: the distance is behind a lock, the rest never changes.
+private final class TrailGeometry: @unchecked Sendable {
+    let points: [MKMapPoint]
+    /// metres from the start to each point
+    let cumulative: [Double]
+    let length: Double
+    private let lock = NSLock()
+    private var drawn: Double = 0
+
+    init(plan: RouteReplayPlan) {
+        points = plan.points.map { MKMapPoint($0) }
+        cumulative = plan.cumulative
+        length = plan.length
     }
 
-    var role: Role = .line
+    var drawnDistance: Double {
+        get { lock.withLock { drawn } }
+        set { lock.withLock { drawn = newValue } }
+    }
+
+    private func segment(at distance: Double) -> Int {
+        var low = 0
+        var high = cumulative.count - 1
+        while high - low > 1 {
+            let middle = (low + high) / 2
+            if cumulative[middle] <= distance { low = middle } else { high = middle }
+        }
+        return low
+    }
+
+    func mapPoint(at distance: Double) -> MKMapPoint {
+        let d = min(max(0, distance), length)
+        let index = segment(at: d)
+        let a = points[index]
+        let b = points[min(index + 1, points.count - 1)]
+        let span = cumulative[min(index + 1, cumulative.count - 1)] - cumulative[index]
+        let f = span > 0 ? (d - cumulative[index]) / span : 0
+        return MKMapPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f)
+    }
+
+    /// Smallest map rect around the route between two distances.
+    func mapRect(from a: Double, to b: Double) -> MKMapRect {
+        let low = min(a, b)
+        let high = max(a, b)
+        let first = mapPoint(at: low)
+        let last = mapPoint(at: high)
+        var minX = min(first.x, last.x)
+        var maxX = max(first.x, last.x)
+        var minY = min(first.y, last.y)
+        var maxY = max(first.y, last.y)
+        var index = segment(at: low) + 1
+        while index < points.count && cumulative[index] < high {
+            let point = points[index]
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+            index += 1
+        }
+        return MKMapRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
 }
+
+private final class ReplayTrail: NSObject, MKOverlay {
+    let geometry: TrailGeometry
+    let coordinate: CLLocationCoordinate2D
+    let boundingMapRect: MKMapRect
+
+    init(plan: RouteReplayPlan) {
+        let geometry = TrailGeometry(plan: plan)
+        self.geometry = geometry
+        coordinate = plan.center
+        // With a margin so the line's width and round ends are never clipped at the edges
+        let margin = 300 * MKMapPointsPerMeterAtLatitude(plan.center.latitude)
+        boundingMapRect = geometry.mapRect(from: 0, to: geometry.length).insetBy(dx: -margin, dy: -margin)
+        super.init()
+    }
+}
+
+/// Draws the route up to the trail's distance: the white casing, then the coloured line on top,
+/// in the same pass (they can't drift apart), with constant widths on screen.
+private final class ReplayTrailRenderer: MKOverlayRenderer {
+    private let geometry: TrailGeometry
+    private let lineColor: CGColor
+    private let casingColor: CGColor
+
+    init(trail: ReplayTrail, color: UIColor) {
+        geometry = trail.geometry
+        lineColor = color.cgColor
+        casingColor = UIColor.white.withAlphaComponent(0.92).cgColor
+        super.init(overlay: trail)
+    }
+
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        let distance = geometry.drawnDistance
+        guard distance > 0 else { return }
+        let casingWidth = 4.5 / zoomScale
+        let lineWidth = 2.6 / zoomScale
+        // Only the segments that touch this tile (plus a line width), joined where consecutive
+        let margin = Double(casingWidth) * 2
+        let area = mapRect.insetBy(dx: -margin, dy: -margin)
+        let points = geometry.points
+        let cumulative = geometry.cumulative
+        let path = CGMutablePath()
+        var connected = false
+        var previous = points[0]
+        var index = 1
+        while index <= points.count {
+            let isTip = index == points.count || cumulative[index] >= distance
+            let next = isTip ? geometry.mapPoint(at: distance) : points[index]
+            let touches = max(previous.x, next.x) >= area.minX && min(previous.x, next.x) <= area.maxX
+                && max(previous.y, next.y) >= area.minY && min(previous.y, next.y) <= area.maxY
+            if touches {
+                if !connected {
+                    path.move(to: point(for: previous))
+                }
+                path.addLine(to: point(for: next))
+                connected = true
+            } else {
+                connected = false
+            }
+            if isTip { break }
+            previous = next
+            index += 1
+        }
+        guard !path.isEmpty else { return }
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.addPath(path)
+        context.setStrokeColor(casingColor)
+        context.setLineWidth(casingWidth)
+        context.strokePath()
+        context.addPath(path)
+        context.setStrokeColor(lineColor)
+        context.setLineWidth(lineWidth)
+        context.strokePath()
+    }
+}
+
+// MARK: - Markers
 
 private final class ReplayPin: NSObject, MKAnnotation {
     enum Kind {
