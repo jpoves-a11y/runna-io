@@ -23,7 +23,9 @@ struct RouteReplayPlan {
     private static let maxPoints = 900
 
     init?(coordinates: [CLLocationCoordinate2D]) {
-        let valid = coordinates.filter { CLLocationCoordinate2DIsValid($0) && !($0.latitude == 0 && $0.longitude == 0) }
+        let usable = coordinates.filter { CLLocationCoordinate2DIsValid($0) && !($0.latitude == 0 && $0.longitude == 0) }
+        // 0. Without the GPS's small loops (see withoutKnots)
+        let valid = Self.withoutKnots(usable)
         guard valid.count >= 2 else { return nil }
 
         // Length of the raw track
@@ -114,6 +116,65 @@ struct RouteReplayPlan {
         length = total
         center = CLLocationCoordinate2D(latitude: middleLat, longitude: (minLng + maxLng) / 2)
         extent = max(height, width, 200)
+    }
+
+    /// The track without the GPS's knots. Where the runner stopped (a traffic light) or the signal
+    /// was bad, the track wanders in small loops of 10-30 m; replayed at hundreds of metres a second
+    /// they made the runner's dot jitter in little circles. Points under 3 m from the last one kept
+    /// are dropped, and a stretch that comes back within 12 m of a point of the last 100 m, having
+    /// stayed within 20 m of it while covering more than 25 m and three times that spread, is cut
+    /// out. Real turns (a U-turn, a roundabout, laps) cover far less than three times their spread,
+    /// so they stay. Tuned by simulation.
+    static func withoutKnots(_ coordinates: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+        guard coordinates.count > 2 else { return coordinates }
+        // Flat metres around the start: plenty for distances of a few hundred metres
+        let kx = cos(coordinates[0].latitude * .pi / 180) * 111_320
+        let ky = 110_574.0
+        func flat(_ c: CLLocationCoordinate2D) -> (x: Double, y: Double) {
+            (c.longitude * kx, c.latitude * ky)
+        }
+        func gap(_ a: (x: Double, y: Double), _ b: (x: Double, y: Double)) -> Double {
+            ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
+        }
+        var kept: [CLLocationCoordinate2D] = [coordinates[0]]
+        var keptFlat = [flat(coordinates[0])]
+        /// metres along the kept track to each kept point
+        var along: [Double] = [0]
+        for coordinate in coordinates.dropFirst() {
+            let point = flat(coordinate)
+            guard let last = keptFlat.last, gap(point, last) >= 3 else { continue }
+            let here = along[along.count - 1] + gap(last, point)
+            var cut: Int?
+            var j = keptFlat.count - 2
+            while j >= 0 && here - along[j] <= 100 {
+                let back = gap(keptFlat[j], point)
+                let path = here - along[j]
+                if back < 12 && path > 25 {
+                    var spread = back
+                    for k in (j + 1)..<keptFlat.count {
+                        spread = max(spread, gap(keptFlat[k], keptFlat[j]))
+                    }
+                    if spread <= 20 && path > 3 * spread {
+                        cut = j
+                    }
+                }
+                j -= 1
+            }
+            if let cut {
+                kept.removeSubrange((cut + 1)...)
+                keptFlat.removeSubrange((cut + 1)...)
+                along.removeSubrange((cut + 1)...)
+            }
+            guard let end = keptFlat.last, gap(point, end) >= 3 else { continue }
+            along.append(along[along.count - 1] + gap(end, point))
+            kept.append(coordinate)
+            keptFlat.append(point)
+        }
+        // The finish exactly where the run ended
+        if let finish = coordinates.last, kept.count >= 2 {
+            kept[kept.count - 1] = finish
+        }
+        return kept
     }
 
     static func meters(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
@@ -421,40 +482,45 @@ struct ReplayDirector {
         )
     }
 
-    /// The cameras a replay goes through, to load the map before it plays: the overview, four zooms
-    /// of the fly-in, the follow camera every so often along the route (with the heading it will
-    /// have there) and the views of the end. A view takes in about half its distance of route ahead.
+    /// The cameras a replay goes through, to load the map before it plays: the animation's own
+    /// camera path, frame by frame, sampled so every zoom and every area it shows gets loaded: a view
+    /// each half zoom level (fly-in, zoom out at the end), each 15° of pitch, each 20° of turn (also
+    /// the slow turn of 3D) and, while running, each quarter of the camera's distance along the
+    /// route (at most ~60 views, a marathon), plus the last view.
     static func preloadCameras(for timeline: RouteReplayTimeline) -> [ReplayCamera] {
         var director = ReplayDirector(timeline: timeline)
-        var times: [Double] = [0]
-        for quarter in 1...4 {
-            times.append(timeline.introHold + timeline.flyIn * Double(quarter) / 4)
-        }
-        times.append(timeline.runEnd + timeline.finish * 0.5)
-        times.append(timeline.total)
-        if timeline.mode == .threeD {
-            times.append(timeline.total + timeline.orbit * 0.5)
-            times.append(director.end)
-        }
-        // At most ~30 views along the route (a marathon), however long it is
-        let spacing = max(timeline.followDistance * (timeline.mode == .threeD ? 0.45 : 0.6), timeline.plan.length / 30)
+        let end = director.end
+        let spacing = max(timeline.followDistance * (timeline.mode == .threeD ? 0.25 : 0.35), timeline.plan.length / 60)
+        let halfZoom = log(1.4)
         let step = 1.0 / 30
         var cameras: [ReplayCamera] = []
-        var next = 0
-        var nextRun = spacing
+        var taken: ReplayCamera?
+        var takenRun = 0.0
+        var current: ReplayCamera?
         var elapsed = 0.0
         var previous = 0.0
-        while next < times.count {
+        while elapsed <= end {
             let frame = director.frame(at: elapsed, dt: elapsed - previous)
             previous = elapsed
-            if elapsed >= times[next] - 1e-6 {
-                cameras.append(frame.camera)
-                next += 1
-            } else if elapsed > timeline.runStart && elapsed < timeline.runEnd && frame.run >= nextRun {
-                cameras.append(frame.camera)
-                nextRun = frame.run + spacing
+            let camera = frame.camera
+            current = camera
+            var take = true
+            if let taken {
+                let zoomed = abs(log(max(1, camera.distance) / max(1, taken.distance))) >= halfZoom
+                let tilted = abs(camera.pitch - taken.pitch) >= 15
+                let turned = abs(ReplayCamera.shortestTurn(from: taken.heading, to: camera.heading)) >= 20
+                let ran = elapsed > timeline.runStart && elapsed < timeline.runEnd && frame.run - takenRun >= spacing
+                take = zoomed || tilted || turned || ran
+            }
+            if take {
+                cameras.append(camera)
+                taken = camera
+                takenRun = frame.run
             }
             elapsed += step
+        }
+        if let current {
+            cameras.append(current)
         }
         return cameras
     }
@@ -984,7 +1050,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
         }
 
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
-            loadState.didFinishRendering()
+            loadState.didFinishRendering(fullyRendered: fullyRendered)
         }
     }
 }
@@ -1194,8 +1260,12 @@ final class MapLoadState {
         renderingSince = now
     }
 
-    func didFinishRendering() {
+    /// Whether the last drawing had every tile (false: some still missing).
+    private(set) var renderedFully = true
+
+    func didFinishRendering(fullyRendered: Bool = true) {
         renderingSince = nil
+        renderedFully = fullyRendered
     }
 
     /// Loading or drawing. A signal on for longer than a few seconds (`patience` times more) is taken
@@ -1236,8 +1306,9 @@ final class MapLoadState {
         return false
     }
 
-    /// Puts `mapView` through `cameras`, each until MapKit has loaded and drawn it (at most a second
-    /// and a half; the first, a wide view, up to 6 s), so they are cached when the replay plays.
+    /// Puts `mapView` through `cameras`, each until MapKit has loaded and drawn it with every tile
+    /// (at most 3 s; the first, a wide view, up to 6 s; a drawing reported incomplete is waited on
+    /// for a second and a half), so they are all cached when the replay plays.
     /// Waits first for the map to be on screen (MapKit loads nothing otherwise). `onProgress` gets
     /// 0...1. False if cancelled.
     func preload(_ cameras: [ReplayCamera], on mapView: MKMapView, onProgress: (Double) -> Void) async -> Bool {
@@ -1250,7 +1321,9 @@ final class MapLoadState {
         }
         for (index, camera) in cameras.enumerated() {
             mapView.camera = camera.mkCamera
-            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 360 : 90, patience: index == 0 ? 2 : 1)
+            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 360 : 180, patience: index == 0 ? 2 : 1) { refreshes in
+                self.renderedFully || refreshes > 90
+            }
             if Task.isCancelled { return false }
             onProgress(Double(index + 1) / Double(cameras.count))
         }

@@ -381,7 +381,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     }
 
     func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
-        loadState.didFinishRendering()
+        loadState.didFinishRendering(fullyRendered: fullyRendered)
     }
 }
 
