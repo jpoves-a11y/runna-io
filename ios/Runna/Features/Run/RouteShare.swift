@@ -1,13 +1,10 @@
 import SwiftUI
 import MapKit
 import AVFoundation
-import AVKit
-import ReplayKit
-import CoreImage
 
 // MARK: - What the video shows
 
-/// Titles and figures drawn over the map in the shared video (all editable before recording).
+/// Titles and figures drawn over the map in the shared video (all editable before making it).
 struct RouteShareOptions: Equatable {
     var title: String
     var date: Date?
@@ -60,7 +57,7 @@ enum RouteShareFormat: String, CaseIterable, Identifiable {
 // MARK: - Overlay drawn over the map
 
 /// Title, live counters and the final card of the shared video. Sizes follow the frame's width,
-/// so the preview and the recording look the same.
+/// so the preview and the video look the same.
 struct RouteShareOverlay: View {
     let options: RouteShareOptions
     /// 0...1 of the route run so far
@@ -69,6 +66,16 @@ struct RouteShareOverlay: View {
     /// metres and seconds of the whole run
     let distance: Double
     let duration: Int?
+    /// 0...1: how far the end card has come in. The video sets it frame by frame (SwiftUI doesn't
+    /// animate there); on screen it stays 1 and the card comes in with its transition.
+    var endCardReveal: Double = 1
+
+    /// Everything that changes from frame to frame (counters, end card): the video draws the overlay
+    /// again only when it changes.
+    var renderKey: String {
+        let values = counterItems(live: !isFinished).map(\.value).joined(separator: "|")
+        return "\(values)|\(isFinished)|\(Int((endCardReveal * 100).rounded()))"
+    }
 
     private var paceText: String? {
         guard let duration, duration > 0, distance >= 50 else { return nil }
@@ -92,6 +99,8 @@ struct RouteShareOverlay: View {
                     Spacer(minLength: 0)
                     if isFinished && options.showsEndCard {
                         endCard(unit: unit)
+                            .scaleEffect(0.9 + 0.1 * endCardReveal)
+                            .opacity(endCardReveal)
                             .frame(maxWidth: .infinity)
                             .transition(.scale(scale: 0.9).combined(with: .opacity))
                         Spacer(minLength: 0)
@@ -265,7 +274,9 @@ private struct ShareBrandMark: View {
 // MARK: - Editor
 
 /// Share a run as a video: choose the format, 2D/3D, map, speed, colour and what is shown, watch the
-/// preview, then record it (the replay plays once in full) and share or save the video.
+/// preview, then make the video. It isn't recorded from the screen: it's made frame by frame behind
+/// a progress screen (`RouteVideoRenderer`), with the map loaded first, and saved to Photos on its
+/// own; then it can be shared.
 struct RouteShareEditor: View {
     let coordinates: [CLLocationCoordinate2D]
     let distance: Double
@@ -274,6 +285,8 @@ struct RouteShareEditor: View {
     let ownerColor: Color
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
 
     @AppStorage("shareFormat") private var formatRaw = RouteShareFormat.story.rawValue
     @State private var config: RouteReplayConfig
@@ -281,16 +294,21 @@ struct RouteShareEditor: View {
     @State private var colorIndex = 0
     @State private var restartToken = 0
     @State private var phase: Phase = .editing
-    @State private var previewRect: CGRect = .zero
-    @State private var recorder = RouteVideoRecorder()
+    @State private var renderer: RouteVideoRenderer?
+    @State private var renderTask: Task<Void, Never>?
     @State private var errorMessage: String?
 
     private enum Phase: Equatable {
         case editing
-        case preparing
-        case recording
-        case saving
-        case done(URL)
+        case rendering
+        case done(URL, SaveResult)
+    }
+
+    /// What happened when saving the video to Photos.
+    private enum SaveResult: Equatable {
+        case saved
+        case noPermission
+        case failed
     }
 
     init(coordinates: [CLLocationCoordinate2D], distance: Double, duration: Int?, title: String, date: Date?, area: Double?, color: Color) {
@@ -311,71 +329,83 @@ struct RouteShareEditor: View {
     private var palette: [Color] { [ownerColor, .brand, .white, .gold, .steal, .sky, .grape] }
     private var routeColor: Color { palette[min(colorIndex, palette.count - 1)] }
 
-    private var isCapturing: Bool { phase == .preparing || phase == .recording }
-
     var body: some View {
         ZStack {
-            (isCapturing ? Color.black : Color.canvas).ignoresSafeArea()
+            Color.canvas.ignoresSafeArea()
             VStack(spacing: 0) {
-                if !isCapturing {
-                    topBar
-                }
-                preview
-                    .padding(.horizontal, isCapturing ? 0 : DS.Spacing.l)
-                    .padding(.vertical, isCapturing ? 0 : DS.Spacing.s)
-                if !isCapturing {
-                    controls
-                }
-            }
-            if phase == .saving {
-                savingOverlay
+                topBar
+                stage
+                    .padding(.horizontal, DS.Spacing.l)
+                    .padding(.vertical, DS.Spacing.s)
+                bottomPanel
             }
         }
-        .statusBarHidden(isCapturing)
-        .animation(.snappy, value: isCapturing)
-        .sheet(item: Binding<SharedVideo?>(
-            get: {
-                if case .done(let url) = phase { return SharedVideo(url: url) }
-                return nil
-            },
-            set: { newValue in
-                if newValue == nil { phase = .editing }
-            }
-        )) { video in
-            SharedVideoSheet(url: video.url)
-        }
+        .animation(.snappy, value: phase)
         .errorAlert($errorMessage)
         .onDisappear {
-            Task { await recorder.cancel() }
+            renderTask?.cancel()
         }
     }
 
     // MARK: Top bar
 
     private var topBar: some View {
-        HStack {
-            Button("Cerrar") { dismiss() }
-                .foregroundStyle(.primary)
-            Spacer()
-            Text("Compartir vídeo")
+        ZStack {
+            Text(barTitle)
                 .font(.headline)
-            Spacer()
-            Button {
-                restartToken += 1
-            } label: {
-                Image(systemName: "arrow.counterclockwise")
+            HStack {
+                switch phase {
+                case .editing:
+                    Button("Cerrar") { dismiss() }
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Button {
+                        restartToken += 1
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                    }
+                    .accessibilityLabel("Ver de nuevo")
+                case .rendering:
+                    Button("Cancelar") { renderTask?.cancel() }
+                        .foregroundStyle(.primary)
+                    Spacer()
+                case .done:
+                    Button("Editar") { phase = .editing }
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Button("Listo") { dismiss() }
+                        .fontWeight(.semibold)
+                }
             }
-            .accessibilityLabel("Ver de nuevo")
         }
         .padding(.horizontal, DS.Spacing.l)
         .frame(height: 44)
     }
 
-    // MARK: Preview
+    private var barTitle: String {
+        switch phase {
+        case .editing: return "Compartir vídeo"
+        case .rendering: return "Creando vídeo"
+        case .done: return "Tu vídeo"
+        }
+    }
 
-    private var preview: some View {
+    // MARK: Preview, progress, result
+
+    private var stage: some View {
         GeometryReader { geometry in
             let size = fitted(aspect: format.aspect, in: geometry.size)
+            stageContent(size: size)
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func stageContent(size: CGSize) -> some View {
+        switch phase {
+        case .editing:
             RouteReplayView(
                 coordinates: coordinates,
                 color: routeColor,
@@ -385,20 +415,29 @@ struct RouteShareEditor: View {
                 allowsFullScreen: false,
                 config: config,
                 share: options,
-                restartToken: restartToken,
-                onFinished: replayFinished
+                restartToken: restartToken
             )
-            .frame(width: size.width, height: size.height)
-            .clipShape(RoundedRectangle(cornerRadius: isCapturing ? 0 : DS.Radius.card, style: .continuous))
-            .background(
-                GeometryReader { frameProxy in
-                    Color.clear
-                        .onAppear { previewRect = frameProxy.frame(in: .global) }
-                        .onChange(of: frameProxy.frame(in: .global)) { _, rect in previewRect = rect }
+        case .rendering:
+            renderingCard
+        case .done(let url, _):
+            LoopingVideoView(url: url)
+        }
+    }
+
+    /// The video's map being drawn (MapKit only draws on screen), frosted over: its frames go one by
+    /// one, not in real time, so they shouldn't be taken for the video. Progress on top.
+    private var renderingCard: some View {
+        ZStack {
+            Color.black
+            if let renderer {
+                RouteVideoMapHost(renderer: renderer)
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Color.black.opacity(0.3)
+                    VideoRenderProgressView(progress: renderer.progress)
                 }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(!isCapturing)
+                .environment(\.colorScheme, .dark)
+            }
         }
     }
 
@@ -411,7 +450,30 @@ struct RouteShareEditor: View {
         return CGSize(width: space.width.rounded(.down), height: (space.width / aspect).rounded(.down))
     }
 
-    // MARK: Controls
+    // MARK: Bottom panel
+
+    @ViewBuilder
+    private var bottomPanel: some View {
+        switch phase {
+        case .editing:
+            controls
+        case .rendering:
+            VStack(spacing: DS.Spacing.s) {
+                Label("Deja Runna.io abierta mientras se crea", systemImage: "iphone")
+                    .font(.footnote.weight(.semibold))
+                Text("Se hace fotograma a fotograma, sin grabar la pantalla, y se guarda en Fotos al terminar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(DS.Spacing.l)
+            .background(Color.surface)
+        case .done(let url, let result):
+            donePanel(url: url, result: result)
+        }
+    }
 
     private var controls: some View {
         ScrollView {
@@ -479,15 +541,15 @@ struct RouteShareEditor: View {
                 }
 
                 Button {
-                    Task { await record() }
+                    startRendering()
                 } label: {
-                    Label("Grabar vídeo", systemImage: "record.circle")
+                    Label("Crear vídeo", systemImage: "film")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PrimaryButtonStyle())
-                .disabled(phase != .editing)
+                .disabled(phase != .editing || renderTask != nil)
 
-                Text("El vídeo se graba mientras se reproduce la animación entera. iOS te pedirá permiso para grabar la pantalla de Runna.io.")
+                Text("Se crea fotograma a fotograma en alta calidad, sin grabar la pantalla y con el mapa ya cargado, y se guarda solo en Fotos.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -518,105 +580,142 @@ struct RouteShareEditor: View {
         return items
     }
 
-    private var savingOverlay: some View {
+    private func donePanel(url: URL, result: SaveResult) -> some View {
         VStack(spacing: DS.Spacing.m) {
-            ProgressView()
-                .controlSize(.large)
-            Text("Preparando el vídeo…")
-                .font(.subheadline.weight(.medium))
-        }
-        .padding(DS.Spacing.xxl)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-    }
-
-    // MARK: Recording
-
-    private func record() async {
-        UIApplication.shared.isIdleTimerDisabled = true
-        phase = .preparing
-        // Let the preview grow to its full size before measuring it
-        try? await Task.sleep(nanoseconds: 450_000_000)
-        guard previewRect.width > 10, previewRect.height > 10 else {
-            phase = .editing
-            UIApplication.shared.isIdleTimerDisabled = false
-            errorMessage = "No se ha podido preparar la grabación."
-            return
-        }
-        do {
-            try await recorder.start(crop: previewRect, screenSize: UIScreen.main.bounds.size, videoSize: format.videoSize)
-        } catch {
-            phase = .editing
-            UIApplication.shared.isIdleTimerDisabled = false
-            errorMessage = error.localizedDescription
-            return
-        }
-        phase = .recording
-        // Play from the very beginning while recording
-        restartToken += 1
-    }
-
-    /// The runner reached the finish: in a recording, keep the final view a moment and save the video.
-    private func replayFinished() {
-        guard phase == .recording else { return }
-        Task {
-            // End card and the start of the slow turn
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard phase == .recording else { return }
-            phase = .saving
-            do {
-                let url = try await recorder.finish()
-                phase = .done(url)
-            } catch {
-                phase = .editing
-                errorMessage = error.localizedDescription
+            HStack(alignment: .top, spacing: DS.Spacing.s) {
+                Image(systemName: result == .saved ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    .foregroundStyle(result == .saved ? Color.brand : Color.secondary)
+                    .symbolEffect(.bounce, value: result == .saved)
+                Text(saveMessage(result))
+                    .font(.subheadline.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
-            UIApplication.shared.isIdleTimerDisabled = false
+            ShareLink(item: url, preview: SharePreview("Mi carrera en Runna.io")) {
+                Label("Compartir vídeo", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            if result == .noPermission {
+                Button("Permitir guardar en Fotos") {
+                    if let settings = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(settings)
+                    }
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .padding(DS.Spacing.l)
+        .background(Color.surface)
+    }
+
+    private func saveMessage(_ result: SaveResult) -> String {
+        switch result {
+        case .saved: return "Guardado en Fotos"
+        case .noPermission: return "Runna.io no tiene permiso para guardar en Fotos. Puedes guardarlo desde Compartir."
+        case .failed: return "No se ha podido guardar en Fotos. Puedes guardarlo desde Compartir."
+        }
+    }
+
+    // MARK: Making the video
+
+    private func startRendering() {
+        guard phase == .editing, renderTask == nil, let plan = RouteReplayPlan(coordinates: coordinates) else { return }
+        let job = RouteVideoRenderer.Job(
+            plan: plan,
+            mode: config.mode,
+            satellite: config.satellite,
+            speed: config.speed,
+            color: UIColor(routeColor),
+            options: options,
+            distance: distance,
+            duration: duration,
+            format: format,
+            colorScheme: colorScheme
+        )
+        let renderer = RouteVideoRenderer(job: job, screenScale: displayScale)
+        self.renderer = renderer
+        phase = .rendering
+        renderTask = Task { @MainActor in
+            // Asked first, so the question doesn't wait for the end
+            let canSave = await VideoLibrary.requestAccess()
+            do {
+                Self.removeOldVideos()
+                let url = try await renderer.render()
+                let result: SaveResult
+                if canSave {
+                    result = await VideoLibrary.save(url) ? .saved : .failed
+                } else {
+                    result = .noPermission
+                }
+                if result == .saved {
+                    Haptics.success()
+                }
+                phase = .done(url, result)
+            } catch {
+                if !(error is CancellationError) {
+                    errorMessage = error.localizedDescription
+                }
+                phase = .editing
+            }
+            self.renderer = nil
+            renderTask = nil
+        }
+    }
+
+    /// Videos made before (temporary files of tens of MB each).
+    private static func removeOldVideos() {
+        let folder = FileManager.default.temporaryDirectory
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        for file in files where file.lastPathComponent.hasPrefix("runna-") && file.pathExtension == "mp4" {
+            try? FileManager.default.removeItem(at: file)
         }
     }
 }
 
-private struct SharedVideo: Identifiable {
-    let url: URL
-    var id: String { url.path }
-}
-
-/// The recorded video: watch it, share it (Instagram, WhatsApp…) or save it to Photos from the share sheet.
-private struct SharedVideoSheet: View {
-    let url: URL
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var player: AVPlayer?
+/// Ring, percentage and time left while the video is made. Reads the progress in its own body, so
+/// only this re-renders while the frames are made.
+private struct VideoRenderProgressView: View {
+    let progress: RouteVideoProgress
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: DS.Spacing.l) {
-                VideoPlayer(player: player)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-                    .frame(maxHeight: .infinity)
-                ShareLink(item: url, preview: SharePreview("Mi carrera en Runna.io")) {
-                    Label("Compartir vídeo", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                Text("Desde aquí puedes publicarlo en tus historias o guardarlo en Fotos.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        let fraction = progress.fraction
+        VStack(spacing: DS.Spacing.l) {
+            ZStack {
+                ProgressRing(fraction: fraction, lineWidth: 6, tint: .white, track: Color.white.opacity(0.2))
+                Text("\(Int(fraction * 100))%")
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .monospacedDigit()
             }
-            .padding(DS.Spacing.l)
-            .navigationTitle("Tu vídeo")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Editar") { dismiss() }
-                }
+            .frame(width: 104, height: 104)
+            VStack(spacing: 4) {
+                Text(progress.isLoadingMap ? "Cargando el mapa…" : "Creando tu vídeo…")
+                    .font(.headline)
+                Text(detail)
+                    .font(.subheadline)
+                    .opacity(0.75)
             }
+            .multilineTextAlignment(.center)
         }
-        .onAppear {
-            let newPlayer = AVPlayer(url: url)
-            player = newPlayer
-            newPlayer.play()
+        .foregroundStyle(.white)
+        .padding(DS.Spacing.l)
+    }
+
+    private var detail: String {
+        if progress.isLoadingMap {
+            return "Para que no falte ninguna zona"
         }
-        .onDisappear { player?.pause() }
+        guard let remaining = progress.remaining else {
+            return "Se guardará en Fotos al terminar"
+        }
+        if remaining < 10 {
+            return "Casi listo"
+        }
+        if remaining < 60 {
+            return "Quedan unos \(max(10, Int((remaining / 5).rounded()) * 5)) s"
+        }
+        let minutes = Int((remaining / 60).rounded())
+        return minutes <= 1 ? "Queda alrededor de un minuto" : "Quedan unos \(minutes) min"
     }
 }
 
@@ -639,165 +738,52 @@ private struct FlowChips: View {
     }
 }
 
-// MARK: - Video recording
+// MARK: - The finished video
 
-/// Records the part of the screen where the replay plays (ReplayKit in-app capture), cropped and
-/// scaled to the chosen video size, into an MP4 file.
-final class RouteVideoRecorder: @unchecked Sendable {
-    enum RecorderError: LocalizedError {
-        case unavailable
-        case failed(String)
+/// The finished video playing in a loop, without controls, filling its card.
+private struct LoopingVideoView: UIViewRepresentable {
+    let url: URL
 
-        var errorDescription: String? {
-            switch self {
-            case .unavailable: return "La grabación de pantalla no está disponible en este iPhone."
-            case .failed(let reason): return "No se ha podido grabar el vídeo (\(reason))."
-            }
-        }
+    func makeUIView(context: Context) -> LoopingPlayerView {
+        let view = LoopingPlayerView()
+        view.play(url)
+        return view
     }
 
-    private let lock = NSLock()
-    private let context = CIContext(options: [.cacheIntermediates: false])
-    private var writer: AVAssetWriter?
-    private var input: AVAssetWriterInput?
-    private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
-    private var sessionStarted = false
-    private var crop: CGRect = .zero
-    private var screenSize: CGSize = .zero
-    private var videoSize: CGSize = .zero
-    private var outputURL: URL?
-    private var lastFrameTime: CMTime = .invalid
-    private var isCapturing = false
-
-    /// Starts capturing. `crop` and `screenSize` are in points (global coordinates).
-    func start(crop: CGRect, screenSize: CGSize, videoSize: CGSize) async throws {
-        let recorder = RPScreenRecorder.shared()
-        guard recorder.isAvailable else { throw RecorderError.unavailable }
-        recorder.isMicrophoneEnabled = false
-
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("runna-\(UUID().uuidString).mp4")
-        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: Int(videoSize.width),
-            AVVideoHeightKey: Int(videoSize.height),
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 12_000_000,
-                AVVideoExpectedSourceFrameRateKey: 30,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-            ],
-        ])
-        input.expectsMediaDataInRealTime = true
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: Int(videoSize.width),
-            kCVPixelBufferHeightKey as String: Int(videoSize.height),
-        ])
-        guard writer.canAdd(input) else { throw RecorderError.failed("formato") }
-        writer.add(input)
-
-        lock.withLock {
-            self.writer = writer
-            self.input = input
-            self.adaptor = adaptor
-            self.crop = crop
-            self.screenSize = screenSize
-            self.videoSize = videoSize
-            self.outputURL = url
-            self.sessionStarted = false
-            self.lastFrameTime = .invalid
-            self.isCapturing = true
-        }
-
-        do {
-            try await recorder.startCapture(handler: { [weak self] buffer, type, error in
-                guard error == nil, type == .video else { return }
-                self?.append(buffer)
-            })
-        } catch {
-            reset()
-            throw RecorderError.failed(error.localizedDescription)
-        }
+    func updateUIView(_ uiView: LoopingPlayerView, context: Context) {
+        uiView.play(url)
     }
 
-    /// Stops capturing and returns the finished video file.
-    func finish() async throws -> URL {
-        try? await RPScreenRecorder.shared().stopCapture()
-        let (writer, input, url, started) = lock.withLock { () -> (AVAssetWriter?, AVAssetWriterInput?, URL?, Bool) in
-            isCapturing = false
-            return (self.writer, self.input, self.outputURL, self.sessionStarted)
+    static func dismantleUIView(_ uiView: LoopingPlayerView, coordinator: ()) {
+        uiView.stop()
+    }
+}
+
+private final class LoopingPlayerView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+
+    private var player: AVQueuePlayer?
+    private var looper: AVPlayerLooper?
+    private var url: URL?
+
+    func play(_ url: URL) {
+        guard url != self.url else { return }
+        self.url = url
+        let player = AVQueuePlayer()
+        player.isMuted = true
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        self.player = player
+        if let playerLayer = layer as? AVPlayerLayer {
+            playerLayer.player = player
+            playerLayer.videoGravity = .resizeAspect
         }
-        guard let writer, let input, let url, started else {
-            reset()
-            throw RecorderError.failed("sin imágenes")
-        }
-        input.markAsFinished()
-        await writer.finishWriting()
-        reset()
-        guard writer.status == .completed else {
-            throw RecorderError.failed(writer.error?.localizedDescription ?? "escritura")
-        }
-        return url
+        backgroundColor = .black
+        player.play()
     }
 
-    /// Stops without saving (the editor was closed).
-    func cancel() async {
-        let capturing = lock.withLock { isCapturing }
-        guard capturing else { return }
-        try? await RPScreenRecorder.shared().stopCapture()
-        lock.withLock { writer?.cancelWriting() }
-        reset()
-    }
-
-    private func reset() {
-        lock.withLock {
-            writer = nil
-            input = nil
-            adaptor = nil
-            sessionStarted = false
-            isCapturing = false
-        }
-    }
-
-    /// One screen frame: crop the replay, scale it to the video size and append it.
-    private func append(_ sampleBuffer: CMSampleBuffer) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard isCapturing, let writer, let input, let adaptor,
-              CMSampleBufferDataIsReady(sampleBuffer),
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        if !sessionStarted {
-            guard writer.startWriting() else { return }
-            writer.startSession(atSourceTime: time)
-            sessionStarted = true
-        }
-        guard input.isReadyForMoreMediaData else { return }
-        if lastFrameTime.isValid, CMTimeCompare(time, lastFrameTime) <= 0 { return }
-
-        let bufferWidth = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
-        let bufferHeight = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
-        guard screenSize.width > 0, bufferWidth > 0 else { return }
-        let scale = bufferWidth / screenSize.width
-        // Core Image's origin is bottom-left
-        let region = CGRect(
-            x: crop.minX * scale,
-            y: bufferHeight - crop.maxY * scale,
-            width: crop.width * scale,
-            height: crop.height * scale
-        ).integral.intersection(CGRect(x: 0, y: 0, width: bufferWidth, height: bufferHeight))
-        guard region.width > 1, region.height > 1, let pool = adaptor.pixelBufferPool else { return }
-
-        var output: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &output)
-        guard let output else { return }
-        let image = CIImage(cvPixelBuffer: pixelBuffer)
-            .cropped(to: region)
-            .transformed(by: CGAffineTransform(translationX: -region.minX, y: -region.minY))
-            .transformed(by: CGAffineTransform(scaleX: videoSize.width / region.width, y: videoSize.height / region.height))
-        context.render(image, to: output)
-        if adaptor.append(output, withPresentationTime: time) {
-            lastFrameTime = time
-        }
+    func stop() {
+        player?.pause()
+        looper = nil
+        player = nil
     }
 }
