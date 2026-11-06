@@ -81,7 +81,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         self.job = job
         let timeline = RouteReplayTimeline(plan: job.plan, mode: job.mode, speed: job.speed)
         self.timeline = timeline
-        scene = ReplayScene(timeline: timeline, color: job.color)
+        scene = ReplayScene(timeline: timeline, color: job.color, pulses: false)
         director = ReplayDirector(timeline: timeline)
         let scale = max(1, screenScale)
         let size = CGSize(width: job.format.videoSize.width / scale, height: job.format.videoSize.height / scale)
@@ -191,6 +191,10 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
+            // The runner where MapKit projects it on the frame now drawn (averaged frame to frame),
+            // and one refresh so its new place is on screen when the frame is copied
+            scene.placeRunner(at: frame.runner, time: elapsed)
+            await clock.next()
 
             var waits = 0
             while !input.isReadyForMoreMediaData {
@@ -243,20 +247,17 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
 
     // MARK: Frames
 
-    /// Sets the map up for `frame`: runner, markers (fading in a quarter of a second of video, the
-    /// halo breathing with the video's clock), camera and line.
+    /// Sets the map up for `frame`: markers (fading in a quarter of a second of video, the runner's
+    /// halo breathing with the video's clock), camera and line. The runner is placed once it's drawn.
     private func apply(_ frame: ReplayFrame, elapsed: Double, dt: Double) {
         let fade = CGFloat(dt / 0.25)
         runnerAlpha = Self.approach(runnerAlpha, frame.showsRunner ? 1 : 0, by: fade)
         finishAlpha = Self.approach(finishAlpha, frame.showsFinish ? 1 : 0, by: fade)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        scene.runnerPin.coordinate = frame.runner
-        scene.setAlpha(runnerAlpha, for: scene.runnerPin, animated: false)
+        scene.setRunnerAlpha(runnerAlpha, animated: false)
         scene.setAlpha(finishAlpha, for: scene.finishPin, animated: false)
-        let runnerView = scene.pinView(scene.runnerPin)
-        runnerView?.clockOverride = elapsed
-        runnerView?.setPulse(phase: elapsed / 1.4)
+        scene.runnerDot.setPulse(phase: elapsed / 1.4)
         CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)
@@ -363,7 +364,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     }
 
     func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-        scene.view(for: annotation, pulses: false)
+        scene.view(for: annotation)
     }
 
     func mapViewWillStartLoadingMap(_ mapView: MKMapView) {
