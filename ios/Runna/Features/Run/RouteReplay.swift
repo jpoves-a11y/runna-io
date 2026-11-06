@@ -975,13 +975,15 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 return
             }
 
-            // Camera, then the runner where it projects with it, then the line: all for the same frame
+            // Where MapKit put the runner on the frame it drew; then the camera, the runner on the
+            // ground with it, and the line: all for the same frame
+            scene.measureRunner(time: now, detectsLifts: frame.showsRunner)
             scene.setRunnerAlpha(frame.showsRunner ? 1 : 0, animated: true)
             scene.setAlpha(frame.showsFinish ? 1 : 0, for: scene.finishPin, animated: true)
             if !userTookOver {
                 mapView.camera = frame.camera.mkCamera
             }
-            scene.placeRunner(at: frame.runner, time: now)
+            scene.placeRunner(at: frame.runner)
             scene.drawTrail(to: frame.trail)
             if frame.isRevealed {
                 scene.addArea()
@@ -1075,6 +1077,9 @@ final class ReplayScene {
     let finishPin = ReplayPin(kind: .finish)
     /// The runner, on top of the map (see RunnerDotView)
     let runnerDot: RunnerDotView
+    /// Invisible annotation on the runner: where MapKit puts it, from which the dot is placed
+    let runnerProbe = ReplayPin(kind: .probe)
+    private var groundOffset = RunnerGroundOffset()
 
     private let ghostLine: MKPolyline
     /// Margin (map points) redrawn around the line's tip: its width and round end, even on the
@@ -1084,7 +1089,7 @@ final class ReplayScene {
     private var trailDrawn: Double = 0
     private var areaAdded = false
     /// Markers' opacity, also for views MapKit makes later
-    private var alphas: [ReplayPin.Kind: CGFloat] = [.start: 1, .finish: 0]
+    private var alphas: [ReplayPin.Kind: CGFloat] = [.start: 1, .finish: 0, .probe: 1]
 
     var plan: RouteReplayPlan { timeline.plan }
 
@@ -1123,7 +1128,8 @@ final class ReplayScene {
         mapView.addOverlay(trail, level: .aboveRoads)
         startPin.coordinate = plan.points.first ?? plan.center
         finishPin.coordinate = plan.points.last ?? plan.center
-        mapView.addAnnotations([startPin, finishPin])
+        runnerProbe.coordinate = plan.points.first ?? plan.center
+        mapView.addAnnotations([startPin, finishPin, runnerProbe])
         for view in mapView.subviews where view is RunnerDotView {
             view.removeFromSuperview()
         }
@@ -1131,11 +1137,27 @@ final class ReplayScene {
         mapView.addSubview(runnerDot)
     }
 
-    /// Puts the runner's dot where MapKit projects `coordinate` with the camera just set, averaged
-    /// over time (`time`: the screen's clock, or the video's).
-    func placeRunner(at coordinate: CLLocationCoordinate2D, time: CFTimeInterval) {
+    /// Measures where MapKit put the runner on the map it last drew (the probe annotation) against
+    /// `convert`'s projection of the same coordinate with the same camera, and updates the ground
+    /// offset (see RunnerGroundOffset). Call it before changing the camera or the runner.
+    func measureRunner(time: CFTimeInterval, detectsLifts: Bool) {
+        guard let mapView, let probe = mapView.view(for: runnerProbe), probe.isDescendant(of: mapView) else { return }
+        let placed = probe.convert(CGPoint(x: probe.bounds.midX, y: probe.bounds.midY), to: mapView)
+        let projected = mapView.convert(runnerProbe.coordinate, toPointTo: mapView)
+        guard placed.x.isFinite, placed.y.isFinite, projected.x.isFinite, projected.y.isFinite else { return }
+        groundOffset.update(CGPoint(x: placed.x - projected.x, y: placed.y - projected.y), at: time, detectsLifts: detectsLifts)
+    }
+
+    /// Moves the runner to `coordinate` with the camera just set: the probe there (MapKit places it
+    /// for the next measure) and the dot on the ground under it, where the line ends: `convert`'s
+    /// projection plus the ground offset.
+    func placeRunner(at coordinate: CLLocationCoordinate2D) {
         guard let mapView else { return }
-        runnerDot.follow(mapView.convert(coordinate, toPointTo: mapView), at: time)
+        runnerProbe.coordinate = coordinate
+        let projected = mapView.convert(coordinate, toPointTo: mapView)
+        guard projected.x.isFinite, projected.y.isFinite else { return }
+        let offset = groundOffset.value ?? .zero
+        runnerDot.center = CGPoint(x: projected.x + offset.x, y: projected.y + offset.y)
     }
 
     /// Shows or hides the runner; `animated` fades it in a quarter of a second.
@@ -1533,7 +1555,8 @@ final class ReplayTrailRenderer: MKOverlayRenderer {
 
 final class ReplayPin: NSObject, MKAnnotation {
     enum Kind {
-        case start, finish
+        /// `probe`: invisible, on the runner, to read where MapKit puts it (see ReplayScene.measureRunner)
+        case start, finish, probe
     }
 
     let kind: Kind
@@ -1545,7 +1568,7 @@ final class ReplayPin: NSObject, MKAnnotation {
     }
 }
 
-/// Start ring and checkered finish flag (they don't move: MapKit places them).
+/// Start ring, checkered finish flag, and the runner's invisible probe.
 final class ReplayPinView: MKAnnotationView {
     init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor) {
         super.init(annotation: annotation, reuseIdentifier: nil)
@@ -1576,6 +1599,9 @@ final class ReplayPinView: MKAnnotationView {
             badge.addSubview(flag)
             addSubview(badge)
             zPriority = .max
+        case .probe:
+            frame = CGRect(x: 0, y: 0, width: 2, height: 2)
+            backgroundColor = .clear
         }
     }
 
@@ -1584,14 +1610,58 @@ final class ReplayPinView: MKAnnotationView {
     }
 }
 
-/// The runner: a dot with a white ring and a breathing halo. It isn't a MapKit annotation: in cities
-/// with a 3D satellite model MapKit puts annotations on that model, so the dot jumped between the
-/// ground and treetops or roofs from one frame to the next. It's a view of our own on top of the map,
-/// placed where MapKit projects the runner and averaged over time (`follow`), so it moves smoothly.
+/// How far MapKit's placement of the runner is from `convert`'s projection of it, without the lifts
+/// of the 3D model. `convert` puts a coordinate at sea level: in 3D the ground is higher, so it's off
+/// by an offset that changes smoothly with the terrain. MapKit puts annotations on the terrain, as
+/// the line, but in cities with a 3D satellite model it puts them on that model: on trees and roofs,
+/// up on screen by a few metres, in jumps from one frame to the next. The offset follows the
+/// terrain smoothly, and a sudden jump up is taken as the model and held off until the runner is
+/// back on the ground (at most 2 s). Tuned on the jumps measured in a Turin video.
+struct RunnerGroundOffset {
+    private(set) var value: CGPoint?
+    private var last: CGPoint?
+    private var lifted = false
+    private var liftedSince: CFTimeInterval = 0
+    private var time: CFTimeInterval = 0
+
+    /// `offset` measured at `now`. `detectsLifts`: while the runner runs (before, it's just followed).
+    mutating func update(_ offset: CGPoint, at now: CFTimeInterval, detectsLifts: Bool) {
+        defer {
+            self.last = offset
+            self.time = now
+        }
+        guard detectsLifts, let current = value, let last,
+              abs(offset.x - current.x) < 150, abs(offset.y - current.y) < 150 else {
+            value = offset
+            lifted = false
+            return
+        }
+        let dt = min(0.1, max(0, now - time))
+        var next = current
+        next.x += (offset.x - current.x) * CGFloat(1 - exp(-dt / 0.15))
+        if lifted {
+            if offset.y >= current.y - 2 {
+                // Back on the ground
+                lifted = false
+                next.y = offset.y
+            } else if now - liftedSince > 2 {
+                lifted = false
+            }
+        } else if offset.y - last.y < -max(3, CGFloat(60 * dt)) {
+            // Up at once: a tree or a roof of the 3D model under the runner, not the ground
+            lifted = true
+            liftedSince = now
+        } else {
+            next.y += (offset.y - current.y) * CGFloat(1 - exp(-dt / 0.08))
+        }
+        value = next
+    }
+}
+
+/// The runner: a dot with a white ring and a breathing halo, on top of the map. ReplayScene places it
+/// on the ground under the runner, where the line is (see ReplayScene.measureRunner).
 final class RunnerDotView: UIView {
     private let halo = CAShapeLayer()
-    private var smoothed: CGPoint?
-    private var smoothedTime: CFTimeInterval = 0
 
     /// `pulses`: the halo breathes on its own; otherwise it's set frame by frame with `setPulse`.
     init(color: UIColor, pulses: Bool) {
@@ -1631,27 +1701,6 @@ final class RunnerDotView: UIView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    /// Moves the dot towards `point` (where MapKit projects the runner now), averaged: in height
-    /// with a time constant of 0.2 s (the 3D model's jumps are up and down), across with 0.05 s (so
-    /// it keeps to the line when the camera turns). A big move (the camera flying, the dot
-    /// appearing) is taken at once.
-    func follow(_ point: CGPoint, at time: CFTimeInterval) {
-        guard point.x.isFinite, point.y.isFinite else { return }
-        guard let current = smoothed, alpha > 0.01, hypot(point.x - current.x, point.y - current.y) < 80 else {
-            smoothed = point
-            smoothedTime = time
-            center = point
-            return
-        }
-        let dt = min(0.1, max(0, time - smoothedTime))
-        smoothedTime = time
-        let across = CGFloat(1 - exp(-dt / 0.05))
-        let height = CGFloat(1 - exp(-dt / 0.2))
-        let next = CGPoint(x: current.x + (point.x - current.x) * across, y: current.y + (point.y - current.y) * height)
-        smoothed = next
-        center = next
     }
 
     /// The halo at `phase` of its breath (each whole number starts one, 1.4 s on screen): for frames

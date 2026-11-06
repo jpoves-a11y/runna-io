@@ -191,9 +191,10 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
-            // The runner where MapKit projects it on the frame now drawn (averaged frame to frame),
-            // and one refresh so its new place is on screen when the frame is copied
-            scene.placeRunner(at: frame.runner, time: elapsed)
+            // The runner on the ground where MapKit put it on the frame now drawn (without the 3D
+            // model's lifts), and one refresh so its new place is on screen when the frame is copied
+            scene.measureRunner(time: elapsed, detectsLifts: frame.showsRunner)
+            scene.placeRunner(at: frame.runner)
             await clock.next()
 
             var waits = 0
@@ -258,6 +259,8 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         scene.setRunnerAlpha(runnerAlpha, animated: false)
         scene.setAlpha(finishAlpha, for: scene.finishPin, animated: false)
         scene.runnerDot.setPulse(phase: elapsed / 1.4)
+        // MapKit places the runner's probe while the frame is drawn (measured once it is)
+        scene.runnerProbe.coordinate = frame.runner
         CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)
