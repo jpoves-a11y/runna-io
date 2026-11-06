@@ -205,6 +205,8 @@ private struct ConquestInboxView: View {
     @State private var tauntVictim: Victim?
     @State private var sentVictimIds: Set<String> = []
     @State private var showsShareEditor = false
+    /// Name given on this screen
+    @State private var renamedTo: String?
 
     var body: some View {
         NavigationStack {
@@ -212,11 +214,20 @@ private struct ConquestInboxView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     RunCelebrationHeader(
                         title: headerTitle,
-                        subtitle: route?.name ?? "Actividad importada",
+                        subtitle: renamedTo ?? route?.name ?? "Actividad importada",
                         isWorking: isLoading
                     )
                     .padding(.top, DS.Spacing.s)
                     if let route {
+                        // Name it now, while it's fresh (imported names are generic)
+                        ActivityNameEditor(
+                            routeId: route.id,
+                            currentName: renamedTo ?? route.name,
+                            startDate: route.startDate,
+                            distance: route.distance
+                        ) { name in
+                            renamedTo = name
+                        }
                         VStack(spacing: DS.Spacing.m) {
                             if route.locations.count >= 2 {
                                 RouteReplayView(
@@ -253,7 +264,7 @@ private struct ConquestInboxView: View {
                         coordinates: route.locations,
                         distance: route.distance,
                         duration: route.duration,
-                        title: route.name,
+                        title: renamedTo ?? route.name,
                         date: route.startDate,
                         area: (result?.newAreaConquered ?? 0) > 0 ? result?.newAreaConquered : route.territoryArea,
                         color: Color.brand

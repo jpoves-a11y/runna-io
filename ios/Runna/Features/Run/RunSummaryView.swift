@@ -7,8 +7,8 @@ struct RunSummaryView: View {
     let onClose: () -> Void
 
     @Environment(SessionStore.self) private var session
+    /// The name given on this screen (empty: the default one)
     @State private var routeName = ""
-    @State private var renameSaved = false
     @State private var errorMessage: String?
     @State private var tauntVictim: Victim?
     @State private var sentVictimIds: Set<String> = []
@@ -28,6 +28,15 @@ struct RunSummaryView: View {
                         isWorking: isWorking
                     )
                     .padding(.top, DS.Spacing.s)
+                    // Name it now, while it's fresh (enabled once the run is on the server)
+                    ActivityNameEditor(
+                        routeId: submission.routeId,
+                        currentName: routeName.isEmpty ? run.defaultName : routeName,
+                        startDate: run.startedAt,
+                        distance: run.distance
+                    ) { name in
+                        routeName = name
+                    }
                     VStack(spacing: DS.Spacing.m) {
                         RouteReplayView(
                             coordinates: run.coordinates,
@@ -51,9 +60,6 @@ struct RunSummaryView: View {
                     let treasures: [TreasureLine] = treasureLines
                     if !treasures.isEmpty {
                         TreasuresCard(treasures: treasures)
-                    }
-                    if submission.routeId != nil {
-                        renameSection
                     }
                 }
                 .padding(.horizontal, DS.Spacing.screen)
@@ -229,42 +235,6 @@ struct RunSummaryView: View {
         return nil
     }
 
-    private var renameSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            SectionHeader(title: "Nombre de la carrera")
-            HStack(spacing: DS.Spacing.m) {
-                TextField(run.defaultName, text: $routeName)
-                    .font(.body)
-                    .submitLabel(.done)
-                    .onSubmit { rename() }
-                Button {
-                    rename()
-                } label: {
-                    if renameSaved {
-                        Label("Guardado", systemImage: "checkmark")
-                            .labelStyle(.titleAndIcon)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Guardar")
-                            .foregroundStyle(Color.brand)
-                    }
-                }
-                .font(.subheadline.weight(.semibold))
-                .disabled(routeName.trimmingCharacters(in: .whitespaces).isEmpty || renameSaved)
-                .opacity(routeName.trimmingCharacters(in: .whitespaces).isEmpty && !renameSaved ? 0.4 : 1)
-                .accessibilityLabel(renameSaved ? "Guardado" : "Guardar nombre")
-            }
-            .padding(.horizontal, DS.Spacing.l)
-            .frame(minHeight: 50)
-            .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .hairlineBorder()
-        }
-        .sensoryFeedback(.success, trigger: renameSaved)
-        .onChange(of: routeName) { _, _ in
-            renameSaved = false
-        }
-    }
-
     private func retry() {
         guard !retrying else { return }
         retrying = true
@@ -279,27 +249,6 @@ struct RunSummaryView: View {
                 retryMessage = "El servidor sigue sin aceptarla."
             default:
                 break
-            }
-        }
-    }
-
-    private func rename() {
-        guard let routeId = submission.routeId else { return }
-        let name = routeName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        // Optimistic: saved at once in "Mis carreras" and the feed; undone if the server refuses
-        let previous: String? = MyRoutesModel.shared.routes.first(where: { $0.id == routeId })?.name
-        MyRoutesModel.shared.applyRename(routeId: routeId, name: name)
-        renameSaved = true
-        Task {
-            do {
-                try await APIClient.shared.send("PATCH", "/api/routes/\(routeId)/name", body: ["name": name])
-            } catch {
-                renameSaved = false
-                if let previous {
-                    MyRoutesModel.shared.applyRename(routeId: routeId, name: previous)
-                }
-                errorMessage = error.localizedDescription
             }
         }
     }

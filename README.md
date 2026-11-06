@@ -85,7 +85,7 @@ Dos amigos (o dos rivales en una competición) que corren juntos no se roban ter
 - Se comparan los recorridos punto a punto en el mismo momento (hora de cada punto si la app la envía, `pointTimes`; si no, interpolada a lo largo del recorrido). Da igual quién empezó o paró antes de grabar, o si uno siguió grabando la vuelta a casa.
 - **Juntos** (≥ 70 % de cada carrera al lado del otro): no se roban nada. **Parcial** (≥ 800 m juntos): solo se protege el área que encierran las dos carreras.
 - Si el primero en subir ya le robó al otro, al subir el segundo se deshace el robo: se le devuelve el área, se corrige la métrica, el feed y la competición del primero, y ambas rutas quedan marcadas como corridas juntas.
-- Los avisos de "te han robado" no salen al momento: esperan 30 minutos en `pending_steal_notifications` y se descartan si el robo se deshace. Mientras la víctima está grabando una carrera en la app (`POST /api/runs/active`), esperan a que la suba (máximo 12 horas).
+- Los avisos de "te han robado" no salen al momento: esperan 5 minutos en `pending_steal_notifications` (el cron pasa cada 5, así que salen entre 5 y 10 minutos después) y se descartan si el robo se deshace. Mientras la víctima está grabando una carrera en la app (`POST /api/runs/active`), esperan a que la suba (máximo 12 horas).
 
 Prueba e2e: `scripts/e2e/ran-together-test.mjs`.
 

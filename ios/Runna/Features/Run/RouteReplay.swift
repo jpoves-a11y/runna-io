@@ -524,6 +524,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
         private var pieceOverlays: [[MKOverlay]] = []
         private var chunkStart = 0
         private var areaAdded = false
+        /// Casings go below it, lines above it (see play)
+        private var anchor: ReplayLine?
         /// Frames' pieces merged into one overlay (~half a second)
         private static let piecesPerChunk = 30
         /// Shortest piece added (metres)
@@ -592,6 +594,14 @@ private struct RouteReplayMapView: UIViewRepresentable {
             let ghost = ReplayLine(coordinates: &points, count: points.count)
             ghost.role = .ghost
             mapView.addOverlay(ghost, level: .aboveRoads)
+            // Invisible marker right above the ghost: white casings are inserted below it and coloured
+            // lines added on top, so every casing stays under every line, all in the same level
+            // (the coloured line in .aboveLabels was drawn late, or not at all, with 3D terrain)
+            var anchorPoints = [plan.points.first ?? plan.center, plan.points.first ?? plan.center]
+            let anchor = ReplayLine(coordinates: &anchorPoints, count: anchorPoints.count)
+            anchor.role = .anchor
+            mapView.addOverlay(anchor, level: .aboveRoads)
+            self.anchor = anchor
 
             startPin.coordinate = plan.points.first ?? plan.center
             finishPin.coordinate = plan.points.last ?? plan.center
@@ -739,11 +749,12 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 areaAdded = true
                 var points = plan.points
                 let polygon = MKPolygon(coordinates: &points, count: points.count)
-                mapView.addOverlay(polygon, level: .aboveRoads)
+                // Under the route lines
+                mapView.insertOverlay(polygon, at: 0, level: .aboveRoads)
             }
         }
 
-        /// White casing (below labels) and coloured line (above labels) through `points`.
+        /// White casing (under every coloured line) and coloured line (on top) through `coordinates`.
         private func addLine(_ coordinates: [CLLocationCoordinate2D], on mapView: MKMapView) -> [MKOverlay] {
             guard coordinates.count >= 2 else { return [] }
             var points = coordinates
@@ -751,8 +762,12 @@ private struct RouteReplayMapView: UIViewRepresentable {
             casing.role = .casing
             let line = ReplayLine(coordinates: &points, count: points.count)
             line.role = .line
-            mapView.addOverlay(casing, level: .aboveRoads)
-            mapView.addOverlay(line, level: .aboveLabels)
+            if let anchor {
+                mapView.insertOverlay(casing, below: anchor)
+            } else {
+                mapView.addOverlay(casing, level: .aboveRoads)
+            }
+            mapView.addOverlay(line, level: .aboveRoads)
             return [casing, line]
         }
 
@@ -815,6 +830,9 @@ private struct RouteReplayMapView: UIViewRepresentable {
             case .line:
                 renderer.strokeColor = color
                 renderer.lineWidth = 2.6
+            case .anchor:
+                renderer.strokeColor = .clear
+                renderer.lineWidth = 0
             }
             return renderer
         }
@@ -840,6 +858,8 @@ extension RouteReplayMapView.Coordinator: UIGestureRecognizerDelegate {
 private final class ReplayLine: MKPolyline {
     enum Role {
         case ghost, casing, line
+        /// Invisible: marks where casings end and lines begin
+        case anchor
     }
 
     var role: Role = .line

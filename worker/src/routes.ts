@@ -527,7 +527,7 @@ export async function autoCollectTreasuresAlongRoute(
 }
 
 /** "Te han robado" pushes wait this long (the victim may have run with the attacker and upload later). */
-export const STEAL_NOTIFICATION_DELAY_MS = 30 * 60 * 1000;
+export const STEAL_NOTIFICATION_DELAY_MS = 5 * 60 * 1000;
 /** ...and keep waiting while the victim is recording a run in the app, up to this long. */
 export const STEAL_NOTIFICATION_MAX_HOLD_MS = 12 * 60 * 60 * 1000;
 
