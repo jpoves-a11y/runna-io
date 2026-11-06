@@ -254,7 +254,9 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         scene.runnerPin.coordinate = frame.runner
         scene.setAlpha(runnerAlpha, for: scene.runnerPin, animated: false)
         scene.setAlpha(finishAlpha, for: scene.finishPin, animated: false)
-        scene.pinView(scene.runnerPin)?.setPulse(phase: elapsed / 1.4)
+        let runnerView = scene.pinView(scene.runnerPin)
+        runnerView?.clockOverride = elapsed
+        runnerView?.setPulse(phase: elapsed / 1.4)
         CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)

@@ -1528,9 +1528,16 @@ final class ReplayPin: NSObject, MKAnnotation {
 /// Start ring, runner (dot with a breathing halo) and checkered finish flag.
 final class ReplayPinView: MKAnnotationView {
     private var halo: CAShapeLayer?
+    private let isRunner: Bool
+    /// The runner's height on screen, steadied (see `steady`), and when it was last steadied
+    private var steadyY: CGFloat?
+    private var steadyTime: CFTimeInterval = 0
+    /// The video's clock while a video is made (frames aren't drawn in real time); nil: the screen's
+    var clockOverride: CFTimeInterval?
 
     /// `pulses`: the halo breathes on its own; otherwise it's set frame by frame with `setPulse`.
     init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor, pulses: Bool = true) {
+        isRunner = kind == .runner
         super.init(annotation: annotation, reuseIdentifier: nil)
         collisionMode = .none
         displayPriority = .required
@@ -1598,6 +1605,32 @@ final class ReplayPinView: MKAnnotationView {
 
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override var center: CGPoint {
+        didSet { steady() }
+    }
+
+    /// In cities with a 3D satellite model (buildings, trees), MapKit puts the runner on that model,
+    /// so beside buildings and trees it jumps between the ground and roofs or treetops, a few metres
+    /// up and down from one frame to the next (the dot "vibrated"). Its height on screen is eased
+    /// instead (time constant 0.12 s): the jumps go, while the real movement, slow on screen as the
+    /// camera follows the runner, is barely delayed. Big moves (the camera flying) aren't eased.
+    private func steady() {
+        guard isRunner else { return }
+        let now = clockOverride ?? CACurrentMediaTime()
+        let raw = center.y
+        guard let current = steadyY, alpha > 0.01, abs(raw - current) < 60 else {
+            steadyY = raw
+            steadyTime = now
+            if transform != .identity { transform = .identity }
+            return
+        }
+        let dt = min(0.1, max(0, now - steadyTime))
+        steadyTime = now
+        let next = current + (raw - current) * CGFloat(1 - exp(-dt / 0.12))
+        steadyY = next
+        transform = CGAffineTransform(translationX: 0, y: next - raw)
     }
 
     /// The halo at `phase` of its breath (each whole number starts one, 1.4 s on screen): for frames
