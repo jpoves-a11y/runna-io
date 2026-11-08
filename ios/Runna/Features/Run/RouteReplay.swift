@@ -796,15 +796,15 @@ private struct ReplayShareLayer: View {
 /// the route line advance together:
 /// - Before it plays, the camera goes through the views the replay will show, behind a "loading"
 ///   cover, until MapKit has loaded each of them: no area is missing while it plays. Meanwhile
-///   MapKit's 3D camera is measured, and in 3D the ground along the route (ReplayGroundModel).
+///   MapKit's 3D camera is measured (ReplayGroundModel).
 /// - The route run so far is ONE MapKit overlay (white casing and coloured line drawn in the same
 ///   pass, lying on the map and on the 3D terrain). Each frame its renderer redraws only the few
 ///   tiles around the advancing tip: no overlay is added or removed while running, so MapKit stays
 ///   light (no dropped frames) and nothing flickers.
 /// - The line ends exactly where the runner is, with a disc drawn in the same pass; on it stands the
-///   runner's flag (RunnerFlagView), a view on top of the map so buildings never hide it, its foot
-///   projected on the ground at the end of the line as it's drawn on screen. At the finish it stays
-///   planted, waving.
+///   runner's flag (RunnerFlagView), a view on top of the map so buildings never hide it. Its pole
+///   runs along the world's vertical through the end of the line as drawn on screen, so the line's
+///   end is on it however high the ground. At the finish it stays planted, waving.
 /// - The camera looks at a much smoother copy of the route at the runner's distance (it glides
 ///   through turns, with no time lag) and is never more than 12% of its distance from the runner,
 ///   so the runner can't leave the frame.
@@ -930,14 +930,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
         // MARK: Playback
 
         /// Plays the replay from the start: first loads the map for every view it goes through
-        /// (behind the cover), measuring MapKit's camera and, in 3D, the ground along the route so
-        /// the flag stands on the end of the line; then flies.
+        /// (behind the cover), measuring MapKit's camera on each; then flies.
         func play(plan: RouteReplayPlan, mode: RouteReplayMode, satellite: Bool, speed: Double, color: UIColor, runner: ReplayRunner, on mapView: MKMapView) {
             stop()
             self.speed = speed
             self.runner = runner
             plantedAt = nil
-            let key = "\(plan.points.count)-\(Int(plan.length))-\(mode.rawValue)-\(satellite)-\(reduceMotion)"
+            let key = "\(plan.points.count)-\(Int(plan.length))-\(mode.rawValue)-\(satellite)"
             if preloadedKey != key {
                 // Another route or look: everything is measured again as it loads
                 ground = ReplayGroundModel()
@@ -954,40 +953,24 @@ private struct RouteReplayMapView: UIViewRepresentable {
             publish(fraction: 0, finished: false, force: true)
             progress?.loading = 0
 
-            // Every view, a survey of the ground along the route (3D), then the first view again so
-            // it's on screen when the cover goes; loaded already, only that one
-            let first = reduceMotion ? timeline.revealCamera(heading: 0) : timeline.overviewCamera
-            var cameras: [ReplayCamera] = []
-            var survey: [ReplayCamera] = []
-            if preloadedKey != key {
-                if reduceMotion {
-                    // The flag is planted at the finish at once: the ground measured there
-                    var finish = first
-                    finish.center = plan.points.last ?? plan.center
-                    cameras = [finish]
-                } else {
-                    cameras = ReplayDirector.preloadCameras(for: timeline)
-                    survey = ReplayGroundModel.surveyCameras(for: timeline)
-                }
+            var cameras: [ReplayCamera]
+            if reduceMotion {
+                cameras = [timeline.revealCamera(heading: 0)]
+            } else if preloadedKey == key {
+                // Loaded already: only the first view, so it's on screen when the cover goes
+                cameras = [timeline.overviewCamera]
+            } else {
+                // Every view, then back to the first one
+                cameras = ReplayDirector.preloadCameras(for: timeline)
+                cameras.append(timeline.overviewCamera)
             }
-            // Shares of the progress ring: a view loading counts 1, a survey stop a quarter
-            let units = Double(cameras.count) + 0.25 * Double(survey.count) + 1
-            let loadedShare = Double(cameras.count) / units
-            let surveyedShare = loadedShare + 0.25 * Double(survey.count) / units
             let loadState = self.loadState
-            let groundModel = ground
-            preloadTask = Task { [weak self, cameras, survey] in
-                let calibrate = { scene.calibrateGround() }
-                guard await loadState.preload(cameras, on: mapView, afterEach: calibrate, onProgress: { fraction in
-                    self?.progress?.loading = fraction * loadedShare
-                }) else { return }
-                guard await groundModel.survey(survey, on: mapView, loadState: loadState, onProgress: { fraction in
-                    self?.progress?.loading = loadedShare + fraction * (surveyedShare - loadedShare)
-                }) else { return }
-                guard await loadState.preload([first], on: mapView, afterEach: calibrate, onProgress: { fraction in
-                    self?.progress?.loading = surveyedShare + fraction * (1 - surveyedShare)
-                }) else { return }
-                guard !Task.isCancelled, let self, self.scene === scene else { return }
+            preloadTask = Task { [weak self, cameras] in
+                // MapKit's camera measured on each view once drawn (a calculation: the camera stays put)
+                let loaded = await loadState.preload(cameras, on: mapView, afterEach: { scene.calibrateGround() }, onProgress: { fraction in
+                    self?.progress?.loading = fraction
+                })
+                guard loaded, !Task.isCancelled, let self, self.scene === scene else { return }
                 self.preloadedKey = key
                 self.start(timeline: timeline, scene: scene, on: mapView)
             }
@@ -1180,7 +1163,7 @@ final class ReplayScene {
     let startPin = ReplayPin(kind: .start)
     /// The runner's flag, on top of the map, its foot on the ground at the end of the line
     let runnerFlag: RunnerFlagView
-    /// MapKit's 3D camera and the ground's height, to stand the flag on the ground (see groundPoint)
+    /// MapKit's 3D camera, to stand the flag's pole along the vertical through the line's end
     let ground: ReplayGroundModel
 
     private let ghostLine: MKPolyline
@@ -1241,23 +1224,12 @@ final class ReplayScene {
     /// on by `dt`: `streamBearing` is where its cloth is blown (nil: planted, it keeps its way).
     func moveFlag(to coordinate: CLLocationCoordinate2D, streamBearing: Double?, moving: Bool, dt: Double) {
         guard let mapView else { return }
-        if let point = groundPoint(of: coordinate) {
-            runnerFlag.center = point
+        // Its pole along the vertical through the line's end: the end is on it, however high the ground
+        if let line = ground.poleLine(for: coordinate, on: mapView) {
+            runnerFlag.stand(base: line.base, up: line.up, foot: line.foot)
         }
         let camera = mapView.camera
         runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.heading, cameraPitch: Double(camera.pitch), dt: dt)
-    }
-
-    /// Where `coordinate` is on screen, on the ground, as the line is drawn there: projected with
-    /// MapKit's 3D camera as measured (ReplayGroundModel), at the height of the ground there. On a
-    /// flat map (or before any 3D camera is measured) `convert` itself, which is right there.
-    func groundPoint(of coordinate: CLLocationCoordinate2D) -> CGPoint? {
-        guard let mapView, mapView.bounds.width > 0 else { return nil }
-        if let point = ground.project(coordinate, on: mapView) {
-            return point
-        }
-        let base = mapView.convert(coordinate, toPointTo: mapView)
-        return base.x.isFinite && base.y.isFinite ? base : nil
     }
 
     /// Measures MapKit's camera on the frame shown now. Call it only when the map is still and drawn.

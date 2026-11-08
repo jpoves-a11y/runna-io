@@ -12,11 +12,12 @@ import UIKit
 ///   with MapKit's pitch, heading and distance, solving its lens, the screen point it looks through
 ///   and the height of the ground under the centre (MapKit looks at the centre on the ground).
 ///   Checked in a simulation of such a camera at any height, heading, pitch and screen centre.
-/// - Ground: those heights, and a survey of the whole route behind the cover (the camera stopping
-///   every few tens of metres along it), make a map of the ground's height along the route.
+/// - Ground: those heights make a rough map of the ground's height.
 /// - Each frame: the ground the camera looks at is measured again with the lens known (MapKit may
-///   ease its camera over the terrain), and the coordinate is projected at its own height in the map,
-///   not the camera's (the runner can be well off the centre, higher or lower).
+///   ease its camera over the terrain), and the coordinate is projected at its height in the map.
+/// That's only an estimate, so the flag doesn't rely on it: its pole is drawn along the world's
+/// vertical through the line's end (`poleLine`), from `convert`'s exact point upwards, and the end of
+/// the line lies on that vertical however high the ground. The estimate only says where the cloth goes.
 @MainActor
 final class ReplayGroundModel {
     private struct Sample {
@@ -209,53 +210,48 @@ final class ReplayGroundModel {
         return weightSum > 0 ? heightSum / weightSum : nil
     }
 
-    /// Surveys the ground along the route (`surveyCameras`, whose map is loaded already): each stop
-    /// for a couple of screen refreshes (a few more while MapKit is still drawing), then measured.
-    /// Every few stops it's measured again a moment later: if MapKit turns out to ease its camera's
-    /// height over the terrain, each stop from then on waits until the camera holds still.
-    /// `onProgress` gets 0...1. False if cancelled.
-    func survey(_ cameras: [ReplayCamera], on mapView: MKMapView, loadState: MapLoadState, onProgress: (Double) -> Void) async -> Bool {
-        guard !cameras.isEmpty else { return !Task.isCancelled }
-        let clock = FrameClock()
-        clock.start()
-        defer { clock.stop() }
-        var easing = false
-        for (index, camera) in cameras.enumerated() {
-            mapView.camera = camera.mkCamera
-            _ = await loadState.settle(clock: clock, maxRefreshes: 6, minRefreshes: 2, calmRefreshes: 1, patience: 0.5)
-            if Task.isCancelled { return false }
-            var height = calibrate(on: mapView)
-            if easing || index < 4 || index % 8 == 0 {
-                var refreshes = 0
-                while refreshes < (easing ? 24 : 2) {
-                    await clock.next()
-                    if Task.isCancelled { return false }
-                    refreshes += 1
-                    guard refreshes % 2 == 0 else { continue }
-                    // The newer measurement replaces the stop's sample
-                    let again = calibrate(on: mapView)
-                    if let previous = height, let again {
-                        if abs(again - previous) < 0.3 { break }
-                        easing = true
-                    }
-                    height = again
-                }
-            }
-            onProgress(Double(index + 1) / Double(cameras.count))
+    /// The line the pole stands on, on screen: the world's vertical through `coordinate`.
+    /// - `base`: `convert`'s point for it (at MapKit's reference height, sea level). Exact: MapKit's own.
+    /// - `up`: the way up that vertical on screen, away from where verticals meet (below the view
+    ///   when it's tilted). The ground at `coordinate`, wherever it is, lies on this line, so the line's
+    ///   end is always on a pole drawn along it, however high the terrain.
+    /// - `foot`: where on it the ground is thought to be (where the cloth goes), never below `base`.
+    func poleLine(for coordinate: CLLocationCoordinate2D, on mapView: MKMapView) -> (base: CGPoint, up: CGVector, foot: CGPoint)? {
+        let base = mapView.convert(coordinate, toPointTo: mapView)
+        guard base.x.isFinite, base.y.isFinite else { return nil }
+        let straightUp = CGVector(dx: 0, dy: -1)
+        guard let shot = Shot(mapView) else { return (base, straightUp, base) }
+        var foot = base
+        if let estimate = project(coordinate, on: mapView) {
+            foot = estimate
         }
-        return true
-    }
+        // Flat ground (or none above it known): a straight pole on `convert`'s point
+        guard hypot(foot.x - base.x, foot.y - base.y) > 0.5 else { return (base, straightUp, base) }
 
-    /// The survey of the ground along the route (3D): the replay's following camera every few tens
-    /// of metres of it (at most ~80 stops), centred on the route itself.
-    static func surveyCameras(for timeline: RouteReplayTimeline) -> [ReplayCamera] {
-        let plan = timeline.plan
-        guard timeline.mode == .threeD, plan.length > 0 else { return [] }
-        let stops = max(1, Int((plan.length / max(60, plan.length / 80)).rounded(.up)))
-        return (0...stops).map { index in
-            let distance = plan.length * Double(index) / Double(stops)
-            return ReplayCamera(center: plan.coordinate(at: distance), distance: timeline.followDistance, pitch: 50, heading: plan.cameraBearing(at: distance))
+        // Where verticals meet on screen: below the lens's centre by f·tan(pitch)
+        let pitch = shot.geometry.pitch
+        let lensNow: (focal: Double, x: Double, y: Double)?
+        if let lens, shot.size == lensSize {
+            lensNow = (lens.focal, lens.principal.x, lens.principal.y)
+        } else if let rough = roughLens(on: mapView, shot: shot) {
+            lensNow = (rough, 0, 0)
+        } else {
+            lensNow = nil
         }
+        var up = straightUp
+        if let lensNow, pitch < 85 * .pi / 180 {
+            let vanishing = (x: shot.middle.x + lensNow.x, y: shot.middle.y + lensNow.y + lensNow.focal * tan(pitch))
+            let dx = Double(base.x) - vanishing.x
+            let dy = Double(base.y) - vanishing.y
+            let length = hypot(dx, dy)
+            if length > 1, dy < 0 {
+                up = CGVector(dx: dx / length, dy: dy / length)
+            }
+        }
+        // The estimate moved onto the line, never below `base`
+        let along = max(0, (foot.x - base.x) * up.dx + (foot.y - base.y) * up.dy)
+        foot = CGPoint(x: base.x + up.dx * along, y: base.y + up.dy * along)
+        return (base, up, foot)
     }
 
     // MARK: Measuring
@@ -329,6 +325,20 @@ final class ReplayGroundModel {
         guard let fitted = Self.residuals(of: observations, shot: shot, lens: lens, groundHeight: height),
               (fitted.map { abs($0) }.max() ?? .infinity) < 2.5, height > -500, height < 9000 else { return nil }
         return height
+    }
+
+    /// The lens (points) from this frame alone, taking the view's middle as its centre: the scale 50 m
+    /// to the right of the camera's centre, at the depth of the ground there.
+    private func roughLens(on mapView: MKMapView, shot: Shot) -> Double? {
+        let pitch = shot.geometry.pitch
+        let heading = shot.geometry.heading
+        let center = mapView.convert(shot.frame.center, toPointTo: mapView)
+        let right = mapView.convert(shot.frame.coordinate(east: cos(heading) * 50, north: -sin(heading) * 50), toPointTo: mapView)
+        let scale = Double(hypot(right.x - center.x, right.y - center.y)) / 50
+        guard center.y.isFinite, scale > 0, scale.isFinite else { return nil }
+        let groundHeight = pitch > 10 * .pi / 180 ? (Double(center.y) - shot.middle.y) / (scale * sin(pitch)) : 0
+        let focal = scale * (shot.geometry.distance + groundHeight * cos(pitch))
+        return focal.isFinite && focal > 100 && focal < 20_000 ? focal : nil
     }
 
     /// Without the lens measured (no fit matched yet): from this frame alone, taking the view's middle

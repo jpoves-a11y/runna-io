@@ -113,31 +113,16 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
 
-        // 1. Every view of the replay loaded first (measuring MapKit's camera on each), a survey of
-        // the ground along the route in 3D, then back to the first view
-        let cameras = ReplayDirector.preloadCameras(for: timeline)
-        let survey = ReplayGroundModel.surveyCameras(for: timeline)
-        let units = Double(cameras.count) + 0.25 * Double(survey.count) + 1
-        let loadedShare = Double(cameras.count) / units
-        let surveyedShare = loadedShare + 0.25 * Double(survey.count) / units
+        // 1. Every view of the replay loaded first (measuring MapKit's camera on each), then back to
+        // the first one
+        let cameras = ReplayDirector.preloadCameras(for: timeline) + [timeline.overviewCamera]
         let progress = self.progress
         let scene = self.scene
-        let calibrate = { scene.calibrateGround() }
-        let loaded = await loadState.preload(cameras, on: mapView, afterEach: calibrate, onProgress: { fraction in
-            progress.fraction = fraction * loadedShare * Self.loadingShare
+        let loaded = await loadState.preload(cameras, on: mapView, afterEach: { scene.calibrateGround() }, onProgress: { fraction in
+            progress.fraction = fraction * Self.loadingShare
         })
         try Task.checkCancellation()
         guard loaded else { throw CancellationError() }
-        let surveyed = await scene.ground.survey(survey, on: mapView, loadState: loadState, onProgress: { fraction in
-            progress.fraction = (loadedShare + fraction * (surveyedShare - loadedShare)) * Self.loadingShare
-        })
-        try Task.checkCancellation()
-        guard surveyed else { throw CancellationError() }
-        let ready = await loadState.preload([timeline.overviewCamera], on: mapView, afterEach: calibrate, onProgress: { fraction in
-            progress.fraction = (surveyedShare + fraction * (1 - surveyedShare)) * Self.loadingShare
-        })
-        try Task.checkCancellation()
-        guard ready else { throw CancellationError() }
         progress.isLoadingMap = false
 
         // 2. The video file
