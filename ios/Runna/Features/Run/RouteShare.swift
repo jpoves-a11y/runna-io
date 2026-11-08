@@ -283,10 +283,13 @@ struct RouteShareEditor: View {
     let duration: Int?
     /// The owner's colour (offered first).
     let ownerColor: Color
+    /// Whose flag runs the route (nil: the signed-in user).
+    let runner: ReplayRunner?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(SessionStore.self) private var session: SessionStore?
 
     @AppStorage("shareFormat") private var formatRaw = RouteShareFormat.story.rawValue
     @State private var config: RouteReplayConfig
@@ -311,11 +314,12 @@ struct RouteShareEditor: View {
         case failed
     }
 
-    init(coordinates: [CLLocationCoordinate2D], distance: Double, duration: Int?, title: String, date: Date?, area: Double?, color: Color) {
+    init(coordinates: [CLLocationCoordinate2D], distance: Double, duration: Int?, title: String, date: Date?, area: Double?, color: Color, runner: ReplayRunner? = nil) {
         self.coordinates = coordinates
         self.distance = distance
         self.duration = duration
         self.ownerColor = color
+        self.runner = runner
         _config = State(initialValue: RouteReplayConfig(
             mode: RouteReplayMode(rawValue: UserDefaults.standard.string(forKey: "routeReplayMode") ?? "") ?? .threeD,
             satellite: UserDefaults.standard.object(forKey: "routeReplaySatellite") as? Bool ?? true,
@@ -325,6 +329,13 @@ struct RouteShareEditor: View {
     }
 
     private var format: RouteShareFormat { RouteShareFormat(rawValue: formatRaw) ?? .story }
+
+    /// The flag's runner: the one given, else the signed-in user.
+    private var flagRunner: ReplayRunner {
+        if let runner { return runner }
+        if let user = session?.user { return ReplayRunner(user: user) }
+        return ReplayRunner(name: "", avatar: nil, color: "#16A34A")
+    }
 
     private var palette: [Color] { [ownerColor, .brand, .white, .gold, .steal, .sky, .grape] }
     private var routeColor: Color { palette[min(colorIndex, palette.count - 1)] }
@@ -415,7 +426,8 @@ struct RouteShareEditor: View {
                 allowsFullScreen: false,
                 config: config,
                 share: options,
-                restartToken: restartToken
+                restartToken: restartToken,
+                runner: flagRunner
             )
         case .rendering:
             renderingCard
@@ -631,7 +643,8 @@ struct RouteShareEditor: View {
             distance: distance,
             duration: duration,
             format: format,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            runner: flagRunner
         )
         let renderer = RouteVideoRenderer(job: job, screenScale: displayScale)
         self.renderer = renderer
@@ -639,6 +652,7 @@ struct RouteShareEditor: View {
         renderTask = Task { @MainActor in
             // Asked first, so the question doesn't wait for the end
             let canSave = await VideoLibrary.requestAccess()
+            renderer.setRunnerPhoto(await job.runner.loadPhoto())
             do {
                 Self.removeOldVideos()
                 let url = try await renderer.render()

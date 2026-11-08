@@ -8,6 +8,8 @@ struct RouteDetailView: View {
     let color: String?
     /// Rename/delete are only offered on your own activities.
     let editable: Bool
+    /// The runner, for the flag of the replay and the video (nil: you).
+    let owner: ReplayRunner?
     let onChange: () -> Void
 
     @Environment(SessionStore.self) private var session
@@ -20,10 +22,11 @@ struct RouteDetailView: View {
     @State private var showsReplay = false
     @State private var showsShareEditor = false
 
-    init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
+    init(route: RunRoute, color: String? = nil, editable: Bool = true, owner: ReplayRunner? = nil, onChange: @escaping () -> Void = {}) {
         self.route = route
         self.color = color
         self.editable = editable
+        self.owner = owner
         self.onChange = onChange
         _name = State(initialValue: route.name)
     }
@@ -88,7 +91,8 @@ struct RouteDetailView: View {
                 title: name,
                 date: route.startDate,
                 area: route.territoryArea,
-                color: lineColor
+                color: lineColor,
+                runner: owner
             )
         }
         .disabled(isWorking)
@@ -136,7 +140,7 @@ struct RouteDetailView: View {
                     .padding(DS.Spacing.m)
                 }
                 .fullScreenCover(isPresented: $showsReplay) {
-                    RouteReplayFullScreen(coordinates: route.locations, color: lineColor, distance: route.distance, duration: route.duration)
+                    RouteReplayFullScreen(coordinates: route.locations, color: lineColor, distance: route.distance, duration: route.duration, runner: owner)
                 }
         } else {
             EmptyStateView(

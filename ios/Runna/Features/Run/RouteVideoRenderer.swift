@@ -40,6 +40,8 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         let format: RouteShareFormat
         /// The editor's, so the titles look as in its preview
         let colorScheme: ColorScheme
+        /// Whose flag runs the route
+        let runner: ReplayRunner
     }
 
     enum RenderError: LocalizedError {
@@ -71,7 +73,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     private var director: ReplayDirector
     private let loadState = MapLoadState()
     private let clock = FrameClock()
-    private var finishAlpha: CGFloat = 0
+    private var flagAlpha: CGFloat = 0
     private var overlayCache: (key: String, image: CGImage)?
     /// Some iOS versions only snapshot the map after a screen update
     private var snapshotsAfterScreenUpdates = false
@@ -80,7 +82,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         self.job = job
         let timeline = RouteReplayTimeline(plan: job.plan, mode: job.mode, speed: job.speed)
         self.timeline = timeline
-        scene = ReplayScene(timeline: timeline, color: job.color)
+        scene = ReplayScene(timeline: timeline, color: job.color, runner: job.runner)
         director = ReplayDirector(timeline: timeline)
         let scale = max(1, screenScale)
         let size = CGSize(width: job.format.videoSize.width / scale, height: job.format.videoSize.height / scale)
@@ -95,6 +97,11 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         ReplayScene.applyStyle(satellite: job.satellite, mode: job.mode, to: mapView)
         scene.install(on: mapView)
         mapView.camera = timeline.overviewCamera.mkCamera
+    }
+
+    /// The runner's photo for the flag (set before rendering).
+    func setRunnerPhoto(_ photo: UIImage?) {
+        scene.runnerFlag.setPhoto(photo)
     }
 
     /// Seconds of video.
@@ -190,6 +197,13 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
+            // The flag on the ground where MapKit put the runner on the frame now drawn (without the
+            // 3D model's lifts), waving with the video's clock; one refresh so it's on screen when
+            // the frame is copied
+            scene.measureRunner(time: elapsed, detectsLifts: frame.run > 0)
+            scene.placeRunner(at: frame.runner)
+            scene.runnerFlag.wave(at: elapsed)
+            await clock.next()
 
             var waits = 0
             while !input.isReadyForMoreMediaData {
@@ -242,14 +256,16 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
 
     // MARK: Frames
 
-    /// Sets the map up for `frame`: the finish flag (fading in a quarter of a second of video), camera
-    /// and line (the runner is the line's end).
+    /// Sets the map up for `frame`: the runner's flag (fading in a quarter of a second of video, once
+    /// they set off), camera and line. The flag is placed once the frame is drawn.
     private func apply(_ frame: ReplayFrame, elapsed: Double, dt: Double) {
         let fade = CGFloat(dt / 0.25)
-        finishAlpha = Self.approach(finishAlpha, frame.showsFinish ? 1 : 0, by: fade)
+        flagAlpha = Self.approach(flagAlpha, frame.run > 0 ? 1 : 0, by: fade)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        scene.setAlpha(finishAlpha, for: scene.finishPin, animated: false)
+        scene.setFlagAlpha(flagAlpha, animated: false)
+        // MapKit places the runner's probe while the frame is drawn (measured once it is)
+        scene.runnerProbe.coordinate = frame.runner
         CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)
