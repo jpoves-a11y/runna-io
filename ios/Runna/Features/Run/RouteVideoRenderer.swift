@@ -71,7 +71,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     private var director: ReplayDirector
     private let loadState = MapLoadState()
     private let clock = FrameClock()
-    private var runnerAlpha: CGFloat = 0
     private var finishAlpha: CGFloat = 0
     private var overlayCache: (key: String, image: CGImage)?
     /// Some iOS versions only snapshot the map after a screen update
@@ -81,7 +80,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         self.job = job
         let timeline = RouteReplayTimeline(plan: job.plan, mode: job.mode, speed: job.speed)
         self.timeline = timeline
-        scene = ReplayScene(timeline: timeline, color: job.color, pulses: false)
+        scene = ReplayScene(timeline: timeline, color: job.color)
         director = ReplayDirector(timeline: timeline)
         let scale = max(1, screenScale)
         let size = CGSize(width: job.format.videoSize.width / scale, height: job.format.videoSize.height / scale)
@@ -191,11 +190,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
-            // The runner on the ground where MapKit put it on the frame now drawn (without the 3D
-            // model's lifts), and one refresh so its new place is on screen when the frame is copied
-            scene.measureRunner(time: elapsed, detectsLifts: frame.showsRunner)
-            scene.placeRunner(at: frame.runner)
-            await clock.next()
 
             var waits = 0
             while !input.isReadyForMoreMediaData {
@@ -248,19 +242,14 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
 
     // MARK: Frames
 
-    /// Sets the map up for `frame`: markers (fading in a quarter of a second of video, the runner's
-    /// halo breathing with the video's clock), camera and line. The runner is placed once it's drawn.
+    /// Sets the map up for `frame`: the finish flag (fading in a quarter of a second of video), camera
+    /// and line (the runner is the line's end).
     private func apply(_ frame: ReplayFrame, elapsed: Double, dt: Double) {
         let fade = CGFloat(dt / 0.25)
-        runnerAlpha = Self.approach(runnerAlpha, frame.showsRunner ? 1 : 0, by: fade)
         finishAlpha = Self.approach(finishAlpha, frame.showsFinish ? 1 : 0, by: fade)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        scene.setRunnerAlpha(runnerAlpha, animated: false)
         scene.setAlpha(finishAlpha, for: scene.finishPin, animated: false)
-        scene.runnerDot.setPulse(phase: elapsed / 1.4)
-        // MapKit places the runner's probe while the frame is drawn (measured once it is)
-        scene.runnerProbe.coordinate = frame.runner
         CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)

@@ -185,7 +185,13 @@ async function handleProcessRouteTerritory(
       const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
       const distanceKm = distance ? distance / 1000 : 0;
       const newAreaKm2 = conquestResult.newAreaConquered / 1000000;
-      await notifyFriendNewActivity(storage, userId, distanceKm, newAreaKm2, env);
+      // "X ha salido a correr": only for a run that just happened (not an old one imported or processed
+      // again) and only once per run, however many times it's processed
+      if (isRecentRun(completedAt || route.completedAt) && await storage.claimFriendActivityNotification(routeId)) {
+        await notifyFriendNewActivity(storage, userId, distanceKm, newAreaKm2, env);
+      } else {
+        console.log(`[QUEUE] Friend activity push skipped for route ${routeId} (old run or already notified)`);
+      }
 
       // Check overtakes (top 10 friends) — batch load users in 1 query
       const friendIds = await storage.getFriendIds(userId);
@@ -251,6 +257,15 @@ async function handleReprocessFriendGroup(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Friends hear about a run only if it ended in the last 12 hours. */
+const FRIEND_ACTIVITY_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+function isRecentRun(completedAt: string | Date | null | undefined): boolean {
+  if (!completedAt) return false;
+  const end = new Date(completedAt).getTime();
+  return Number.isFinite(end) && Date.now() - end <= FRIEND_ACTIVITY_MAX_AGE_MS;
+}
 
 async function updateFeedEventSafe(
   storage: WorkerStorage,

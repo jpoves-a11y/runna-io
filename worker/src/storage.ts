@@ -209,6 +209,7 @@ export class WorkerStorage {
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE victim_id = ${userId} OR attacker_id = ${userId}`);
     await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
@@ -337,6 +338,22 @@ export class WorkerStorage {
       started_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
+    // Runs whose "X ha salido a correr" push went out (once per run, however often it's processed)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS friend_activity_notified (
+      route_id TEXT PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
+      notified_at TEXT NOT NULL
+    )`);
+  }
+
+  /**
+   * Claims the "has gone for a run" push of a route: true only the first time for that route (one
+   * atomic insert), so a run processed again (another import of it, a retry) doesn't notify again.
+   */
+  async claimFriendActivityNotification(routeId: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const result = await this.db.run(sql`INSERT OR IGNORE INTO friend_activity_notified (route_id, notified_at)
+      VALUES (${routeId}, ${new Date().toISOString()})`);
+    return (result.rowsAffected || 0) > 0;
   }
 
   // ===== Login attempt limits (see worker/src/rateLimit.ts) =====
@@ -2137,6 +2154,7 @@ export class WorkerStorage {
   async deleteAllRoutesByUserId(userId: string): Promise<void> {
     await this.ensureSchemaUpgrades();
     await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(routes).where(eq(routes.userId, userId));
   }
