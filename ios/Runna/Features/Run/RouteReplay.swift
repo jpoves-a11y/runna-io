@@ -795,16 +795,15 @@ private struct ReplayShareLayer: View {
 /// rate). Each frame is computed for the moment it will be on screen, and the runner, the camera and
 /// the route line advance together:
 /// - Before it plays, the camera goes through the views the replay will show, behind a "loading"
-///   cover, until MapKit has loaded each of them: no area is missing while it plays. Meanwhile
-///   MapKit's 3D camera is measured (ReplayGroundModel).
+///   cover, until MapKit has loaded each of them: no area is missing while it plays.
 /// - The route run so far is ONE MapKit overlay (white casing and coloured line drawn in the same
 ///   pass, lying on the map and on the 3D terrain). Each frame its renderer redraws only the few
 ///   tiles around the advancing tip: no overlay is added or removed while running, so MapKit stays
 ///   light (no dropped frames) and nothing flickers.
 /// - The line ends exactly where the runner is, with a disc drawn in the same pass; on it stands the
-///   runner's flag (RunnerFlagView), a view on top of the map so buildings never hide it. Its pole
-///   runs along the world's vertical through the end of the line as drawn on screen, so the line's
-///   end is on it however high the ground. At the finish it stays planted, waving.
+///   runner's flag (RunnerFlag), drawn by the line's renderer in the same pass, painted on the
+///   ground so it stands up from the camera: it can't lag behind the line, drift from it or jump
+///   onto buildings and trees. At the finish it stays planted, waving.
 /// - The camera looks at a much smoother copy of the route at the runner's distance (it glides
 ///   through turns, with no time lag) and is never more than 12% of its distance from the runner,
 ///   so the runner can't leave the frame.
@@ -887,9 +886,6 @@ private struct RouteReplayMapView: UIViewRepresentable {
         private var preloadTask: Task<Void, Never>?
         /// Route, view and map whose views are loaded already (playing it again needn't wait)
         private var preloadedKey: String?
-        /// MapKit's 3D camera and the ground along the route, measured while loading (kept with the
-        /// loaded views, to play again)
-        private var ground = ReplayGroundModel()
         private var displayLink: CADisplayLink?
         private var startTime: CFTimeInterval = 0
         private var lastTick: CFTimeInterval = 0
@@ -937,12 +933,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
             self.runner = runner
             plantedAt = nil
             let key = "\(plan.points.count)-\(Int(plan.length))-\(mode.rawValue)-\(satellite)"
-            if preloadedKey != key {
-                // Another route or look: everything is measured again as it loads
-                ground = ReplayGroundModel()
-            }
             let timeline = RouteReplayTimeline(plan: plan, mode: mode, speed: speed)
-            let scene = ReplayScene(timeline: timeline, color: color, runner: runner, ground: ground)
+            let scene = ReplayScene(timeline: timeline, color: color, runner: runner)
             scene.runnerFlag.setPhoto(runnerPhoto)
             self.scene = scene
             director = ReplayDirector(timeline: timeline)
@@ -966,8 +958,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
             }
             let loadState = self.loadState
             preloadTask = Task { [weak self, cameras] in
-                // MapKit's camera measured on each view once drawn (a calculation: the camera stays put)
-                let loaded = await loadState.preload(cameras, on: mapView, afterEach: { scene.calibrateGround() }, onProgress: { fraction in
+                let loaded = await loadState.preload(cameras, on: mapView, onProgress: { fraction in
                     self?.progress?.loading = fraction
                 })
                 guard loaded, !Task.isCancelled, let self, self.scene === scene else { return }
@@ -1027,7 +1018,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
             if let plantedAt {
                 lastTick = now
                 // Planted: on the ground at the finish, in a breeze (still without motion)
-                scene.moveFlag(to: plantedAt, streamBearing: nil, moving: false, dt: reduceMotion ? 0 : dt)
+                scene.updateFlag(streamBearing: nil, moving: false, dt: reduceMotion ? 0 : dt)
                 return
             }
             lastTick = now
@@ -1045,16 +1036,15 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 return
             }
 
-            // The camera, then the flag on the ground at the end of the line as it's drawn now, and
-            // the line: all for the same frame. The flag shows once the runner sets off and stays
-            // (planted at the finish when they get there), its cloth blown back from where they're going.
+            // The camera, the line, and the flag the line's renderer draws at its end: all for the same
+            // frame. The flag shows once the runner sets off and stays (planted at the finish when
+            // they get there), its cloth blown back from where they're going.
             scene.setFlagAlpha(frame.run > 0 ? 1 : 0, animated: true)
             if !userTookOver {
                 mapView.camera = frame.camera.mkCamera
             }
-            let flagDistance = Self.flagDistance(for: frame, timeline: scene.timeline, shown: scene.shownLineEnd)
-            scene.moveFlag(to: scene.lineEnd(at: flagDistance), streamBearing: plan.windBearing(at: flagDistance), moving: frame.showsRunner, dt: dt)
             scene.drawTrail(to: frame.trail)
+            scene.updateFlag(streamBearing: plan.windBearing(at: frame.trail), moving: frame.showsRunner, dt: dt)
             if frame.isRevealed {
                 scene.addArea()
             }
@@ -1064,16 +1054,6 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 setInteractive(true)
             }
             publish(fraction: frame.run / plan.length, finished: frame.isFinished, force: false)
-        }
-
-        /// How far along the route the flag stands: where the end of the line is drawn on screen
-        /// (MapKit draws the line's tiles a frame or two after it grows, so the flag would lead it),
-        /// never more than a moment behind the runner, and at the finish once the run is over.
-        static func flagDistance(for frame: ReplayFrame, timeline: RouteReplayTimeline, shown: Double) -> Double {
-            let length = timeline.plan.length
-            guard !frame.isRevealed, frame.trail < length else { return length }
-            let lag = max(25, 0.3 * length / max(1, timeline.run))
-            return min(frame.trail, max(frame.trail - lag, shown))
         }
 
         private func publish(fraction: Double, finished: Bool, force: Bool) {
@@ -1134,13 +1114,6 @@ private struct RouteReplayMapView: UIViewRepresentable {
         func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
             loadState.didFinishRendering(fullyRendered: fullyRendered)
         }
-
-        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            // The map is the user's and it has just stopped: a still frame to measure MapKit's camera on
-            if plantedAt != nil {
-                scene?.calibrateGround()
-            }
-        }
     }
 }
 
@@ -1161,13 +1134,15 @@ final class ReplayScene {
     let color: UIColor
     let trail: ReplayTrail
     let startPin = ReplayPin(kind: .start)
-    /// Carries the flag when MapKit places it (see moveFlag)
-    private let runnerPin = ReplayPin(kind: .runner)
-    private(set) var flagInAnnotation = false
-    /// The runner's flag, on top of the map, its foot on the ground at the end of the line
-    let runnerFlag: RunnerFlagView
-    /// MapKit's 3D camera, to stand the flag's pole along the vertical through the line's end
-    let ground: ReplayGroundModel
+    /// The runner's flag, drawn by the line's renderer at the end of the line (see updateFlag)
+    let runnerFlag: RunnerFlag
+    /// The flag's opacity, and where it's fading to (a quarter of a second)
+    private var flagAlpha: CGFloat = 0
+    private var flagAlphaTarget: CGFloat = 0
+    /// Where the flag was drawn last (redrawn with the new one)
+    private var flagRect: MKMapRect?
+    /// Map points per screen point at the end of the line, last measured
+    private var flagScale: Double?
 
     private let ghostLine: MKPolyline
     /// Margin (map points) redrawn around the line's tip: its width and round end, even on the
@@ -1181,11 +1156,10 @@ final class ReplayScene {
 
     var plan: RouteReplayPlan { timeline.plan }
 
-    init(timeline: RouteReplayTimeline, color: UIColor, runner: ReplayRunner, ground: ReplayGroundModel) {
+    init(timeline: RouteReplayTimeline, color: UIColor, runner: ReplayRunner) {
         self.timeline = timeline
         self.color = color
-        self.ground = ground
-        runnerFlag = RunnerFlagView(runner: runner)
+        runnerFlag = RunnerFlag(runner: runner)
         var points = timeline.plan.points
         ghostLine = MKPolyline(coordinates: &points, count: points.count)
         trail = ReplayTrail(plan: timeline.plan)
@@ -1207,7 +1181,7 @@ final class ReplayScene {
     }
 
     /// Clears the map and puts the route on it: the faint whole route, the line (empty yet) on top
-    /// of it, the start marker, the runner's probe and their flag (hidden until they run).
+    /// of it and the start marker (the line's renderer draws the flag at its end).
     func install(on mapView: MKMapView) {
         self.mapView = mapView
         mapView.removeOverlays(mapView.overlays)
@@ -1216,76 +1190,47 @@ final class ReplayScene {
         mapView.addOverlay(trail, level: .aboveRoads)
         startPin.coordinate = plan.points.first ?? plan.center
         mapView.addAnnotations([startPin])
-        for view in mapView.subviews where view is RunnerFlagView {
-            view.removeFromSuperview()
-        }
-        runnerFlag.alpha = 0
-        mapView.addSubview(runnerFlag)
     }
 
-    /// Stands the flag at `coordinate` (the end of the line), with the camera just set, and moves it
-    /// on by `dt`: `streamBearing` is where its cloth is blown (nil: planted, it keeps its way).
-    func moveFlag(to coordinate: CLLocationCoordinate2D, streamBearing: Double?, moving: Bool, dt: Double) {
+    /// Moves the flag on by `dt` (`streamBearing`: where its cloth is blown, nil: planted, it keeps its
+    /// way) and hands it to the line's renderer, which draws it at the end of the line, painted on the
+    /// ground so that from the camera just set it stands up. Call it after `drawTrail`.
+    func updateFlag(streamBearing: Double?, moving: Bool, dt: Double) {
         guard let mapView else { return }
-        if ground.pickMode == .planar && !flagInAnnotation {
-            // MapKit can't tell where its 3D ground is on screen: the flag goes into an annotation,
-            // which MapKit places itself
-            useAnnotationFlag(on: mapView)
-        }
-        if flagInAnnotation {
-            runnerPin.coordinate = coordinate
-        } else if let point = ground.locate(coordinate, on: mapView) {
-            // The screen point MapKit says is on the line's end
-            runnerFlag.stand(at: point)
-        } else if let point = ground.project(coordinate, on: mapView) {
-            runnerFlag.stand(at: point)
-        } else {
-            let point = mapView.convert(coordinate, toPointTo: mapView)
-            if point.x.isFinite, point.y.isFinite {
-                runnerFlag.stand(at: point)
-            }
+        if flagAlpha != flagAlphaTarget {
+            let step = CGFloat(max(0, dt) / 0.25)
+            flagAlpha = flagAlpha < flagAlphaTarget ? min(flagAlphaTarget, flagAlpha + step) : max(flagAlphaTarget, flagAlpha - step)
         }
         let camera = mapView.camera
         runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.heading, cameraPitch: Double(camera.pitch), dt: dt)
+
+        let geometry = trail.geometry
+        let foot = geometry.mapPoint(at: geometry.drawnDistance)
+        let heading = camera.heading * .pi / 180
+        // Map points per screen point there: MapKit's scale 20 m across the camera's view
+        let mapPointsPerMeter = MKMapPointsPerMeterAtLatitude(foot.coordinate.latitude)
+        let across = 20 * mapPointsPerMeter
+        let a = mapView.convert(foot.coordinate, toPointTo: mapView)
+        let b = mapView.convert(MKMapPoint(x: foot.x + cos(heading) * across, y: foot.y + sin(heading) * across).coordinate, toPointTo: mapView)
+        let points = Double(hypot(b.x - a.x, b.y - a.y))
+        if points.isFinite, points > 0.01 {
+            flagScale = across / points
+        }
+        guard let scale = flagScale else { return }
+        let pose = FlagPose(heading: heading, cosPitch: max(0.3, cos(Double(camera.pitch) * .pi / 180)), mapPointsPerPoint: scale)
+        geometry.setFlag(runnerFlag.drawing(alpha: flagAlpha), pose: pose)
+        // The tiles under the flag, where it was and where it is
+        let rect = pose.mapRect(foot: foot)
+        let dirty = flagRect.map { $0.union(rect) } ?? rect
+        flagRect = rect
+        mapView.renderer(for: trail)?.setNeedsDisplay(dirty)
     }
 
-    /// Measures MapKit's camera on the frame shown now. Call it only when the map is still and drawn.
-    func calibrateGround() {
-        guard let mapView else { return }
-        ground.calibrate(on: mapView)
-    }
-
-    /// The end of the line after `distance` metres: the very point the line's renderer draws it to.
-    func lineEnd(at distance: Double) -> CLLocationCoordinate2D {
-        trail.geometry.mapPoint(at: distance).coordinate
-    }
-
-    /// How far along the route the end of the line is drawn on screen now (metres).
-    var shownLineEnd: Double { trail.geometry.shownTip }
-
-    /// Moves the flag into an annotation at the end of the line: MapKit places it on its 3D ground
-    /// itself, in step with the map (on the photo-real model it may stand on trees or roofs).
-    private func useAnnotationFlag(on mapView: MKMapView) {
-        flagInAnnotation = true
-        runnerFlag.removeFromSuperview()
-        runnerFlag.transform = .identity
-        mapView.addAnnotation(runnerPin)
-    }
-
-    /// Where the foot of the flag's pole is on the map's view now (wherever the flag is held).
-    var flagFoot: CGPoint? {
-        guard let mapView, runnerFlag.superview != nil else { return nil }
-        return runnerFlag.convert(runnerFlag.footInBounds, to: mapView)
-    }
-
-    /// Shows the flag; `animated` fades it in a quarter of a second.
+    /// Shows the flag; `animated` fades it in a quarter of a second (as `updateFlag` goes).
     func setFlagAlpha(_ alpha: CGFloat, animated: Bool) {
-        let flag = runnerFlag
-        guard flag.alpha != alpha else { return }
-        if animated {
-            UIView.animate(withDuration: 0.25) { flag.alpha = alpha }
-        } else {
-            flag.alpha = alpha
+        flagAlphaTarget = alpha
+        if !animated {
+            flagAlpha = alpha
         }
     }
 
@@ -1347,7 +1292,7 @@ final class ReplayScene {
     /// The start or finish marker's view.
     func view(for annotation: MKAnnotation) -> MKAnnotationView? {
         guard let pin = annotation as? ReplayPin else { return nil }
-        let view = ReplayPinView(annotation: pin, kind: pin.kind, color: color, flag: pin.kind == .runner ? runnerFlag : nil)
+        let view = ReplayPinView(annotation: pin, kind: pin.kind, color: color)
         view.alpha = alphas[pin.kind] ?? 1
         return view
     }
@@ -1511,6 +1456,8 @@ final class TrailGeometry: @unchecked Sendable {
     private var tilesDrawing = 0
     /// The line's end (metres) on the latest finished tile that showed it, and that tile's change
     private var tip: (generation: Int, distance: Double) = (0, 0)
+    /// The runner's flag, drawn at the line's end, and how it's painted on the ground
+    private var flag: (drawing: FlagDrawing, pose: FlagPose)?
 
     init(plan: RouteReplayPlan) {
         points = plan.points.map { MKMapPoint($0) }
@@ -1533,11 +1480,19 @@ final class TrailGeometry: @unchecked Sendable {
         lock.withLock { generation }
     }
 
+    /// The flag as it is now (a change, like the distance).
+    func setFlag(_ drawing: FlagDrawing, pose: FlagPose) {
+        lock.withLock {
+            flag = (drawing, pose)
+            generation += 1
+        }
+    }
+
     /// The renderer starts a tile: what to draw, and which change it shows.
-    func beginTile() -> (distance: Double, generation: Int) {
-        lock.withLock { () -> (distance: Double, generation: Int) in
+    func beginTile() -> (distance: Double, generation: Int, flag: (drawing: FlagDrawing, pose: FlagPose)?) {
+        lock.withLock { () -> (distance: Double, generation: Int, flag: (drawing: FlagDrawing, pose: FlagPose)?) in
             tilesDrawing += 1
-            return (drawn, generation)
+            return (drawn, generation, flag)
         }
     }
 
@@ -1614,8 +1569,9 @@ final class ReplayTrail: NSObject, MKOverlay {
         let geometry = TrailGeometry(plan: plan)
         self.geometry = geometry
         coordinate = plan.center
-        // With a margin so the line's width and round ends are never clipped at the edges
-        let margin = 300 * MKMapPointsPerMeterAtLatitude(plan.center.latitude)
+        // With a margin so the line's width and round ends are never clipped at the edges,
+        // and the runner's flag, painted on the ground at its end, is never cut off either
+        let margin = 1500 * MKMapPointsPerMeterAtLatitude(plan.center.latitude)
         boundingMapRect = geometry.mapRect(from: 0, to: geometry.length).insetBy(dx: -margin, dy: -margin)
         super.init()
     }
@@ -1638,7 +1594,7 @@ final class ReplayTrailRenderer: MKOverlayRenderer {
     }
 
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
-        let (distance, generation) = geometry.beginTile()
+        let (distance, generation, flag) = geometry.beginTile()
         // Whether this tile shows the line's end (the runner's flag stands where it's drawn)
         var shownTip: Double?
         defer { geometry.endTile(generation: generation, tipDistance: shownTip) }
@@ -1691,17 +1647,28 @@ final class ReplayTrailRenderer: MKOverlayRenderer {
         // route is shown.
         let tip = geometry.mapPoint(at: distance)
         let halo = 13 / zoomScale
-        guard mapRect.insetBy(dx: -Double(halo), dy: -Double(halo)).contains(tip) else { return }
-        shownTip = distance
-        guard distance < geometry.length else { return }
-        let center = point(for: tip)
-        func disc(_ radius: CGFloat, _ color: CGColor) {
-            context.setFillColor(color)
-            context.fillEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+        if mapRect.insetBy(dx: -Double(halo), dy: -Double(halo)).contains(tip) {
+            shownTip = distance
+            if distance < geometry.length {
+                let center = point(for: tip)
+                func disc(_ radius: CGFloat, _ color: CGColor) {
+                    context.setFillColor(color)
+                    context.fillEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+                }
+                disc(halo, haloColor)
+                disc(8.5 / zoomScale, casingColor)
+                disc(5.5 / zoomScale, lineColor)
+            }
         }
-        disc(halo, haloColor)
-        disc(8.5 / zoomScale, casingColor)
-        disc(5.5 / zoomScale, lineColor)
+
+        // The runner's flag, standing on that end: painted on the ground in this same pass, stretched
+        // away from the camera so that from it the flag stands up (see FlagPose)
+        if let flag, flag.drawing.alpha > 0.01, flag.pose.mapRect(foot: tip).intersects(mapRect) {
+            context.saveGState()
+            context.concatenate(flag.pose.transform(foot: point(for: tip)))
+            flag.drawing.draw(in: context)
+            context.restoreGState()
+        }
     }
 }
 
@@ -1710,7 +1677,6 @@ final class ReplayTrailRenderer: MKOverlayRenderer {
 final class ReplayPin: NSObject, MKAnnotation {
     enum Kind {
         case start
-        case runner
     }
 
     let kind: Kind
@@ -1722,9 +1688,9 @@ final class ReplayPin: NSObject, MKAnnotation {
     }
 }
 
-/// Start ring (the runner's flag is RunnerFlagView).
+/// Start ring (the runner's flag is drawn by the line's renderer).
 final class ReplayPinView: MKAnnotationView {
-    init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor, flag: RunnerFlagView? = nil) {
+    init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor) {
         super.init(annotation: annotation, reuseIdentifier: nil)
         collisionMode = .none
         displayPriority = .required
@@ -1739,17 +1705,6 @@ final class ReplayPinView: MKAnnotationView {
             dot.layer.borderWidth = 3
             addSubview(dot)
             zPriority = .defaultUnselected
-        case .runner:
-            // The flag, its pole's foot on the annotation's point
-            if let flag {
-                frame = CGRect(origin: .zero, size: flag.bounds.size)
-                flag.removeFromSuperview()
-                flag.transform = .identity
-                flag.center = CGPoint(x: bounds.midX, y: bounds.maxY)
-                addSubview(flag)
-                centerOffset = CGPoint(x: 0, y: -bounds.height / 2)
-            }
-            zPriority = .max
         }
     }
 

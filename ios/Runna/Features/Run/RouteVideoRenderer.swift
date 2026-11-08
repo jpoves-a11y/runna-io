@@ -74,8 +74,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     private let loadState = MapLoadState()
     private let clock = FrameClock()
     private var flagAlpha: CGFloat = 0
-    /// The line's colour (0...255), to find its end in a frame's pixels
-    private var lineRGB = (r: 0, g: 0, b: 0)
     private var overlayCache: (key: String, image: CGImage)?
     /// Some iOS versions only snapshot the map after a screen update
     private var snapshotsAfterScreenUpdates = false
@@ -84,7 +82,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         self.job = job
         let timeline = RouteReplayTimeline(plan: job.plan, mode: job.mode, speed: job.speed)
         self.timeline = timeline
-        scene = ReplayScene(timeline: timeline, color: job.color, runner: job.runner, ground: ReplayGroundModel())
+        scene = ReplayScene(timeline: timeline, color: job.color, runner: job.runner)
         director = ReplayDirector(timeline: timeline)
         let scale = max(1, screenScale)
         let size = CGSize(width: job.format.videoSize.width / scale, height: job.format.videoSize.height / scale)
@@ -98,11 +96,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         mapView.isUserInteractionEnabled = false
         ReplayScene.applyStyle(satellite: job.satellite, mode: job.mode, to: mapView)
         scene.install(on: mapView)
-        // The flag is drawn into each frame by hand, on the disc at the end of the line (drawFlag)
-        scene.runnerFlag.isHidden = true
-        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
-        job.color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
-        lineRGB = (Int(min(1, max(0, red)) * 255), Int(min(1, max(0, green)) * 255), Int(min(1, max(0, blue)) * 255))
         mapView.camera = timeline.overviewCamera.mkCamera
     }
 
@@ -120,12 +113,10 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
 
-        // 1. Every view of the replay loaded first (measuring MapKit's camera on each), then back to
-        // the first one
+        // 1. Every view of the replay loaded first, then back to the first one
         let cameras = ReplayDirector.preloadCameras(for: timeline) + [timeline.overviewCamera]
         let progress = self.progress
-        let scene = self.scene
-        let loaded = await loadState.preload(cameras, on: mapView, afterEach: { scene.calibrateGround() }, onProgress: { fraction in
+        let loaded = await loadState.preload(cameras, on: mapView, onProgress: { fraction in
             progress.fraction = fraction * Self.loadingShare
         })
         try Task.checkCancellation()
@@ -189,6 +180,13 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             let dt = index == 0 ? 0 : step
             let frame = director.frame(at: elapsed, dt: dt)
             apply(frame, elapsed: elapsed, dt: dt)
+            // The flag at the end of the line, drawn by the line's renderer with it (waited for with
+            // the line's tiles), moving with the video's clock
+            scene.updateFlag(
+                streamBearing: frame.isFinished || frame.run >= timeline.plan.length ? nil : timeline.plan.windBearing(at: frame.run),
+                moving: frame.showsRunner,
+                dt: dt
+            )
             // The titles are made while MapKit draws the map
             let overlay = autoreleasepool { overlayImage(for: frame, elapsed: elapsed) }
 
@@ -201,22 +199,11 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
                 calmRefreshes: 1,
                 patience: index == 0 ? 2 : 1
             ) { refreshes in
-                // The line's tiles redrawn (MapKit may need none: not waited for long)
+                // The line's tiles (and the flag's) redrawn (MapKit may need none: not waited for long)
                 geometry.hasDrawn(generation: change) || refreshes > 12
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
-            // The frame is drawn and still: MapKit's camera measured on it, and the flag on the ground
-            // at the end of the line (drawn up to `trail`), moving with the video's clock; one refresh
-            // so it's on screen when the frame is copied
-            scene.calibrateGround()
-            scene.moveFlag(
-                to: scene.lineEnd(at: frame.trail),
-                streamBearing: frame.isFinished || frame.run >= timeline.plan.length ? nil : timeline.plan.windBearing(at: frame.run),
-                moving: frame.showsRunner,
-                dt: dt
-            )
-            await clock.next()
 
             var waits = 0
             while !input.isReadyForMoreMediaData {
@@ -270,14 +257,11 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     // MARK: Frames
 
     /// Sets the map up for `frame`: the runner's flag (fading in a quarter of a second of video, once
-    /// they set off), camera and line. The flag is placed once the frame is drawn.
+    /// they set off), camera and line.
     private func apply(_ frame: ReplayFrame, elapsed: Double, dt: Double) {
         let fade = CGFloat(dt / 0.25)
         flagAlpha = Self.approach(flagAlpha, frame.run > 0 ? 1 : 0, by: fade)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         scene.setFlagAlpha(flagAlpha, animated: false)
-        CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)
         if frame.isRevealed {
@@ -316,103 +300,10 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             drew = snapshotMap(in: rect, context: context)
         }
         guard drew else { return false }
-        drawFlag(in: context, rect: rect)
         if let overlay {
             UIImage(cgImage: overlay).draw(in: rect)
         }
         return true
-    }
-
-    /// The runner's flag, drawn into the frame with the foot of its pole on the disc at the end of
-    /// the line exactly as it came out in this frame (found in its pixels near where the flag was
-    /// placed), or where it was placed if the disc can't be seen.
-    private func drawFlag(in context: CGContext, rect: CGRect) {
-        let flag = scene.runnerFlag
-        guard flagAlpha > 0, mapSize.width > 0, let placed = scene.flagFoot else { return }
-        let scale = rect.width / mapSize.width
-        let near = CGPoint(x: placed.x * scale, y: placed.y * scale)
-        var foot = placed
-        if let disc = Self.findDisc(in: context, near: near, reach: 60 * scale, scale: scale, color: lineRGB) {
-            foot = CGPoint(x: disc.x / scale, y: disc.y / scale)
-        }
-        let opacity = flag.layer.opacity
-        context.saveGState()
-        context.setAlpha(flagAlpha)
-        context.translateBy(x: foot.x * scale, y: foot.y * scale)
-        context.scaleBy(x: scale, y: scale)
-        let anchor = flag.footInBounds
-        context.translateBy(x: -anchor.x, y: -anchor.y)
-        flag.layer.isHidden = false
-        flag.layer.opacity = 1
-        flag.layer.render(in: context)
-        flag.layer.opacity = opacity
-        flag.layer.isHidden = true
-        context.restoreGState()
-    }
-
-    /// The centre (pixels) of the disc at the end of the line, nearest to `near`: the one place the
-    /// line's colour fills a square about 6 points across (the line itself is narrower), refined to
-    /// the middle of the spots where it does. Nil if it isn't in the frame (hidden, off screen).
-    private static func findDisc(in context: CGContext, near: CGPoint, reach: CGFloat, scale: CGFloat, color: (r: Int, g: Int, b: Int)) -> CGPoint? {
-        guard let data = context.data else { return nil }
-        let bytes = data.assumingMemoryBound(to: UInt8.self)
-        let rowBytes = context.bytesPerRow
-        let x0 = max(0, Int(near.x - reach))
-        let x1 = min(context.width - 1, Int(near.x + reach))
-        let y0 = max(0, Int(near.y - reach))
-        let y1 = min(context.height - 1, Int(near.y + reach))
-        let half = max(2, Int((3.1 * scale).rounded()))
-        guard x1 - x0 > 2 * half + 2, y1 - y0 > 2 * half + 2 else { return nil }
-        let w = x1 - x0 + 1
-        let h = y1 - y0 + 1
-        func matches(_ x: Int, _ y: Int) -> Bool {
-            let offset = y * rowBytes + x * 4
-            let b = Int(bytes[offset])
-            let g = Int(bytes[offset + 1])
-            let r = Int(bytes[offset + 2])
-            return abs(r - color.r) + abs(g - color.g) + abs(b - color.b) < 80
-        }
-        // Integral image of the pixels in the line's colour
-        var integral = [Int32](repeating: 0, count: (w + 1) * (h + 1))
-        for y in 0..<h {
-            var rowSum: Int32 = 0
-            for x in 0..<w {
-                if matches(x0 + x, y0 + y) { rowSum += 1 }
-                integral[(y + 1) * (w + 1) + x + 1] = integral[y * (w + 1) + x + 1] + rowSum
-            }
-        }
-        let side = Int32(2 * half + 1)
-        let full = side * side
-        var best: (x: Int, y: Int, distance: CGFloat)?
-        for y in half..<(h - half) {
-            for x in half..<(w - half) {
-                let sum = integral[(y + half + 1) * (w + 1) + x + half + 1] - integral[(y - half) * (w + 1) + x + half + 1]
-                    - integral[(y + half + 1) * (w + 1) + x - half] + integral[(y - half) * (w + 1) + x - half]
-                guard sum * 10 >= full * 9 else { continue }
-                let distance = hypot(CGFloat(x0 + x) - near.x, CGFloat(y0 + y) - near.y)
-                if best == nil || distance < best!.distance {
-                    best = (x, y, distance)
-                }
-            }
-        }
-        guard let spot = best else { return nil }
-        // The disc's centre: the middle of the spots around that one where the square is all its colour
-        let radius = Int((4 * scale).rounded())
-        var sumX = 0, sumY = 0, count = 0
-        for y in max(half, spot.y - radius)...min(h - half - 1, spot.y + radius) {
-            for x in max(half, spot.x - radius)...min(w - half - 1, spot.x + radius) {
-                let dx = x - spot.x, dy = y - spot.y
-                guard dx * dx + dy * dy <= radius * radius else { continue }
-                let sum = integral[(y + half + 1) * (w + 1) + x + half + 1] - integral[(y - half) * (w + 1) + x + half + 1]
-                    - integral[(y + half + 1) * (w + 1) + x - half] + integral[(y - half) * (w + 1) + x - half]
-                guard sum * 10 >= full * 9 else { continue }
-                sumX += x
-                sumY += y
-                count += 1
-            }
-        }
-        guard count > 0 else { return nil }
-        return CGPoint(x: CGFloat(x0) + CGFloat(sumX) / CGFloat(count) + 0.5, y: CGFloat(y0) + CGFloat(sumY) / CGFloat(count) + 0.5)
     }
 
     private func snapshotMap(in rect: CGRect, context: CGContext) -> Bool {
