@@ -1007,15 +1007,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
             }
             // Computed for the moment this frame will be on screen, so motion is even frame to frame
             let now = link.targetTimestamp
+            let dt = min(0.1, max(0, now - lastTick))
             if let plantedAt {
-                scene.measureRunner(time: now, detectsLifts: true)
-                scene.placeRunner(at: plantedAt)
-                if !reduceMotion {
-                    scene.runnerFlag.wave(at: now - startTime)
-                }
+                lastTick = now
+                // Planted: on the ground at the finish, in a breeze (still without motion)
+                scene.moveFlag(to: plantedAt, streamBearing: nil, moving: false, dt: reduceMotion ? 0 : dt)
                 return
             }
-            let dt = min(0.1, max(0, now - lastTick))
             lastTick = now
             let frame = director.frame(at: now - startTime, dt: dt)
             self.director = director
@@ -1031,16 +1029,15 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 return
             }
 
-            // Where MapKit put the runner on the frame it drew; then the camera, the flag on the
-            // ground at the end of the line with it, and the line: all for the same frame. The flag
-            // shows once the runner sets off and stays (planted at the finish when they get there).
-            scene.measureRunner(time: now, detectsLifts: frame.run > 0)
+            // The camera, then the flag on the ground at the end of the line (the same coordinate as
+            // the line's end) and the line: all for the same frame. The flag shows once the runner
+            // sets off and stays (planted at the finish when they get there), its cloth blown back
+            // from where they're going.
             scene.setFlagAlpha(frame.run > 0 ? 1 : 0, animated: true)
             if !userTookOver {
                 mapView.camera = frame.camera.mkCamera
             }
-            scene.placeRunner(at: frame.runner)
-            scene.runnerFlag.wave(at: now - startTime)
+            scene.moveFlag(to: frame.runner, streamBearing: Self.streamBearing(of: frame, on: plan), moving: frame.showsRunner, dt: dt)
             scene.drawTrail(to: frame.trail)
             if frame.isRevealed {
                 scene.addArea()
@@ -1051,6 +1048,11 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 setInteractive(true)
             }
             publish(fraction: frame.run / plan.length, finished: frame.isFinished, force: false)
+        }
+
+        /// Where the runner's wind blows the flag: opposite to their way (over the last tens of metres).
+        static func streamBearing(of frame: ReplayFrame, on plan: RouteReplayPlan) -> Double {
+            plan.bearing(at: min(max(frame.run, 30), plan.length - 30), window: 80) + 180
         }
 
         private func publish(fraction: Double, finished: Bool, force: Bool) {
@@ -1133,9 +1135,10 @@ final class ReplayScene {
     let startPin = ReplayPin(kind: .start)
     /// The runner's flag, on top of the map, its foot on the ground at the end of the line
     let runnerFlag: RunnerFlagView
-    /// Invisible annotation on the runner: where MapKit puts it, from which the flag is placed
-    let runnerProbe = ReplayPin(kind: .probe)
-    private var groundOffset = RunnerGroundOffset()
+    /// Height of the ground under the camera's centre (metres) and the lens (points), worked out from
+    /// MapKit's projection (see groundPoint); kept for near top-down views, where they can't be
+    private var groundHeight: Double?
+    private var focalLength: Double?
 
     private let ghostLine: MKPolyline
     /// Margin (map points) redrawn around the line's tip: its width and round end, even on the
@@ -1145,7 +1148,7 @@ final class ReplayScene {
     private var trailDrawn: Double = 0
     private var areaAdded = false
     /// Markers' opacity, also for views MapKit makes later
-    private var alphas: [ReplayPin.Kind: CGFloat] = [.start: 1, .probe: 1]
+    private var alphas: [ReplayPin.Kind: CGFloat] = [.start: 1]
 
     var plan: RouteReplayPlan { timeline.plan }
 
@@ -1182,8 +1185,7 @@ final class ReplayScene {
         mapView.addOverlay(ghostLine, level: .aboveRoads)
         mapView.addOverlay(trail, level: .aboveRoads)
         startPin.coordinate = plan.points.first ?? plan.center
-        runnerProbe.coordinate = plan.points.first ?? plan.center
-        mapView.addAnnotations([startPin, runnerProbe])
+        mapView.addAnnotations([startPin])
         for view in mapView.subviews where view is RunnerFlagView {
             view.removeFromSuperview()
         }
@@ -1191,27 +1193,74 @@ final class ReplayScene {
         mapView.addSubview(runnerFlag)
     }
 
-    /// Measures where MapKit put the runner on the map it last drew (the probe annotation) against
-    /// `convert`'s projection of the same coordinate with the same camera, and updates the ground
-    /// offset (see RunnerGroundOffset). Call it before changing the camera or the runner.
-    func measureRunner(time: CFTimeInterval, detectsLifts: Bool) {
-        guard let mapView, let probe = mapView.view(for: runnerProbe), probe.isDescendant(of: mapView) else { return }
-        let placed = probe.convert(CGPoint(x: probe.bounds.midX, y: probe.bounds.midY), to: mapView)
-        let projected = mapView.convert(runnerProbe.coordinate, toPointTo: mapView)
-        guard placed.x.isFinite, placed.y.isFinite, projected.x.isFinite, projected.y.isFinite else { return }
-        groundOffset.update(CGPoint(x: placed.x - projected.x, y: placed.y - projected.y), at: time, detectsLifts: detectsLifts)
+    /// Stands the flag at `coordinate` (the end of the line), with the camera just set, and moves it
+    /// on by `dt`: `streamBearing` is where its cloth is blown (nil: planted, it keeps its way).
+    func moveFlag(to coordinate: CLLocationCoordinate2D, streamBearing: Double?, moving: Bool, dt: Double) {
+        guard let mapView else { return }
+        if let point = groundPoint(of: coordinate) {
+            runnerFlag.center = point
+        }
+        let camera = mapView.camera
+        runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.heading, cameraPitch: Double(camera.pitch), dt: dt)
     }
 
-    /// Moves the runner to `coordinate` with the camera just set: the probe there (MapKit places it
-    /// for the next measure) and the flag's foot on the ground under it, where the line ends:
-    /// `convert`'s projection plus the ground offset (not moved until there's a measure).
-    func placeRunner(at coordinate: CLLocationCoordinate2D) {
-        guard let mapView else { return }
-        runnerProbe.coordinate = coordinate
-        guard let offset = groundOffset.value else { return }
-        let projected = mapView.convert(coordinate, toPointTo: mapView)
-        guard projected.x.isFinite, projected.y.isFinite else { return }
-        runnerFlag.center = CGPoint(x: projected.x + offset.x, y: projected.y + offset.y)
+    /// Where `coordinate` is on screen, on the ground, as the line is drawn there. The line's own
+    /// coordinate, projected with MapKit's camera:
+    /// - `convert` projects at sea level, so on high ground it's far off (Turin: ~90 points).
+    /// - MapKit draws the camera's centre in the middle of the view, on the ground. The sea-level
+    ///   point under it, seen through `convert`, gives the height of the ground there and the lens
+    ///   (the scale at that point gives the depth).
+    /// - The coordinate is then raised to that height with the camera's geometry and added to
+    ///   `convert`'s point. Exact on even ground (checked in a simulation of the camera at any
+    ///   height and heading); off by ~0.4 points per metre the runner is above or below the centre,
+    ///   which while following is a few metres. Flat maps and sea level need no correction.
+    func groundPoint(of coordinate: CLLocationCoordinate2D) -> CGPoint? {
+        guard let mapView, mapView.bounds.width > 0 else { return nil }
+        let base = mapView.convert(coordinate, toPointTo: mapView)
+        guard base.x.isFinite, base.y.isFinite else { return nil }
+        let camera = mapView.camera
+        let distance = camera.centerCoordinateDistance
+        let pitch = Double(camera.pitch) * .pi / 180
+        let heading = camera.heading * .pi / 180
+        let center = camera.centerCoordinate
+        let latitudeScale = 110_574.0
+        let longitudeScale = cos(center.latitude * .pi / 180) * 111_320
+        guard distance > 0, longitudeScale > 0 else { return base }
+
+        // Sea-level point under the centre, and 50 m to the camera's right of it
+        let centerAtSea = mapView.convert(center, toPointTo: mapView)
+        let rightOfCenter = CLLocationCoordinate2D(
+            latitude: center.latitude - sin(heading) * 50 / latitudeScale,
+            longitude: center.longitude + cos(heading) * 50 / longitudeScale
+        )
+        let rightAtSea = mapView.convert(rightOfCenter, toPointTo: mapView)
+        let scale = Double(hypot(rightAtSea.x - centerAtSea.x, rightAtSea.y - centerAtSea.y)) / 50
+        if pitch > 10 * .pi / 180, scale > 0, centerAtSea.y.isFinite {
+            // The ground at the centre is drawn mid-view; its sea-level point lower by f·h·sin(pitch)/depth
+            let drop = Double(centerAtSea.y - mapView.bounds.midY)
+            let height = drop / (scale * sin(pitch))
+            if height.isFinite, height > -500, height < 9000 {
+                groundHeight = height
+                focalLength = scale * (distance + height * cos(pitch))
+            }
+        }
+        guard let height = groundHeight, let focal = focalLength, abs(height) > 1 else { return base }
+
+        // Camera in metres around the centre (x east, y north, z up), the centre on the ground
+        let forward = (x: sin(pitch) * sin(heading), y: sin(pitch) * cos(heading), z: -cos(pitch))
+        let right = (x: cos(heading), y: -sin(heading), z: 0.0)
+        let up = (x: sin(heading) * cos(pitch), y: cos(heading) * cos(pitch), z: sin(pitch))
+        let eye = (x: -distance * forward.x, y: -distance * forward.y, z: height - distance * forward.z)
+        let east = (coordinate.longitude - center.longitude) * longitudeScale
+        let north = (coordinate.latitude - center.latitude) * latitudeScale
+        func project(_ z: Double) -> (x: Double, y: Double)? {
+            let v = (x: east - eye.x, y: north - eye.y, z: z - eye.z)
+            let depth = v.x * forward.x + v.y * forward.y + v.z * forward.z
+            guard depth > 1 else { return nil }
+            return (focal * (v.x * right.x + v.y * right.y) / depth, -focal * (v.x * up.x + v.y * up.y + v.z * up.z) / depth)
+        }
+        guard let onGround = project(height), let atSea = project(0) else { return base }
+        return CGPoint(x: base.x + CGFloat(onGround.x - atSea.x), y: base.y + CGFloat(onGround.y - atSea.y))
     }
 
     /// Shows the flag; `animated` fades it in a quarter of a second.
@@ -1628,8 +1677,7 @@ final class ReplayTrailRenderer: MKOverlayRenderer {
 
 final class ReplayPin: NSObject, MKAnnotation {
     enum Kind {
-        /// `probe`: invisible, on the runner, to read where MapKit puts it (see ReplayScene.measureRunner)
-        case start, probe
+        case start
     }
 
     let kind: Kind
@@ -1641,7 +1689,7 @@ final class ReplayPin: NSObject, MKAnnotation {
     }
 }
 
-/// Start ring, and the invisible probe on the runner (the runner's flag is RunnerFlagView).
+/// Start ring (the runner's flag is RunnerFlagView).
 final class ReplayPinView: MKAnnotationView {
     init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor) {
         super.init(annotation: annotation, reuseIdentifier: nil)
@@ -1658,9 +1706,6 @@ final class ReplayPinView: MKAnnotationView {
             dot.layer.borderWidth = 3
             addSubview(dot)
             zPriority = .defaultUnselected
-        case .probe:
-            frame = CGRect(x: 0, y: 0, width: 2, height: 2)
-            backgroundColor = .clear
         }
     }
 

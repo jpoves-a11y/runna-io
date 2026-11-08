@@ -104,6 +104,11 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         scene.runnerFlag.setPhoto(photo)
     }
 
+    /// Where the runner's wind blows the flag: opposite to their way (over the last tens of metres).
+    private static func streamBearing(of frame: ReplayFrame, on plan: RouteReplayPlan) -> Double {
+        plan.bearing(at: min(max(frame.run, 30), plan.length - 30), window: 80) + 180
+    }
+
     /// Seconds of video.
     var duration: Double { timeline.total + Self.tail }
 
@@ -197,12 +202,14 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
-            // The flag on the ground where MapKit put the runner on the frame now drawn (without the
-            // 3D model's lifts), waving with the video's clock; one refresh so it's on screen when
-            // the frame is copied
-            scene.measureRunner(time: elapsed, detectsLifts: frame.run > 0)
-            scene.placeRunner(at: frame.runner)
-            scene.runnerFlag.wave(at: elapsed)
+            // The flag on the ground at the end of the line on the frame now drawn, moving with the
+            // video's clock; one refresh so it's on screen when the frame is copied
+            scene.moveFlag(
+                to: frame.runner,
+                streamBearing: frame.isFinished || frame.run >= timeline.plan.length ? nil : Self.streamBearing(of: frame, on: timeline.plan),
+                moving: frame.showsRunner,
+                dt: dt
+            )
             await clock.next()
 
             var waits = 0
@@ -264,8 +271,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         scene.setFlagAlpha(flagAlpha, animated: false)
-        // MapKit places the runner's probe while the frame is drawn (measured once it is)
-        scene.runnerProbe.coordinate = frame.runner
         CATransaction.commit()
         mapView.camera = frame.camera.mkCamera
         scene.drawTrail(to: frame.trail)

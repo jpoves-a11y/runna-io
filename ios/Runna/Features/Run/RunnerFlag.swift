@@ -35,75 +35,30 @@ struct ReplayRunner: Equatable {
     }
 }
 
-// MARK: - Where the ground is
-
-/// How far MapKit's placement of the runner is from `convert`'s projection of it, without the lifts
-/// of the 3D model. `convert` puts a coordinate at sea level: in 3D the ground is higher, so it's off
-/// by an offset that changes smoothly with the terrain. MapKit puts annotations on the terrain, as
-/// the line, but in cities with a 3D satellite model it puts them on that model: on trees and roofs,
-/// up on screen by a few metres, in jumps from one frame to the next. The offset follows the
-/// terrain smoothly, and a sudden jump up is taken as the model and held off until the runner is
-/// back on the ground (at most 2 s). Tuned on the jumps measured in a Turin video.
-struct RunnerGroundOffset {
-    private(set) var value: CGPoint?
-    private var last: CGPoint?
-    private var lifted = false
-    private var liftedSince: CFTimeInterval = 0
-    private var time: CFTimeInterval = 0
-
-    /// `offset` measured at `now`. `detectsLifts`: while the runner runs (otherwise it's just followed).
-    mutating func update(_ offset: CGPoint, at now: CFTimeInterval, detectsLifts: Bool) {
-        defer {
-            self.last = offset
-            self.time = now
-        }
-        guard detectsLifts, let current = value, let last,
-              abs(offset.x - current.x) < 150, abs(offset.y - current.y) < 150 else {
-            value = offset
-            lifted = false
-            return
-        }
-        let dt = min(0.1, max(0, now - time))
-        var next = current
-        next.x += (offset.x - current.x) * CGFloat(1 - exp(-dt / 0.15))
-        if lifted {
-            if offset.y >= current.y - 2 {
-                // Back on the ground
-                lifted = false
-                next.y = offset.y
-            } else if now - liftedSince > 2 {
-                lifted = false
-            }
-        } else if offset.y - last.y < -max(3, CGFloat(60 * dt)) {
-            // Up at once: a tree or a roof of the 3D model under the runner, not the ground
-            lifted = true
-            liftedSince = now
-        } else {
-            next.y += (offset.y - current.y) * CGFloat(1 - exp(-dt / 0.08))
-        }
-        value = next
-    }
-}
-
 // MARK: - The flag
 
 /// The runner's flag: a pole planted at the end of the line with a cloth in the runner's colour and
-/// their photo (or initial) in a white ring, waving. It's a view on top of the map, so buildings and
-/// trees never hide it; ReplayScene puts the pole's foot on the ground at the end of the line.
+/// their photo (or initial) in a white ring. A view on top of the map, so buildings and trees never
+/// hide it; ReplayScene stands its pole's foot on the ground at the end of the line.
 ///
-/// The cloth waves like fabric: it's cut into thin vertical strips that follow two travelling waves
-/// (bigger towards the free edge, still at the pole), each narrowed by its slope (the cloth looks
-/// shorter where it folds) and shaded light or dark by it (folds catch the light). Everything is set
-/// for a given time (`wave(at:)`), the screen's in the app and the video's when exporting.
+/// The cloth behaves like one, seen from the replay's camera:
+/// - It streams away from where the runner is going (the wind of running), and swings round through
+///   turns: its direction follows the run's on a damped spring, with a little overshoot.
+/// - It's drawn in perspective: to the left or right of the pole as it points, shorter and slanting
+///   when it points towards or away from the camera (never quite edge-on, so the photo shows).
+/// - It ripples with waves that run from the pole to its free edge, out of the cloth's plane:
+///   stronger and faster while running, a slow breeze and a bit of droop once planted at the finish.
+/// - It's printed on both sides: the photo always reads the right way round.
+/// Everything advances with the time it's given (`update`): the screen's in the app, the video's when
+/// exporting, so the video is the same however fast it's made.
 final class RunnerFlagView: UIView {
-    private static let poleHeight: CGFloat = 46
+    private static let clothLength: CGFloat = 44
+    private static let clothHeight: CGFloat = 28
+    private static let poleHeight: CGFloat = 48
     private static let poleWidth: CGFloat = 2.5
-    private static let clothSize = CGSize(width: 42, height: 28)
     private static let strips = 32
-    /// Pole at the left edge (its centre), cloth from its right side, under the knob
-    private static let poleX: CGFloat = 4.5
-    private static let clothTop: CGFloat = 6
-    private static let size = CGSize(width: 56, height: 54)
+    /// Pole in the middle, room for the cloth on either side
+    private static let size = CGSize(width: 2 * (clothLength + 10), height: poleHeight + 6)
 
     private let pole = CAGradientLayer()
     private let knob = CAGradientLayer()
@@ -111,6 +66,21 @@ final class RunnerFlagView: UIView {
     private var shadeLayers: [CALayer] = []
     private let runner: ReplayRunner
     private var photo: UIImage?
+    /// The cloth laid out for each side of the pole (hoist at the pole, the photo reading normally)
+    private var clothRight: CGImage?
+    private var clothLeft: CGImage?
+
+    // Motion state
+    /// Where the cloth streams to (degrees from north), and how fast that turns (degrees per second)
+    private var yaw: Double?
+    private var yawSpeed: Double = 0
+    /// Phase of the ripples (radians) and the wind (0 calm ... 1 running)
+    private var phase: Double = 0
+    private var wind: Double = 0
+    /// Which side of the pole the cloth is on (+1 right, -1 left), kept while it points at the camera
+    private var side: CGFloat = 1
+    /// The side whose cloth the strips show
+    private var contentsSide: CGFloat = 0
 
     init(runner: ReplayRunner) {
         self.runner = runner
@@ -118,29 +88,22 @@ final class RunnerFlagView: UIView {
         isUserInteractionEnabled = false
         alpha = 0
         // `center` is the foot of the pole
-        layer.anchorPoint = CGPoint(x: Self.poleX / Self.size.width, y: 1)
+        layer.anchorPoint = CGPoint(x: 0.5, y: 1)
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.35
+        layer.shadowOpacity = 0.3
         layer.shadowRadius = 2
         layer.shadowOffset = CGSize(width: 0, height: 1)
 
-        let poleTop = Self.size.height - Self.poleHeight
-        pole.frame = CGRect(x: Self.poleX - Self.poleWidth / 2, y: poleTop, width: Self.poleWidth, height: Self.poleHeight)
-        pole.colors = [UIColor(white: 0.97, alpha: 1).cgColor, UIColor(white: 0.72, alpha: 1).cgColor]
-        pole.startPoint = CGPoint(x: 0, y: 0.5)
-        pole.endPoint = CGPoint(x: 1, y: 0.5)
-        pole.cornerRadius = Self.poleWidth / 2
-        layer.addSublayer(pole)
-
-        let clothImage = Self.clothImage(runner: runner, photo: nil)
-        for index in 0..<Self.strips {
+        let stripWidth = Self.clothLength / CGFloat(Self.strips)
+        for _ in 0..<Self.strips {
             let strip = CALayer()
-            strip.contents = clothImage.cgImage
-            strip.contentsScale = clothImage.scale
+            strip.anchorPoint = .zero
+            strip.bounds = CGRect(x: 0, y: 0, width: stripWidth, height: Self.clothHeight)
             strip.contentsGravity = .resize
-            strip.contentsRect = CGRect(x: CGFloat(index) / CGFloat(Self.strips), y: 0, width: 1 / CGFloat(Self.strips), height: 1)
+            strip.contentsScale = 3
             strip.edgeAntialiasingMask = []
             let shade = CALayer()
+            shade.frame = strip.bounds
             shade.opacity = 0
             strip.addSublayer(shade)
             layer.addSublayer(strip)
@@ -148,14 +111,24 @@ final class RunnerFlagView: UIView {
             shadeLayers.append(shade)
         }
 
-        knob.frame = CGRect(x: Self.poleX - 2.75, y: poleTop - 2.75, width: 5.5, height: 5.5)
+        // The pole over the cloth's edge, so the cloth hangs from it
+        let poleX = Self.size.width / 2
+        let poleTop = Self.size.height - Self.poleHeight
+        pole.frame = CGRect(x: poleX - Self.poleWidth / 2, y: poleTop, width: Self.poleWidth, height: Self.poleHeight)
+        pole.colors = [UIColor(white: 0.97, alpha: 1).cgColor, UIColor(white: 0.7, alpha: 1).cgColor]
+        pole.startPoint = CGPoint(x: 0, y: 0.5)
+        pole.endPoint = CGPoint(x: 1, y: 0.5)
+        pole.cornerRadius = Self.poleWidth / 2
+        layer.addSublayer(pole)
+        knob.frame = CGRect(x: poleX - 2.75, y: poleTop - 2.75, width: 5.5, height: 5.5)
         knob.cornerRadius = 2.75
-        knob.colors = [UIColor.white.cgColor, UIColor(white: 0.78, alpha: 1).cgColor]
+        knob.colors = [UIColor.white.cgColor, UIColor(white: 0.76, alpha: 1).cgColor]
         knob.startPoint = CGPoint(x: 0.3, y: 0.2)
         knob.endPoint = CGPoint(x: 0.8, y: 1)
         layer.addSublayer(knob)
 
-        wave(at: 0)
+        paintCloth()
+        layoutCloth(relativeYaw: 90, depthFactor: 0.64)
     }
 
     required init?(coder: NSCoder) {
@@ -166,36 +139,94 @@ final class RunnerFlagView: UIView {
     func setPhoto(_ image: UIImage?) {
         guard let image, image !== photo else { return }
         photo = image
-        let clothImage = Self.clothImage(runner: runner, photo: image)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for strip in stripLayers {
-            strip.contents = clothImage.cgImage
-            strip.contentsScale = clothImage.scale
-        }
-        CATransaction.commit()
+        paintCloth()
     }
 
-    /// The cloth's shape and shading at `time` (seconds).
-    func wave(at time: Double) {
+    /// Advances the flag by `dt` seconds and draws it for the camera.
+    /// - Parameters:
+    ///   - streamBearing: where the cloth is blown to (degrees from north: opposite to the runner's
+    ///     way); nil keeps its direction (planted at the finish).
+    ///   - moving: running (strong wind) or not (a breeze).
+    ///   - cameraHeading / cameraPitch: degrees, of the map's camera.
+    func update(streamBearing: Double?, moving: Bool, cameraHeading: Double, cameraPitch: Double, dt: Double) {
+        let step = min(0.1, max(0, dt))
+        let target = streamBearing ?? yaw ?? cameraHeading + 90
+        var current = yaw ?? target
+        // Damped spring towards the wind's direction: it follows turns with a little swing
+        let error = ReplayCamera.shortestTurn(from: current, to: target)
+        let stiffness = 30.0
+        let damping = 6.5
+        yawSpeed += (stiffness * error - damping * yawSpeed) * step
+        current += yawSpeed * step
+        yaw = current
+        // Wind and ripples (the phase advances, so a change of speed never jumps)
+        wind += ((moving ? 1 : 0) - wind) * (1 - exp(-step / 0.6))
+        phase += 2 * .pi * (0.9 + 0.9 * wind) * step
+
+        // Seen from the camera: a direction pointing away from it shows going up the screen,
+        // shortened by the camera's tilt (a near-flat map keeps a hint of depth)
+        let pitch = cameraPitch * .pi / 180
+        let depthFactor = cameraPitch > 20 ? cos(pitch) : 0.35
+        layoutCloth(relativeYaw: current - cameraHeading, depthFactor: depthFactor)
+    }
+
+    /// Places the strips for the cloth pointing `relativeYaw` degrees from the camera's direction.
+    private func layoutCloth(relativeYaw: Double, depthFactor: Double) {
+        let angle = relativeYaw * .pi / 180
+        let across = sin(angle)
+        // Side of the pole, kept while the cloth points at (or away from) the camera
+        if across > 0.12 { side = 1 } else if across < -0.12 { side = -1 }
+        // Along the cloth on screen (never quite edge-on), and across it (where ripples push it)
+        let along = CGVector(dx: side * CGFloat(max(abs(across), 0.35)), dy: CGFloat(-cos(angle) * depthFactor))
+        let normal = CGVector(dx: CGFloat(cos(angle)), dy: CGFloat(sin(angle) * depthFactor))
+        let amplitude = 1.6 + 2.8 * wind
+        let sag = 1.2 + 3.5 * (1 - wind)
+
         let count = Self.strips
-        let stripWidth = Self.clothSize.width / CGFloat(count)
-        let clothLeft = Self.poleX + Self.poleWidth / 2
-        let clothTop = Self.size.height - Self.poleHeight + Self.clothTop
+        let length = Self.clothLength
+        let stripWidth = length / CGFloat(count)
+        let top = CGPoint(x: Self.size.width / 2, y: Self.size.height - Self.poleHeight + 1)
+        var points: [CGPoint] = []
+        var ripple: [CGFloat] = []
+        points.reserveCapacity(count + 1)
+        for index in 0...count {
+            let u = Double(index) / Double(count)
+            let w = CGFloat(amplitude * pow(u, 1.2) * (sin(2 * .pi * 1.1 * u - phase) + 0.3 * sin(2 * .pi * 2.4 * u - 1.6 * phase + 1.3)))
+            ripple.append(w)
+            let distance = CGFloat(u) * length
+            points.append(CGPoint(
+                x: top.x + distance * along.dx + w * normal.dx,
+                y: top.y + distance * along.dy + w * normal.dy + CGFloat(sag * u * u)
+            ))
+        }
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        var x = clothLeft
+        if contentsSide != side {
+            contentsSide = side
+            let contents = side > 0 ? clothRight : clothLeft
+            for strip in stripLayers {
+                strip.contents = contents
+            }
+        }
         for index in 0..<count {
-            let a = Self.height(at: Double(index) / Double(count), time: time)
-            let b = Self.height(at: Double(index + 1) / Double(count), time: time)
-            let slope = (b - a) / stripWidth
-            // Narrower where it folds
-            let width = stripWidth / (1 + slope * slope).squareRoot()
+            // Left and right ends of this strip on screen, and its slice of the cloth (hoist at the pole)
+            let near = points[index]
+            let far = points[index + 1]
+            let left = side > 0 ? near : far
+            let right = side > 0 ? far : near
+            let u0 = CGFloat(index) / CGFloat(count)
+            let u1 = CGFloat(index + 1) / CGFloat(count)
+            let slice = side > 0 ? CGRect(x: u0, y: 0, width: u1 - u0, height: 1) : CGRect(x: 1 - u1, y: 0, width: u1 - u0, height: 1)
+            let width = max(0.25, right.x - left.x)
             let strip = stripLayers[index]
-            // A hair wider than its share, so no seam shows between strips
-            strip.frame = CGRect(x: x, y: clothTop + (a + b) / 2, width: width + 0.35, height: Self.clothSize.height)
+            strip.contentsRect = slice
+            strip.position = left
+            // Vertical edges, top edge from `left` to `right` (a hair wider, so no seam shows)
+            strip.setAffineTransform(CGAffineTransform(a: (width + 0.3) / stripWidth, b: (right.y - left.y) / stripWidth, c: 0, d: 1, tx: 0, ty: 0))
+            // Folds catch the light on one side and fall into shadow on the other
+            let slope = (ripple[index + 1] - ripple[index]) / stripWidth * side
             let shade = shadeLayers[index]
-            shade.frame = strip.bounds
             if slope < 0 {
                 shade.backgroundColor = UIColor.white.cgColor
                 shade.opacity = Float(min(0.4, -slope * 0.45))
@@ -203,25 +234,27 @@ final class RunnerFlagView: UIView {
                 shade.backgroundColor = UIColor.black.cgColor
                 shade.opacity = Float(min(0.35, slope * 0.4))
             }
-            x += width
         }
         CATransaction.commit()
     }
 
-    /// Vertical offset (points) of the cloth at `x` (0 at the pole, 1 at the free edge): two waves
-    /// travelling away from the pole, still at the pole and widest at the edge, and a little sag.
-    private static func height(at x: Double, time: Double) -> CGFloat {
-        let amplitude = 3.0
-        let frequency = 1.4
-        let primary = sin(2 * .pi * (1.1 * x - frequency * time))
-        let secondary = 0.3 * sin(2 * .pi * (2.4 * x - 1.6 * frequency * time) + 1.3)
-        return CGFloat(amplitude * pow(x, 1.3) * (primary + secondary) + 1.5 * x * x)
+    /// Paints the cloth for each side of the pole.
+    private func paintCloth() {
+        clothRight = Self.clothImage(runner: runner, photo: photo, hoistOnLeft: true).cgImage
+        clothLeft = Self.clothImage(runner: runner, photo: photo, hoistOnLeft: false).cgImage
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentsSide = side
+        for strip in stripLayers {
+            strip.contents = side > 0 ? clothRight : clothLeft
+        }
+        CATransaction.commit()
     }
 
     /// The cloth flat: the runner's colour (lighter at the top), their photo or initial in a white
-    /// ring a little towards the pole, where the cloth moves least.
-    private static func clothImage(runner: ReplayRunner, photo: UIImage?) -> UIImage {
-        let size = clothSize
+    /// ring a little towards the hoist, where the cloth moves least.
+    private static func clothImage(runner: ReplayRunner, photo: UIImage?, hoistOnLeft: Bool) -> UIImage {
+        let size = CGSize(width: clothLength, height: clothHeight)
         let format = UIGraphicsImageRendererFormat.preferred()
         format.scale = 3
         format.opaque = true
@@ -236,7 +269,7 @@ final class RunnerFlagView: UIView {
                 cg.fill(CGRect(origin: .zero, size: size))
             }
             let diameter: CGFloat = 19
-            let center = CGPoint(x: size.width * 0.42, y: size.height / 2)
+            let center = CGPoint(x: size.width * (hoistOnLeft ? 0.42 : 0.58), y: size.height / 2)
             let ring = diameter + 3.5
             UIColor.white.setFill()
             cg.fillEllipse(in: CGRect(x: center.x - ring / 2, y: center.y - ring / 2, width: ring, height: ring))
@@ -245,7 +278,6 @@ final class RunnerFlagView: UIView {
                 cg.saveGState()
                 cg.addEllipse(in: circle)
                 cg.clip()
-                // Aspect fill
                 let scale = max(diameter / max(1, photo.size.width), diameter / max(1, photo.size.height))
                 let drawn = CGSize(width: photo.size.width * scale, height: photo.size.height * scale)
                 photo.draw(in: CGRect(x: center.x - drawn.width / 2, y: center.y - drawn.height / 2, width: drawn.width, height: drawn.height))
