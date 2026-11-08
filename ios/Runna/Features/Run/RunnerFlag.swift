@@ -68,11 +68,6 @@ final class RunnerFlagView: UIView {
     /// Pole in the middle, room for the cloth on either side and the finial on top
     private static let size = CGSize(width: 2 * (clothLength + 10), height: poleHeight + 8)
 
-    /// The pole carried on below the flag, down the vertical to `convert`'s point (see `stand`)
-    private let poleExtension = CAGradientLayer()
-    private let poleExtensionFade = CAGradientLayer()
-    /// How far the pole goes on below `convert`'s point, fading out
-    private static let extensionReach: CGFloat = 24
     private let pole = CAGradientLayer()
     private let poleShade = CAGradientLayer()
     private let finial = CAGradientLayer()
@@ -113,20 +108,7 @@ final class RunnerFlagView: UIView {
         let foot = Self.size.height
         let poleTop = foot - Self.poleHeight
 
-        // The pole carried on below the view (the same metal), faded out at its far end
         let metal = [0.45, 0.98, 0.82, 0.55, 0.38].map { UIColor(white: $0, alpha: 1).cgColor }
-        poleExtension.colors = metal
-        poleExtension.locations = [0, 0.3, 0.55, 0.8, 1]
-        poleExtension.startPoint = CGPoint(x: 0, y: 0.5)
-        poleExtension.endPoint = CGPoint(x: 1, y: 0.5)
-        poleExtension.frame = CGRect(x: poleX - Self.poleWidth / 2, y: foot - 0.5, width: Self.poleWidth, height: 0)
-        poleExtension.isHidden = true
-        poleExtensionFade.colors = [UIColor.black.cgColor, UIColor.black.cgColor, UIColor.black.withAlphaComponent(0).cgColor]
-        poleExtensionFade.locations = [0, 1, 1]
-        poleExtensionFade.startPoint = CGPoint(x: 0.5, y: 0)
-        poleExtensionFade.endPoint = CGPoint(x: 0.5, y: 1)
-        poleExtension.mask = poleExtensionFade
-        layer.addSublayer(poleExtension)
 
         let stripWidth = Self.clothLength / CGFloat(Self.strips)
         for _ in 0..<Self.strips {
@@ -200,26 +182,18 @@ final class RunnerFlagView: UIView {
         paintCloth()
     }
 
-    /// Stands the flag on its line on screen (ReplayGroundModel.poleLine): the foot of its pole at
-    /// `foot`, the pole along `up`, carried on down to `base` (and a little beyond, fading), so
-    /// wherever the ground is on that line, the pole goes through it.
-    func stand(base: CGPoint, up: CGVector, foot: CGPoint) {
-        let below = hypot(foot.x - base.x, foot.y - base.y)
+    /// Stands the flag with the foot of its pole at `point` (the view's own position: its anchor is
+    /// the foot), upright.
+    func stand(at point: CGPoint) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        center = foot
-        transform = CGAffineTransform(rotationAngle: atan2(up.dx, -up.dy))
-        if below > 0.5 {
-            let length = below + Self.extensionReach
-            poleExtension.isHidden = false
-            poleExtension.frame = CGRect(x: Self.size.width / 2 - Self.poleWidth / 2, y: Self.size.height - 0.5, width: Self.poleWidth, height: length + 0.5)
-            poleExtensionFade.frame = poleExtension.bounds
-            poleExtensionFade.locations = [0, NSNumber(value: Double(below / length)), 1]
-        } else {
-            poleExtension.isHidden = true
-        }
+        transform = .identity
+        center = point
         CATransaction.commit()
     }
+
+    /// The foot of the pole, in the view's own coordinates.
+    var footInBounds: CGPoint { CGPoint(x: bounds.midX, y: bounds.maxY) }
 
     /// Advances the flag by `dt` seconds and draws it for the camera.
     /// - Parameters:

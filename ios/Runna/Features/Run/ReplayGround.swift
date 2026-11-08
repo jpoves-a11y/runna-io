@@ -15,9 +15,8 @@ import UIKit
 /// - Ground: those heights make a rough map of the ground's height.
 /// - Each frame: the ground the camera looks at is measured again with the lens known (MapKit may
 ///   ease its camera over the terrain), and the coordinate is projected at its height in the map.
-/// That's only an estimate, so the flag doesn't rely on it: its pole is drawn along the world's
-/// vertical through the line's end (`poleLine`), from `convert`'s exact point upwards, and the end of
-/// the line lies on that vertical however high the ground. The estimate only says where the cloth goes.
+/// That's only an estimate, so the flag's foot is placed by asking MapKit itself which screen point is
+/// on the line's end (`locate`); the estimate is where that search starts.
 @MainActor
 final class ReplayGroundModel {
     private struct Sample {
@@ -210,48 +209,96 @@ final class ReplayGroundModel {
         return weightSum > 0 ? heightSum / weightSum : nil
     }
 
-    /// The line the pole stands on, on screen: the world's vertical through `coordinate`.
-    /// - `base`: `convert`'s point for it (at MapKit's reference height, sea level). Exact: MapKit's own.
-    /// - `up`: the way up that vertical on screen, away from where verticals meet (below the view
-    ///   when it's tilted). The ground at `coordinate`, wherever it is, lies on this line, so the line's
-    ///   end is always on a pole drawn along it, however high the terrain.
-    /// - `foot`: where on it the ground is thought to be (where the cloth goes), never below `base`.
-    func poleLine(for coordinate: CLLocationCoordinate2D, on mapView: MKMapView) -> (base: CGPoint, up: CGVector, foot: CGPoint)? {
+    /// Whether MapKit's screen-to-coordinate conversion finds the 3D ground (`terrain`), or a flat
+    /// plane (`planar`, so `locate` can't help), as told by `locate` itself.
+    enum PickMode {
+        case unknown
+        case terrain
+        case planar
+    }
+
+    private(set) var pickMode: PickMode = .unknown
+    private var terrainVotes = 0
+    private var planarVotes = 0
+    /// The last point `locate` found (the next frame starts from it)
+    private var lastPick: CGPoint?
+
+    /// The screen point MapKit itself says is on `coordinate`: the point whose
+    /// `convert(_:toCoordinateFrom:)` is `coordinate` (Newton's method on the screen, a few of
+    /// MapKit's conversions a frame). If MapKit finds the 3D ground there, that's exactly where the
+    /// line's end is drawn, with no estimate of the camera or the terrain. Whether it does is told by
+    /// comparing with `convert`'s sea-level point where the ground is clearly high: nil until it's
+    /// known (and for good if it doesn't), and wherever no point is found.
+    func locate(_ coordinate: CLLocationCoordinate2D, on mapView: MKMapView) -> CGPoint? {
+        guard pickMode != .planar, mapView.bounds.width > 0 else { return nil }
         let base = mapView.convert(coordinate, toPointTo: mapView)
         guard base.x.isFinite, base.y.isFinite else { return nil }
-        let straightUp = CGVector(dx: 0, dy: -1)
-        guard let shot = Shot(mapView) else { return (base, straightUp, base) }
-        var foot = base
-        if let estimate = project(coordinate, on: mapView) {
-            foot = estimate
+        let target = LocalFrame(center: coordinate)
+        func miss(at point: CGPoint) -> (east: Double, north: Double)? {
+            let found = mapView.convert(point, toCoordinateFrom: mapView)
+            guard CLLocationCoordinate2DIsValid(found) else { return nil }
+            let offset = target.offset(of: found)
+            guard offset.east.isFinite, offset.north.isFinite else { return nil }
+            return offset
         }
-        // Flat ground (or none above it known): a straight pole on `convert`'s point
-        guard hypot(foot.x - base.x, foot.y - base.y) > 0.5 else { return (base, straightUp, base) }
+        let estimate = project(coordinate, on: mapView)
+        var point = estimate ?? base
+        if let lastPick, hypot(lastPick.x - base.x, lastPick.y - base.y) < 400 {
+            point = lastPick
+        }
+        var solved = false
+        for _ in 0..<5 {
+            guard let error = miss(at: point) else { break }
+            if hypot(error.east, error.north) < 0.5 {
+                solved = true
+                break
+            }
+            guard let right = miss(at: CGPoint(x: point.x + 1, y: point.y)),
+                  let down = miss(at: CGPoint(x: point.x, y: point.y + 1)) else { break }
+            // Metres per point, and the step that cancels the miss
+            let a = right.east - error.east, b = down.east - error.east
+            let c = right.north - error.north, d = down.north - error.north
+            let determinant = a * d - b * c
+            guard abs(determinant) > 1e-9 else { break }
+            var dx = -(d * error.east - b * error.north) / determinant
+            var dy = -(-c * error.east + a * error.north) / determinant
+            let step = hypot(dx, dy)
+            if step > 60 {
+                dx *= 60 / step
+                dy *= 60 / step
+            }
+            point = CGPoint(x: point.x + CGFloat(dx), y: point.y + CGFloat(dy))
+        }
+        if !solved, let error = miss(at: point), hypot(error.east, error.north) < 1 {
+            solved = true
+        }
+        guard solved, point.x.isFinite, point.y.isFinite else {
+            lastPick = nil
+            return nil
+        }
+        lastPick = point
 
-        // Where verticals meet on screen: below the lens's centre by f·tan(pitch)
-        let pitch = shot.geometry.pitch
-        let lensNow: (focal: Double, x: Double, y: Double)?
-        if let lens, shot.size == lensSize {
-            lensNow = (lens.focal, lens.principal.x, lens.principal.y)
-        } else if let rough = roughLens(on: mapView, shot: shot) {
-            lensNow = (rough, 0, 0)
-        } else {
-            lensNow = nil
-        }
-        var up = straightUp
-        if let lensNow, pitch < 85 * .pi / 180 {
-            let vanishing = (x: shot.middle.x + lensNow.x, y: shot.middle.y + lensNow.y + lensNow.focal * tan(pitch))
-            let dx = Double(base.x) - vanishing.x
-            let dy = Double(base.y) - vanishing.y
-            let length = hypot(dx, dy)
-            if length > 1, dy < 0 {
-                up = CGVector(dx: dx / length, dy: dy / length)
+        // Where the ground is clearly high (the estimate well above sea level), a point MapKit finds
+        // on the ground is well away from `convert`'s; on a flat plane it's the same point
+        let offBase = hypot(point.x - base.x, point.y - base.y)
+        if pickMode == .unknown, let estimate, hypot(estimate.x - base.x, estimate.y - base.y) > 8 {
+            if offBase < 1 {
+                planarVotes += 1
+            } else if offBase > 4 {
+                terrainVotes += 1
+            }
+            if terrainVotes >= 8 {
+                pickMode = .terrain
+            } else if planarVotes >= 8 && planarVotes > 2 * terrainVotes {
+                pickMode = .planar
+                return nil
             }
         }
-        // The estimate moved onto the line, never below `base`
-        let along = max(0, (foot.x - base.x) * up.dx + (foot.y - base.y) * up.dy)
-        foot = CGPoint(x: base.x + up.dx * along, y: base.y + up.dy * along)
-        return (base, up, foot)
+        // Not known yet: only a point that shows the ground's height (or ground at sea level anyway)
+        if pickMode == .unknown, let estimate, hypot(estimate.x - base.x, estimate.y - base.y) > 8, offBase < 4 {
+            return nil
+        }
+        return point
     }
 
     // MARK: Measuring
@@ -325,20 +372,6 @@ final class ReplayGroundModel {
         guard let fitted = Self.residuals(of: observations, shot: shot, lens: lens, groundHeight: height),
               (fitted.map { abs($0) }.max() ?? .infinity) < 2.5, height > -500, height < 9000 else { return nil }
         return height
-    }
-
-    /// The lens (points) from this frame alone, taking the view's middle as its centre: the scale 50 m
-    /// to the right of the camera's centre, at the depth of the ground there.
-    private func roughLens(on mapView: MKMapView, shot: Shot) -> Double? {
-        let pitch = shot.geometry.pitch
-        let heading = shot.geometry.heading
-        let center = mapView.convert(shot.frame.center, toPointTo: mapView)
-        let right = mapView.convert(shot.frame.coordinate(east: cos(heading) * 50, north: -sin(heading) * 50), toPointTo: mapView)
-        let scale = Double(hypot(right.x - center.x, right.y - center.y)) / 50
-        guard center.y.isFinite, scale > 0, scale.isFinite else { return nil }
-        let groundHeight = pitch > 10 * .pi / 180 ? (Double(center.y) - shot.middle.y) / (scale * sin(pitch)) : 0
-        let focal = scale * (shot.geometry.distance + groundHeight * cos(pitch))
-        return focal.isFinite && focal > 100 && focal < 20_000 ? focal : nil
     }
 
     /// Without the lens measured (no fit matched yet): from this frame alone, taking the view's middle

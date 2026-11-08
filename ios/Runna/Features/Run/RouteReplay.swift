@@ -1161,6 +1161,9 @@ final class ReplayScene {
     let color: UIColor
     let trail: ReplayTrail
     let startPin = ReplayPin(kind: .start)
+    /// Carries the flag when MapKit places it (see moveFlag)
+    private let runnerPin = ReplayPin(kind: .runner)
+    private(set) var flagInAnnotation = false
     /// The runner's flag, on top of the map, its foot on the ground at the end of the line
     let runnerFlag: RunnerFlagView
     /// MapKit's 3D camera, to stand the flag's pole along the vertical through the line's end
@@ -1224,9 +1227,23 @@ final class ReplayScene {
     /// on by `dt`: `streamBearing` is where its cloth is blown (nil: planted, it keeps its way).
     func moveFlag(to coordinate: CLLocationCoordinate2D, streamBearing: Double?, moving: Bool, dt: Double) {
         guard let mapView else { return }
-        // Its pole along the vertical through the line's end: the end is on it, however high the ground
-        if let line = ground.poleLine(for: coordinate, on: mapView) {
-            runnerFlag.stand(base: line.base, up: line.up, foot: line.foot)
+        if ground.pickMode == .planar && !flagInAnnotation {
+            // MapKit can't tell where its 3D ground is on screen: the flag goes into an annotation,
+            // which MapKit places itself
+            useAnnotationFlag(on: mapView)
+        }
+        if flagInAnnotation {
+            runnerPin.coordinate = coordinate
+        } else if let point = ground.locate(coordinate, on: mapView) {
+            // The screen point MapKit says is on the line's end
+            runnerFlag.stand(at: point)
+        } else if let point = ground.project(coordinate, on: mapView) {
+            runnerFlag.stand(at: point)
+        } else {
+            let point = mapView.convert(coordinate, toPointTo: mapView)
+            if point.x.isFinite, point.y.isFinite {
+                runnerFlag.stand(at: point)
+            }
         }
         let camera = mapView.camera
         runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.heading, cameraPitch: Double(camera.pitch), dt: dt)
@@ -1245,6 +1262,21 @@ final class ReplayScene {
 
     /// How far along the route the end of the line is drawn on screen now (metres).
     var shownLineEnd: Double { trail.geometry.shownTip }
+
+    /// Moves the flag into an annotation at the end of the line: MapKit places it on its 3D ground
+    /// itself, in step with the map (on the photo-real model it may stand on trees or roofs).
+    private func useAnnotationFlag(on mapView: MKMapView) {
+        flagInAnnotation = true
+        runnerFlag.removeFromSuperview()
+        runnerFlag.transform = .identity
+        mapView.addAnnotation(runnerPin)
+    }
+
+    /// Where the foot of the flag's pole is on the map's view now (wherever the flag is held).
+    var flagFoot: CGPoint? {
+        guard let mapView, runnerFlag.superview != nil else { return nil }
+        return runnerFlag.convert(runnerFlag.footInBounds, to: mapView)
+    }
 
     /// Shows the flag; `animated` fades it in a quarter of a second.
     func setFlagAlpha(_ alpha: CGFloat, animated: Bool) {
@@ -1315,7 +1347,7 @@ final class ReplayScene {
     /// The start or finish marker's view.
     func view(for annotation: MKAnnotation) -> MKAnnotationView? {
         guard let pin = annotation as? ReplayPin else { return nil }
-        let view = ReplayPinView(annotation: pin, kind: pin.kind, color: color)
+        let view = ReplayPinView(annotation: pin, kind: pin.kind, color: color, flag: pin.kind == .runner ? runnerFlag : nil)
         view.alpha = alphas[pin.kind] ?? 1
         return view
     }
@@ -1678,6 +1710,7 @@ final class ReplayTrailRenderer: MKOverlayRenderer {
 final class ReplayPin: NSObject, MKAnnotation {
     enum Kind {
         case start
+        case runner
     }
 
     let kind: Kind
@@ -1691,7 +1724,7 @@ final class ReplayPin: NSObject, MKAnnotation {
 
 /// Start ring (the runner's flag is RunnerFlagView).
 final class ReplayPinView: MKAnnotationView {
-    init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor) {
+    init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor, flag: RunnerFlagView? = nil) {
         super.init(annotation: annotation, reuseIdentifier: nil)
         collisionMode = .none
         displayPriority = .required
@@ -1706,6 +1739,17 @@ final class ReplayPinView: MKAnnotationView {
             dot.layer.borderWidth = 3
             addSubview(dot)
             zPriority = .defaultUnselected
+        case .runner:
+            // The flag, its pole's foot on the annotation's point
+            if let flag {
+                frame = CGRect(origin: .zero, size: flag.bounds.size)
+                flag.removeFromSuperview()
+                flag.transform = .identity
+                flag.center = CGPoint(x: bounds.midX, y: bounds.maxY)
+                addSubview(flag)
+                centerOffset = CGPoint(x: 0, y: -bounds.height / 2)
+            }
+            zPriority = .max
         }
     }
 
