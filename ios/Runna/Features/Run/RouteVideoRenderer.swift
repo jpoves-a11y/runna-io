@@ -82,7 +82,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         self.job = job
         let timeline = RouteReplayTimeline(plan: job.plan, mode: job.mode, speed: job.speed)
         self.timeline = timeline
-        scene = ReplayScene(timeline: timeline, color: job.color, runner: job.runner)
+        scene = ReplayScene(timeline: timeline, color: job.color, runner: job.runner, ground: ReplayGroundModel())
         director = ReplayDirector(timeline: timeline)
         let scale = max(1, screenScale)
         let size = CGSize(width: job.format.videoSize.width / scale, height: job.format.videoSize.height / scale)
@@ -104,11 +104,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         scene.runnerFlag.setPhoto(photo)
     }
 
-    /// Where the runner's wind blows the flag: opposite to their way (over the last tens of metres).
-    private static func streamBearing(of frame: ReplayFrame, on plan: RouteReplayPlan) -> Double {
-        plan.bearing(at: min(max(frame.run, 30), plan.length - 30), window: 80) + 180
-    }
-
     /// Seconds of video.
     var duration: Double { timeline.total + Self.tail }
 
@@ -118,14 +113,31 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
 
-        // 1. Every view of the replay loaded first, then back to the first one
-        let cameras = ReplayDirector.preloadCameras(for: timeline) + [timeline.overviewCamera]
+        // 1. Every view of the replay loaded first (measuring MapKit's camera on each), a survey of
+        // the ground along the route in 3D, then back to the first view
+        let cameras = ReplayDirector.preloadCameras(for: timeline)
+        let survey = ReplayGroundModel.surveyCameras(for: timeline)
+        let units = Double(cameras.count) + 0.25 * Double(survey.count) + 1
+        let loadedShare = Double(cameras.count) / units
+        let surveyedShare = loadedShare + 0.25 * Double(survey.count) / units
         let progress = self.progress
-        let loaded = await loadState.preload(cameras, on: mapView) { fraction in
-            progress.fraction = fraction * Self.loadingShare
-        }
+        let scene = self.scene
+        let calibrate = { scene.calibrateGround() }
+        let loaded = await loadState.preload(cameras, on: mapView, afterEach: calibrate, onProgress: { fraction in
+            progress.fraction = fraction * loadedShare * Self.loadingShare
+        })
         try Task.checkCancellation()
         guard loaded else { throw CancellationError() }
+        let surveyed = await scene.ground.survey(survey, on: mapView, loadState: loadState, onProgress: { fraction in
+            progress.fraction = (loadedShare + fraction * (surveyedShare - loadedShare)) * Self.loadingShare
+        })
+        try Task.checkCancellation()
+        guard surveyed else { throw CancellationError() }
+        let ready = await loadState.preload([timeline.overviewCamera], on: mapView, afterEach: calibrate, onProgress: { fraction in
+            progress.fraction = (surveyedShare + fraction * (1 - surveyedShare)) * Self.loadingShare
+        })
+        try Task.checkCancellation()
+        guard ready else { throw CancellationError() }
         progress.isLoadingMap = false
 
         // 2. The video file
@@ -202,11 +214,13 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             }
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
-            // The flag on the ground at the end of the line on the frame now drawn, moving with the
-            // video's clock; one refresh so it's on screen when the frame is copied
+            // The frame is drawn and still: MapKit's camera measured on it, and the flag on the ground
+            // at the end of the line (drawn up to `trail`), moving with the video's clock; one refresh
+            // so it's on screen when the frame is copied
+            scene.calibrateGround()
             scene.moveFlag(
-                to: frame.runner,
-                streamBearing: frame.isFinished || frame.run >= timeline.plan.length ? nil : Self.streamBearing(of: frame, on: timeline.plan),
+                to: scene.lineEnd(at: frame.trail),
+                streamBearing: frame.isFinished || frame.run >= timeline.plan.length ? nil : timeline.plan.windBearing(at: frame.run),
                 moving: frame.showsRunner,
                 dt: dt
             )
