@@ -26,8 +26,6 @@ final class ReplayScene {
     private static let areaSource = "replay-area"
     private static let startSource = "replay-start"
     private static let demSource = "replay-dem"
-    private static let satelliteSource = "replay-satellite"
-    private static let satelliteLayer = "replay-satellite-photos"
     private static let ghostLayer = "replay-ghost"
     private static let casingLayer = "replay-casing"
     private static let lineLayer = "replay-line"
@@ -41,8 +39,6 @@ final class ReplayScene {
     private(set) var isReady = false
     /// Mapbox's light: "day" or "night" (the app's dark mode)
     private var lightPreset = "day"
-    /// Satellite imagery under the 3D buildings and trees, instead of the map's ground
-    private var satellite = false
     private var drawn: Double = 0
     private var areaShown = false
     /// The flag's opacity, and where it's fading to (a quarter of a second)
@@ -105,10 +101,9 @@ final class ReplayScene {
         } else {
             lightPreset = dark && !satellite ? "night" : "day"
         }
-        self.satellite = satellite
-        // Mapbox Standard, with its 3D buildings, landmarks and trees: as a map, or with the
-        // satellite imagery under them (see addRoute)
-        let style: StyleURI = .standard
+        // Mapbox Standard Satellite (photos, relief and names), or the Standard map with its 3D
+        // buildings, landmarks and trees
+        let style: StyleURI = satellite ? .standardSatellite : .standard
         if mapView.mapboxMap.styleURI == style && mapView.mapboxMap.isStyleLoaded {
             // The same look, loaded already: only the route again
             addRoute(to: mapView, mode: mode)
@@ -132,34 +127,16 @@ final class ReplayScene {
             "show3dBuildings": true,
             "show3dLandmarks": true,
             "show3dTrees": true,
-            "show3dFacades": mode == .threeD,
+            // The detailed facades come out plain white
+            "show3dFacades": false,
             "showPointOfInterestLabels": false,
             "showTransitLabels": false,
-            "showPedestrianRoads": !satellite,
+            "showPedestrianRoads": true,
         ]
         // The light changes smoothly (the sun setting as the runner goes)
         map.styleTransition = TransitionOptions(duration: 2.5, delay: 0)
         for (key, value) in config {
             try? map.setStyleImportConfigProperty(for: "basemap", config: key, value: value)
-        }
-        // Satellite: Mapbox's imagery over the map's ground (land, water), under its roads, labels and
-        // 3D buildings and trees, so they stand on the photos
-        if satellite {
-            if !map.sourceExists(withId: Self.satelliteSource) {
-                var imagery = RasterSource(id: Self.satelliteSource)
-                imagery.url = "mapbox://mapbox.satellite"
-                imagery.tileSize = 512
-                try? map.addSource(imagery)
-            }
-            if !map.layerExists(withId: Self.satelliteLayer) {
-                var photos = RasterLayer(id: Self.satelliteLayer, source: Self.satelliteSource)
-                photos.slot = .bottom
-                photos.rasterEmissiveStrength = .constant(1)
-                try? map.addLayer(photos)
-            }
-            try? map.setLayerProperty(for: Self.satelliteLayer, property: "raster-brightness-max", value: Self.photoBrightness(for: lightPreset))
-        } else if map.layerExists(withId: Self.satelliteLayer) {
-            try? map.removeLayer(withId: Self.satelliteLayer)
         }
         for layer in [Self.startLayer, Self.lineLayer, Self.casingLayer, Self.ghostLayer, Self.areaLayer] where map.layerExists(withId: layer) {
             try? map.removeLayer(withId: layer)
@@ -301,9 +278,6 @@ final class ReplayScene {
         if let preset = sunPreset(atFraction: fraction), preset != lightPreset {
             lightPreset = preset
             try? map.setStyleImportConfigProperty(for: "basemap", config: "lightPreset", value: preset)
-            if satellite {
-                try? map.setLayerProperty(for: Self.satelliteLayer, property: "raster-brightness-max", value: Self.photoBrightness(for: preset))
-            }
         }
         applyWeather(at: activity?.date(atFraction: fraction))
     }
@@ -312,15 +286,6 @@ final class ReplayScene {
     private func sunPreset(atFraction fraction: Double) -> String? {
         guard let date = activity?.date(atFraction: fraction) else { return nil }
         return SunPosition.lightPreset(at: plan.coordinate(at: plan.length * fraction), date: date)
-    }
-
-    /// How bright the satellite photos are in each light (darker at night, never black).
-    private static func photoBrightness(for preset: String) -> Double {
-        switch preset {
-        case "night": return 0.45
-        case "dawn", "dusk": return 0.75
-        default: return 1
-        }
     }
 
     /// Rain or snow if it rained or snowed at `date`, as heavy as it was.
