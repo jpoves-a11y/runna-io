@@ -1,0 +1,57 @@
+name: Mapbox check
+
+# Asks Mapbox, with the app's public token, for what the replay's map needs (satellite and terrain
+# tiles, the styles) and prints the answers: status, rate-limit headers and error messages. To tell
+# why the satellite map doesn't load. The token is a secret, masked in the log.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/mapbox-check.yml
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
+    steps:
+      - name: Ask Mapbox
+        run: |
+          set -u
+          ask() {
+            local name="$1" url="$2"
+            echo "=== $name"
+            local code
+            code=$(curl -sS -o body.out -D headers.out -w "%{http_code}" "$url&access_token=$TOKEN" || true)
+            echo "HTTP $code"
+            grep -iE "^(x-rate-limit|retry-after|x-cache|content-type)" headers.out || true
+            if [ "$code" != "200" ] || grep -qi "json" headers.out; then
+              head -c 600 body.out | sed "s/$TOKEN/***/g"; echo
+            fi
+          }
+          ask "token" "https://api.mapbox.com/tokens/v2?x=1"
+          ask "satellite tile (raster v4)" "https://api.mapbox.com/v4/mapbox.satellite/14/8504/5869@2x.jpg90?x=1"
+          ask "satellite tile 2 (raster v4, z16)" "https://api.mapbox.com/v4/mapbox.satellite/16/34017/23478@2x.jpg90?x=1"
+          ask "satellite tilejson" "https://api.mapbox.com/v4/mapbox.satellite.json?secure=1"
+          ask "terrain dem tile" "https://api.mapbox.com/v4/mapbox.mapbox-terrain-dem-v1/12/2126/1467@2x.pngraw?x=1"
+          ask "streets vector tile" "https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/14/8504/5869.vector.pbf?x=1"
+          ask "style standard-satellite" "https://api.mapbox.com/styles/v1/mapbox/standard-satellite?x=1"
+          echo "=== standard-satellite sources"
+          python3 - <<'PY' || true
+          import json
+          try:
+              style = json.load(open("body.out"))
+          except Exception as error:
+              print("no style json:", error)
+          else:
+              for name, source in (style.get("sources") or {}).items():
+                  print(name, source.get("type"), source.get("url") or source.get("tiles"))
+              for item in style.get("imports") or []:
+                  print("import", item.get("id"), item.get("url"))
+          PY
+          ask "style satellite-streets-v12" "https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12?x=1"
+          echo "=== a burst: 40 satellite tiles at once"
+          for x in $(seq 8490 8529); do
+            curl -s -o /dev/null -w "%{http_code} " "https://api.mapbox.com/v4/mapbox.satellite/14/$x/5869@2x.jpg90?access_token=$TOKEN" &
+          done
+          wait; echo
