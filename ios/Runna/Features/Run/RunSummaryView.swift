@@ -43,7 +43,8 @@ struct RunSummaryView: View {
                             color: Color.brand,
                             distance: run.distance,
                             duration: run.duration,
-                            height: 260
+                            height: 260,
+                            activity: ReplayActivity(routeId: submission.routeId, start: run.startedAt, end: run.completedAt)
                         )
                         if run.coordinates.count >= 2 {
                             Button {
@@ -78,7 +79,8 @@ struct RunSummaryView: View {
                     title: routeName.trimmingCharacters(in: .whitespaces).isEmpty ? run.defaultName : routeName,
                     date: run.startedAt,
                     area: conqueredArea,
-                    color: Color.brand
+                    color: Color.brand,
+                    activity: ReplayActivity(routeId: submission.routeId, start: run.startedAt, end: run.completedAt)
                 )
             }
             .navigationTitle("Resumen")

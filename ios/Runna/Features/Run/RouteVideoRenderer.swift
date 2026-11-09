@@ -42,6 +42,9 @@ final class RouteVideoRenderer: NSObject {
         let colorScheme: ColorScheme
         /// Whose flag runs the route
         let runner: ReplayRunner
+        /// When it was run (the sun's light, the weather) and what it adds (km paces, altitude)
+        let activity: ReplayActivity?
+        let extras: ReplayExtras
     }
 
     enum RenderError: LocalizedError {
@@ -89,7 +92,8 @@ final class RouteVideoRenderer: NSObject {
         super.init()
         mapView.isUserInteractionEnabled = false
         loadState.attach(to: mapView)
-        scene.install(on: mapView, satellite: job.satellite, mode: job.mode, dark: job.colorScheme == .dark)
+        scene.setExtras(job.extras)
+        scene.install(on: mapView, satellite: job.satellite, mode: job.mode, dark: job.colorScheme == .dark, activity: job.activity)
         scene.setCamera(timeline.overviewCamera)
     }
 
@@ -251,6 +255,7 @@ final class RouteVideoRenderer: NSObject {
         scene.setFlagAlpha(flagAlpha, animated: false)
         scene.setCamera(frame.camera)
         scene.drawTrail(to: frame.trail)
+        scene.updateSky(fraction: frame.run / timeline.plan.length)
         if frame.isRevealed {
             scene.addArea()
         }
@@ -324,7 +329,10 @@ final class RouteVideoRenderer: NSObject {
             isFinished: frame.isFinished,
             distance: job.distance,
             duration: job.duration,
-            endCardReveal: 1 - pow(1 - reveal, 3)
+            endCardReveal: 1 - pow(1 - reveal, 3),
+            elevation: job.extras.elevation,
+            weatherCredit: job.extras.hasWeather,
+            accent: Color(uiColor: job.color)
         )
         let key = overlay.renderKey
         if let overlayCache, overlayCache.key == key {

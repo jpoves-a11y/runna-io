@@ -1,5 +1,6 @@
 import CoreLocation
-import MapboxMaps
+// Rain and snow are experimental in Mapbox Maps v11
+@_spi(Experimental) import MapboxMaps
 import UIKit
 
 // MARK: - What the replay draws on the map (Mapbox)
@@ -47,6 +48,14 @@ final class ReplayScene {
     /// The flag's opacity, and where it's fading to (a quarter of a second)
     private var flagAlpha: CGFloat = 0
     private var flagAlphaTarget: CGFloat = 0
+    /// The activity: when it was run sets the sun's light (and the weather) as the runner goes
+    var activity: ReplayActivity?
+    /// The pace of each km and the weather of that day (they may arrive after the replay starts)
+    private(set) var extras = ReplayExtras()
+    /// The weather effect on the map now (to change it only when it changes)
+    private var weatherKey = ""
+    /// A marker at each km (or 5 km on long routes): its distance along the route and its view
+    private var kmMarkers: [(distance: Double, view: KmMarkerView, annotation: ViewAnnotation)] = []
 
     var plan: RouteReplayPlan { timeline.plan }
 
@@ -78,16 +87,24 @@ final class ReplayScene {
 
     /// Loads the look (satellite with roads and names, or the standard map with its 3D buildings;
     /// 3D terrain in 3D) and puts the route on it. `isReady` once done.
-    func install(on mapView: MapView, satellite: Bool, mode: RouteReplayMode, dark: Bool) {
+    func install(on mapView: MapView, satellite: Bool, mode: RouteReplayMode, dark: Bool, activity: ReplayActivity?) {
+        self.activity = activity
         self.mapView = mapView
         isReady = false
         drawn = 0
         areaShown = false
-        // Every flag of an earlier replay goes (it would stay where that replay stopped)
+        // Every flag and km marker of an earlier replay goes (it would stay where that replay stopped)
         mapView.viewAnnotations.removeAll()
         flagAnnotation = nil
-        // The map in light or dark like the app; satellite imagery always in daylight
-        lightPreset = dark && !satellite ? "night" : "day"
+        kmMarkers = []
+        weatherKey = ""
+        // The sun's light where and when the run started; without a date, light or dark like the
+        // app (satellite imagery then always in daylight)
+        if let preset = sunPreset(atFraction: 0) {
+            lightPreset = preset
+        } else {
+            lightPreset = dark && !satellite ? "night" : "day"
+        }
         self.satellite = satellite
         // Mapbox Standard, with its 3D buildings, landmarks and trees: as a map, or with the
         // satellite imagery under them (see addRoute)
@@ -120,6 +137,8 @@ final class ReplayScene {
             "showTransitLabels": false,
             "showPedestrianRoads": !satellite,
         ]
+        // The light changes smoothly (the sun setting as the runner goes)
+        map.styleTransition = TransitionOptions(duration: 2.5, delay: 0)
         for (key, value) in config {
             try? map.setStyleImportConfigProperty(for: "basemap", config: key, value: value)
         }
@@ -138,6 +157,7 @@ final class ReplayScene {
                 photos.rasterEmissiveStrength = .constant(1)
                 try? map.addLayer(photos)
             }
+            try? map.setLayerProperty(for: Self.satelliteLayer, property: "raster-brightness-max", value: Self.photoBrightness(for: lightPreset))
         } else if map.layerExists(withId: Self.satelliteLayer) {
             try? map.removeLayer(withId: Self.satelliteLayer)
         }
@@ -217,6 +237,8 @@ final class ReplayScene {
         flagHolder.alpha = flagAlpha
 
         isReady = true
+        addKmMarkers(to: mapView)
+        applyWeather(at: activity?.date(atFraction: 0))
         let distance = drawn
         drawn = -1
         drawTrail(to: distance)
@@ -256,6 +278,112 @@ final class ReplayScene {
         let trim: [Double] = fraction >= 1 ? [1, 1] : [fraction, 1]
         try? map.setLayerProperty(for: Self.casingLayer, property: "line-trim-offset", value: trim)
         try? map.setLayerProperty(for: Self.lineLayer, property: "line-trim-offset", value: trim)
+        showKmMarkers(upTo: target)
+    }
+
+    // MARK: Sun, weather and km markers
+
+    /// The pace of each km and the weather of that day, once loaded: the km markers get their pace
+    /// and the weather shows.
+    func setExtras(_ extras: ReplayExtras) {
+        guard extras != self.extras else { return }
+        self.extras = extras
+        guard isReady, let mapView else { return }
+        addKmMarkers(to: mapView)
+        weatherKey = ""
+        applyWeather(at: activity?.date(atFraction: drawn / max(1, plan.length)))
+    }
+
+    /// The sun's light (and the weather) when the runner had run `fraction` of the route: dawn, day,
+    /// dusk or night, changing smoothly.
+    func updateSky(fraction: Double) {
+        guard isReady, let map = mapView?.mapboxMap else { return }
+        if let preset = sunPreset(atFraction: fraction), preset != lightPreset {
+            lightPreset = preset
+            try? map.setStyleImportConfigProperty(for: "basemap", config: "lightPreset", value: preset)
+            if satellite {
+                try? map.setLayerProperty(for: Self.satelliteLayer, property: "raster-brightness-max", value: Self.photoBrightness(for: preset))
+            }
+        }
+        applyWeather(at: activity?.date(atFraction: fraction))
+    }
+
+    /// Mapbox's light for the sun where the route is, when the runner had run `fraction` of it.
+    private func sunPreset(atFraction fraction: Double) -> String? {
+        guard let date = activity?.date(atFraction: fraction) else { return nil }
+        return SunPosition.lightPreset(at: plan.coordinate(at: plan.length * fraction), date: date)
+    }
+
+    /// How bright the satellite photos are in each light (darker at night, never black).
+    private static func photoBrightness(for preset: String) -> Double {
+        switch preset {
+        case "night": return 0.45
+        case "dawn", "dusk": return 0.75
+        default: return 1
+        }
+    }
+
+    /// Rain or snow if it rained or snowed at `date`, as heavy as it was.
+    private func applyWeather(at date: Date?) {
+        guard let map = mapView?.mapboxMap else { return }
+        let hour = date.flatMap { extras.weather(at: $0) }
+        let level = hour.map { min(1, 0.3 + $0.amount / 5) } ?? 0
+        let key = "\(String(describing: hour?.kind))-\(Int((level * 4).rounded()))"
+        guard key != weatherKey else { return }
+        weatherKey = key
+        try? map.removeRain()
+        try? map.removeSnow()
+        guard let hour else { return }
+        switch hour.kind {
+        case .rain:
+            var rain = Rain()
+            rain.density = .constant(level)
+            rain.intensity = .constant(level)
+            try? map.setRain(rain)
+        case .snow:
+            var snow = Snow()
+            snow.density = .constant(level)
+            snow.intensity = .constant(level)
+            try? map.setSnow(snow)
+        case .dry:
+            break
+        }
+    }
+
+    /// A marker at each km of the route (each 5 km on routes over 15 km), with that km's pace if
+    /// known; each one shows as the line gets there.
+    private func addKmMarkers(to mapView: MapView) {
+        for marker in kmMarkers {
+            marker.annotation.remove()
+        }
+        kmMarkers = []
+        let step = plan.length > 15_000 ? 5 : 1
+        let count = Int(plan.length / 1000)
+        guard count >= 1 else { return }
+        for km in stride(from: step, through: count, by: step) {
+            let distance = Double(km) * 1000
+            guard distance < plan.length - 50 else { continue }
+            let pace = km <= extras.kmPaces.count ? extras.kmPaces[km - 1] : nil
+            let view = KmMarkerView(km: km, pace: pace, color: color)
+            let annotation = ViewAnnotation(coordinate: plan.coordinate(at: distance), view: view)
+            annotation.variableAnchors = [ViewAnnotationAnchorConfig(anchor: .bottom)]
+            annotation.allowOverlap = true
+            mapView.viewAnnotations.add(annotation)
+            kmMarkers.append((distance, view, annotation))
+        }
+        showKmMarkers(upTo: drawn)
+    }
+
+    /// Fades each km marker in as the line passes it (over about a quarter of a second of running).
+    private func showKmMarkers(upTo distance: Double) {
+        guard !kmMarkers.isEmpty else { return }
+        let fade = max(20, 0.25 * plan.length / max(1, timeline.run))
+        for marker in kmMarkers {
+            let alpha = CGFloat(min(1, max(0, (distance - marker.distance) / fade)))
+            if marker.view.alpha != alpha {
+                marker.view.alpha = alpha
+            }
+        }
     }
 
     /// The area the route encloses, under the lines (once, at the reveal).
@@ -415,5 +543,60 @@ final class MapLoadState {
             onProgress(Double(index + 1) / Double(cameras.count))
         }
         return true
+    }
+}
+
+/// A km marker: "3 km · 5:12" in a small dark capsule, over a dot on the route.
+final class KmMarkerView: UIView {
+    private static let dotSize: CGFloat = 7
+    private let size: CGSize
+
+    init(km: Int, pace: Double?, color: UIColor) {
+        var text = "\(km) km"
+        if let pace, pace.isFinite, pace > 0 {
+            let seconds = Int(pace.rounded())
+            text += String(format: " · %d:%02d", seconds / 60, seconds % 60)
+        }
+        let label = UILabel()
+        label.text = text
+        label.font = .systemFont(ofSize: 11, weight: .bold)
+        label.textColor = .white
+        label.textAlignment = .center
+        let textSize = label.intrinsicContentSize
+        let capsule = CGSize(width: ceil(textSize.width) + 14, height: 20)
+        size = CGSize(width: capsule.width, height: capsule.height + 3 + Self.dotSize)
+        super.init(frame: CGRect(origin: .zero, size: size))
+        isUserInteractionEnabled = false
+        alpha = 0
+
+        let background = UIView(frame: CGRect(origin: .zero, size: capsule))
+        background.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        background.layer.cornerRadius = capsule.height / 2
+        background.layer.borderWidth = 1
+        background.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
+        addSubview(background)
+        label.frame = background.bounds
+        addSubview(label)
+
+        let dot = UIView(frame: CGRect(x: (size.width - Self.dotSize) / 2, y: size.height - Self.dotSize, width: Self.dotSize, height: Self.dotSize))
+        dot.backgroundColor = .white
+        dot.layer.cornerRadius = Self.dotSize / 2
+        dot.layer.borderWidth = 2
+        dot.layer.borderColor = color.cgColor
+        addSubview(dot)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: CGSize { size }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize { self.size }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize { size }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize, withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority, verticalFittingPriority: UILayoutPriority) -> CGSize {
+        size
     }
 }

@@ -589,6 +589,8 @@ struct RouteReplayView: View {
     var onFinished: (() -> Void)?
     /// Whose flag runs the route (photo and colour); nil: the signed-in user.
     var runner: ReplayRunner?
+    /// The activity: when it was run (the sun's light, the weather) and its profile (km, altitude)
+    var activity: ReplayActivity?
 
     @AppStorage("routeReplayMode") private var modeRaw = RouteReplayMode.threeD.rawValue
     @AppStorage("routeReplaySatellite") private var satellite = true
@@ -603,6 +605,8 @@ struct RouteReplayView: View {
     @State private var runnerPhoto: UIImage?
     /// Computed once per route.
     @State private var plan: RouteReplayPlan?
+    /// The pace of each km, the altitude profile and the weather of that day (loaded once)
+    @State private var extras = ReplayExtras()
 
     init(
         coordinates: [CLLocationCoordinate2D],
@@ -615,7 +619,8 @@ struct RouteReplayView: View {
         share: RouteShareOptions? = nil,
         restartToken: Int = 0,
         onFinished: (() -> Void)? = nil,
-        runner: ReplayRunner? = nil
+        runner: ReplayRunner? = nil,
+        activity: ReplayActivity? = nil
     ) {
         self.coordinates = coordinates
         self.color = color
@@ -628,6 +633,7 @@ struct RouteReplayView: View {
         self.restartToken = restartToken
         self.onFinished = onFinished
         self.runner = runner
+        self.activity = activity
         _plan = State(initialValue: RouteReplayPlan(coordinates: coordinates))
     }
 
@@ -659,7 +665,9 @@ struct RouteReplayView: View {
                 progress: progress,
                 onFinished: onFinished,
                 runner: flagRunner,
-                runnerPhoto: runnerPhoto
+                runnerPhoto: runnerPhoto,
+                activity: activity,
+                extras: extras
             )
             .accessibilityLabel("Animación del recorrido")
             // The views that read the progress (several times a second) are separate views, so
@@ -670,7 +678,9 @@ struct RouteReplayView: View {
                     progress: progress,
                     options: share,
                     distance: distance ?? plan?.length ?? 0,
-                    duration: duration
+                    duration: duration,
+                    extras: extras,
+                    color: color
                 )
             } else if config == nil {
                 ReplayChrome(
@@ -684,7 +694,9 @@ struct RouteReplayView: View {
                     onFullScreen: { showsFullScreen = true },
                     onMode: { newMode in modeRaw = newMode.rawValue },
                     onSatellite: { on in satellite = on },
-                    onReplay: { playToken += 1 }
+                    onReplay: { playToken += 1 },
+                    extras: extras,
+                    color: color
                 )
             }
         }
@@ -706,8 +718,12 @@ struct RouteReplayView: View {
         .task(id: flagRunner) {
             runnerPhoto = await flagRunner.loadPhoto()
         }
+        .task(id: activity) {
+            guard let activity else { return }
+            extras = await ReplayExtrasLoader.load(activity, center: plan?.center ?? coordinates.first ?? CLLocationCoordinate2D())
+        }
         .fullScreenCover(isPresented: $showsFullScreen) {
-            RouteReplayFullScreen(coordinates: coordinates, color: color, distance: distance, duration: duration, runner: runner)
+            RouteReplayFullScreen(coordinates: coordinates, color: color, distance: distance, duration: duration, runner: runner, activity: activity)
         }
     }
 }
@@ -726,6 +742,9 @@ private struct ReplayChrome: View {
     let onMode: (RouteReplayMode) -> Void
     let onSatellite: (Bool) -> Void
     let onReplay: () -> Void
+    /// The altitude profile and the weather of that day (with Apple Weather's attribution)
+    let extras: ReplayExtras
+    let color: Color
 
     var body: some View {
         let fraction = progress.fraction
@@ -745,6 +764,24 @@ private struct ReplayChrome: View {
                 }
             }
             Spacer(minLength: 0)
+            if extras.elevation.count >= 2, fraction > 0 || finished {
+                ReplayElevationStrip(points: extras.elevation, fraction: finished ? 1 : fraction, color: color)
+                    .foregroundStyle(.white)
+                    .background(Color.black.opacity(0.45), in: Capsule())
+                    .frame(maxWidth: 320)
+                    .transition(.opacity)
+            }
+            if extras.hasWeather {
+                Link(destination: extras.weatherLegalURL ?? URL(string: "https://weatherkit.apple.com/legal-attribution.html")!) {
+                    Text("\u{F8FF} Weather")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.black.opacity(0.4), in: Capsule())
+                }
+                .accessibilityLabel("Datos meteorológicos de Apple Weather")
+            }
             HStack(spacing: DS.Spacing.s) {
                 ReplaySegmented(
                     options: ["2D", "3D"],
@@ -779,6 +816,8 @@ private struct ReplayShareLayer: View {
     let options: RouteShareOptions
     let distance: Double
     let duration: Int?
+    let extras: ReplayExtras
+    let color: Color
 
     var body: some View {
         RouteShareOverlay(
@@ -786,7 +825,10 @@ private struct ReplayShareLayer: View {
             fraction: progress.fraction,
             isFinished: progress.isFinished,
             distance: distance,
-            duration: duration
+            duration: duration,
+            elevation: extras.elevation,
+            weatherCredit: extras.hasWeather,
+            accent: color
         )
     }
 }
@@ -820,6 +862,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
     let onFinished: (() -> Void)?
     let runner: ReplayRunner
     let runnerPhoto: UIImage?
+    let activity: ReplayActivity?
+    let extras: ReplayExtras
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -845,6 +889,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
         coordinator.onFinished = onFinished
         coordinator.reduceMotion = reduceMotion
         coordinator.setRunnerPhoto(runnerPhoto)
+        coordinator.activity = activity
+        coordinator.setExtras(extras)
         // A new look (2D / 3D, map / satellite) plays again from the start, loading its views first
         let styleKey = "\(satellite)-\(mode.rawValue)-\(dark)"
         let restart = force || coordinator.styleKey != styleKey || coordinator.playToken != playToken || coordinator.speed != speed
@@ -868,6 +914,9 @@ private struct RouteReplayMapView: UIViewRepresentable {
         private(set) var speed: Double = 1
         private(set) var runner: ReplayRunner?
         private var runnerPhoto: UIImage?
+        /// When the run was (the sun's light, the weather) and what it adds (km paces, weather)
+        var activity: ReplayActivity?
+        private var extras = ReplayExtras()
         /// The replay is over: the flag stays planted at the finish (and waves) while the map is the user's
         private var planted = false
 
@@ -899,6 +948,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
             mapView.addGestureRecognizer(pinch)
         }
 
+        /// The pace of each km and the weather of that day (they may arrive after the replay started).
+        func setExtras(_ extras: ReplayExtras) {
+            guard extras != self.extras else { return }
+            self.extras = extras
+            scene?.setExtras(extras)
+        }
+
         /// The runner's photo for the flag (it may arrive after the replay started).
         func setRunnerPhoto(_ photo: UIImage?) {
             guard let photo, photo !== runnerPhoto else { return }
@@ -918,12 +974,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
             let timeline = RouteReplayTimeline(plan: plan, mode: mode, speed: speed)
             let scene = ReplayScene(timeline: timeline, color: color, runner: runner)
             scene.runnerFlag.setPhoto(runnerPhoto)
+            scene.setExtras(extras)
             self.scene = scene
             director = ReplayDirector(timeline: timeline)
             reportedFinish = false
             userTookOver = false
             setInteractive(false)
-            scene.install(on: mapView, satellite: satellite, mode: mode, dark: dark)
+            scene.install(on: mapView, satellite: satellite, mode: mode, dark: dark, activity: activity)
             publish(fraction: 0, finished: false, force: true)
             progress?.loading = 0
 
@@ -966,6 +1023,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 // The whole route at once, the flag planted at the finish (still)
                 scene.setCamera(timeline.revealCamera(heading: 0))
                 scene.drawTrail(to: plan.length)
+                scene.updateSky(fraction: 1)
                 scene.addArea()
                 scene.setFlagAlpha(1, animated: false)
                 setInteractive(true)
@@ -1026,6 +1084,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 scene.setCamera(frame.camera)
             }
             scene.drawTrail(to: frame.trail)
+            scene.updateSky(fraction: frame.run / plan.length)
             scene.updateFlag(streamBearing: plan.windBearing(at: frame.trail), moving: frame.showsRunner, dt: dt)
             if frame.isRevealed {
                 scene.addArea()
@@ -1123,11 +1182,13 @@ struct RouteReplayFullScreen: View {
     var duration: Int? = nil
     /// Whose flag (nil: the signed-in user)
     var runner: ReplayRunner? = nil
+    /// When it was run and its profile
+    var activity: ReplayActivity? = nil
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        RouteReplayView(coordinates: coordinates, color: color, distance: distance, duration: duration, height: nil, allowsFullScreen: false, runner: runner)
+        RouteReplayView(coordinates: coordinates, color: color, distance: distance, duration: duration, height: nil, allowsFullScreen: false, runner: runner, activity: activity)
             .ignoresSafeArea()
             .overlay(alignment: .topTrailing) {
                 GlassCircleButton(systemImage: "xmark", accessibilityLabel: "Cerrar") {

@@ -92,7 +92,8 @@ struct RouteDetailView: View {
                 date: route.startDate,
                 area: route.territoryArea,
                 color: lineColor,
-                runner: owner
+                runner: owner,
+                activity: ReplayActivity(route: route)
             )
         }
         .disabled(isWorking)
@@ -140,7 +141,7 @@ struct RouteDetailView: View {
                     .padding(DS.Spacing.m)
                 }
                 .fullScreenCover(isPresented: $showsReplay) {
-                    RouteReplayFullScreen(coordinates: route.locations, color: lineColor, distance: route.distance, duration: route.duration, runner: owner)
+                    RouteReplayFullScreen(coordinates: route.locations, color: lineColor, distance: route.distance, duration: route.duration, runner: owner, activity: ReplayActivity(route: route))
                 }
         } else {
             EmptyStateView(

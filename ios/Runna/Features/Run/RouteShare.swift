@@ -19,6 +19,8 @@ struct RouteShareOptions: Equatable {
     var showsBrand = true
     /// Big summary card when the runner reaches the finish.
     var showsEndCard = true
+    /// The altitude profile, filling in as the runner goes (when the route has altitudes).
+    var showsElevation = true
 }
 
 /// Shape of the video.
@@ -69,12 +71,21 @@ struct RouteShareOverlay: View {
     /// 0...1: how far the end card has come in. The video sets it frame by frame (SwiftUI doesn't
     /// animate there); on screen it stays 1 and the card comes in with its transition.
     var endCardReveal: Double = 1
+    /// The route's altitude profile (empty: none shown)
+    var elevation: [ReplayElevationPoint] = []
+    /// Rain or snow from Apple Weather shows: its attribution is required
+    var weatherCredit = false
+    /// The profile's colour
+    var accent: Color = .white
 
-    /// Everything that changes from frame to frame (counters, end card): the video draws the overlay
-    /// again only when it changes.
+    private var showsElevation: Bool { options.showsElevation && elevation.count >= 2 }
+
+    /// Everything that changes from frame to frame (counters, end card, the profile): the video
+    /// draws the overlay again only when it changes.
     var renderKey: String {
         let values = counterItems(live: !isFinished).map(\.value).joined(separator: "|")
-        return "\(values)|\(isFinished)|\(Int((endCardReveal * 100).rounded()))"
+        let profile = showsElevation ? Int(((isFinished ? 1 : fraction) * 300).rounded()) : -1
+        return "\(values)|\(isFinished)|\(Int((endCardReveal * 100).rounded()))|\(profile)|\(weatherCredit)"
     }
 
     private var paceText: String? {
@@ -105,7 +116,18 @@ struct RouteShareOverlay: View {
                             .transition(.scale(scale: 0.9).combined(with: .opacity))
                         Spacer(minLength: 0)
                     }
+                    if showsElevation {
+                        ReplayElevationStrip(points: elevation, fraction: isFinished ? 1 : fraction, color: accent, unit: unit)
+                            .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12 * unit, style: .continuous))
+                            .padding(.bottom, 8 * unit)
+                    }
                     counters(unit: unit)
+                    if weatherCredit {
+                        Text("Tiempo: \u{F8FF} Weather")
+                            .font(.system(size: 8 * unit, weight: .medium))
+                            .opacity(0.7)
+                            .padding(.top, 4 * unit)
+                    }
                 }
                 .padding(18 * unit)
             }
@@ -285,6 +307,8 @@ struct RouteShareEditor: View {
     let ownerColor: Color
     /// Whose flag runs the route (nil: the signed-in user).
     let runner: ReplayRunner?
+    /// When it was run and its profile (the sun's light, the weather, km markers, altitude)
+    let activity: ReplayActivity?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
@@ -300,6 +324,8 @@ struct RouteShareEditor: View {
     @State private var renderer: RouteVideoRenderer?
     @State private var renderTask: Task<Void, Never>?
     @State private var errorMessage: String?
+    /// The altitude profile, km paces and weather of the activity (loaded once)
+    @State private var extras = ReplayExtras()
 
     private enum Phase: Equatable {
         case editing
@@ -314,12 +340,13 @@ struct RouteShareEditor: View {
         case failed
     }
 
-    init(coordinates: [CLLocationCoordinate2D], distance: Double, duration: Int?, title: String, date: Date?, area: Double?, color: Color, runner: ReplayRunner? = nil) {
+    init(coordinates: [CLLocationCoordinate2D], distance: Double, duration: Int?, title: String, date: Date?, area: Double?, color: Color, runner: ReplayRunner? = nil, activity: ReplayActivity? = nil) {
         self.coordinates = coordinates
         self.distance = distance
         self.duration = duration
         self.ownerColor = color
         self.runner = runner
+        self.activity = activity
         _config = State(initialValue: RouteReplayConfig(
             mode: RouteReplayMode(rawValue: UserDefaults.standard.string(forKey: "routeReplayMode") ?? "") ?? .threeD,
             satellite: UserDefaults.standard.object(forKey: "routeReplaySatellite") as? Bool ?? true,
@@ -355,6 +382,11 @@ struct RouteShareEditor: View {
         .errorAlert($errorMessage)
         .onDisappear {
             renderTask?.cancel()
+        }
+        .task(id: activity) {
+            guard let activity else { return }
+            let center = RouteReplayPlan(coordinates: coordinates)?.center ?? coordinates.first ?? CLLocationCoordinate2D()
+            extras = await ReplayExtrasLoader.load(activity, center: center)
         }
     }
 
@@ -427,7 +459,8 @@ struct RouteShareEditor: View {
                 config: config,
                 share: options,
                 restartToken: restartToken,
-                runner: flagRunner
+                runner: flagRunner,
+                activity: activity
             )
         case .rendering:
             renderingCard
@@ -587,6 +620,9 @@ struct RouteShareEditor: View {
         if let area = options.area, area > 0 {
             items.append(.init(title: "Territorio", isOn: options.showsArea) { options.showsArea.toggle() })
         }
+        if extras.elevation.count >= 2 {
+            items.append(.init(title: "Altitud", isOn: options.showsElevation) { options.showsElevation.toggle() })
+        }
         items.append(.init(title: "Resumen final", isOn: options.showsEndCard) { options.showsEndCard.toggle() })
         items.append(.init(title: "Marca Runna.io", isOn: options.showsBrand) { options.showsBrand.toggle() })
         return items
@@ -644,7 +680,9 @@ struct RouteShareEditor: View {
             duration: duration,
             format: format,
             colorScheme: colorScheme,
-            runner: flagRunner
+            runner: flagRunner,
+            activity: activity,
+            extras: extras
         )
         let renderer = RouteVideoRenderer(job: job, screenScale: displayScale)
         self.renderer = renderer

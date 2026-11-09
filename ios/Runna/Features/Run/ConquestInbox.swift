@@ -235,7 +235,8 @@ private struct ConquestInboxView: View {
                                     color: Color.brand,
                                     distance: route.distance,
                                     duration: route.duration,
-                                    height: 260
+                                    height: 260,
+                                    activity: ReplayActivity(route: route)
                                 )
                                 Button {
                                     showsShareEditor = true
@@ -267,7 +268,8 @@ private struct ConquestInboxView: View {
                         title: renamedTo ?? route.name,
                         date: route.startDate,
                         area: (result?.newAreaConquered ?? 0) > 0 ? result?.newAreaConquered : route.territoryArea,
-                        color: Color.brand
+                        color: Color.brand,
+                        activity: ReplayActivity(route: route)
                     )
                 }
             }
