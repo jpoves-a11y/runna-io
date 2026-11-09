@@ -33,6 +33,9 @@ final class ReplayScene {
 
     private weak var mapView: MapView?
     private let flagHolder: FlagHolderView
+    /// What Mapbox couldn't load (shown small on the map, to tell why something is missing)
+    private let errorLabel = UILabel()
+    private var errorObserver: AnyCancelable?
     private var flagAnnotation: ViewAnnotation?
     /// The style and the route's layers are in
     private(set) var isReady = false
@@ -81,8 +84,10 @@ final class ReplayScene {
         areaShown = false
         // Every flag of an earlier replay goes (it would stay where that replay stopped)
         mapView.viewAnnotations.removeAll()
+        showErrors(on: mapView)
         flagAnnotation = nil
-        lightPreset = dark ? "night" : "day"
+        // The map in light or dark like the app; satellite imagery always in daylight
+        lightPreset = dark && !satellite ? "night" : "day"
         // Mapbox's Standard look, as satellite imagery or as a map, in light or dark like the app
         let style: StyleURI = satellite ? .standardSatellite : .standard
         if mapView.mapboxMap.styleURI == style && mapView.mapboxMap.isStyleLoaded {
@@ -94,6 +99,31 @@ final class ReplayScene {
             MainActor.assumeIsolated {
                 guard let self, let mapView, self.mapView === mapView else { return }
                 self.addRoute(to: mapView, mode: mode)
+            }
+        }
+    }
+
+    /// Shows what Mapbox fails to load (a source or its tiles), small at the top of the map.
+    private func showErrors(on mapView: MapView) {
+        for view in mapView.subviews where view.tag == 0x5EE {
+            view.removeFromSuperview()
+        }
+        errorLabel.tag = 0x5EE
+        errorLabel.text = nil
+        errorLabel.isHidden = true
+        errorLabel.numberOfLines = 3
+        errorLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        errorLabel.textColor = .white
+        errorLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        errorLabel.frame = CGRect(x: 8, y: 60, width: max(100, mapView.bounds.width - 16), height: 40)
+        errorLabel.autoresizingMask = [.flexibleWidth]
+        mapView.addSubview(errorLabel)
+        errorObserver = mapView.mapboxMap.onMapLoadingError.observe { [weak self] error in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let source = error.sourceId.map { " (\($0))" } ?? ""
+                self.errorLabel.text = " Mapbox: \(error.message)\(source)"
+                self.errorLabel.isHidden = false
             }
         }
     }
@@ -133,6 +163,7 @@ final class ReplayScene {
         ghost.lineWidth = .constant(2)
         ghost.lineCap = .constant(.round)
         ghost.lineDasharray = .constant([1, 2.5])
+        ghost.lineEmissiveStrength = .constant(1)
         try? map.addLayer(ghost)
 
         // The route run so far: white casing and the coloured line, trimmed to the runner's distance
@@ -142,6 +173,7 @@ final class ReplayScene {
         casing.lineCap = .constant(.round)
         casing.lineJoin = .constant(.round)
         casing.lineTrimOffset = .constant([0, 1])
+        casing.lineEmissiveStrength = .constant(1)
         try? map.addLayer(casing)
         var line = LineLayer(id: Self.lineLayer, source: Self.routeSource)
         line.lineColor = .constant(StyleColor(color))
@@ -149,6 +181,8 @@ final class ReplayScene {
         line.lineCap = .constant(.round)
         line.lineJoin = .constant(.round)
         line.lineTrimOffset = .constant([0, 1])
+        // Its own colour, not shaded by the map's light (day or night)
+        line.lineEmissiveStrength = .constant(1)
         try? map.addLayer(line)
 
         // The start: a white dot ringed in the runner's colour
@@ -161,6 +195,7 @@ final class ReplayScene {
         dot.circleStrokeColor = .constant(StyleColor(color))
         dot.circleStrokeWidth = .constant(3)
         dot.circlePitchAlignment = .constant(.viewport)
+        dot.circleEmissiveStrength = .constant(1)
         try? map.addLayer(dot)
 
         // The runner's flag, bound to the end of the line
@@ -225,6 +260,7 @@ final class ReplayScene {
         var fill = FillLayer(id: Self.areaLayer, source: Self.areaSource)
         fill.fillColor = .constant(StyleColor(color.withAlphaComponent(0.2)))
         fill.fillOutlineColor = .constant(StyleColor(color.withAlphaComponent(0.45)))
+        fill.fillEmissiveStrength = .constant(1)
         try? map.addLayer(fill, layerPosition: .below(Self.ghostLayer))
     }
 
