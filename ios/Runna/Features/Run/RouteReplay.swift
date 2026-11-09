@@ -1142,16 +1142,28 @@ extension RouteReplayMapView.Coordinator: UIGestureRecognizerDelegate {
 
 // MARK: - Waiting for the map
 
-/// Screen refreshes to wait for (`await clock.next()`), from a display link at 60 Hz.
+/// Screen refreshes to wait for (`await clock.next()`), from a display link at `rate` Hz (60 by
+/// default; up to 120 on ProMotion iPhones).
 @MainActor
 final class FrameClock: NSObject {
+    /// The fastest the screen refreshes, up to 120 Hz
+    static var screenRate: Int { max(60, min(120, UIScreen.main.maximumFramesPerSecond)) }
+
+    /// Refreshes a second it asks for
+    let rate: Int
     private var link: CADisplayLink?
     private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    init(rate: Int = 60) {
+        self.rate = max(1, rate)
+        super.init()
+    }
 
     func start() {
         guard link == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
+        let rate = Float(self.rate)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, rate), maximum: rate, preferred: rate)
         link.add(to: .main, forMode: .common)
         self.link = link
     }

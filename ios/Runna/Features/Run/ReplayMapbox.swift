@@ -1,5 +1,5 @@
 import CoreLocation
-// Rain and snow are experimental in Mapbox Maps v11
+// Some of what the replay uses (Standard Satellite among them) may still be experimental in v11
 @_spi(Experimental) import MapboxMaps
 import UIKit
 
@@ -54,6 +54,21 @@ final class ReplayScene {
     private let wetGlass = WetGlassView()
     /// A marker at each km (or 5 km on long routes): its distance along the route and its view
     private var kmMarkers: [(distance: Double, view: KmMarkerView, annotation: ViewAnnotation)] = []
+    /// Lowers the map's tile budget if iOS runs short of memory
+    private var memoryObserver: NSObjectProtocol?
+    /// iOS has run short of memory: from then on the maps keep Mapbox's own (small) tile budget
+    private static var memoryIsTight = false
+
+    /// Tiles each of the map's sources keeps in memory: far more than Mapbox's own budget (a few
+    /// dozen, for the screen's size), so every tile loaded before the replay is still there, parsed,
+    /// when the replay gets to it (the heavy ones near towns most of all); as many as the iPhone's
+    /// memory allows.
+    static var tileBudget: Int {
+        let gigabytes = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        if gigabytes <= 4.5 { return 120 }
+        if gigabytes <= 6.5 { return 200 }
+        return 300
+    }
 
     var plan: RouteReplayPlan { timeline.plan }
 
@@ -62,6 +77,12 @@ final class ReplayScene {
         self.color = color
         runnerFlag = RunnerFlagView(runner: runner)
         flagHolder = FlagHolderView(flag: runnerFlag)
+    }
+
+    deinit {
+        if let memoryObserver {
+            NotificationCenter.default.removeObserver(memoryObserver)
+        }
     }
 
     /// A map for the replay: no ornaments but the logo and attribution Mapbox requires, no gestures.
@@ -96,6 +117,7 @@ final class ReplayScene {
         flagAnnotation = nil
         kmMarkers = []
         weatherKey = ""
+        keepTilesInMemory(on: mapView)
         wetGlass.reset()
         wetGlass.frame = mapView.bounds
         wetGlass.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -123,6 +145,30 @@ final class ReplayScene {
             MainActor.assumeIsolated {
                 guard let self, let mapView, self.mapView === mapView else { return }
                 self.addRoute(to: mapView, mode: mode)
+            }
+        }
+    }
+
+    /// Keeps many tiles in memory (in tiles, not megabytes: a budget in megabytes compresses the
+    /// satellite photos); if iOS warns that memory is short, the map lets go of what it can and goes
+    /// back to Mapbox's own budget.
+    private func keepTilesInMemory(on mapView: MapView) {
+        if !Self.memoryIsTight {
+            mapView.mapboxMap.setTileCacheBudget(size: .tiles(Self.tileBudget))
+        }
+        if let memoryObserver {
+            NotificationCenter.default.removeObserver(memoryObserver)
+        }
+        memoryObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak mapView] _ in
+            MainActor.assumeIsolated {
+                ReplayScene.memoryIsTight = true
+                guard let map = mapView?.mapboxMap else { return }
+                map.setTileCacheBudget(size: nil)
+                map.reduceMemoryUse()
             }
         }
     }
@@ -298,43 +344,15 @@ final class ReplayScene {
         return SunPosition.lightPreset(at: plan.coordinate(at: plan.length * fraction), date: date)
     }
 
-    /// Rain or snow if it rained or snowed at `date`, as heavy as it was.
+    /// Rain or snow on the screen's glass if it rained or snowed at `date`, as heavy as it was (our
+    /// own drops and flakes; the map's own rain and snow look worse and aren't used).
     private func applyWeather(at date: Date?) {
-        guard let map = mapView?.mapboxMap else { return }
         let hour = date.flatMap { extras.weather(at: $0) }
         let level = hour.map { min(1, 0.3 + $0.amount / 5) } ?? 0
         let key = "\(String(describing: hour?.kind))-\(Int((level * 4).rounded()))"
         guard key != weatherKey else { return }
         weatherKey = key
-        try? map.removeRain()
-        try? map.removeSnow()
-        wetGlass.level = hour?.kind == .rain ? level : 0
-        guard let hour else { return }
-        switch hour.kind {
-        case .rain:
-            // The rain falling in front of the map: fine, long streaks, a little slanted, that bend
-            // the map behind them, thinner in the middle so the runner shows, the edges a little
-            // darker (with the drops on the glass, over it)
-            var rain = Rain()
-            rain.density = .constant(0.3 + 0.55 * level)
-            rain.intensity = .constant(0.55 + 0.45 * level)
-            rain.dropletSize = .constant([2.4, 21])
-            rain.distortionStrength = .constant(0.85)
-            rain.centerThinning = .constant(0.4)
-            rain.direction = .constant([0, 76])
-            rain.vignette = .constant(0.25 + 0.3 * level)
-            try? map.setRain(rain)
-        case .snow:
-            var snow = Snow()
-            snow.density = .constant(0.3 + 0.5 * level)
-            snow.intensity = .constant(0.6 + 0.4 * level)
-            snow.flakeSize = .constant(0.9)
-            snow.centerThinning = .constant(0.3)
-            snow.vignette = .constant(0.25 + 0.25 * level)
-            try? map.setSnow(snow)
-        case .dry:
-            break
-        }
+        wetGlass.setWeather(hour?.kind ?? .dry, level: hour == nil ? 0 : level)
     }
 
     /// A marker at each km of the route (each 5 km on routes over 15 km), with that km's pace if
@@ -463,6 +481,9 @@ final class MapLoadState {
     private var frames = 0
     private var completeFrames = 0
     private var idles = 0
+    /// Resources Mapbox couldn't load (tiles, with no network say); a passing error (a rate limit,
+    /// which Mapbox retries) doesn't matter, many in a row with views that won't settle do
+    private(set) var errors = 0
     private var observers: [AnyCancelable] = []
 
     func attach(to mapView: MapView) {
@@ -482,22 +503,28 @@ final class MapLoadState {
                     self?.idles += 1
                 }
             },
+            mapView.mapboxMap.onMapLoadingError.observe { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.errors += 1
+                }
+            },
         ]
     }
 
     /// Waits until the map shows what was just set (camera, line): at least `minRefreshes` screen
     /// refreshes, then until Mapbox has drawn a complete frame since (or gone idle, or drawn nothing
-    /// at all for a few refreshes: nothing changed), and `isReady` holds. Gives up after
-    /// `maxRefreshes`; whether it settled.
+    /// at all for a refresh more: nothing changed), and `isReady` holds. Gives up after `maxSeconds`;
+    /// whether it settled.
     func settle(
         clock: FrameClock,
-        maxRefreshes: Int,
+        maxSeconds: Double,
         minRefreshes: Int = 2,
         isReady: (Int) -> Bool = { _ in true }
     ) async -> Bool {
         let startFrames = frames
         let startComplete = completeFrames
         let startIdles = idles
+        let maxRefreshes = max(minRefreshes, Int((maxSeconds * Double(clock.rate)).rounded()))
         var refreshes = 0
         while refreshes < maxRefreshes {
             await clock.next()
@@ -505,32 +532,36 @@ final class MapLoadState {
             refreshes += 1
             guard refreshes >= minRefreshes, isReady(refreshes) else { continue }
             let complete = completeFrames > startComplete + 1 || idles > startIdles
-            let untouched = frames == startFrames && refreshes >= minRefreshes + 3
+            let untouched = frames == startFrames && refreshes >= minRefreshes + 1
             if complete || untouched { return true }
         }
         return false
     }
 
     /// Puts the map through `cameras` (via `scene`), each until Mapbox has loaded and drawn it
-    /// completely (at most 1.5 s; the first, a wide view, up to 4 s), so they are all cached when the
-    /// replay plays; then through `warm`, the views the replay starts with, more patiently (up to
-    /// 2.5 s each), so they are the freshest in the map's memory. Waits first for the map to be on
-    /// screen and its style and route in. `onProgress` gets 0...1. False if cancelled.
-    func preload(_ cameras: [ReplayCamera], warm: [ReplayCamera] = [], on mapView: MapView, scene: ReplayScene, onProgress: (Double) -> Void) async -> Bool {
-        let clock = FrameClock()
+    /// completely (up to 4 s each; the first, a wide view, up to 5 s), so they are all in memory when
+    /// the replay plays; then through `warm`, the views the replay starts with, so they are the
+    /// freshest there. After three views in a row that didn't load with Mapbox reporting errors (no
+    /// network), it doesn't wait for the rest. Waits first for the map to be on screen and its style and route in. The clock
+    /// at `rate` Hz. `onProgress` gets 0...1. False if cancelled.
+    func preload(_ cameras: [ReplayCamera], warm: [ReplayCamera] = [], on mapView: MapView, scene: ReplayScene, rate: Int = 60, onProgress: (Double) -> Void) async -> Bool {
+        let clock = FrameClock(rate: rate)
         clock.start()
         defer { clock.stop() }
         var waited = 0
-        while mapView.window == nil || mapView.bounds.width < 1 || (!scene.isReady && waited < 900) {
+        while mapView.window == nil || mapView.bounds.width < 1 || (!scene.isReady && waited < 15 * clock.rate) {
             await clock.next()
             if Task.isCancelled { return false }
             waited += 1
         }
         let all = cameras + warm
+        var failing = 0
         for (index, camera) in all.enumerated() {
             scene.setCamera(camera)
             let warming = index >= cameras.count
-            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 240 : (warming ? 150 : 90), minRefreshes: warming ? 3 : 2)
+            let errorsBefore = errors
+            let settled = await settle(clock: clock, maxSeconds: failing >= 3 ? 0.3 : (index == 0 ? 5 : 4), minRefreshes: warming ? 3 : 2)
+            failing = !settled && errors > errorsBefore ? failing + 1 : 0
             if Task.isCancelled { return false }
             onProgress(Double(index + 1) / Double(all.count))
         }

@@ -16,7 +16,6 @@ struct RouteShareOptions: Equatable {
     var showsTime = true
     var showsPace = true
     var showsArea = true
-    var showsBrand = true
     /// Big summary card when the runner reaches the finish.
     var showsEndCard = true
     /// The altitude profile, filling in as the runner goes (when the route has altitudes).
@@ -156,9 +155,8 @@ struct RouteShareOverlay: View {
             }
             .shadow(color: .black.opacity(0.4), radius: 4 * unit, y: 1)
             Spacer(minLength: 0)
-            if options.showsBrand {
-                ShareBrandMark(unit: unit)
-            }
+            // Always: every shared video carries Runna.io's mark
+            ShareBrandMark(unit: unit)
         }
     }
 
@@ -625,7 +623,6 @@ struct RouteShareEditor: View {
             items.append(.init(title: "Altitud", isOn: options.showsElevation) { options.showsElevation.toggle() })
         }
         items.append(.init(title: "Resumen final", isOn: options.showsEndCard) { options.showsEndCard.toggle() })
-        items.append(.init(title: "Marca Runna.io", isOn: options.showsBrand) { options.showsBrand.toggle() })
         return items
     }
 

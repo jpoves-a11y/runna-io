@@ -75,7 +75,9 @@ final class RouteVideoRenderer: NSObject {
     private let scene: ReplayScene
     private var director: ReplayDirector
     private let loadState = MapLoadState()
-    private let clock = FrameClock()
+    /// The screen's fastest refresh (120 Hz on ProMotion iPhones): each frame waits a couple of
+    /// refreshes for the map, so the faster they come, the sooner the video is done
+    private let clock = FrameClock(rate: FrameClock.screenRate)
     private var flagAlpha: CGFloat = 0
     private var overlayCache: (key: String, image: CGImage)?
 
@@ -91,6 +93,9 @@ final class RouteVideoRenderer: NSObject {
         mapView = ReplayScene.makeMapView(frame: CGRect(origin: .zero, size: size))
         super.init()
         mapView.isUserInteractionEnabled = false
+        // Mapbox draws as fast as the clock asks for frames
+        let rate = Float(clock.rate)
+        mapView.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, rate), maximum: rate, preferred: rate)
         loadState.attach(to: mapView)
         scene.setExtras(job.extras)
         scene.install(on: mapView, satellite: job.satellite, mode: job.mode, dark: job.colorScheme == .dark, activity: job.activity)
@@ -115,7 +120,7 @@ final class RouteVideoRenderer: NSObject {
         let cameras = ReplayDirector.preloadCameras(for: timeline)
         let warm = ReplayDirector.startCameras(for: timeline)
         let progress = self.progress
-        let loaded = await loadState.preload(cameras, warm: warm, on: mapView, scene: scene, onProgress: { fraction in
+        let loaded = await loadState.preload(cameras, warm: warm, on: mapView, scene: scene, rate: clock.rate, onProgress: { fraction in
             progress.fraction = fraction * Self.loadingShare
         })
         try Task.checkCancellation()
@@ -170,7 +175,8 @@ final class RouteVideoRenderer: NSObject {
         let step = 1 / Double(Self.framesPerSecond)
         let frames = Int((duration / step).rounded(.up))
         var started = CACurrentMediaTime()
-        var slowFrames = 0
+        /// Frames in a row that didn't load with Mapbox reporting errors (no network)
+        var failing = 0
 
         for index in 0..<frames {
             try Task.checkCancellation()
@@ -187,14 +193,16 @@ final class RouteVideoRenderer: NSObject {
             // The titles are made while Mapbox draws the map
             let overlay = autoreleasepool { overlayImage(for: frame, elapsed: elapsed) }
 
-            // Up to 0.75 s for Mapbox to draw it completely (3 s the first one; less after several
-            // slow frames, so a bad network can't stall it)
+            // Up to 3 s for Mapbox to draw it completely, every tile in full detail (5 s the first
+            // one); only when it can't load at all (several frames in a row with errors: no
+            // network) it stops waiting, so the video can't stall
+            let errorsBefore = loadState.errors
             let settled = await loadState.settle(
                 clock: clock,
-                maxRefreshes: index == 0 ? 180 : (slowFrames >= 8 ? 8 : 45),
+                maxSeconds: failing >= 5 ? 0.15 : (index == 0 ? 5 : 3),
                 minRefreshes: 2
             )
-            slowFrames = settled ? 0 : slowFrames + 1
+            failing = !settled && loadState.errors > errorsBefore ? failing + 1 : 0
             try Task.checkCancellation()
 
             var waits = 0
@@ -212,14 +220,15 @@ final class RouteVideoRenderer: NSObject {
             CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
             guard let buffer else { throw RenderError.writer("memoria") }
 
-            // A frame where the map didn't come out (blank) is waited for and drawn again
-            var drew = autoreleasepool { draw(overlay: overlay, into: buffer) }
+            // The map as it's on screen now (it has settled: no need to make the screen update
+            // first); one that didn't come out (blank) is waited for and drawn again, forcing it
+            var drew = autoreleasepool { draw(overlay: overlay, into: buffer, forcingUpdate: !settled) }
             var retries = 0
             while !drew && retries < 3 {
                 retries += 1
-                _ = await loadState.settle(clock: clock, maxRefreshes: 30)
+                _ = await loadState.settle(clock: clock, maxSeconds: 0.5)
                 try Task.checkCancellation()
-                drew = autoreleasepool { draw(overlay: overlay, into: buffer) }
+                drew = autoreleasepool { draw(overlay: overlay, into: buffer, forcingUpdate: true) }
             }
             guard drew else { throw RenderError.capture }
 
@@ -266,9 +275,10 @@ final class RouteVideoRenderer: NSObject {
         value < target ? min(target, value + step) : max(target, value - step)
     }
 
-    /// Copies the map as MapKit shows it now into `buffer`, with the titles on top. False if the
-    /// map came out blank.
-    private func draw(overlay: CGImage?, into buffer: CVPixelBuffer) -> Bool {
+    /// Copies the map as Mapbox shows it now into `buffer`, with the titles on top. False if the
+    /// map came out blank. `forcingUpdate`: the screen updates first (slower; for a frame that
+    /// hasn't settled or came out blank).
+    private func draw(overlay: CGImage?, into buffer: CVPixelBuffer, forcingUpdate: Bool) -> Bool {
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let context = CGContext(
@@ -287,18 +297,18 @@ final class RouteVideoRenderer: NSObject {
         UIGraphicsPushContext(context)
         defer { UIGraphicsPopContext() }
 
-        guard snapshotMap(in: rect, context: context) else { return false }
+        guard snapshotMap(in: rect, context: context, forcingUpdate: forcingUpdate) else { return false }
         if let overlay {
             UIImage(cgImage: overlay).draw(in: rect)
         }
         return true
     }
 
-    private func snapshotMap(in rect: CGRect, context: CGContext) -> Bool {
+    private func snapshotMap(in rect: CGRect, context: CGContext, forcingUpdate: Bool) -> Bool {
         context.setFillColor(UIColor.black.cgColor)
         context.fill(rect)
-        // The map with the flag on it (Mapbox draws with Metal: only after a screen update)
-        _ = mapView.drawHierarchy(in: rect, afterScreenUpdates: true)
+        // The map with the flag and the rain or snow on it, as drawn on screen
+        _ = mapView.drawHierarchy(in: rect, afterScreenUpdates: forcingUpdate)
         return !Self.isBlank(context)
     }
 
