@@ -89,7 +89,7 @@ final class RouteVideoRenderer: NSObject {
         super.init()
         mapView.isUserInteractionEnabled = false
         loadState.attach(to: mapView)
-        scene.install(on: mapView, satellite: job.satellite, mode: job.mode)
+        scene.install(on: mapView, satellite: job.satellite, mode: job.mode, dark: job.colorScheme == .dark)
         scene.setCamera(timeline.overviewCamera)
     }
 

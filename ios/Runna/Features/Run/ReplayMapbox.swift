@@ -36,6 +36,8 @@ final class ReplayScene {
     private var flagAnnotation: ViewAnnotation?
     /// The style and the route's layers are in
     private(set) var isReady = false
+    /// Mapbox's light: "day" or "night" (the app's dark mode)
+    private var lightPreset = "day"
     private var drawn: Double = 0
     private var areaShown = false
     /// The flag's opacity, and where it's fading to (a quarter of a second)
@@ -72,16 +74,17 @@ final class ReplayScene {
 
     /// Loads the look (satellite with roads and names, or the standard map with its 3D buildings;
     /// 3D terrain in 3D) and puts the route on it. `isReady` once done.
-    func install(on mapView: MapView, satellite: Bool, mode: RouteReplayMode) {
+    func install(on mapView: MapView, satellite: Bool, mode: RouteReplayMode, dark: Bool) {
         self.mapView = mapView
         isReady = false
         drawn = 0
         areaShown = false
-        if let flagAnnotation {
-            flagAnnotation.remove()
-        }
+        // Every flag of an earlier replay goes (it would stay where that replay stopped)
+        mapView.viewAnnotations.removeAll()
         flagAnnotation = nil
-        let style: StyleURI = satellite ? .satelliteStreets : .standard
+        lightPreset = dark ? "night" : "day"
+        // Mapbox's Standard look, as satellite imagery or as a map, in light or dark like the app
+        let style: StyleURI = satellite ? .standardSatellite : .standard
         if mapView.mapboxMap.styleURI == style && mapView.mapboxMap.isStyleLoaded {
             // The same look, loaded already: only the route again
             addRoute(to: mapView, mode: mode)
@@ -97,6 +100,7 @@ final class ReplayScene {
 
     private func addRoute(to mapView: MapView, mode: RouteReplayMode) {
         let map = mapView.mapboxMap!
+        try? map.setStyleImportConfigProperty(for: "basemap", config: "lightPreset", value: lightPreset)
         for layer in [Self.startLayer, Self.lineLayer, Self.casingLayer, Self.ghostLayer, Self.areaLayer] where map.layerExists(withId: layer) {
             try? map.removeLayer(withId: layer)
         }
@@ -304,7 +308,8 @@ final class MapLoadState {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.frames += 1
-                    if event.renderMode == .full && !event.needsRepaint {
+                    // Drawn with every tile it needs (terrain transitions may keep it repainting)
+                    if event.renderMode == .full {
                         self.completeFrames += 1
                     }
                 }
@@ -336,7 +341,7 @@ final class MapLoadState {
             if Task.isCancelled { return false }
             refreshes += 1
             guard refreshes >= minRefreshes, isReady(refreshes) else { continue }
-            let complete = completeFrames > startComplete || idles > startIdles
+            let complete = completeFrames > startComplete + 1 || idles > startIdles
             let untouched = frames == startFrames && refreshes >= minRefreshes + 3
             if complete || untouched { return true }
         }
@@ -344,7 +349,7 @@ final class MapLoadState {
     }
 
     /// Puts the map through `cameras` (via `scene`), each until Mapbox has loaded and drawn it
-    /// completely (at most 3 s; the first, a wide view, up to 6 s), so they are all cached when the
+    /// completely (at most 1.5 s; the first, a wide view, up to 4 s), so they are all cached when the
     /// replay plays. Waits first for the map to be on screen and its style and route in.
     /// `onProgress` gets 0...1. False if cancelled.
     func preload(_ cameras: [ReplayCamera], on mapView: MapView, scene: ReplayScene, onProgress: (Double) -> Void) async -> Bool {
@@ -359,7 +364,7 @@ final class MapLoadState {
         }
         for (index, camera) in cameras.enumerated() {
             scene.setCamera(camera)
-            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 360 : 180, minRefreshes: 3)
+            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 240 : 90, minRefreshes: 2)
             if Task.isCancelled { return false }
             onProgress(Double(index + 1) / Double(cameras.count))
         }

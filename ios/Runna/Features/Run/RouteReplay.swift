@@ -593,6 +593,7 @@ struct RouteReplayView: View {
     @AppStorage("routeReplayMode") private var modeRaw = RouteReplayMode.threeD.rawValue
     @AppStorage("routeReplaySatellite") private var satellite = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     @Environment(SessionStore.self) private var session: SessionStore?
 
@@ -651,6 +652,7 @@ struct RouteReplayView: View {
                 colorKey: String(describing: color),
                 mode: mode,
                 satellite: isSatellite,
+                dark: colorScheme == .dark,
                 speed: speed,
                 playToken: playToken,
                 reduceMotion: reduceMotion,
@@ -809,6 +811,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
     let colorKey: String
     let mode: RouteReplayMode
     let satellite: Bool
+    /// The app is in dark mode: the map's light follows it
+    let dark: Bool
     let speed: Double
     let playToken: Int
     let reduceMotion: Bool
@@ -842,14 +846,14 @@ private struct RouteReplayMapView: UIViewRepresentable {
         coordinator.reduceMotion = reduceMotion
         coordinator.setRunnerPhoto(runnerPhoto)
         // A new look (2D / 3D, map / satellite) plays again from the start, loading its views first
-        let styleKey = "\(satellite)-\(mode.rawValue)"
+        let styleKey = "\(satellite)-\(mode.rawValue)-\(dark)"
         let restart = force || coordinator.styleKey != styleKey || coordinator.playToken != playToken || coordinator.speed != speed
             || coordinator.colorKey != colorKey || coordinator.runner != runner
         if restart, let plan {
             coordinator.playToken = playToken
             coordinator.colorKey = colorKey
             coordinator.styleKey = styleKey
-            coordinator.play(plan: plan, mode: mode, satellite: satellite, speed: speed, color: color, runner: runner, on: mapView)
+            coordinator.play(plan: plan, mode: mode, satellite: satellite, dark: dark, speed: speed, color: color, runner: runner, on: mapView)
         }
     }
 
@@ -906,7 +910,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
 
         /// Plays the replay from the start: loads the look and the route, then the map for every
         /// view it goes through (behind the cover); then flies.
-        func play(plan: RouteReplayPlan, mode: RouteReplayMode, satellite: Bool, speed: Double, color: UIColor, runner: ReplayRunner, on mapView: ReplayMapView) {
+        func play(plan: RouteReplayPlan, mode: RouteReplayMode, satellite: Bool, dark: Bool, speed: Double, color: UIColor, runner: ReplayRunner, on mapView: ReplayMapView) {
             stop()
             self.speed = speed
             self.runner = runner
@@ -919,7 +923,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
             reportedFinish = false
             userTookOver = false
             setInteractive(false)
-            scene.install(on: mapView, satellite: satellite, mode: mode)
+            scene.install(on: mapView, satellite: satellite, mode: mode, dark: dark)
             publish(fraction: 0, finished: false, force: true)
             progress?.loading = 0
 
