@@ -50,6 +50,8 @@ final class ReplayScene {
     private(set) var extras = ReplayExtras()
     /// The weather effect on the map now (to change it only when it changes)
     private var weatherKey = ""
+    /// Drops on the screen's glass while it rains (over the map, so the video has them too)
+    private let wetGlass = WetGlassView()
     /// A marker at each km (or 5 km on long routes): its distance along the route and its view
     private var kmMarkers: [(distance: Double, view: KmMarkerView, annotation: ViewAnnotation)] = []
 
@@ -94,6 +96,14 @@ final class ReplayScene {
         flagAnnotation = nil
         kmMarkers = []
         weatherKey = ""
+        wetGlass.reset()
+        wetGlass.frame = mapView.bounds
+        wetGlass.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        if wetGlass.superview !== mapView {
+            mapView.addSubview(wetGlass)
+        }
+        // Over everything on the map (the flag too): it's the glass
+        mapView.bringSubviewToFront(wetGlass)
         // The sun's light where and when the run started; without a date, light or dark like the
         // app (satellite imagery then always in daylight)
         if let preset = sunPreset(atFraction: 0) {
@@ -298,17 +308,29 @@ final class ReplayScene {
         weatherKey = key
         try? map.removeRain()
         try? map.removeSnow()
+        wetGlass.level = hour?.kind == .rain ? level : 0
         guard let hour else { return }
         switch hour.kind {
         case .rain:
+            // The rain falling in front of the map: fine, long streaks, a little slanted, that bend
+            // the map behind them, thinner in the middle so the runner shows, the edges a little
+            // darker (with the drops on the glass, over it)
             var rain = Rain()
-            rain.density = .constant(level)
-            rain.intensity = .constant(level)
+            rain.density = .constant(0.3 + 0.55 * level)
+            rain.intensity = .constant(0.55 + 0.45 * level)
+            rain.dropletSize = .constant([2.4, 21])
+            rain.distortionStrength = .constant(0.85)
+            rain.centerThinning = .constant(0.4)
+            rain.direction = .constant([0, 76])
+            rain.vignette = .constant(0.25 + 0.3 * level)
             try? map.setRain(rain)
         case .snow:
             var snow = Snow()
-            snow.density = .constant(level)
-            snow.intensity = .constant(level)
+            snow.density = .constant(0.3 + 0.5 * level)
+            snow.intensity = .constant(0.6 + 0.4 * level)
+            snow.flakeSize = .constant(0.9)
+            snow.centerThinning = .constant(0.3)
+            snow.vignette = .constant(0.25 + 0.25 * level)
             try? map.setSnow(snow)
         case .dry:
             break
@@ -329,9 +351,10 @@ final class ReplayScene {
             let distance = Double(km) * 1000
             guard distance < plan.length - 50 else { continue }
             let pace = km <= extras.kmPaces.count ? extras.kmPaces[km - 1] : nil
-            let view = KmMarkerView(km: km, pace: pace, color: color)
+            let view = KmMarkerView(km: km, pace: pace)
             let annotation = ViewAnnotation(coordinate: plan.coordinate(at: distance), view: view)
-            annotation.variableAnchors = [ViewAnnotationAnchorConfig(anchor: .bottom)]
+            // The dot on the route point, the label beside it
+            annotation.variableAnchors = [ViewAnnotationAnchorConfig(anchor: .left, offsetX: -KmMarkerView.dotSize / 2)]
             annotation.allowOverlap = true
             mapView.viewAnnotations.add(annotation)
             kmMarkers.append((distance, view, annotation))
@@ -382,6 +405,7 @@ final class ReplayScene {
         }
         let camera = mapView.mapboxMap.cameraState
         runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.bearing, cameraPitch: Double(camera.pitch), dt: dt)
+        wetGlass.step(dt: dt)
     }
 
     /// Shows the flag; `animated` fades it in a quarter of a second (as `updateFlag` goes).
@@ -489,9 +513,10 @@ final class MapLoadState {
 
     /// Puts the map through `cameras` (via `scene`), each until Mapbox has loaded and drawn it
     /// completely (at most 1.5 s; the first, a wide view, up to 4 s), so they are all cached when the
-    /// replay plays. Waits first for the map to be on screen and its style and route in.
-    /// `onProgress` gets 0...1. False if cancelled.
-    func preload(_ cameras: [ReplayCamera], on mapView: MapView, scene: ReplayScene, onProgress: (Double) -> Void) async -> Bool {
+    /// replay plays; then through `warm`, the views the replay starts with, more patiently (up to
+    /// 2.5 s each), so they are the freshest in the map's memory. Waits first for the map to be on
+    /// screen and its style and route in. `onProgress` gets 0...1. False if cancelled.
+    func preload(_ cameras: [ReplayCamera], warm: [ReplayCamera] = [], on mapView: MapView, scene: ReplayScene, onProgress: (Double) -> Void) async -> Bool {
         let clock = FrameClock()
         clock.start()
         defer { clock.stop() }
@@ -501,54 +526,99 @@ final class MapLoadState {
             if Task.isCancelled { return false }
             waited += 1
         }
-        for (index, camera) in cameras.enumerated() {
+        let all = cameras + warm
+        for (index, camera) in all.enumerated() {
             scene.setCamera(camera)
-            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 240 : 90, minRefreshes: 2)
+            let warming = index >= cameras.count
+            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 240 : (warming ? 150 : 90), minRefreshes: warming ? 3 : 2)
             if Task.isCancelled { return false }
-            onProgress(Double(index + 1) / Double(cameras.count))
+            onProgress(Double(index + 1) / Double(all.count))
         }
         return true
     }
 }
 
-/// A km marker: "3 km · 5:12" in a small dark capsule, over a dot on the route.
+/// A km marker: a small white dot on the route and, beside it, a discreet dark label with the km and
+/// its pace ("3 km | 5:12 /km").
 final class KmMarkerView: UIView {
-    private static let dotSize: CGFloat = 7
+    static let dotSize: CGFloat = 9
     private let size: CGSize
 
-    init(km: Int, pace: Double?, color: UIColor) {
-        var text = "\(km) km"
+    init(km: Int, pace: Double?) {
+        let dot = Self.dotSize
+        let height: CGFloat = 18
+        let padding: CGFloat = 7
+        let gap: CGFloat = 6
+
+        let kmLabel = UILabel()
+        let kmText = NSMutableAttributedString(string: "\(km)", attributes: [
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: UIColor.white,
+        ])
+        kmText.append(NSAttributedString(string: " km", attributes: [
+            .font: UIFont.systemFont(ofSize: 9, weight: .medium),
+            .foregroundColor: UIColor.white.withAlphaComponent(0.65),
+        ]))
+        kmLabel.attributedText = kmText
+        let kmWidth = ceil(kmLabel.intrinsicContentSize.width)
+
+        var paceLabel: UILabel?
         if let pace, pace.isFinite, pace > 0 {
             let seconds = Int(pace.rounded())
-            text += String(format: " · %d:%02d", seconds / 60, seconds % 60)
+            let label = UILabel()
+            let text = NSMutableAttributedString(string: String(format: "%d:%02d", seconds / 60, seconds % 60), attributes: [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.9),
+            ])
+            text.append(NSAttributedString(string: " /km", attributes: [
+                .font: UIFont.systemFont(ofSize: 8.5, weight: .medium),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.55),
+            ]))
+            label.attributedText = text
+            paceLabel = label
         }
-        let label = UILabel()
-        label.text = text
-        label.font = .systemFont(ofSize: 11, weight: .bold)
-        label.textColor = .white
-        label.textAlignment = .center
-        let textSize = label.intrinsicContentSize
-        let capsule = CGSize(width: ceil(textSize.width) + 14, height: 20)
-        size = CGSize(width: capsule.width, height: capsule.height + 3 + Self.dotSize)
+        let paceWidth = paceLabel.map { ceil($0.intrinsicContentSize.width) } ?? 0
+        let pillWidth = padding + kmWidth + (paceLabel == nil ? 0 : gap + 1 + gap + paceWidth) + padding
+        let pillX = dot + 4
+        size = CGSize(width: pillX + pillWidth, height: height)
         super.init(frame: CGRect(origin: .zero, size: size))
         isUserInteractionEnabled = false
         alpha = 0
 
-        let background = UIView(frame: CGRect(origin: .zero, size: capsule))
-        background.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        background.layer.cornerRadius = capsule.height / 2
-        background.layer.borderWidth = 1
-        background.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
-        addSubview(background)
-        label.frame = background.bounds
-        addSubview(label)
+        // The dot on the route
+        let marker = UIView(frame: CGRect(x: 0, y: (height - dot) / 2, width: dot, height: dot))
+        marker.backgroundColor = .white
+        marker.layer.cornerRadius = dot / 2
+        marker.layer.borderWidth = 1
+        marker.layer.borderColor = UIColor.black.withAlphaComponent(0.28).cgColor
+        marker.layer.shadowColor = UIColor.black.cgColor
+        marker.layer.shadowOpacity = 0.3
+        marker.layer.shadowRadius = 2
+        marker.layer.shadowOffset = CGSize(width: 0, height: 1)
+        marker.layer.shadowPath = UIBezierPath(ovalIn: marker.bounds).cgPath
+        addSubview(marker)
 
-        let dot = UIView(frame: CGRect(x: (size.width - Self.dotSize) / 2, y: size.height - Self.dotSize, width: Self.dotSize, height: Self.dotSize))
-        dot.backgroundColor = .white
-        dot.layer.cornerRadius = Self.dotSize / 2
-        dot.layer.borderWidth = 2
-        dot.layer.borderColor = color.cgColor
-        addSubview(dot)
+        // The label beside it
+        let pill = UIView(frame: CGRect(x: pillX, y: 0, width: pillWidth, height: height))
+        pill.backgroundColor = UIColor(white: 0.06, alpha: 0.68)
+        pill.layer.cornerRadius = height / 2
+        pill.layer.borderWidth = 0.5
+        pill.layer.borderColor = UIColor.white.withAlphaComponent(0.16).cgColor
+        pill.layer.shadowColor = UIColor.black.cgColor
+        pill.layer.shadowOpacity = 0.2
+        pill.layer.shadowRadius = 3
+        pill.layer.shadowOffset = CGSize(width: 0, height: 1)
+        pill.layer.shadowPath = UIBezierPath(roundedRect: pill.bounds, cornerRadius: height / 2).cgPath
+        addSubview(pill)
+        kmLabel.frame = CGRect(x: padding, y: 0, width: kmWidth, height: height)
+        pill.addSubview(kmLabel)
+        if let paceLabel {
+            let divider = UIView(frame: CGRect(x: padding + kmWidth + gap, y: (height - 9) / 2, width: 1, height: 9))
+            divider.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+            pill.addSubview(divider)
+            paceLabel.frame = CGRect(x: divider.frame.maxX + gap, y: 0, width: paceWidth, height: height)
+            pill.addSubview(paceLabel)
+        }
     }
 
     required init?(coder: NSCoder) {

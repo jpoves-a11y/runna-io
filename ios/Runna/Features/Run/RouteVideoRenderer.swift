@@ -111,10 +111,11 @@ final class RouteVideoRenderer: NSObject {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
 
-        // 1. Every view of the replay loaded first, then back to the first one
-        let cameras = ReplayDirector.preloadCameras(for: timeline) + [timeline.overviewCamera]
+        // 1. Every view of the replay loaded first, then its start again and the first view
+        let cameras = ReplayDirector.preloadCameras(for: timeline)
+        let warm = ReplayDirector.startCameras(for: timeline)
         let progress = self.progress
-        let loaded = await loadState.preload(cameras, on: mapView, scene: scene, onProgress: { fraction in
+        let loaded = await loadState.preload(cameras, warm: warm, on: mapView, scene: scene, onProgress: { fraction in
             progress.fraction = fraction * Self.loadingShare
         })
         try Task.checkCancellation()

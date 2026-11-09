@@ -118,7 +118,8 @@ struct RouteShareOverlay: View {
                     }
                     if showsElevation {
                         ReplayElevationStrip(points: elevation, fraction: isFinished ? 1 : fraction, color: accent, unit: unit)
-                            .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 12 * unit, style: .continuous))
+                            .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16 * unit, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 16 * unit, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 1))
                             .padding(.bottom, 8 * unit)
                     }
                     counters(unit: unit)

@@ -492,10 +492,11 @@ struct ReplayDirector {
     /// camera path, frame by frame, sampled so every zoom and every area it shows gets loaded: a view
     /// each half zoom level (fly-in, zoom out at the end), each 15° of pitch, each 20° of turn (also
     /// the slow turn of 3D) and, while running, each quarter of the camera's distance along the
-    /// route (at most ~60 views, a marathon), plus the last view.
-    static func preloadCameras(for timeline: RouteReplayTimeline) -> [ReplayCamera] {
+    /// route (at most ~60 views, a marathon), plus the last view. With `until`, only up to that
+    /// moment of the animation (seconds).
+    static func preloadCameras(for timeline: RouteReplayTimeline, until: Double? = nil) -> [ReplayCamera] {
         var director = ReplayDirector(timeline: timeline)
-        let end = director.end
+        let end = min(director.end, until ?? director.end)
         let spacing = max(timeline.followDistance * (timeline.mode == .threeD ? 0.25 : 0.35), timeline.plan.length / 60)
         let halfZoom = log(1.4)
         let step = 1.0 / 30
@@ -529,6 +530,12 @@ struct ReplayDirector {
             cameras.append(current)
         }
         return cameras
+    }
+
+    /// The start of the animation, loaded last before it plays: the fly-in and the first five seconds
+    /// of running, then the first view (on screen when the cover goes).
+    static func startCameras(for timeline: RouteReplayTimeline) -> [ReplayCamera] {
+        preloadCameras(for: timeline, until: timeline.runStart + 5) + [timeline.overviewCamera]
     }
 
     /// `center` moved towards `runner` so it's at most `maxMeters` from it.
@@ -766,19 +773,18 @@ private struct ReplayChrome: View {
             Spacer(minLength: 0)
             if extras.elevation.count >= 2, fraction > 0 || finished {
                 ReplayElevationStrip(points: extras.elevation, fraction: finished ? 1 : fraction, color: color)
-                    .foregroundStyle(.white)
-                    .background(Color.black.opacity(0.45), in: Capsule())
-                    .frame(maxWidth: 320)
+                    .glassSurface(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .frame(maxWidth: 340)
                     .transition(.opacity)
             }
             if extras.hasWeather {
                 Link(destination: extras.weatherLegalURL ?? URL(string: "https://weatherkit.apple.com/legal-attribution.html")!) {
                     Text("\u{F8FF} Weather")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primary.opacity(0.8))
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.black.opacity(0.4), in: Capsule())
+                        .frame(height: 20)
+                        .glassSurface(Capsule())
                 }
                 .accessibilityLabel("Datos meteorológicos de Apple Weather")
             }
@@ -985,20 +991,23 @@ private struct RouteReplayMapView: UIViewRepresentable {
             progress?.loading = 0
 
             let key = "\(plan.points.count)-\(Int(plan.length))-\(mode.rawValue)-\(satellite)"
-            var cameras: [ReplayCamera]
+            var cameras: [ReplayCamera] = []
+            var warm: [ReplayCamera] = []
             if reduceMotion {
-                cameras = [timeline.revealCamera(heading: 0)]
-            } else if preloadedKey == key {
-                // Loaded already: only the first view, so it's on screen when the cover goes
-                cameras = [timeline.overviewCamera]
+                warm = [timeline.revealCamera(heading: 0)]
             } else {
-                // Every view, then back to the first one
-                cameras = ReplayDirector.preloadCameras(for: timeline)
-                cameras.append(timeline.overviewCamera)
+                if preloadedKey != key {
+                    // Every view of the animation
+                    cameras = ReplayDirector.preloadCameras(for: timeline)
+                }
+                // Then its start again (the fly-in and the first seconds of running) and the first
+                // view, last, so the map still holds them in full detail when the cover goes: the
+                // rest of the route pushes them out of its memory (and so does playing it before)
+                warm = ReplayDirector.startCameras(for: timeline)
             }
             let loadState = self.loadState
-            preloadTask = Task { [weak self, cameras] in
-                let loaded = await loadState.preload(cameras, on: mapView, scene: scene, onProgress: { fraction in
+            preloadTask = Task { [weak self, cameras, warm] in
+                let loaded = await loadState.preload(cameras, warm: warm, on: mapView, scene: scene, onProgress: { fraction in
                     self?.progress?.loading = fraction
                 })
                 guard loaded, !Task.isCancelled, let self, self.scene === scene else { return }
