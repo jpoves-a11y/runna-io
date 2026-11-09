@@ -496,10 +496,8 @@ struct ReplayDirector {
     static func preloadCameras(for timeline: RouteReplayTimeline) -> [ReplayCamera] {
         var director = ReplayDirector(timeline: timeline)
         let end = director.end
-        // Mapbox loads around the view too, and throttles bursts of tiles: a view every zoom level,
-        // 25° of pitch, 40° of turn and half the camera's distance along the route (at most ~30)
-        let spacing = max(timeline.followDistance * 0.5, timeline.plan.length / 30)
-        let halfZoom = log(2.0)
+        let spacing = max(timeline.followDistance * (timeline.mode == .threeD ? 0.25 : 0.35), timeline.plan.length / 60)
+        let halfZoom = log(1.4)
         let step = 1.0 / 30
         var cameras: [ReplayCamera] = []
         var taken: ReplayCamera?
@@ -515,8 +513,8 @@ struct ReplayDirector {
             var take = true
             if let taken {
                 let zoomed = abs(log(max(1, camera.distance) / max(1, taken.distance))) >= halfZoom
-                let tilted = abs(camera.pitch - taken.pitch) >= 25
-                let turned = abs(ReplayCamera.shortestTurn(from: taken.heading, to: camera.heading)) >= 40
+                let tilted = abs(camera.pitch - taken.pitch) >= 15
+                let turned = abs(ReplayCamera.shortestTurn(from: taken.heading, to: camera.heading)) >= 20
                 let ran = elapsed > timeline.runStart && elapsed < timeline.runEnd && frame.run - takenRun >= spacing
                 take = zoomed || tilted || turned || ran
             }

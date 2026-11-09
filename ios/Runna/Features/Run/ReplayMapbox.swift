@@ -25,6 +25,8 @@ final class ReplayScene {
     private static let areaSource = "replay-area"
     private static let startSource = "replay-start"
     private static let demSource = "replay-dem"
+    private static let satelliteSource = "replay-satellite"
+    private static let satelliteLayer = "replay-satellite-photos"
     private static let ghostLayer = "replay-ghost"
     private static let casingLayer = "replay-casing"
     private static let lineLayer = "replay-line"
@@ -33,14 +35,13 @@ final class ReplayScene {
 
     private weak var mapView: MapView?
     private let flagHolder: FlagHolderView
-    /// What Mapbox couldn't load (shown small on the map, to tell why something is missing)
-    private let errorLabel = UILabel()
-    private var errorObserver: AnyCancelable?
     private var flagAnnotation: ViewAnnotation?
     /// The style and the route's layers are in
     private(set) var isReady = false
     /// Mapbox's light: "day" or "night" (the app's dark mode)
     private var lightPreset = "day"
+    /// Satellite imagery under the 3D buildings and trees, instead of the map's ground
+    private var satellite = false
     private var drawn: Double = 0
     private var areaShown = false
     /// The flag's opacity, and where it's fading to (a quarter of a second)
@@ -84,12 +85,13 @@ final class ReplayScene {
         areaShown = false
         // Every flag of an earlier replay goes (it would stay where that replay stopped)
         mapView.viewAnnotations.removeAll()
-        showErrors(on: mapView)
         flagAnnotation = nil
         // The map in light or dark like the app; satellite imagery always in daylight
         lightPreset = dark && !satellite ? "night" : "day"
-        // Mapbox's Standard look, as satellite imagery or as a map, in light or dark like the app
-        let style: StyleURI = satellite ? .standardSatellite : .standard
+        self.satellite = satellite
+        // Mapbox Standard, with its 3D buildings, landmarks and trees: as a map, or with the
+        // satellite imagery under them (see addRoute)
+        let style: StyleURI = .standard
         if mapView.mapboxMap.styleURI == style && mapView.mapboxMap.isStyleLoaded {
             // The same look, loaded already: only the route again
             addRoute(to: mapView, mode: mode)
@@ -103,34 +105,42 @@ final class ReplayScene {
         }
     }
 
-    /// Shows what Mapbox fails to load (a source or its tiles), small at the top of the map.
-    private func showErrors(on mapView: MapView) {
-        for view in mapView.subviews where view.tag == 0x5EE {
-            view.removeFromSuperview()
-        }
-        errorLabel.tag = 0x5EE
-        errorLabel.text = nil
-        errorLabel.isHidden = true
-        errorLabel.numberOfLines = 3
-        errorLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        errorLabel.textColor = .white
-        errorLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        errorLabel.frame = CGRect(x: 8, y: 60, width: max(100, mapView.bounds.width - 16), height: 40)
-        errorLabel.autoresizingMask = [.flexibleWidth]
-        mapView.addSubview(errorLabel)
-        errorObserver = mapView.mapboxMap.onMapLoadingError.observe { [weak self] error in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let source = error.sourceId.map { " (\($0))" } ?? ""
-                self.errorLabel.text = " Mapbox: \(error.message)\(source)"
-                self.errorLabel.isHidden = false
-            }
-        }
-    }
-
     private func addRoute(to mapView: MapView, mode: RouteReplayMode) {
         let map = mapView.mapboxMap!
-        try? map.setStyleImportConfigProperty(for: "basemap", config: "lightPreset", value: lightPreset)
+        // Standard's look: its light, 3D buildings, landmarks and trees (with facades in 3D), no
+        // points of interest
+        let config: [String: Any] = [
+            "lightPreset": lightPreset,
+            "show3dObjects": true,
+            "show3dBuildings": true,
+            "show3dLandmarks": true,
+            "show3dTrees": true,
+            "show3dFacades": mode == .threeD,
+            "showPointOfInterestLabels": false,
+            "showTransitLabels": false,
+            "showPedestrianRoads": !satellite,
+        ]
+        for (key, value) in config {
+            try? map.setStyleImportConfigProperty(for: "basemap", config: key, value: value)
+        }
+        // Satellite: Mapbox's imagery over the map's ground (land, water), under its roads, labels and
+        // 3D buildings and trees, so they stand on the photos
+        if satellite {
+            if !map.sourceExists(withId: Self.satelliteSource) {
+                var imagery = RasterSource(id: Self.satelliteSource)
+                imagery.url = "mapbox://mapbox.satellite"
+                imagery.tileSize = 512
+                try? map.addSource(imagery)
+            }
+            if !map.layerExists(withId: Self.satelliteLayer) {
+                var photos = RasterLayer(id: Self.satelliteLayer, source: Self.satelliteSource)
+                photos.slot = .bottom
+                photos.rasterEmissiveStrength = .constant(1)
+                try? map.addLayer(photos)
+            }
+        } else if map.layerExists(withId: Self.satelliteLayer) {
+            try? map.removeLayer(withId: Self.satelliteLayer)
+        }
         for layer in [Self.startLayer, Self.lineLayer, Self.casingLayer, Self.ghostLayer, Self.areaLayer] where map.layerExists(withId: layer) {
             try? map.removeLayer(withId: layer)
         }
