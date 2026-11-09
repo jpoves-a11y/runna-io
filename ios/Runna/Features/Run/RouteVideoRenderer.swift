@@ -18,15 +18,15 @@ final class RouteVideoProgress {
 
 /// Makes the share video without recording the screen. The replay (the same animation as on screen:
 /// `ReplayDirector` and `ReplayScene`) is computed frame by frame at a fixed 30 fps on a map of its
-/// own, shown behind the progress screen because MapKit only draws on screen:
+/// own (Mapbox), shown behind the progress screen because the map only draws on screen:
 /// 1. First every view the replay goes through is loaded (as before playing it in the app).
-/// 2. Then each frame is set up and waits until MapKit has drawn it completely (map tiles, 3D
-///    terrain, the line's tiles up to the runner); it's then copied into the video with the titles
-///    and figures on top.
+/// 2. Then each frame is set up and waits until Mapbox has drawn it completely (map tiles, 3D
+///    terrain, the line, the flag at its end); it's then copied into the video with the titles and
+///    figures on top.
 /// However fast or slow the iPhone and the network are, the video comes out the same: no dropped
 /// frames, no half-loaded areas, the line's end exactly under the runner.
 @MainActor
-final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
+final class RouteVideoRenderer: NSObject {
     struct Job {
         let plan: RouteReplayPlan
         let mode: RouteReplayMode
@@ -64,7 +64,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
 
     let progress = RouteVideoProgress()
     /// The map the frames are drawn on, and its size in points: its pixels are the video's
-    let mapView: MKMapView
+    let mapView: ReplayMapView
     let mapSize: CGSize
 
     private let job: Job
@@ -75,8 +75,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     private let clock = FrameClock()
     private var flagAlpha: CGFloat = 0
     private var overlayCache: (key: String, image: CGImage)?
-    /// Some iOS versions only snapshot the map after a screen update
-    private var snapshotsAfterScreenUpdates = false
 
     init(job: Job, screenScale: CGFloat) {
         self.job = job
@@ -87,16 +85,12 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         let scale = max(1, screenScale)
         let size = CGSize(width: job.format.videoSize.width / scale, height: job.format.videoSize.height / scale)
         mapSize = size
-        mapView = MKMapView(frame: CGRect(origin: .zero, size: size))
+        mapView = ReplayScene.makeMapView(frame: CGRect(origin: .zero, size: size))
         super.init()
-        mapView.delegate = self
-        mapView.showsCompass = false
-        mapView.showsScale = false
-        mapView.showsUserLocation = false
         mapView.isUserInteractionEnabled = false
-        ReplayScene.applyStyle(satellite: job.satellite, mode: job.mode, to: mapView)
-        scene.install(on: mapView)
-        mapView.camera = timeline.overviewCamera.mkCamera
+        loadState.attach(to: mapView)
+        scene.install(on: mapView, satellite: job.satellite, mode: job.mode)
+        scene.setCamera(timeline.overviewCamera)
     }
 
     /// The runner's photo for the flag (set before rendering).
@@ -116,7 +110,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         // 1. Every view of the replay loaded first, then back to the first one
         let cameras = ReplayDirector.preloadCameras(for: timeline) + [timeline.overviewCamera]
         let progress = self.progress
-        let loaded = await loadState.preload(cameras, on: mapView, onProgress: { fraction in
+        let loaded = await loadState.preload(cameras, on: mapView, scene: scene, onProgress: { fraction in
             progress.fraction = fraction * Self.loadingShare
         })
         try Task.checkCancellation()
@@ -170,7 +164,6 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         defer { clock.stop() }
         let step = 1 / Double(Self.framesPerSecond)
         let frames = Int((duration / step).rounded(.up))
-        let geometry = scene.trail.geometry
         var started = CACurrentMediaTime()
         var slowFrames = 0
 
@@ -180,28 +173,22 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             let dt = index == 0 ? 0 : step
             let frame = director.frame(at: elapsed, dt: dt)
             apply(frame, elapsed: elapsed, dt: dt)
-            // The flag at the end of the line, drawn by the line's renderer with it (waited for with
-            // the line's tiles), moving with the video's clock
+            // The flag at the end of the line, moving with the video's clock
             scene.updateFlag(
                 streamBearing: frame.isFinished || frame.run >= timeline.plan.length ? nil : timeline.plan.windBearing(at: frame.run),
                 moving: frame.showsRunner,
                 dt: dt
             )
-            // The titles are made while MapKit draws the map
+            // The titles are made while Mapbox draws the map
             let overlay = autoreleasepool { overlayImage(for: frame, elapsed: elapsed) }
 
-            // Up to 0.75 s for MapKit to draw it (3 s the first one); less while the map keeps
-            // saying it's busy (it doesn't always report the end), so a bad network can't stall it
-            let change = geometry.currentGeneration
+            // Up to 0.75 s for Mapbox to draw it completely (3 s the first one; less after several
+            // slow frames, so a bad network can't stall it)
             let settled = await loadState.settle(
                 clock: clock,
                 maxRefreshes: index == 0 ? 180 : (slowFrames >= 8 ? 8 : 45),
-                calmRefreshes: 1,
-                patience: index == 0 ? 2 : 1
-            ) { refreshes in
-                // The line's tiles (and the flag's) redrawn (MapKit may need none: not waited for long)
-                geometry.hasDrawn(generation: change) || refreshes > 12
-            }
+                minRefreshes: 2
+            )
             slowFrames = settled ? 0 : slowFrames + 1
             try Task.checkCancellation()
 
@@ -225,7 +212,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
             var retries = 0
             while !drew && retries < 3 {
                 retries += 1
-                _ = await loadState.settle(clock: clock, maxRefreshes: 30, calmRefreshes: 1)
+                _ = await loadState.settle(clock: clock, maxRefreshes: 30)
                 try Task.checkCancellation()
                 drew = autoreleasepool { draw(overlay: overlay, into: buffer) }
             }
@@ -262,7 +249,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         let fade = CGFloat(dt / 0.25)
         flagAlpha = Self.approach(flagAlpha, frame.run > 0 ? 1 : 0, by: fade)
         scene.setFlagAlpha(flagAlpha, animated: false)
-        mapView.camera = frame.camera.mkCamera
+        scene.setCamera(frame.camera)
         scene.drawTrail(to: frame.trail)
         if frame.isRevealed {
             scene.addArea()
@@ -294,12 +281,7 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         UIGraphicsPushContext(context)
         defer { UIGraphicsPopContext() }
 
-        var drew = snapshotMap(in: rect, context: context)
-        if !drew && !snapshotsAfterScreenUpdates {
-            snapshotsAfterScreenUpdates = true
-            drew = snapshotMap(in: rect, context: context)
-        }
-        guard drew else { return false }
+        guard snapshotMap(in: rect, context: context) else { return false }
         if let overlay {
             UIImage(cgImage: overlay).draw(in: rect)
         }
@@ -309,7 +291,8 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
     private func snapshotMap(in rect: CGRect, context: CGContext) -> Bool {
         context.setFillColor(UIColor.black.cgColor)
         context.fill(rect)
-        _ = mapView.drawHierarchy(in: rect, afterScreenUpdates: snapshotsAfterScreenUpdates)
+        // The map with the flag on it (Mapbox draws with Metal: only after a screen update)
+        _ = mapView.drawHierarchy(in: rect, afterScreenUpdates: true)
         return !Self.isBlank(context)
     }
 
@@ -359,42 +342,12 @@ final class RouteVideoRenderer: NSObject, MKMapViewDelegate {
         overlayCache = (key, image)
         return image
     }
-
-    // MARK: MKMapViewDelegate
-
-    func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-        scene.renderer(for: overlay)
-    }
-
-    func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-        scene.view(for: annotation)
-    }
-
-    func mapViewWillStartLoadingMap(_ mapView: MKMapView) {
-        loadState.willStartLoading()
-    }
-
-    func mapViewDidFinishLoadingMap(_ mapView: MKMapView) {
-        loadState.didFinishLoading()
-    }
-
-    func mapViewDidFailLoadingMap(_ mapView: MKMapView, withError error: Error) {
-        loadState.didFinishLoading()
-    }
-
-    func mapViewWillStartRenderingMap(_ mapView: MKMapView) {
-        loadState.willStartRendering()
-    }
-
-    func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
-        loadState.didFinishRendering(fullyRendered: fullyRendered)
-    }
 }
 
 // MARK: - The renderer's map on screen
 
 /// Shows the renderer's map scaled down to fit, while it keeps drawing at its own size (the video's
-/// pixels): MapKit only draws a map that is on screen.
+/// pixels): the map only draws when it is on screen.
 struct RouteVideoMapHost: UIViewRepresentable {
     let renderer: RouteVideoRenderer
 
@@ -409,10 +362,10 @@ struct RouteVideoMapHost: UIViewRepresentable {
 /// affected by the scale of the views around it).
 final class RouteVideoMapContainer: UIView {
     private let scaler = UIView()
-    private let mapView: MKMapView
+    private let mapView: ReplayMapView
     private let mapSize: CGSize
 
-    init(mapView: MKMapView, mapSize: CGSize) {
+    init(mapView: ReplayMapView, mapSize: CGSize) {
         self.mapView = mapView
         self.mapSize = mapSize
         super.init(frame: .zero)

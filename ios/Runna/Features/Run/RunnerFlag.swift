@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import MapKit
 
 // MARK: - Who ran
 
@@ -38,11 +37,10 @@ struct ReplayRunner: Equatable {
 
 // MARK: - The flag
 
-/// The runner's flag: a metal pole with a gold finial, and a cloth in the runner's colour with their
-/// photo (or initial) in a white ring. It isn't a view: the line's own renderer draws it at the end of
-/// the line, in the same pass as the line (ReplayTrailRenderer), so it can't lag behind it, drift from
-/// it or jump onto buildings and trees. It's painted on the ground stretched away from the camera, as
-/// much as the camera's tilt shortens it, so from the camera it stands up (FlagPose).
+/// The runner's flag: a metal pole with a gold finial, planted at the end of the line, and a cloth in
+/// the runner's colour with their photo (or initial) in a white ring. A view on top of the map, so
+/// buildings and trees never hide it; ReplayScene stands its pole's foot on the ground at the end of
+/// the line.
 ///
 /// The cloth behaves like one, seen from the replay's camera:
 /// - It streams away from where the runner is going (the wind of running), and swings round through
@@ -56,15 +54,27 @@ struct ReplayRunner: Equatable {
 ///   round the pole; printed on both sides, so the photo always reads the right way round.
 /// Everything advances with the time it's given (`update`): the screen's in the app, the video's when
 /// exporting, so the video is the same however fast it's made.
-@MainActor
-final class RunnerFlag {
-    static let clothLength = FlagSize.clothLength
-    static let clothHeight = FlagSize.clothHeight
-    static let poleHeight = FlagSize.poleHeight
-    static let hoistDrop = FlagSize.hoistDrop
-    static let sleeve = FlagSize.sleeve
-    static let strips = FlagSize.strips
+final class RunnerFlagView: UIView {
+    private static let clothLength: CGFloat = 46
+    private static let clothHeight: CGFloat = 30
+    private static let poleHeight: CGFloat = 50
+    private static let poleWidth: CGFloat = 3
+    private static let finialSize: CGFloat = 7
+    /// Where the cloth hangs from, below the top of the pole
+    private static let hoistDrop: CGFloat = 2.5
+    /// Width of the sleeve the cloth wraps the pole with
+    private static let sleeve: CGFloat = 4
+    private static let strips = 32
+    /// Pole in the middle, room for the cloth on either side and the finial on top
+    private static let size = CGSize(width: 2 * (clothLength + 10), height: poleHeight + 8)
+    /// The view's size: the foot of the pole is the middle of its bottom edge
+    static var flagSize: CGSize { size }
 
+    private let pole = CAGradientLayer()
+    private let poleShade = CAGradientLayer()
+    private let finial = CAGradientLayer()
+    private var stripLayers: [CALayer] = []
+    private var shadeLayers: [CALayer] = []
     private let runner: ReplayRunner
     private var photo: UIImage?
     /// The cloth laid out for each side of the pole (hoist at the pole, the photo reading normally)
@@ -80,14 +90,103 @@ final class RunnerFlag {
     private var wind: Double = 0
     /// Which side of the pole the cloth is on (+1 right, -1 left), kept while it points at the camera
     private var side: CGFloat = 1
-    /// The cloth's top edge (points from the foot of the pole) and the light on each strip
-    private var edge: [CGPoint] = []
-    private var shades: [CGFloat] = []
+    /// The side whose cloth the strips show
+    private var contentsSide: CGFloat = 0
 
     init(runner: ReplayRunner) {
         self.runner = runner
+        super.init(frame: CGRect(origin: .zero, size: Self.size))
+        isUserInteractionEnabled = false
+        alpha = 0
+        // `center` is the foot of the pole
+        layer.anchorPoint = CGPoint(x: 0.5, y: 1)
+        // A soft drop shadow, so it stands out on any map
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.32
+        layer.shadowRadius = 2
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+
+        let poleX = Self.size.width / 2
+        let foot = Self.size.height
+        let poleTop = foot - Self.poleHeight
+
+        let metal = [0.45, 0.98, 0.82, 0.55, 0.38].map { UIColor(white: $0, alpha: 1).cgColor }
+
+        // Where it stands: a disc in the runner's colour in a white ring, at the end of the line
+        let ring = CALayer()
+        ring.frame = CGRect(x: poleX - 6.5, y: foot - 6.5, width: 13, height: 13)
+        ring.cornerRadius = 6.5
+        ring.backgroundColor = UIColor.white.cgColor
+        let dot = CALayer()
+        dot.frame = ring.bounds.insetBy(dx: 3, dy: 3)
+        dot.cornerRadius = dot.frame.width / 2
+        dot.backgroundColor = UIColor(Color(hex: runner.color)).cgColor
+        ring.addSublayer(dot)
+        layer.addSublayer(ring)
+
+        let stripWidth = Self.clothLength / CGFloat(Self.strips)
+        for _ in 0..<Self.strips {
+            let strip = CALayer()
+            strip.anchorPoint = .zero
+            strip.bounds = CGRect(x: 0, y: 0, width: stripWidth, height: Self.clothHeight)
+            strip.contentsGravity = .resize
+            strip.contentsScale = 3
+            // The weave stays smooth where the cloth folds away and its strips narrow
+            strip.minificationFilter = .trilinear
+            strip.edgeAntialiasingMask = []
+            let shade = CALayer()
+            shade.frame = strip.bounds
+            shade.opacity = 0
+            strip.addSublayer(shade)
+            layer.addSublayer(strip)
+            stripLayers.append(strip)
+            shadeLayers.append(shade)
+        }
+
+        // The pole over the cloth's sleeve, so the cloth hangs from it: brushed metal, round (dark at
+        // its edges, a highlight off-centre), a little darker towards the ground
+        pole.frame = CGRect(x: poleX - Self.poleWidth / 2, y: poleTop, width: Self.poleWidth, height: Self.poleHeight)
+        pole.colors = metal
+        pole.locations = [0, 0.3, 0.55, 0.8, 1]
+        pole.startPoint = CGPoint(x: 0, y: 0.5)
+        pole.endPoint = CGPoint(x: 1, y: 0.5)
+        pole.cornerRadius = Self.poleWidth / 2
+        pole.borderWidth = 0.4
+        pole.borderColor = UIColor.black.withAlphaComponent(0.28).cgColor
+        pole.masksToBounds = true
+        poleShade.frame = pole.bounds
+        poleShade.colors = [UIColor.black.withAlphaComponent(0).cgColor, UIColor.black.withAlphaComponent(0.22).cgColor]
+        poleShade.locations = [0.55, 1]
+        poleShade.startPoint = CGPoint(x: 0.5, y: 0)
+        poleShade.endPoint = CGPoint(x: 0.5, y: 1)
+        pole.addSublayer(poleShade)
+        layer.addSublayer(pole)
+
+        // A gold ball on top, lit from the upper left
+        let finialSize = Self.finialSize
+        finial.frame = CGRect(x: poleX - finialSize / 2, y: poleTop - finialSize / 2, width: finialSize, height: finialSize)
+        finial.type = .radial
+        finial.colors = [
+            UIColor(red: 1, green: 0.965, blue: 0.784, alpha: 1),
+            UIColor(red: 0.949, green: 0.757, blue: 0.306, alpha: 1),
+            UIColor(red: 0.69, green: 0.478, blue: 0.086, alpha: 1),
+            UIColor(red: 0.431, green: 0.29, blue: 0.039, alpha: 1),
+        ].map(\.cgColor)
+        finial.locations = [0, 0.35, 0.8, 1]
+        finial.startPoint = CGPoint(x: 0.35, y: 0.3)
+        finial.endPoint = CGPoint(x: 1, y: 0.95)
+        finial.cornerRadius = finialSize / 2
+        finial.masksToBounds = true
+        finial.borderWidth = 0.3
+        finial.borderColor = UIColor.black.withAlphaComponent(0.25).cgColor
+        layer.addSublayer(finial)
+
         paintCloth()
         layoutCloth(relativeYaw: 90, depthFactor: 0.64)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 
     /// The runner's photo arrived: the cloth is painted again with it.
@@ -97,12 +196,20 @@ final class RunnerFlag {
         paintCloth()
     }
 
-    /// The flag as it is now, for the line's renderer, at `alpha`.
-    func drawing(alpha: CGFloat) -> FlagDrawing {
-        FlagDrawing(cloth: side > 0 ? clothRight : clothLeft, side: side, edge: edge, shades: shades, alpha: alpha)
+    /// Stands the flag with the foot of its pole at `point` (the view's own position: its anchor is
+    /// the foot), upright.
+    func stand(at point: CGPoint) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        transform = .identity
+        center = point
+        CATransaction.commit()
     }
 
-    /// Advances the flag by `dt` seconds and lays it out for the camera.
+    /// The foot of the pole, in the view's own coordinates.
+    var footInBounds: CGPoint { CGPoint(x: bounds.midX, y: bounds.maxY) }
+
+    /// Advances the flag by `dt` seconds and draws it for the camera.
     /// - Parameters:
     ///   - streamBearing: where the cloth is blown to (degrees from north: opposite to the runner's
     ///     way); nil keeps its direction (planted at the finish).
@@ -130,7 +237,7 @@ final class RunnerFlag {
         layoutCloth(relativeYaw: current - cameraHeading, depthFactor: depthFactor)
     }
 
-    /// Lays the cloth out pointing `relativeYaw` degrees from the camera's direction.
+    /// Places the strips for the cloth pointing `relativeYaw` degrees from the camera's direction.
     private func layoutCloth(relativeYaw: Double, depthFactor: Double) {
         let angle = relativeYaw * .pi / 180
         let across = sin(angle)
@@ -145,7 +252,7 @@ final class RunnerFlag {
         let count = Self.strips
         let length = Self.clothLength
         let stripWidth = length / CGFloat(count)
-        let top = CGPoint(x: 0, y: -Self.poleHeight + Self.hoistDrop)
+        let top = CGPoint(x: Self.size.width / 2, y: Self.size.height - Self.poleHeight + Self.hoistDrop)
         var points: [CGPoint] = []
         var ripple: [CGFloat] = []
         points.reserveCapacity(count + 1)
@@ -160,21 +267,56 @@ final class RunnerFlag {
                 y: top.y + distance * along.dy + w * normal.dy + CGFloat(sag * u * u)
             ))
         }
-        // Folds catch the light on one side and fall into shadow on the other
-        var light: [CGFloat] = []
-        light.reserveCapacity(count)
-        for index in 0..<count {
-            let slope = (ripple[index + 1] - ripple[index]) / stripWidth * side
-            light.append(slope < 0 ? min(0.42, -slope * 0.5) : -min(0.4, slope * 0.45))
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if contentsSide != side {
+            contentsSide = side
+            let contents = side > 0 ? clothRight : clothLeft
+            for strip in stripLayers {
+                strip.contents = contents
+            }
         }
-        edge = points
-        shades = light
+        for index in 0..<count {
+            // Left and right ends of this strip on screen, and its slice of the cloth (hoist at the pole)
+            let near = points[index]
+            let far = points[index + 1]
+            let left = side > 0 ? near : far
+            let right = side > 0 ? far : near
+            let u0 = CGFloat(index) / CGFloat(count)
+            let u1 = CGFloat(index + 1) / CGFloat(count)
+            let slice = side > 0 ? CGRect(x: u0, y: 0, width: u1 - u0, height: 1) : CGRect(x: 1 - u1, y: 0, width: u1 - u0, height: 1)
+            let width = max(0.25, right.x - left.x)
+            let strip = stripLayers[index]
+            strip.contentsRect = slice
+            strip.position = left
+            // Vertical edges, top edge from `left` to `right` (a hair wider, so no seam shows)
+            strip.setAffineTransform(CGAffineTransform(a: (width + 0.3) / stripWidth, b: (right.y - left.y) / stripWidth, c: 0, d: 1, tx: 0, ty: 0))
+            // Folds catch the light on one side and fall into shadow on the other
+            let slope = (ripple[index + 1] - ripple[index]) / stripWidth * side
+            let shade = shadeLayers[index]
+            if slope < 0 {
+                shade.backgroundColor = UIColor.white.cgColor
+                shade.opacity = Float(min(0.42, -slope * 0.5))
+            } else {
+                shade.backgroundColor = UIColor.black.cgColor
+                shade.opacity = Float(min(0.4, slope * 0.45))
+            }
+        }
+        CATransaction.commit()
     }
 
     /// Paints the cloth for each side of the pole.
     private func paintCloth() {
         clothRight = Self.clothImage(runner: runner, photo: photo, hoistOnLeft: true).cgImage
         clothLeft = Self.clothImage(runner: runner, photo: photo, hoistOnLeft: false).cgImage
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentsSide = side
+        for strip in stripLayers {
+            strip.contents = side > 0 ? clothRight : clothLeft
+        }
+        CATransaction.commit()
     }
 
     /// The cloth flat, as fabric: the runner's colour (lighter at the top) with a satin sheen and a
@@ -320,169 +462,5 @@ final class RunnerFlag {
         var alpha: CGFloat = 0
         guard color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else { return color }
         return UIColor(hue: hue, saturation: saturation, brightness: min(1, brightness * factor), alpha: alpha)
-    }
-}
-
-// MARK: - Drawing the flag at the end of the line
-
-/// The flag's sizes (points, as seen on screen), readable from MapKit's drawing threads.
-enum FlagSize {
-    static let clothLength: CGFloat = 46
-    static let clothHeight: CGFloat = 30
-    static let poleHeight: CGFloat = 50
-    static let poleWidth: CGFloat = 3
-    static let finialSize: CGFloat = 7
-    /// Where the cloth hangs from, below the top of the pole
-    static let hoistDrop: CGFloat = 2.5
-    /// Width of the sleeve the cloth wraps the pole with
-    static let sleeve: CGFloat = 4
-    static let strips = 32
-}
-
-/// The runner's flag at one moment, for the line's renderer (it draws on MapKit's drawing threads,
-/// so it's immutable). In the flag's own space: points, x to the right, y down, the foot of the pole
-/// at the origin.
-struct FlagDrawing: @unchecked Sendable {
-    let cloth: CGImage?
-    let side: CGFloat
-    /// The cloth's top edge, hoist first
-    let edge: [CGPoint]
-    /// Light (+) or shadow (−) on each strip
-    let shades: [CGFloat]
-    let alpha: CGFloat
-
-    /// Everything it can cover, in its own space
-    static let extent = CGRect(
-        x: -(FlagSize.clothLength + 12),
-        y: -(FlagSize.poleHeight + FlagSize.clothLength + 8),
-        width: 2 * (FlagSize.clothLength + 12),
-        height: FlagSize.poleHeight + 2 * FlagSize.clothLength + 30
-    )
-
-    private static let space = CGColorSpaceCreateDeviceRGB()
-    /// Brushed metal across the pole: dark at its edges, a highlight off-centre
-    private static let metal = CGGradient(
-        colorsSpace: space,
-        colors: [0.45, 0.98, 0.82, 0.55, 0.38].map { CGColor(gray: $0, alpha: 1) } as CFArray,
-        locations: [0, 0.3, 0.55, 0.8, 1]
-    )
-    /// A gold ball, lit from the upper left
-    private static let gold = CGGradient(
-        colorsSpace: space,
-        colors: [
-            CGColor(red: 1, green: 0.965, blue: 0.784, alpha: 1),
-            CGColor(red: 0.949, green: 0.757, blue: 0.306, alpha: 1),
-            CGColor(red: 0.69, green: 0.478, blue: 0.086, alpha: 1),
-            CGColor(red: 0.431, green: 0.29, blue: 0.039, alpha: 1),
-        ] as CFArray,
-        locations: [0, 0.35, 0.8, 1]
-    )
-
-    /// Draws it in `context`, whose space is the flag's.
-    func draw(in context: CGContext) {
-        guard alpha > 0.01, edge.count > 1 else { return }
-        let length = FlagSize.clothLength
-        let height = FlagSize.clothHeight
-        let count = edge.count - 1
-        let stripWidth = length / CGFloat(count)
-        context.saveGState()
-        context.setAlpha(alpha)
-        context.beginTransparencyLayer(auxiliaryInfo: nil)
-
-        // The cloth, strip by strip: each one's top edge from one point of the edge to the next,
-        // its slice of the cloth (hoist at the pole), its light
-        if let cloth {
-            for index in 0..<count {
-                let near = edge[index]
-                let far = edge[index + 1]
-                let left = side > 0 ? near : far
-                let right = side > 0 ? far : near
-                let sliceStart = side > 0 ? CGFloat(index) / CGFloat(count) : 1 - CGFloat(index + 1) / CGFloat(count)
-                let width = max(0.25, right.x - left.x)
-                context.saveGState()
-                context.concatenate(CGAffineTransform(a: (width + 0.3) / stripWidth, b: (right.y - left.y) / stripWidth, c: 0, d: 1, tx: left.x, ty: left.y))
-                let strip = CGRect(x: 0, y: 0, width: stripWidth, height: height)
-                context.clip(to: strip)
-                // The image upright in this y-down space
-                context.saveGState()
-                context.translateBy(x: 0, y: height)
-                context.scaleBy(x: 1, y: -1)
-                context.draw(cloth, in: CGRect(x: -sliceStart * length, y: 0, width: length, height: height))
-                context.restoreGState()
-                let light = shades[index]
-                if abs(light) > 0.005 {
-                    context.setFillColor(gray: light > 0 ? 1 : 0, alpha: abs(light))
-                    context.fill(strip)
-                }
-                context.restoreGState()
-            }
-        }
-
-        // The pole, over the cloth's sleeve
-        let poleWidth = FlagSize.poleWidth
-        let poleHeight = FlagSize.poleHeight
-        let pole = CGRect(x: -poleWidth / 2, y: -poleHeight, width: poleWidth, height: poleHeight)
-        context.saveGState()
-        context.addPath(CGPath(roundedRect: pole, cornerWidth: poleWidth / 2, cornerHeight: poleWidth / 2, transform: nil))
-        context.clip()
-        if let metal = Self.metal {
-            context.drawLinearGradient(metal, start: CGPoint(x: pole.minX, y: 0), end: CGPoint(x: pole.maxX, y: 0), options: [])
-        } else {
-            context.setFillColor(gray: 0.8, alpha: 1)
-            context.fill(pole)
-        }
-        context.restoreGState()
-        context.setStrokeColor(gray: 0, alpha: 0.28)
-        context.setLineWidth(0.4)
-        context.addPath(CGPath(roundedRect: pole, cornerWidth: poleWidth / 2, cornerHeight: poleWidth / 2, transform: nil))
-        context.strokePath()
-
-        // The finial
-        let size = FlagSize.finialSize
-        let ball = CGRect(x: -size / 2, y: -poleHeight - size / 2, width: size, height: size)
-        context.saveGState()
-        context.addEllipse(in: ball)
-        context.clip()
-        if let gold = Self.gold {
-            let center = CGPoint(x: ball.minX + 0.35 * size, y: ball.minY + 0.3 * size)
-            context.drawRadialGradient(gold, startCenter: center, startRadius: 0, endCenter: center, endRadius: 0.65 * size * 1.2, options: [.drawsAfterEndLocation])
-        }
-        context.restoreGState()
-
-        context.endTransparencyLayer()
-        context.restoreGState()
-    }
-}
-
-/// How the flag is painted on the ground at the end of the line so that, from the camera, it stands
-/// up: the flag's x along the camera's right, its height (up the screen) stretched away from the
-/// camera by as much as the camera's tilt shortens the ground. Scaled so a point of the flag is a
-/// point on screen there.
-struct FlagPose: Sendable {
-    /// Of the camera, radians
-    let heading: Double
-    /// cos(pitch), kept above 0.3 so it never stretches out of all proportion
-    let cosPitch: Double
-    /// Map points per screen point at the end of the line
-    let mapPointsPerPoint: Double
-
-    /// From the flag's space to the map points around `foot` (in the renderer's drawing space, which
-    /// is in map points, y south).
-    func transform(foot: CGPoint) -> CGAffineTransform {
-        let k = mapPointsPerPoint
-        let stretch = k / cosPitch
-        // Right: east cos(h), north −sin(h) → map (cos h, sin h). Up the screen (−y): away from the
-        // camera, east sin(h), north cos(h) → map (sin h, −cos h)
-        return CGAffineTransform(
-            a: CGFloat(k * cos(heading)), b: CGFloat(k * sin(heading)),
-            c: CGFloat(-stretch * sin(heading)), d: CGFloat(stretch * cos(heading)),
-            tx: foot.x, ty: foot.y
-        )
-    }
-
-    /// The map rect the flag can cover with its foot at `foot`.
-    func mapRect(foot: MKMapPoint) -> MKMapRect {
-        let rect = FlagDrawing.extent.applying(transform(foot: CGPoint(x: foot.x, y: foot.y)))
-        return MKMapRect(x: Double(rect.minX), y: Double(rect.minY), width: Double(rect.width), height: Double(rect.height))
     }
 }

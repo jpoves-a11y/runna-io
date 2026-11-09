@@ -789,21 +789,16 @@ private struct ReplayShareLayer: View {
     }
 }
 
-// MARK: - Map (UIKit)
+// MARK: - Map (UIKit, Mapbox)
 
-/// The map of the replay, driven frame by frame by one clock (CADisplayLink, at the screen's refresh
-/// rate). Each frame is computed for the moment it will be on screen, and the runner, the camera and
-/// the route line advance together:
+/// The map of the replay (Mapbox), driven frame by frame by one clock (CADisplayLink, at the
+/// screen's refresh rate). Each frame is computed for the moment it will be on screen, and the
+/// runner, the camera and the route line advance together:
 /// - Before it plays, the camera goes through the views the replay will show, behind a "loading"
-///   cover, until MapKit has loaded each of them: no area is missing while it plays.
-/// - The route run so far is ONE MapKit overlay (white casing and coloured line drawn in the same
-///   pass, lying on the map and on the 3D terrain). Each frame its renderer redraws only the few
-///   tiles around the advancing tip: no overlay is added or removed while running, so MapKit stays
-///   light (no dropped frames) and nothing flickers.
-/// - The line ends exactly where the runner is, with a disc drawn in the same pass; on it stands the
-///   runner's flag (RunnerFlag), drawn by the line's renderer in the same pass, painted on the
-///   ground so it stands up from the camera: it can't lag behind the line, drift from it or jump
-///   onto buildings and trees. At the finish it stays planted, waving.
+///   cover, until Mapbox has loaded and drawn each of them: no area is missing while it plays.
+/// - The route run so far is the route's line trimmed at the runner's distance, lying on the 3D
+///   terrain; on its end stands the runner's flag, a view annotation Mapbox places itself on the
+///   terrain, in step with the map. At the finish it stays planted, waving.
 /// - The camera looks at a much smoother copy of the route at the runner's distance (it glides
 ///   through turns, with no time lag) and is never more than 12% of its distance from the runner,
 ///   so the runner can't leave the frame.
@@ -826,60 +821,53 @@ private struct RouteReplayMapView: UIViewRepresentable {
         Coordinator()
     }
 
-    func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView(frame: .zero)
-        mapView.delegate = context.coordinator
-        mapView.showsCompass = false
-        mapView.showsScale = false
-        mapView.showsUserLocation = false
-        mapView.isScrollEnabled = false
-        mapView.isZoomEnabled = false
-        mapView.isRotateEnabled = false
-        mapView.isPitchEnabled = false
+    func makeUIView(context: Context) -> ReplayMapView {
+        let mapView = ReplayScene.makeMapView(frame: .zero)
         context.coordinator.attach(to: mapView)
         update(context.coordinator, mapView: mapView, force: true)
         return mapView
     }
 
-    func updateUIView(_ mapView: MKMapView, context: Context) {
+    func updateUIView(_ mapView: ReplayMapView, context: Context) {
         update(context.coordinator, mapView: mapView, force: false)
     }
 
-    static func dismantleUIView(_ mapView: MKMapView, coordinator: Coordinator) {
+    static func dismantleUIView(_ mapView: ReplayMapView, coordinator: Coordinator) {
         coordinator.stop()
     }
 
-    private func update(_ coordinator: Coordinator, mapView: MKMapView, force: Bool) {
+    private func update(_ coordinator: Coordinator, mapView: ReplayMapView, force: Bool) {
         coordinator.progress = progress
         coordinator.onFinished = onFinished
         coordinator.reduceMotion = reduceMotion
         coordinator.setRunnerPhoto(runnerPhoto)
         // A new look (2D / 3D, map / satellite) plays again from the start, loading its views first
-        let styleChanged = coordinator.setStyle(satellite: satellite, mode: mode, on: mapView, force: force)
-        let restart = force || styleChanged || coordinator.playToken != playToken || coordinator.speed != speed
+        let styleKey = "\(satellite)-\(mode.rawValue)"
+        let restart = force || coordinator.styleKey != styleKey || coordinator.playToken != playToken || coordinator.speed != speed
             || coordinator.colorKey != colorKey || coordinator.runner != runner
         if restart, let plan {
             coordinator.playToken = playToken
             coordinator.colorKey = colorKey
+            coordinator.styleKey = styleKey
             coordinator.play(plan: plan, mode: mode, satellite: satellite, speed: speed, color: color, runner: runner, on: mapView)
         }
     }
 
     @MainActor
-    final class Coordinator: NSObject, MKMapViewDelegate {
+    final class Coordinator: NSObject {
         var progress: RouteReplayProgress?
         var onFinished: (() -> Void)?
         var reduceMotion = false
         var playToken = -1
         var colorKey = ""
+        var styleKey: String?
         private(set) var speed: Double = 1
         private(set) var runner: ReplayRunner?
         private var runnerPhoto: UIImage?
-        private var styleKey: String?
-        /// The replay is over: the flag stays planted here (and waves) while the map is the user's
-        private var plantedAt: CLLocationCoordinate2D?
+        /// The replay is over: the flag stays planted at the finish (and waves) while the map is the user's
+        private var planted = false
 
-        private weak var mapView: MKMapView?
+        private weak var mapView: ReplayMapView?
         private var scene: ReplayScene?
         private var director: ReplayDirector?
         private let loadState = MapLoadState()
@@ -893,8 +881,9 @@ private struct RouteReplayMapView: UIViewRepresentable {
         private var lastPublished: CFTimeInterval = 0
         private var userTookOver = false
 
-        func attach(to mapView: MKMapView) {
+        func attach(to mapView: ReplayMapView) {
             self.mapView = mapView
+            loadState.attach(to: mapView)
             // Any touch after the finish stops the slow turn and leaves the map to the user
             let pan = UIPanGestureRecognizer(target: self, action: #selector(userGesture(_:)))
             pan.delegate = self
@@ -906,16 +895,6 @@ private struct RouteReplayMapView: UIViewRepresentable {
             mapView.addGestureRecognizer(pinch)
         }
 
-        /// Map look for the view (3D terrain or flat) and the map type; whether it changed.
-        @discardableResult
-        func setStyle(satellite: Bool, mode: RouteReplayMode, on mapView: MKMapView, force: Bool) -> Bool {
-            let key = "\(satellite)-\(mode.rawValue)"
-            guard force || key != styleKey else { return false }
-            styleKey = key
-            ReplayScene.applyStyle(satellite: satellite, mode: mode, to: mapView)
-            return true
-        }
-
         /// The runner's photo for the flag (it may arrive after the replay started).
         func setRunnerPhoto(_ photo: UIImage?) {
             guard let photo, photo !== runnerPhoto else { return }
@@ -925,14 +904,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
 
         // MARK: Playback
 
-        /// Plays the replay from the start: first loads the map for every view it goes through
-        /// (behind the cover), measuring MapKit's camera on each; then flies.
-        func play(plan: RouteReplayPlan, mode: RouteReplayMode, satellite: Bool, speed: Double, color: UIColor, runner: ReplayRunner, on mapView: MKMapView) {
+        /// Plays the replay from the start: loads the look and the route, then the map for every
+        /// view it goes through (behind the cover); then flies.
+        func play(plan: RouteReplayPlan, mode: RouteReplayMode, satellite: Bool, speed: Double, color: UIColor, runner: ReplayRunner, on mapView: ReplayMapView) {
             stop()
             self.speed = speed
             self.runner = runner
-            plantedAt = nil
-            let key = "\(plan.points.count)-\(Int(plan.length))-\(mode.rawValue)-\(satellite)"
+            planted = false
             let timeline = RouteReplayTimeline(plan: plan, mode: mode, speed: speed)
             let scene = ReplayScene(timeline: timeline, color: color, runner: runner)
             scene.runnerFlag.setPhoto(runnerPhoto)
@@ -941,10 +919,11 @@ private struct RouteReplayMapView: UIViewRepresentable {
             reportedFinish = false
             userTookOver = false
             setInteractive(false)
-            scene.install(on: mapView)
+            scene.install(on: mapView, satellite: satellite, mode: mode)
             publish(fraction: 0, finished: false, force: true)
             progress?.loading = 0
 
+            let key = "\(plan.points.count)-\(Int(plan.length))-\(mode.rawValue)-\(satellite)"
             var cameras: [ReplayCamera]
             if reduceMotion {
                 cameras = [timeline.revealCamera(heading: 0)]
@@ -958,17 +937,17 @@ private struct RouteReplayMapView: UIViewRepresentable {
             }
             let loadState = self.loadState
             preloadTask = Task { [weak self, cameras] in
-                let loaded = await loadState.preload(cameras, on: mapView, onProgress: { fraction in
+                let loaded = await loadState.preload(cameras, on: mapView, scene: scene, onProgress: { fraction in
                     self?.progress?.loading = fraction
                 })
                 guard loaded, !Task.isCancelled, let self, self.scene === scene else { return }
                 self.preloadedKey = key
-                self.start(timeline: timeline, scene: scene, on: mapView)
+                self.start(timeline: timeline, scene: scene)
             }
         }
 
         /// The map is loaded: the cover goes and the replay plays (without motion: the whole route at once).
-        private func start(timeline: RouteReplayTimeline, scene: ReplayScene, on mapView: MKMapView) {
+        private func start(timeline: RouteReplayTimeline, scene: ReplayScene) {
             preloadTask = nil
             progress?.loading = nil
             let plan = timeline.plan
@@ -981,22 +960,22 @@ private struct RouteReplayMapView: UIViewRepresentable {
             displayLink = link
             if reduceMotion {
                 // The whole route at once, the flag planted at the finish (still)
-                mapView.camera = timeline.revealCamera(heading: 0).mkCamera
+                scene.setCamera(timeline.revealCamera(heading: 0))
                 scene.drawTrail(to: plan.length)
                 scene.addArea()
                 scene.setFlagAlpha(1, animated: false)
                 setInteractive(true)
                 reportFinish()
-                plant(at: plan.points.last ?? plan.center, link: link)
+                plant(link: link)
                 return
             }
-            mapView.camera = timeline.overviewCamera.mkCamera
+            scene.setCamera(timeline.overviewCamera)
         }
 
-        /// The flag stays at `coordinate`, on the ground and waving, as the user moves the map
-        /// (at 60 Hz at most from now on).
-        private func plant(at coordinate: CLLocationCoordinate2D, link: CADisplayLink) {
-            plantedAt = coordinate
+        /// The flag stays planted at the finish, waving, as the user moves the map (at 60 Hz at most
+        /// from now on).
+        private func plant(link: CADisplayLink) {
+            planted = true
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
         }
 
@@ -1008,20 +987,19 @@ private struct RouteReplayMapView: UIViewRepresentable {
         }
 
         @objc private func tick(_ link: CADisplayLink) {
-            guard let mapView, let scene, var director = self.director else {
+            guard let scene, var director = self.director else {
                 stop()
                 return
             }
             // Computed for the moment this frame will be on screen, so motion is even frame to frame
             let now = link.targetTimestamp
             let dt = min(0.1, max(0, now - lastTick))
-            if let plantedAt {
-                lastTick = now
-                // Planted: on the ground at the finish, in a breeze (still without motion)
+            lastTick = now
+            if planted {
+                // Planted: at the finish, in a breeze (still without motion)
                 scene.updateFlag(streamBearing: nil, moving: false, dt: reduceMotion ? 0 : dt)
                 return
             }
-            lastTick = now
             let frame = director.frame(at: now - startTime, dt: dt)
             self.director = director
             let plan = scene.plan
@@ -1032,16 +1010,16 @@ private struct RouteReplayMapView: UIViewRepresentable {
                 scene.addArea()
                 if !reportedFinish { reportFinish() }
                 setInteractive(true)
-                plant(at: plan.points.last ?? frame.runner, link: link)
+                plant(link: link)
                 return
             }
 
-            // The camera, the line, and the flag the line's renderer draws at its end: all for the same
-            // frame. The flag shows once the runner sets off and stays (planted at the finish when
-            // they get there), its cloth blown back from where they're going.
+            // The camera, the line and the flag at its end, all for the same frame. The flag shows
+            // once the runner sets off and stays (planted at the finish when they get there), its
+            // cloth blown back from where they're going.
             scene.setFlagAlpha(frame.run > 0 ? 1 : 0, animated: true)
             if !userTookOver {
-                mapView.camera = frame.camera.mkCamera
+                scene.setCamera(frame.camera)
             }
             scene.drawTrail(to: frame.trail)
             scene.updateFlag(streamBearing: plan.windBearing(at: frame.trail), moving: frame.showsRunner, dt: dt)
@@ -1073,46 +1051,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
 
         private func setInteractive(_ on: Bool) {
             guard let mapView else { return }
-            mapView.isScrollEnabled = on
-            mapView.isZoomEnabled = on
-            mapView.isRotateEnabled = on
-            mapView.isPitchEnabled = on
+            ReplayScene.setInteractive(on, on: mapView)
         }
 
         @objc private func userGesture(_ recognizer: UIGestureRecognizer) {
             if reportedFinish, recognizer.state == .began {
                 userTookOver = true
             }
-        }
-
-        // MARK: MKMapViewDelegate
-
-        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            scene?.renderer(for: overlay) ?? MKOverlayRenderer(overlay: overlay)
-        }
-
-        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            scene?.view(for: annotation)
-        }
-
-        func mapViewWillStartLoadingMap(_ mapView: MKMapView) {
-            loadState.willStartLoading()
-        }
-
-        func mapViewDidFinishLoadingMap(_ mapView: MKMapView) {
-            loadState.didFinishLoading()
-        }
-
-        func mapViewDidFailLoadingMap(_ mapView: MKMapView, withError error: Error) {
-            loadState.didFinishLoading()
-        }
-
-        func mapViewWillStartRenderingMap(_ mapView: MKMapView) {
-            loadState.willStartRendering()
-        }
-
-        func mapViewDidFinishRenderingMap(_ mapView: MKMapView, fullyRendered: Bool) {
-            loadState.didFinishRendering(fullyRendered: fullyRendered)
         }
     }
 }
@@ -1123,182 +1068,7 @@ extension RouteReplayMapView.Coordinator: UIGestureRecognizerDelegate {
     }
 }
 
-// MARK: - What the replay draws on the map
-
-/// The replay's drawing on a map: the faint whole route, the route run so far (one overlay redrawn
-/// only around its tip), the area it encloses at the end, and the start, runner and finish markers.
-/// The replay in the app and the video renderer both use it, so they look the same.
-@MainActor
-final class ReplayScene {
-    let timeline: RouteReplayTimeline
-    let color: UIColor
-    let trail: ReplayTrail
-    let startPin = ReplayPin(kind: .start)
-    /// The runner's flag, drawn by the line's renderer at the end of the line (see updateFlag)
-    let runnerFlag: RunnerFlag
-    /// The flag's opacity, and where it's fading to (a quarter of a second)
-    private var flagAlpha: CGFloat = 0
-    private var flagAlphaTarget: CGFloat = 0
-    /// Where the flag was drawn last (redrawn with the new one)
-    private var flagRect: MKMapRect?
-    /// Map points per screen point at the end of the line, last measured
-    private var flagScale: Double?
-
-    private let ghostLine: MKPolyline
-    /// Margin (map points) redrawn around the line's tip: its width and round end, even on the
-    /// coarser tiles MapKit uses further from the camera
-    private let trailPadding: Double
-    private weak var mapView: MKMapView?
-    private var trailDrawn: Double = 0
-    private var areaAdded = false
-    /// Markers' opacity, also for views MapKit makes later
-    private var alphas: [ReplayPin.Kind: CGFloat] = [.start: 1]
-
-    var plan: RouteReplayPlan { timeline.plan }
-
-    init(timeline: RouteReplayTimeline, color: UIColor, runner: ReplayRunner) {
-        self.timeline = timeline
-        self.color = color
-        runnerFlag = RunnerFlag(runner: runner)
-        var points = timeline.plan.points
-        ghostLine = MKPolyline(coordinates: &points, count: points.count)
-        trail = ReplayTrail(plan: timeline.plan)
-        trailPadding = (60 + timeline.followDistance * 0.12) * MKMapPointsPerMeterAtLatitude(timeline.plan.center.latitude)
-    }
-
-    /// Satellite (with roads and names) or a muted map; 3D terrain in 3D; no points of interest.
-    static func applyStyle(satellite: Bool, mode: RouteReplayMode, to mapView: MKMapView) {
-        let elevation: MKMapConfiguration.ElevationStyle = mode == .threeD ? .realistic : .flat
-        if satellite {
-            let configuration = MKHybridMapConfiguration(elevationStyle: elevation)
-            configuration.pointOfInterestFilter = .excludingAll
-            mapView.preferredConfiguration = configuration
-        } else {
-            let configuration = MKStandardMapConfiguration(elevationStyle: elevation, emphasisStyle: .muted)
-            configuration.pointOfInterestFilter = .excludingAll
-            mapView.preferredConfiguration = configuration
-        }
-    }
-
-    /// Clears the map and puts the route on it: the faint whole route, the line (empty yet) on top
-    /// of it and the start marker (the line's renderer draws the flag at its end).
-    func install(on mapView: MKMapView) {
-        self.mapView = mapView
-        mapView.removeOverlays(mapView.overlays)
-        mapView.removeAnnotations(mapView.annotations)
-        mapView.addOverlay(ghostLine, level: .aboveRoads)
-        mapView.addOverlay(trail, level: .aboveRoads)
-        startPin.coordinate = plan.points.first ?? plan.center
-        mapView.addAnnotations([startPin])
-    }
-
-    /// Moves the flag on by `dt` (`streamBearing`: where its cloth is blown, nil: planted, it keeps its
-    /// way) and hands it to the line's renderer, which draws it at the end of the line, painted on the
-    /// ground so that from the camera just set it stands up. Call it after `drawTrail`.
-    func updateFlag(streamBearing: Double?, moving: Bool, dt: Double) {
-        guard let mapView else { return }
-        if flagAlpha != flagAlphaTarget {
-            let step = CGFloat(max(0, dt) / 0.25)
-            flagAlpha = flagAlpha < flagAlphaTarget ? min(flagAlphaTarget, flagAlpha + step) : max(flagAlphaTarget, flagAlpha - step)
-        }
-        let camera = mapView.camera
-        runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.heading, cameraPitch: Double(camera.pitch), dt: dt)
-
-        let geometry = trail.geometry
-        let foot = geometry.mapPoint(at: geometry.drawnDistance)
-        let heading = camera.heading * .pi / 180
-        // Map points per screen point there: MapKit's scale 20 m across the camera's view
-        let mapPointsPerMeter = MKMapPointsPerMeterAtLatitude(foot.coordinate.latitude)
-        let across = 20 * mapPointsPerMeter
-        let a = mapView.convert(foot.coordinate, toPointTo: mapView)
-        let b = mapView.convert(MKMapPoint(x: foot.x + cos(heading) * across, y: foot.y + sin(heading) * across).coordinate, toPointTo: mapView)
-        let points = Double(hypot(b.x - a.x, b.y - a.y))
-        if points.isFinite, points > 0.01 {
-            flagScale = across / points
-        }
-        guard let scale = flagScale else { return }
-        let pose = FlagPose(heading: heading, cosPitch: max(0.3, cos(Double(camera.pitch) * .pi / 180)), mapPointsPerPoint: scale)
-        geometry.setFlag(runnerFlag.drawing(alpha: flagAlpha), pose: pose)
-        // The tiles under the flag, where it was and where it is
-        let rect = pose.mapRect(foot: foot)
-        let dirty = flagRect.map { $0.union(rect) } ?? rect
-        flagRect = rect
-        mapView.renderer(for: trail)?.setNeedsDisplay(dirty)
-    }
-
-    /// Shows the flag; `animated` fades it in a quarter of a second (as `updateFlag` goes).
-    func setFlagAlpha(_ alpha: CGFloat, animated: Bool) {
-        flagAlphaTarget = alpha
-        if !animated {
-            flagAlpha = alpha
-        }
-    }
-
-    /// Draws the route up to `distance` metres: the trail's renderer redraws only the tiles around
-    /// the stretch added since the last frame (the rest of the line stays as it is on screen).
-    func drawTrail(to distance: Double) {
-        guard let mapView else { return }
-        let geometry = trail.geometry
-        let target = min(max(0, distance), geometry.length)
-        guard abs(target - trailDrawn) > 0.01 else { return }
-        let changed = geometry.mapRect(from: trailDrawn, to: target).insetBy(dx: -trailPadding, dy: -trailPadding)
-        trailDrawn = target
-        geometry.drawnDistance = target
-        mapView.renderer(for: trail)?.setNeedsDisplay(changed)
-    }
-
-    /// The area the route encloses, under the lines (once, at the reveal).
-    func addArea() {
-        guard !areaAdded, let mapView else { return }
-        areaAdded = true
-        var points = plan.points
-        let polygon = MKPolygon(coordinates: &points, count: points.count)
-        mapView.insertOverlay(polygon, at: 0, level: .aboveRoads)
-    }
-
-    /// Shows or hides a marker; `animated` fades it in a quarter of a second.
-    func setAlpha(_ alpha: CGFloat, for pin: ReplayPin, animated: Bool) {
-        alphas[pin.kind] = alpha
-        guard let view = mapView?.view(for: pin), view.alpha != alpha else { return }
-        if animated {
-            UIView.animate(withDuration: 0.25) { view.alpha = alpha }
-        } else {
-            view.alpha = alpha
-        }
-    }
-
-    func renderer(for overlay: MKOverlay) -> MKOverlayRenderer {
-        if let trail = overlay as? ReplayTrail {
-            return ReplayTrailRenderer(trail: trail, color: color)
-        }
-        if let polygon = overlay as? MKPolygon {
-            let renderer = MKPolygonRenderer(polygon: polygon)
-            renderer.fillColor = color.withAlphaComponent(0.2)
-            renderer.strokeColor = color.withAlphaComponent(0.45)
-            renderer.lineWidth = 1
-            return renderer
-        }
-        if let line = overlay as? MKPolyline, line === ghostLine {
-            let renderer = MKPolylineRenderer(polyline: line)
-            renderer.strokeColor = color.withAlphaComponent(0.4)
-            renderer.lineWidth = 2
-            renderer.lineCap = .round
-            renderer.lineDashPattern = [2, 5]
-            return renderer
-        }
-        return MKOverlayRenderer(overlay: overlay)
-    }
-
-    /// The start or finish marker's view.
-    func view(for annotation: MKAnnotation) -> MKAnnotationView? {
-        guard let pin = annotation as? ReplayPin else { return nil }
-        let view = ReplayPinView(annotation: pin, kind: pin.kind, color: color)
-        view.alpha = alphas[pin.kind] ?? 1
-        return view
-    }
-}
-
-// MARK: - Waiting for MapKit
+// MARK: - Waiting for the map
 
 /// Screen refreshes to wait for (`await clock.next()`), from a display link at 60 Hz.
 @MainActor
@@ -1338,378 +1108,6 @@ final class FrameClock: NSObject {
         for continuation in continuations {
             continuation.resume()
         }
-    }
-}
-
-/// Whether MapKit is loading or drawing the map (from its delegate calls), and ways to wait until
-/// a view is completely on screen.
-@MainActor
-final class MapLoadState {
-    private var loadingSince: CFTimeInterval?
-    private var renderingSince: CFTimeInterval?
-
-    func willStartLoading() {
-        let now = CACurrentMediaTime()
-        // MapKit doesn't always report the end: a start long after one that never ended is a new load
-        if let since = loadingSince, now - since < 10 { return }
-        loadingSince = now
-    }
-
-    func didFinishLoading() {
-        loadingSince = nil
-    }
-
-    func willStartRendering() {
-        let now = CACurrentMediaTime()
-        if let since = renderingSince, now - since < 10 { return }
-        renderingSince = now
-    }
-
-    /// Whether the last drawing had every tile (false: some still missing).
-    private(set) var renderedFully = true
-
-    func didFinishRendering(fullyRendered: Bool = true) {
-        renderingSince = nil
-        renderedFully = fullyRendered
-    }
-
-    /// Loading or drawing. A signal on for longer than a few seconds (`patience` times more) is taken
-    /// as stuck and ignored.
-    func isBusy(patience: Double = 1) -> Bool {
-        let now = CACurrentMediaTime()
-        if let since = loadingSince, now - since < 3 * patience { return true }
-        if let since = renderingSince, now - since < 1.5 * patience { return true }
-        return false
-    }
-
-    /// Waits until the map shows what was just set (camera, overlays): `minRefreshes` screen
-    /// refreshes at least (MapKit draws on the next one and shows it on the one after), then until it
-    /// is neither loading nor drawing, and `isReady` (given the refreshes so far) holds, for
-    /// `calmRefreshes` in a row. Gives up after `maxRefreshes`; whether it settled.
-    func settle(
-        clock: FrameClock,
-        maxRefreshes: Int,
-        minRefreshes: Int = 3,
-        calmRefreshes: Int = 2,
-        patience: Double = 1,
-        isReady: (Int) -> Bool = { _ in true }
-    ) async -> Bool {
-        var refreshes = 0
-        var calm = 0
-        while refreshes < maxRefreshes {
-            await clock.next()
-            if Task.isCancelled { return false }
-            refreshes += 1
-            guard refreshes >= minRefreshes else { continue }
-            if isBusy(patience: patience) || !isReady(refreshes) {
-                calm = 0
-            } else {
-                calm += 1
-                if calm >= calmRefreshes { return true }
-            }
-        }
-        return false
-    }
-
-    /// Puts `mapView` through `cameras`, each until MapKit has loaded and drawn it with every tile
-    /// (at most 3 s; the first, a wide view, up to 6 s; a drawing reported incomplete is waited on
-    /// for a second and a half), so they are all cached when the replay plays. `afterEach` runs on
-    /// each one drawn (a still frame).
-    /// Waits first for the map to be on screen (MapKit loads nothing otherwise). `onProgress` gets
-    /// 0...1. False if cancelled.
-    func preload(_ cameras: [ReplayCamera], on mapView: MKMapView, afterEach: () -> Void = {}, onProgress: (Double) -> Void) async -> Bool {
-        let clock = FrameClock()
-        clock.start()
-        defer { clock.stop() }
-        while mapView.window == nil || mapView.bounds.width < 1 {
-            await clock.next()
-            if Task.isCancelled { return false }
-        }
-        for (index, camera) in cameras.enumerated() {
-            mapView.camera = camera.mkCamera
-            _ = await settle(clock: clock, maxRefreshes: index == 0 ? 360 : 180, patience: index == 0 ? 2 : 1) { refreshes in
-                self.renderedFully || refreshes > 90
-            }
-            if Task.isCancelled { return false }
-            afterEach()
-            onProgress(Double(index + 1) / Double(cameras.count))
-        }
-        return true
-    }
-}
-
-// MARK: - The route run so far (one overlay, redrawn only around its tip)
-
-/// The route in map points with the distance it's drawn up to. Read by the renderer on MapKit's
-/// drawing threads, written on the main thread: the distance is behind a lock, the rest never changes.
-/// It also counts the renderer's drawing, so a video can wait until the line's tiles are redrawn.
-final class TrailGeometry: @unchecked Sendable {
-    let points: [MKMapPoint]
-    /// metres from the start to each point
-    let cumulative: [Double]
-    let length: Double
-    private let lock = NSLock()
-    private var drawn: Double = 0
-    /// Changes of `drawn` so far, the latest one a finished tile showed, and tiles being drawn
-    private var generation = 0
-    private var drawnGeneration = 0
-    private var tilesDrawing = 0
-    /// The line's end (metres) on the latest finished tile that showed it, and that tile's change
-    private var tip: (generation: Int, distance: Double) = (0, 0)
-    /// The runner's flag, drawn at the line's end, and how it's painted on the ground
-    private var flag: (drawing: FlagDrawing, pose: FlagPose)?
-
-    init(plan: RouteReplayPlan) {
-        points = plan.points.map { MKMapPoint($0) }
-        cumulative = plan.cumulative
-        length = plan.length
-    }
-
-    var drawnDistance: Double {
-        get { lock.withLock { drawn } }
-        set {
-            lock.withLock {
-                drawn = newValue
-                generation += 1
-            }
-        }
-    }
-
-    /// Identifies the latest change of the drawn distance.
-    var currentGeneration: Int {
-        lock.withLock { generation }
-    }
-
-    /// The flag as it is now (a change, like the distance).
-    func setFlag(_ drawing: FlagDrawing, pose: FlagPose) {
-        lock.withLock {
-            flag = (drawing, pose)
-            generation += 1
-        }
-    }
-
-    /// The renderer starts a tile: what to draw, and which change it shows.
-    func beginTile() -> (distance: Double, generation: Int, flag: (drawing: FlagDrawing, pose: FlagPose)?) {
-        lock.withLock { () -> (distance: Double, generation: Int, flag: (drawing: FlagDrawing, pose: FlagPose)?) in
-            tilesDrawing += 1
-            return (drawn, generation, flag)
-        }
-    }
-
-    /// The renderer finished a tile; `tipDistance` is the line's end if the tile showed it.
-    func endTile(generation tileGeneration: Int, tipDistance: Double?) {
-        lock.withLock {
-            tilesDrawing -= 1
-            drawnGeneration = max(drawnGeneration, tileGeneration)
-            if let tipDistance, tileGeneration >= tip.generation {
-                tip = (tileGeneration, tipDistance)
-            }
-        }
-    }
-
-    /// Where the line's end is drawn on screen now (metres): as the latest tile that showed it.
-    var shownTip: Double {
-        lock.withLock { tip.distance }
-    }
-
-    /// No tile is being drawn and the change `target` (or a later one) is on a finished tile.
-    func hasDrawn(generation target: Int) -> Bool {
-        lock.withLock { tilesDrawing == 0 && drawnGeneration >= target }
-    }
-
-    private func segment(at distance: Double) -> Int {
-        var low = 0
-        var high = cumulative.count - 1
-        while high - low > 1 {
-            let middle = (low + high) / 2
-            if cumulative[middle] <= distance { low = middle } else { high = middle }
-        }
-        return low
-    }
-
-    func mapPoint(at distance: Double) -> MKMapPoint {
-        let d = min(max(0, distance), length)
-        let index = segment(at: d)
-        let a = points[index]
-        let b = points[min(index + 1, points.count - 1)]
-        let span = cumulative[min(index + 1, cumulative.count - 1)] - cumulative[index]
-        let f = span > 0 ? (d - cumulative[index]) / span : 0
-        return MKMapPoint(x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f)
-    }
-
-    /// Smallest map rect around the route between two distances.
-    func mapRect(from a: Double, to b: Double) -> MKMapRect {
-        let low = min(a, b)
-        let high = max(a, b)
-        let first = mapPoint(at: low)
-        let last = mapPoint(at: high)
-        var minX = min(first.x, last.x)
-        var maxX = max(first.x, last.x)
-        var minY = min(first.y, last.y)
-        var maxY = max(first.y, last.y)
-        var index = segment(at: low) + 1
-        while index < points.count && cumulative[index] < high {
-            let point = points[index]
-            minX = min(minX, point.x)
-            maxX = max(maxX, point.x)
-            minY = min(minY, point.y)
-            maxY = max(maxY, point.y)
-            index += 1
-        }
-        return MKMapRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-    }
-}
-
-final class ReplayTrail: NSObject, MKOverlay {
-    let geometry: TrailGeometry
-    let coordinate: CLLocationCoordinate2D
-    let boundingMapRect: MKMapRect
-
-    init(plan: RouteReplayPlan) {
-        let geometry = TrailGeometry(plan: plan)
-        self.geometry = geometry
-        coordinate = plan.center
-        // With a margin so the line's width and round ends are never clipped at the edges,
-        // and the runner's flag, painted on the ground at its end, is never cut off either
-        let margin = 1500 * MKMapPointsPerMeterAtLatitude(plan.center.latitude)
-        boundingMapRect = geometry.mapRect(from: 0, to: geometry.length).insetBy(dx: -margin, dy: -margin)
-        super.init()
-    }
-}
-
-/// Draws the route up to the trail's distance: the white casing, then the coloured line on top,
-/// in the same pass (they can't drift apart), with constant widths on screen.
-final class ReplayTrailRenderer: MKOverlayRenderer {
-    private let geometry: TrailGeometry
-    private let lineColor: CGColor
-    private let casingColor: CGColor
-    private let haloColor: CGColor
-
-    init(trail: ReplayTrail, color: UIColor) {
-        geometry = trail.geometry
-        lineColor = color.cgColor
-        casingColor = UIColor.white.withAlphaComponent(0.92).cgColor
-        haloColor = color.withAlphaComponent(0.3).cgColor
-        super.init(overlay: trail)
-    }
-
-    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
-        let (distance, generation, flag) = geometry.beginTile()
-        // Whether this tile shows the line's end (the runner's flag stands where it's drawn)
-        var shownTip: Double?
-        defer { geometry.endTile(generation: generation, tipDistance: shownTip) }
-        guard distance > 0 else { return }
-        let casingWidth = 7 / zoomScale
-        let lineWidth = 4.5 / zoomScale
-        // Only the segments that touch this tile (plus a line width), joined where consecutive
-        let margin = Double(casingWidth) * 2
-        let area = mapRect.insetBy(dx: -margin, dy: -margin)
-        let points = geometry.points
-        let cumulative = geometry.cumulative
-        let path = CGMutablePath()
-        var connected = false
-        var previous = points[0]
-        var index = 1
-        while index <= points.count {
-            let isTip = index == points.count || cumulative[index] >= distance
-            let next = isTip ? geometry.mapPoint(at: distance) : points[index]
-            let touches = max(previous.x, next.x) >= area.minX && min(previous.x, next.x) <= area.maxX
-                && max(previous.y, next.y) >= area.minY && min(previous.y, next.y) <= area.maxY
-            if touches {
-                if !connected {
-                    path.move(to: point(for: previous))
-                }
-                path.addLine(to: point(for: next))
-                connected = true
-            } else {
-                connected = false
-            }
-            if isTip { break }
-            previous = next
-            index += 1
-        }
-        if !path.isEmpty {
-            context.setLineCap(.round)
-            context.setLineJoin(.round)
-            context.addPath(path)
-            context.setStrokeColor(casingColor)
-            context.setLineWidth(casingWidth)
-            context.strokePath()
-            context.addPath(path)
-            context.setStrokeColor(lineColor)
-            context.setLineWidth(lineWidth)
-            context.strokePath()
-        }
-
-        // The foot of the runner's flag: a disc at the end of the line itself, drawn in the same pass
-        // (it can't lag behind the line, jump onto buildings or trees, or drift from it). A soft halo,
-        // a white ring and the colour, lying on the ground like the line. Not drawn once the whole
-        // route is shown.
-        let tip = geometry.mapPoint(at: distance)
-        let halo = 13 / zoomScale
-        if mapRect.insetBy(dx: -Double(halo), dy: -Double(halo)).contains(tip) {
-            shownTip = distance
-            if distance < geometry.length {
-                let center = point(for: tip)
-                func disc(_ radius: CGFloat, _ color: CGColor) {
-                    context.setFillColor(color)
-                    context.fillEllipse(in: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
-                }
-                disc(halo, haloColor)
-                disc(8.5 / zoomScale, casingColor)
-                disc(5.5 / zoomScale, lineColor)
-            }
-        }
-
-        // The runner's flag, standing on that end: painted on the ground in this same pass, stretched
-        // away from the camera so that from it the flag stands up (see FlagPose)
-        if let flag, flag.drawing.alpha > 0.01, flag.pose.mapRect(foot: tip).intersects(mapRect) {
-            context.saveGState()
-            context.concatenate(flag.pose.transform(foot: point(for: tip)))
-            flag.drawing.draw(in: context)
-            context.restoreGState()
-        }
-    }
-}
-
-// MARK: - Markers
-
-final class ReplayPin: NSObject, MKAnnotation {
-    enum Kind {
-        case start
-    }
-
-    let kind: Kind
-    @objc dynamic var coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
-
-    init(kind: Kind) {
-        self.kind = kind
-        super.init()
-    }
-}
-
-/// Start ring (the runner's flag is drawn by the line's renderer).
-final class ReplayPinView: MKAnnotationView {
-    init(annotation: ReplayPin, kind: ReplayPin.Kind, color: UIColor) {
-        super.init(annotation: annotation, reuseIdentifier: nil)
-        collisionMode = .none
-        displayPriority = .required
-        isUserInteractionEnabled = false
-        switch kind {
-        case .start:
-            frame = CGRect(x: 0, y: 0, width: 13, height: 13)
-            let dot = UIView(frame: bounds)
-            dot.backgroundColor = .white
-            dot.layer.cornerRadius = 6.5
-            dot.layer.borderColor = color.cgColor
-            dot.layer.borderWidth = 3
-            addSubview(dot)
-            zPriority = .defaultUnselected
-        }
-    }
-
-    required init?(coder aDecoder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
     }
 }
 
