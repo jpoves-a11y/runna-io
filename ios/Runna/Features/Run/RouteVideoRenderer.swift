@@ -98,6 +98,16 @@ final class RouteVideoRenderer: NSObject {
         mapView.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, rate), maximum: rate, preferred: rate)
         loadState.attach(to: mapView)
         scene.setExtras(job.extras)
+        // The boxes the titles draw at the bottom: the weather on the glass goes round them
+        scene.setGlassBoxes(RouteShareOverlay(
+            options: job.options,
+            fraction: 0,
+            isFinished: false,
+            distance: job.distance,
+            duration: job.duration,
+            elevation: job.extras.elevation,
+            weatherCredit: job.extras.hasWeather
+        ).boxLayout)
         scene.install(on: mapView, satellite: job.satellite, mode: job.mode, dark: job.colorScheme == .dark, activity: job.activity)
         scene.setCamera(timeline.overviewCamera)
     }
@@ -343,7 +353,8 @@ final class RouteVideoRenderer: NSObject {
             endCardReveal: 1 - pow(1 - reveal, 3),
             elevation: job.extras.elevation,
             weatherCredit: job.extras.hasWeather,
-            accent: Color(uiColor: job.color)
+            accent: Color(uiColor: job.color),
+            raisedBoxes: job.extras.hasPrecipitation
         )
         let key = overlay.renderKey
         if let overlayCache, overlayCache.key == key {

@@ -55,6 +55,89 @@ enum RouteShareFormat: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - The boxes at the bottom of the overlay
+
+/// Which boxes the overlay draws at its bottom and where, so the weather on the map's glass can go
+/// round them (rain runs along their edges, snow piles up on them). The overlay lays them out with
+/// these same sizes: everything follows the frame's width (`unit` = width / 360).
+struct ShareBoxLayout: Equatable {
+    var counters = false
+    var elevation = false
+    /// Apple Weather's attribution, under the counters
+    var credit = false
+
+    static let padding: CGFloat = 18
+    static let cornerRadius: CGFloat = 16
+    static let countersHeight: CGFloat = 66
+    static let elevationHeight: CGFloat = 48
+    static let elevationGap: CGFloat = 8
+    static let creditHeight: CGFloat = 10
+    static let creditGap: CGFloat = 4
+
+    var isEmpty: Bool { !counters && !elevation }
+
+    /// The boxes in a frame of `size`, top to bottom.
+    func shelves(in size: CGSize) -> [GlassShelf] {
+        let unit = size.width / 360
+        guard unit > 0 else { return [] }
+        let left = Self.padding * unit
+        let width = size.width - 2 * left
+        var bottom = size.height - Self.padding * unit
+        if credit {
+            bottom -= (Self.creditHeight + Self.creditGap) * unit
+        }
+        var boxes: [GlassShelf] = []
+        if counters {
+            let height = Self.countersHeight * unit
+            boxes.append(GlassShelf(rect: CGRect(x: left, y: bottom - height, width: width, height: height), cornerRadius: Self.cornerRadius * unit))
+            bottom -= height
+        }
+        if elevation {
+            bottom -= Self.elevationGap * unit
+            let height = Self.elevationHeight * unit
+            boxes.insert(GlassShelf(rect: CGRect(x: left, y: bottom - height, width: width, height: height), cornerRadius: Self.cornerRadius * unit), at: 0)
+        }
+        return boxes
+    }
+}
+
+/// The look of a box over the map. Plain: a dark translucent panel with a hairline. Raised (while
+/// the weather shows): it stands out of the glass, lit from above, with a bright top edge, a darker
+/// foot and its shadow on the map, so the water running round it reads as going round something.
+private struct ShareBoxStyle: ViewModifier {
+    let unit: CGFloat
+    let raised: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: ShareBoxLayout.cornerRadius * unit, style: .continuous)
+        if raised {
+            content
+                .background {
+                    shape
+                        .fill(Color.black.opacity(0.5))
+                        .overlay(shape.fill(LinearGradient(
+                            colors: [Color.white.opacity(0.2), Color.white.opacity(0.05), Color.black.opacity(0.12)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )))
+                        .shadow(color: Color.black.opacity(0.5), radius: 9 * unit, y: 6 * unit)
+                }
+                .overlay(shape.strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.85), Color.white.opacity(0.28), Color.white.opacity(0.1), Color.white.opacity(0.32)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1.3 * unit
+                ))
+        } else {
+            content
+                .background(Color.black.opacity(0.35), in: shape)
+                .overlay(shape.stroke(Color.white.opacity(0.15), lineWidth: 1))
+        }
+    }
+}
+
 // MARK: - Overlay drawn over the map
 
 /// Title, live counters and the final card of the shared video. Sizes follow the frame's width,
@@ -76,15 +159,22 @@ struct RouteShareOverlay: View {
     var weatherCredit = false
     /// The profile's colour
     var accent: Color = .white
+    /// It rained or snowed: the boxes stand out of the glass (the weather goes round them)
+    var raisedBoxes = false
 
     private var showsElevation: Bool { options.showsElevation && elevation.count >= 2 }
+
+    /// The boxes at the bottom, for the weather on the map's glass.
+    var boxLayout: ShareBoxLayout {
+        ShareBoxLayout(counters: !counterItems(live: true).isEmpty, elevation: showsElevation, credit: weatherCredit)
+    }
 
     /// Everything that changes from frame to frame (counters, end card, the profile): the video
     /// draws the overlay again only when it changes.
     var renderKey: String {
         let values = counterItems(live: !isFinished).map(\.value).joined(separator: "|")
         let profile = showsElevation ? Int(((isFinished ? 1 : fraction) * 300).rounded()) : -1
-        return "\(values)|\(isFinished)|\(Int((endCardReveal * 100).rounded()))|\(profile)|\(weatherCredit)"
+        return "\(values)|\(isFinished)|\(Int((endCardReveal * 100).rounded()))|\(profile)|\(weatherCredit)|\(raisedBoxes)"
     }
 
     private var paceText: String? {
@@ -117,19 +207,19 @@ struct RouteShareOverlay: View {
                     }
                     if showsElevation {
                         ReplayElevationStrip(points: elevation, fraction: isFinished ? 1 : fraction, color: accent, unit: unit)
-                            .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16 * unit, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 16 * unit, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 1))
-                            .padding(.bottom, 8 * unit)
+                            .modifier(ShareBoxStyle(unit: unit, raised: raisedBoxes))
+                            .padding(.bottom, ShareBoxLayout.elevationGap * unit)
                     }
                     counters(unit: unit)
                     if weatherCredit {
                         Text("Tiempo: \u{F8FF} Weather")
                             .font(.system(size: 8 * unit, weight: .medium))
                             .opacity(0.7)
-                            .padding(.top, 4 * unit)
+                            .frame(height: ShareBoxLayout.creditHeight * unit)
+                            .padding(.top, ShareBoxLayout.creditGap * unit)
                     }
                 }
-                .padding(18 * unit)
+                .padding(ShareBoxLayout.padding * unit)
             }
             .foregroundStyle(Color.white)
             .animation(.spring(response: 0.5, dampingFraction: 0.8), value: isFinished)
@@ -185,9 +275,9 @@ struct RouteShareOverlay: View {
                     .frame(maxWidth: .infinity)
                 }
             }
-            .padding(.vertical, 12 * unit)
-            .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16 * unit, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16 * unit, style: .continuous).stroke(Color.white.opacity(0.15), lineWidth: 1))
+            // A fixed height (the figures fit with room to spare): the weather needs to know where the box is
+            .frame(height: ShareBoxLayout.countersHeight * unit)
+            .modifier(ShareBoxStyle(unit: unit, raised: raisedBoxes))
         }
     }
 

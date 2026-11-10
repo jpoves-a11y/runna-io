@@ -198,6 +198,10 @@ final class SessionStore {
         guard state == .loggedIn else { return }
         // Permission may have been granted in Settings meanwhile
         Task { await PushManager.shared.registerIfAuthorized() }
+        // A watch may have synced an activity while the app was away: its result shows right away
+        if let userId {
+            Task { await ConquestInbox.shared.appBecameActive(userId: userId) }
+        }
     }
 
     // MARK: - Account

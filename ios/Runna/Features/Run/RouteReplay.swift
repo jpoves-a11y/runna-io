@@ -651,6 +651,21 @@ struct RouteReplayView: View {
         return ReplayRunner(name: "", avatar: nil, color: "#16A34A")
     }
 
+    /// The boxes the shared video draws at its bottom (none in the app's own replay): the weather
+    /// on the map's glass goes round them.
+    private var shareBoxes: ShareBoxLayout {
+        guard let share else { return ShareBoxLayout() }
+        return RouteShareOverlay(
+            options: share,
+            fraction: 0,
+            isFinished: false,
+            distance: distance ?? plan?.length ?? 0,
+            duration: duration,
+            elevation: extras.elevation,
+            weatherCredit: extras.hasWeather
+        ).boxLayout
+    }
+
     private var mode: RouteReplayMode { config?.mode ?? RouteReplayMode(rawValue: modeRaw) ?? .threeD }
     private var isSatellite: Bool { config?.satellite ?? satellite }
     private var speed: Double { config?.speed ?? 1 }
@@ -674,7 +689,8 @@ struct RouteReplayView: View {
                 runner: flagRunner,
                 runnerPhoto: runnerPhoto,
                 activity: activity,
-                extras: extras
+                extras: extras,
+                glassBoxes: shareBoxes
             )
             .accessibilityLabel("Animación del recorrido")
             // The views that read the progress (several times a second) are separate views, so
@@ -834,7 +850,8 @@ private struct ReplayShareLayer: View {
             duration: duration,
             elevation: extras.elevation,
             weatherCredit: extras.hasWeather,
-            accent: color
+            accent: color,
+            raisedBoxes: extras.hasPrecipitation
         )
     }
 }
@@ -870,6 +887,8 @@ private struct RouteReplayMapView: UIViewRepresentable {
     let runnerPhoto: UIImage?
     let activity: ReplayActivity?
     let extras: ReplayExtras
+    /// The boxes drawn over the map (the shared video's), which the weather goes round
+    var glassBoxes = ShareBoxLayout()
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -897,6 +916,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
         coordinator.setRunnerPhoto(runnerPhoto)
         coordinator.activity = activity
         coordinator.setExtras(extras)
+        coordinator.setGlassBoxes(glassBoxes)
         // A new look (2D / 3D, map / satellite) plays again from the start, loading its views first
         let styleKey = "\(satellite)-\(mode.rawValue)-\(dark)"
         let restart = force || coordinator.styleKey != styleKey || coordinator.playToken != playToken || coordinator.speed != speed
@@ -923,6 +943,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
         /// When the run was (the sun's light, the weather) and what it adds (km paces, weather)
         var activity: ReplayActivity?
         private var extras = ReplayExtras()
+        private var glassBoxes = ShareBoxLayout()
         /// The replay is over: the flag stays planted at the finish (and waves) while the map is the user's
         private var planted = false
 
@@ -961,6 +982,13 @@ private struct RouteReplayMapView: UIViewRepresentable {
             scene?.setExtras(extras)
         }
 
+        /// The boxes drawn over the map, which the weather goes round.
+        func setGlassBoxes(_ boxes: ShareBoxLayout) {
+            guard boxes != glassBoxes else { return }
+            glassBoxes = boxes
+            scene?.setGlassBoxes(boxes)
+        }
+
         /// The runner's photo for the flag (it may arrive after the replay started).
         func setRunnerPhoto(_ photo: UIImage?) {
             guard let photo, photo !== runnerPhoto else { return }
@@ -981,6 +1009,7 @@ private struct RouteReplayMapView: UIViewRepresentable {
             let scene = ReplayScene(timeline: timeline, color: color, runner: runner)
             scene.runnerFlag.setPhoto(runnerPhoto)
             scene.setExtras(extras)
+            scene.setGlassBoxes(glassBoxes)
             self.scene = scene
             director = ReplayDirector(timeline: timeline)
             reportedFinish = false

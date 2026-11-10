@@ -25,6 +25,10 @@ final class AppRouter {
     var showPowers = false
     /// Opens the latest weekly competition summary in Rankings.
     var showWeeklySummary = false
+    #if DEBUG
+    /// Shows the replay's weather on its own: "rain", "snow" or "fog" (e2e screenshots).
+    var weatherDemo: String?
+    #endif
 
     private init() {}
 
@@ -59,6 +63,9 @@ final class AppRouter {
             // runnaio://weekly-summary (e2e screenshots)
             selectedTab = .rankings
             showWeeklySummary = true
+        case "weather":
+            // runnaio://weather/<rain|snow|fog> (e2e screenshots)
+            weatherDemo = parts.first ?? "rain"
         #endif
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)

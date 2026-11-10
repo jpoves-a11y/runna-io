@@ -65,7 +65,6 @@ struct MapScreen: View {
         } message: {
             Text("Se perderá el recorrido que quedó grabado.")
         }
-        .conquestInbox()
         .task(id: router.reloadSignal) {
             await reload(force: model.reloadTracker.consume(router.reloadSignal))
         }

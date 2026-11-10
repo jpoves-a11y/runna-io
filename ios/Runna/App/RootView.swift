@@ -98,6 +98,16 @@ struct MainTabView: View {
             }
         }
         .modifier(PendingPhotosModifier())
+        // Results of activities imported from a watch, shown on entering the app whatever the tab
+        .conquestInbox()
+        #if DEBUG
+        .fullScreenCover(item: Binding(
+            get: { router.weatherDemo.map { WeatherDemoKind(id: $0) } },
+            set: { _ in router.weatherDemo = nil }
+        )) { demo in
+            WeatherDemoView(kind: demo.id)
+        }
+        #endif
     }
 }
 

@@ -50,8 +50,10 @@ final class ReplayScene {
     private(set) var extras = ReplayExtras()
     /// The weather effect on the map now (to change it only when it changes)
     private var weatherKey = ""
-    /// Drops on the screen's glass while it rains (over the map, so the video has them too)
+    /// Rain, snow or fog on the screen's glass (over the map, so the video has them too)
     private let wetGlass = WetGlassView()
+    /// The boxes drawn over the map that the weather goes round
+    private var glassBoxes = ShareBoxLayout()
     /// A marker at each km (or 5 km on long routes): its distance along the route and its view
     private var kmMarkers: [(distance: Double, view: KmMarkerView, annotation: ViewAnnotation)] = []
     /// Lowers the map's tile budget if iOS runs short of memory
@@ -348,11 +350,25 @@ final class ReplayScene {
     /// own drops and flakes; the map's own rain and snow look worse and aren't used).
     private func applyWeather(at date: Date?) {
         let hour = date.flatMap { extras.weather(at: $0) }
-        let level = hour.map { min(1, 0.3 + $0.amount / 5) } ?? 0
-        let key = "\(String(describing: hour?.kind))-\(Int((level * 4).rounded()))"
+        let kind = hour?.kind ?? .dry
+        let level = hour.map { $0.kind == .dry ? 0 : min(1, 0.3 + $0.amount / 5) } ?? 0
+        let fog = hour?.fog ?? 0
+        let key = "\(String(describing: kind))-\(Int((level * 4).rounded()))-\(Int((fog * 10).rounded()))"
         guard key != weatherKey else { return }
         weatherKey = key
-        wetGlass.setWeather(hour?.kind ?? .dry, level: hour == nil ? 0 : level)
+        wetGlass.setWeather(kind, level: level, fog: fog)
+    }
+
+    /// The boxes drawn over the map (the shared video's counters and altitude profile): the rain
+    /// runs round them and the snow piles up on them.
+    func setGlassBoxes(_ boxes: ShareBoxLayout) {
+        guard boxes != glassBoxes else { return }
+        glassBoxes = boxes
+        if boxes.isEmpty {
+            wetGlass.setShelves(nil)
+        } else {
+            wetGlass.setShelves { size in boxes.shelves(in: size) }
+        }
     }
 
     /// A marker at each km of the route (each 5 km on routes over 15 km), with that km's pace if
