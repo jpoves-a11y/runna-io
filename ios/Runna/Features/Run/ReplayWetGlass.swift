@@ -1261,9 +1261,10 @@ private final class GlassDrop {
         case side(shelf: Int, direction: CGFloat)
     }
 
-    /// How far a drop's middle stays from the edge it sits on or runs along, in radii: it overlaps
-    /// the edge a little, as water clinging to it
-    static let ledgeGap: CGFloat = 0.55
+    /// How far a drop's middle stays from the edge it sits on or runs along, in radii: it just
+    /// overlaps the edge, as water clinging to it (the box is drawn over the glass, so what's
+    /// under the box doesn't show)
+    static let ledgeGap: CGFloat = 0.85
 
     let layer = CALayer()
     let lens: CALayer?

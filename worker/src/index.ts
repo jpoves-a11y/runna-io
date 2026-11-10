@@ -141,7 +141,7 @@ export default {
     return handleQueueBatch(batch, env);
   },
   scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    // Cloudflare Cron Trigger ("*/5 * * * *"): runs the due /api/tasks/* in-process (see cron.ts)
+    // Cloudflare Cron Trigger (every minute): runs the due /api/tasks/* in-process (see cron.ts)
     configurePush(env);
     ctx.waitUntil(
       ensureSchema(env)
