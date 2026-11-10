@@ -244,6 +244,24 @@ async function call(method, route, { token, body, raw, headers = {}, useEnv = en
 }
 
 const one = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows[0];
+
+/** The runner's own push: queued ~3 minutes ahead, nothing sent yet; sent by the cron once it's due. */
+async function checkActivityReadyPush(label, type, routeId, apnsCalls) {
+  const row = await one('select * from activity_ready_notifications where route_id = ?', [routeId ?? '']);
+  const wait = row ? Date.parse(row.due_at) - Date.parse(row.created_at) : 0;
+  check(`${label}: "tu carrera está lista" queued 3 minutes ahead, not sent yet`,
+    !!row && row.sent_at === null && wait === 3 * 60 * 1000 && !apnsCalls().some((p) => p.body?.type === type), { row, wait });
+  const cronEnv = { ...env, INTERNAL_CRON: true };
+  const early = await call('POST', '/api/tasks/steal-notifications', { useEnv: cronEnv });
+  check(`${label}: not sent before it's due`, early.status === 200 && early.data.activityReady?.sent === 0 && !apnsCalls().some((p) => p.body?.type === type), early.data);
+  await db.execute({ sql: 'update activity_ready_notifications set due_at = ? where route_id = ?', args: [new Date(Date.now() - 1000).toISOString(), routeId ?? ''] });
+  const due = await call('POST', '/api/tasks/steal-notifications', { useEnv: cronEnv });
+  const again = await call('POST', '/api/tasks/steal-notifications', { useEnv: cronEnv });
+  const sent = apnsCalls().filter((p) => p.body?.type === type);
+  check(`${label}: sent once by the cron, with the result`, due.data.activityReady?.sent === 1 && again.data.activityReady?.sent === 0 && sent.length === 1
+    && sent[0].body.data.routeId === routeId && sent[0].body.aps.alert.title.includes('Tu carrera está lista') && /Has conquistado .+ (m²|km²)/.test(sent[0].body.aps.alert.body), { due: due.data, sent });
+  return sent[0];
+}
 const all = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows;
 
 async function register(username) {
@@ -324,8 +342,8 @@ const feed = runRoute ? await one('select * from feed_events where route_id = ?'
 check('feed event created', !!feed && feed.user_id === user.id, feed);
 const territory = await one('select count(*) n from territories where user_id = ?', [user.id]);
 check('territory processed by the queue', Number(territory.n) > 0, territory);
-const push = calls.apns.find((p) => p.body?.type === 'suunto_auto_import');
-check('APNs push suunto_auto_import with routeId', !!push && push.body.data.routeId === runRoute?.id && push.path === `/3/device/device${stamp}`, calls.apns);
+const push = await checkActivityReadyPush('suunto', 'suunto_auto_import', runRoute?.id, () => calls.apns);
+check('APNs push suunto_auto_import to the registered device', push?.path === `/3/device/device${stamp}`, calls.apns);
 
 // Duplicate notification (form-encoded) does nothing new
 const formBody = `username=${SUUNTO_USER}&workoutid=wk-run`;

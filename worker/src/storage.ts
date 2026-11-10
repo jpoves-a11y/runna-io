@@ -208,6 +208,7 @@ export class WorkerStorage {
     await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE victim_id = ${userId} OR attacker_id = ${userId}`);
     await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
+    await this.db.run(sql`DELETE FROM activity_ready_notifications WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
@@ -333,6 +334,17 @@ export class WorkerStorage {
     )`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_pending_steal_due ON pending_steal_notifications(due_at)`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_pending_steal_route_victim ON pending_steal_notifications(route_id, victim_id)`);
+    // "Tu carrera está lista" pushes of activities imported from a watch: sent a few minutes after the
+    // import (sendDueActivityReadyNotifications), once per route (the row stays, with sent_at)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS activity_ready_notifications (
+      route_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      due_at TEXT NOT NULL,
+      sent_at TEXT,
+      created_at TEXT NOT NULL
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_activity_ready_due ON activity_ready_notifications(sent_at, due_at)`);
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS active_runs (
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       started_at TEXT NOT NULL,
@@ -979,6 +991,48 @@ export class WorkerStorage {
   async postponePendingStealNotifications(ids: string[], dueAtIso: string): Promise<void> {
     if (ids.length === 0) return;
     await this.db.run(sql`UPDATE pending_steal_notifications SET due_at = ${dueAtIso} WHERE id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  // ===== Delayed "tu carrera está lista" notifications (imported activities) =====
+
+  /**
+   * Queues the push that tells a user their imported activity is ready, once per route: a route
+   * imported or processed again doesn't notify again. Returns whether it was queued now.
+   */
+  async scheduleActivityReadyNotification(userId: string, routeId: string, source: string, delayMs: number): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date();
+    const due = new Date(now.getTime() + delayMs).toISOString();
+    const result = await this.db.run(sql`INSERT OR IGNORE INTO activity_ready_notifications (route_id, user_id, source, due_at, sent_at, created_at)
+      VALUES (${routeId}, ${userId}, ${source}, ${due}, NULL, ${now.toISOString()})`);
+    return (result.rowsAffected || 0) > 0;
+  }
+
+  async getDueActivityReadyNotifications(nowIso: string, limit: number = 50): Promise<Array<{ routeId: string; userId: string; source: string }>> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ route_id: string; user_id: string; source: string }>(sql`
+      SELECT route_id, user_id, source FROM activity_ready_notifications
+      WHERE sent_at IS NULL AND due_at <= ${nowIso} ORDER BY due_at LIMIT ${limit}`);
+    return rows.map((r) => ({ routeId: r.route_id, userId: r.user_id, source: r.source }));
+  }
+
+  /**
+   * Closes a route's queued push (sent, or no longer needed because the user has already seen the
+   * result in the app). True only for the caller that closes it, so it is never sent twice.
+   */
+  async closeActivityReadyNotification(routeId: string, userId?: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date().toISOString();
+    const result = userId
+      ? await this.db.run(sql`UPDATE activity_ready_notifications SET sent_at = ${now} WHERE route_id = ${routeId} AND user_id = ${userId} AND sent_at IS NULL`)
+      : await this.db.run(sql`UPDATE activity_ready_notifications SET sent_at = ${now} WHERE route_id = ${routeId} AND sent_at IS NULL`);
+    return (result.rowsAffected || 0) > 0;
+  }
+
+  /** Forgets closed rows older than `beforeIso` (the once-per-route guard only matters for recent imports). */
+  async deleteOldActivityReadyNotifications(beforeIso: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM activity_ready_notifications WHERE created_at < ${beforeIso}`);
   }
 
   // ===== Runs being recorded in the app =====

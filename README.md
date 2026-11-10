@@ -64,12 +64,12 @@ También puedes usar `wrangler dev` (`npm run worker:dev`, con wrangler instalad
 npx wrangler deploy -c wrangler.worker.toml
 ```
 
-`wrangler.worker.toml` declara un único Cron Trigger (`*/5 * * * *`). Cada ejecución corre dentro del propio Worker las tareas que tocan (horario Europe/Madrid, ver `worker/src/cron.ts`):
+`wrangler.worker.toml` declara un único Cron Trigger (`* * * * *`, cada minuto). Cada ejecución corre dentro del propio Worker las tareas que tocan (horario Europe/Madrid, ver `worker/src/cron.ts`):
 
 | Tarea | Cuándo |
 |---|---|
-| polar-auto-sync | cada 5 minutos |
-| steal-notifications | cada 5 minutos (envía los avisos de "te han robado" pendientes; ver más abajo) |
+| polar-auto-sync | cada 3 minutos |
+| steal-notifications | cada minuto (envía los avisos pendientes de "te han robado" y "tu carrera está lista"; ver más abajo) |
 | spawn-treasure | en el minuto 0 de cada hora (la tarea elige la hora del día) |
 | inactivity-check | 10:00 y 19:00 |
 | weekly-summary | domingos a las 20:00 |
@@ -85,7 +85,8 @@ Dos amigos (o dos rivales en una competición) que corren juntos no se roban ter
 - Se comparan los recorridos punto a punto en el mismo momento (hora de cada punto si la app la envía, `pointTimes`; si no, interpolada a lo largo del recorrido). Da igual quién empezó o paró antes de grabar, o si uno siguió grabando la vuelta a casa.
 - **Juntos** (≥ 70 % de cada carrera al lado del otro): no se roban nada. **Parcial** (≥ 800 m juntos): solo se protege el área que encierran las dos carreras.
 - Si el primero en subir ya le robó al otro, al subir el segundo se deshace el robo: se le devuelve el área, se corrige la métrica, el feed y la competición del primero, y ambas rutas quedan marcadas como corridas juntas.
-- Los avisos de "te han robado" no salen al momento: esperan 5 minutos en `pending_steal_notifications` (el cron pasa cada 5, así que salen entre 5 y 10 minutos después) y se descartan si el robo se deshace. Mientras la víctima está grabando una carrera en la app (`POST /api/runs/active`), esperan a que la suba (máximo 12 horas).
+- Los avisos de "te han robado" no salen al momento: esperan 3 minutos en `pending_steal_notifications` (el cron pasa cada minuto, así que salen entre 3 y 4 minutos después) y se descartan si el robo se deshace. Mientras la víctima está grabando una carrera en la app (`POST /api/runs/active`), esperan a que la suba (máximo 12 horas).
+- Quien corre también recibe su aviso: cuando un servicio conectado (Strava, Polar, Suunto, Garmin) importa una actividad sola, el aviso "Tu carrera está lista" espera los mismos 3 minutos en `activity_ready_notifications` y sale con el resultado ya asentado (área conquistada, a quién se ha robado, con quién se ha corrido). Si antes de eso la app ya ha enseñado el resultado (`POST /api/routes/:id/result-seen`), no se envía. Una vez por ruta.
 
 Prueba e2e: `scripts/e2e/ran-together-test.mjs`.
 

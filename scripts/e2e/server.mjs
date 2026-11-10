@@ -56,7 +56,7 @@ function runCronOnce() {
   const pending = [];
   const cronCtx = { waitUntil: (promise) => { pending.push(Promise.resolve(promise)); }, passThroughOnException() {} };
   try {
-    worker.scheduled({ cron: '*/5 * * * *', scheduledTime, type: 'scheduled' }, env, cronCtx);
+    worker.scheduled({ cron: '* * * * *', scheduledTime, type: 'scheduled' }, env, cronCtx);
   } catch (error) {
     console.error('[e2e cron] scheduled() threw:', error);
     return;

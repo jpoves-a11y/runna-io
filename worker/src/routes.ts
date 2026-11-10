@@ -7,6 +7,7 @@ import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CO
 import { LIMITS, clientIp, lockedForSeconds, recordAttempt, clearAttempts, tooManyAttempts } from './rateLimit';
 import { sql } from 'drizzle-orm';
 import { apnsSecretProblems } from './pushHelper';
+import { RUN_SETTLE_DELAY_MS, queueActivityReadyPush, sendDueActivityReadyNotifications } from './notifications';
 import { USER_COLORS } from '../../shared/colors';
 import { isRunningActivityType } from './sports';
 import { analyzeProfile, buildProfile, parseGpxPoints, parseStoredProfile, stravaStreamsToPoints, type StoredProfile } from './profile';
@@ -527,7 +528,9 @@ export async function autoCollectTreasuresAlongRoute(
 }
 
 /** "Te han robado" pushes wait this long (the victim may have run with the attacker and upload later). */
-export const STEAL_NOTIFICATION_DELAY_MS = 5 * 60 * 1000;
+export const STEAL_NOTIFICATION_DELAY_MS = RUN_SETTLE_DELAY_MS;
+/** A push held because the victim is recording a run is looked at again this often. */
+const STEAL_NOTIFICATION_RECHECK_MS = 2 * 60 * 1000;
 /** ...and keep waiting while the victim is recording a run in the app, up to this long. */
 export const STEAL_NOTIFICATION_MAX_HOLD_MS = 12 * 60 * 60 * 1000;
 
@@ -698,7 +701,7 @@ export async function sendDueStealNotifications(
   }
 
   if (postpone.length > 0) {
-    await storage.postponePendingStealNotifications(postpone, new Date(now.getTime() + 10 * 60 * 1000).toISOString());
+    await storage.postponePendingStealNotifications(postpone, new Date(now.getTime() + STEAL_NOTIFICATION_RECHECK_MS).toISOString());
   }
   for (const userId of staleActiveRuns) {
     try { await storage.clearActiveRun(userId); } catch (_) {}
@@ -2914,7 +2917,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // Cron (every 5 minutes): sends the queued "te han robado" pushes that are due
+  // Cron (every minute): sends the queued pushes that are due, "te han robado" to the victims of a
+  // run and "tu carrera está lista" to the runner of an imported activity
   app.post('/api/tasks/steal-notifications', async (c) => {
     try {
       if (!(await isCronRequest(c))) {
@@ -2922,10 +2926,28 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
       const storage = new WorkerStorage(getDb(c.env));
       const result = await sendDueStealNotifications(storage, c.env);
-      return c.json({ success: true, ...result });
+      let activityReady = { sent: 0, skipped: 0 };
+      try {
+        activityReady = await sendDueActivityReadyNotifications(storage, c.env);
+      } catch (error) {
+        console.error('[CRON ACTIVITY READY] Error:', error);
+      }
+      return c.json({ success: true, ...result, activityReady });
     } catch (error: any) {
       console.error('[CRON STEAL NOTIFICATIONS] Error:', error);
       return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // The app has shown this route's result to its runner: the queued "tu carrera está lista" push isn't needed
+  app.post('/api/routes/:routeId/result-seen', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.closeActivityReadyNotification(c.req.param('routeId'), c.get('authUserId'));
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[ROUTES] POST /api/routes/:routeId/result-seen failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
     }
   });
 
@@ -5444,32 +5466,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
                         console.log(`[STRAVA WEBHOOK] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-                        // Send push notification
-                        try {
-                          const { sendPushToUser } = await import('./pushHelper');
-                          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-                          if (subscriptions.length > 0) {
-                            const distKm = (activity.distance / 1000).toFixed(1);
-                            const pushSubs = subscriptions.map((sub: any) => ({
-                              endpoint: sub.endpoint,
-                              keys: { p256dh: sub.p256dh, auth: sub.auth },
-                            }));
-                            await sendPushToUser(
-                              pushSubs,
-                              {
-                                title: '🏃 ¡Carrera registrada!',
-                                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                                tag: `strava-auto-${activity.id}`,
-                                data: { type: 'strava_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-                              },
-                              (c.env as any).VAPID_PUBLIC_KEY || '',
-                              (c.env as any).VAPID_PRIVATE_KEY || '',
-                              (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                            );
-                          }
-                        } catch (pushErr) {
-                          console.warn(`[STRAVA WEBHOOK] Push notification failed:`, pushErr);
-                        }
+                        // The runner's "tu carrera está lista" push goes out a few minutes later, with the settled result
+                        await queueActivityReadyPush(storage, userId, route.id, 'strava');
                       } else {
                         // Short route (<10 coords) — create route + feed event without territory
                         try {
@@ -6520,7 +6518,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   /**
    * One Polar user: imports new exercises (GET /v3/exercises), turns up to 3 of them into routes
    * (feed event + territory queue) and sends the "¡Carrera registrada!" push (polar_auto_import).
-   * Shared by the 5-minute cron and the Polar webhook.
+   * Shared by the 3-minute cron and the Polar webhook.
    */
   const autoSyncPolarUser = async (
     env: Env,
@@ -6655,32 +6653,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         processed++;
         console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-        // 3. Send push notification to user about the new activity
-        try {
-          const { sendPushToUser } = await import('./pushHelper');
-          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-          if (subscriptions.length > 0) {
-            const distKm = (activity.distance / 1000).toFixed(1);
-            const pushSubs = subscriptions.map((sub: any) => ({
-              endpoint: sub.endpoint,
-              keys: { p256dh: sub.p256dh, auth: sub.auth },
-            }));
-            await sendPushToUser(
-              pushSubs,
-              {
-                title: '🏃 ¡Carrera registrada!',
-                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                tag: `polar-auto-${activity.id}`,
-                data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-              },
-              env.VAPID_PUBLIC_KEY || '',
-              env.VAPID_PRIVATE_KEY || '',
-              env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-            );
-          }
-        } catch (pushErr) {
-          console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
-        }
+        // 3. The runner's "tu carrera está lista" push goes out a few minutes later, with the settled result
+        await queueActivityReadyPush(storage, userId, route.id, 'polar');
       } catch (procErr) {
         console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
       }
@@ -6693,7 +6667,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // ({event: "EXERCISE", user_id, entity_id, timestamp, url}), signed with "Polar-Webhook-Signature"
   // = hex HMAC-SHA256 of the raw body with the webhook's signature_secret_key (POLAR_WEBHOOK_SECRET).
   // We answer 200 at once and import that user's exercises in the background with the same code as
-  // the 5-minute cron (which stays as the fallback). The exercise data is always read from Polar's
+  // the 3-minute cron (which stays as the fallback). The exercise data is always read from Polar's
   // API with the user's token, never taken from the payload.
 
   /** Users whose webhook import is running in this isolate (Polar may send the same event twice). */
@@ -8150,7 +8124,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // POST /api/tasks/polar-auto-sync — Cron: runs every 5 minutes, auto-syncs Polar activities
+  // POST /api/tasks/polar-auto-sync — Cron: runs every 3 minutes, auto-syncs Polar activities
   // Checks all connected Polar accounts for new exercises, processes them, and notifies users
   app.post('/api/tasks/polar-auto-sync', async (c) => {
     try {
@@ -8167,7 +8141,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const cronStart = Date.now();
       const MAX_CRON_TIME = 25000; // 25s safety limit
       const MAX_USERS_PER_INVOCATION = 5; // Process at most 5 users per cron run
-      const SYNC_STALE_MINUTES = 4; // Only sync users not synced in last 4 minutes
+      const SYNC_STALE_MINUTES = 2; // Only sync users not synced in the last 2 minutes (the poll runs every 3)
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);

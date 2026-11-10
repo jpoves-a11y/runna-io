@@ -188,7 +188,9 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
   await befriend(a, c);
   const routeC = await upload(c, loop(origin, { offset: 3 }), 40, 25); // Carla runs the same loop alone later
   check('4. Carla took Ana\'s loop', (await metricsFromRoute(routeC.id, a.id)).length === 1);
-  check('4. a push to Ana is queued', (await pendingFor(routeC.id, a.id)).length === 1);
+  const queuedForAna = await pendingFor(routeC.id, a.id);
+  check('4. a push to Ana is queued', queuedForAna.length === 1);
+  check('4. it waits 3 minutes', Date.parse(queuedForAna[0]?.due_at) - Date.parse(queuedForAna[0]?.created_at) === 3 * MIN, queuedForAna[0]);
   // Ana is recording a run that started before Carla's ended: she may have been with Carla
   const active = await call('POST', '/api/runs/active', { token: a.token, body: { startedAt: new Date(NOW - 41 * MIN).toISOString() } });
   check('4. active run accepted', active.status === 200, active);
@@ -196,12 +198,27 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
   const cronEnv = { ...env, INTERNAL_CRON: true };
   let cron = await call('POST', '/api/tasks/steal-notifications', { useEnv: cronEnv });
   check('4. held while Ana is recording', cron.data.postponed === 1 && cron.data.sent === 0 && (await pendingFor(routeC.id, a.id)).length === 1, cron.data);
+  const heldUntil = Date.parse((await pendingFor(routeC.id, a.id))[0]?.due_at) - Date.now();
+  check('4. looked at again 2 minutes later', heldUntil > 1.5 * MIN && heldUntil <= 2 * MIN, heldUntil);
   await call('DELETE', '/api/runs/active', { token: a.token });
   await db.execute({ sql: 'update pending_steal_notifications set due_at = ? where victim_id = ?', args: [new Date(NOW - MIN).toISOString(), a.id] });
   cron = await call('POST', '/api/tasks/steal-notifications', { useEnv: cronEnv });
   await flush();
   check('4. sent once the run is gone', cron.data.sent === 1 && (await pendingFor(routeC.id, a.id)).length === 0, cron.data);
   check('4. APNs push "te han robado"', apns.some((p) => p?.data?.type === 'territory_loss' || p?.type === 'territory_loss'), apns);
+
+  // ---------- 4b. The runner's own push isn't sent once the app has shown the result ----------
+  await db.execute({ sql: 'insert into activity_ready_notifications (route_id, user_id, source, due_at, sent_at, created_at) values (?, ?, ?, ?, NULL, ?)',
+    args: [routeC.id, c.id, 'garmin', new Date(NOW - MIN).toISOString(), new Date(NOW - 4 * MIN).toISOString()] });
+  await db.execute({ sql: 'insert into push_subscriptions (user_id, endpoint, p256dh, auth) values (?, ?, ?, ?)', args: [c.id, `apns:sandbox:carla${stamp}`, 'apns', 'apns'] });
+  const notHers = await call('POST', `/api/routes/${routeC.id}/result-seen`, { token: a.token });
+  const stillOpen = (await db.execute({ sql: 'select sent_at from activity_ready_notifications where route_id = ?', args: [routeC.id] })).rows[0];
+  check('4b. someone else can\'t close it', notHers.status === 200 && stillOpen?.sent_at === null, stillOpen);
+  const seen = await call('POST', `/api/routes/${routeC.id}/result-seen`, { token: c.token });
+  const apnsBefore = apns.length;
+  cron = await call('POST', '/api/tasks/steal-notifications', { useEnv: cronEnv });
+  check('4b. seen in the app: no "tu carrera está lista" push', seen.status === 200 && cron.data.activityReady?.sent === 0 && apns.length === apnsBefore, cron.data);
+  check('4b. result-seen needs a session', (await call('POST', `/api/routes/${routeC.id}/result-seen`)).status === 401);
 
   // ---------- 5. Reprocess gives the same result ----------
   queued.push({ type: 'reprocess_friend_group', userId: a.id });

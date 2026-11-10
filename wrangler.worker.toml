@@ -48,7 +48,7 @@ RESEND_FROM = "onboarding@resend.dev"
 # ===== Polar instant sync (webhook) =====
 # 1. curl -X POST -H "Authorization: Bearer $UPSTASH_CRON_SECRET" <worker>/api/admin/polar/webhook/register
 # 2. wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml   # signatureSecretKey from step 1
-# The 5-minute cron poll keeps running as a fallback.
+# The 3-minute cron poll keeps running as a fallback.
 #
 # ===== Garmin (Garmin Connect Developer Program, Activity API push) =====
 # wrangler secret put GARMIN_CLIENT_ID -c wrangler.worker.toml       # consumer key
@@ -58,10 +58,11 @@ RESEND_FROM = "onboarding@resend.dev"
 # for Activity Details, Deregistrations and User Permissions Change. No cron: Garmin pushes every activity.
 #
 # ===== Scheduled tasks =====
-# A single Cloudflare Cron Trigger (every 5 minutes) runs every task in-process, without HTTP
+# A single Cloudflare Cron Trigger (every minute) runs every task in-process, without HTTP
 # (see worker/src/cron.ts, times in Europe/Madrid):
-#   - polar-auto-sync: every run (fallback poll; the Polar webhook imports at once)
-#   - steal-notifications: every run (sends the queued "te han robado" pushes that are due)
+#   - steal-notifications: every minute ("te han robado" and "tu carrera está lista" pushes, sent
+#     3 minutes after the run arrived, in case a friend who ran along stops their watch a bit later)
+#   - polar-auto-sync: every 3 minutes (fallback poll; the Polar webhook imports at once)
 #   - spawn-treasure: minute 0 of every hour (the task picks today's random spawn hour)
 #   - inactivity-check: 10:00 and 19:00
 #   - weekly-summary: Sundays 20:00
@@ -76,7 +77,7 @@ RESEND_FROM = "onboarding@resend.dev"
 # Public pages served by the Worker: /privacy, /terms, /support, /invite/<token>, /open
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["* * * * *"]
 
 # ===== Cloudflare Queue for Async Territory Processing =====
 # The territory queue offloads CPU-heavy work (polygon intersections, stealing,

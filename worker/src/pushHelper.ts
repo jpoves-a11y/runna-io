@@ -16,7 +16,10 @@ interface PushSubscriptionData {
 interface PushNotificationPayload {
   title: string;
   body: string;
+  /** Groups notifications in Notification Center (APNs thread-id) */
   tag?: string;
+  /** A newer notification with the same id replaces this one (APNs collapse id); none by default */
+  collapseId?: string;
   data?: any;
 }
 
@@ -479,8 +482,11 @@ async function sendApnsDetailed(endpoint: string, payload: PushNotificationPaylo
       'apns-expiration': String(Math.floor(Date.now() / 1000) + 24 * 60 * 60),
       'content-type': 'application/json',
     };
-    if (payload.tag && new TextEncoder().encode(payload.tag).length <= 64) {
-      headers['apns-collapse-id'] = payload.tag;
+    // `tag` only groups notifications (thread-id). A collapse id makes a new notification replace
+    // the one before it, so it is sent only when asked for: with the tag as collapse id, a second
+    // comment, friend request or steal used to erase the first one from the lock screen.
+    if (payload.collapseId && new TextEncoder().encode(payload.collapseId).length <= 64) {
+      headers['apns-collapse-id'] = payload.collapseId;
     }
 
     const first = await postToApns(config, environment, deviceToken, headers, body);

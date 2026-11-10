@@ -32,7 +32,7 @@ import type { GarminAccount, GarminActivity, Route } from '../../shared/schema';
 import { fitTrack, type FitPoint } from './fit';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
-import { sendPushToUser } from './pushHelper';
+import { queueActivityReadyPush } from './notifications';
 
 type AppContext = Context<AppEnv>;
 
@@ -504,26 +504,9 @@ export async function processGarminActivity(env: Env, storage: WorkerStorage, ac
   return { routeId: route.id, queued, reused: false, skipReason: null };
 }
 
-async function notifyImported(env: Env, storage: WorkerStorage, activity: GarminActivity, routeId: string): Promise<void> {
-  try {
-    const subscriptions = await storage.getPushSubscriptionsByUserId(activity.userId);
-    if (subscriptions.length === 0) return;
-    const distKm = (activity.distance / 1000).toFixed(1);
-    await sendPushToUser(
-      subscriptions.map((sub) => ({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } })),
-      {
-        title: '🏃 ¡Carrera registrada!',
-        body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-        tag: `garmin-auto-${activity.id}`,
-        data: { type: 'garmin_auto_import', routeId, url: '/?showPendingAnimation=true' },
-      },
-      env.VAPID_PUBLIC_KEY || '',
-      env.VAPID_PRIVATE_KEY || '',
-      env.VAPID_SUBJECT || 'mailto:notifications@runna.io',
-    );
-  } catch (error) {
-    console.warn(`[GARMIN] Push notification failed for ${activity.userId}:`, error);
-  }
+/** The runner's "tu carrera está lista" push, sent a few minutes later with the settled result. */
+async function notifyImported(_env: Env, storage: WorkerStorage, activity: GarminActivity, routeId: string): Promise<void> {
+  await queueActivityReadyPush(storage, activity.userId, routeId, 'garmin');
 }
 
 // ==================== Webhook ====================
