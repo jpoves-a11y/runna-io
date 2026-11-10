@@ -1378,8 +1378,8 @@ private final class GlassDrop {
             if dx * dx + dy * dy >= 6 {
                 trailPoints.append(center)
                 // Long enough: the oldest stretch has dried
-                if trailPoints.count > 260 {
-                    trailPoints.removeFirst(trailPoints.count - 260)
+                if trailPoints.count > 80 {
+                    trailPoints.removeFirst(trailPoints.count - 80)
                 }
             }
         } else {
@@ -1390,7 +1390,7 @@ private final class GlassDrop {
         path.addLines(between: trailPoints)
         path.addLine(to: center)
         trail.path = path
-        trail.lineWidth = max(1.2, radius * 1.05)
+        trail.lineWidth = max(1.2, radius * 0.85)
     }
 
     func remove() {
