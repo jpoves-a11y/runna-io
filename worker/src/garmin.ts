@@ -30,6 +30,7 @@ import type { GarminAccount, GarminActivity, Route } from '../../shared/schema';
 import { fitTrack, type FitPoint } from './fit';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
+import { runsCountFromMs } from './gameStorage';
 import { sendPushToUser } from './pushHelper';
 
 type AppContext = Context<AppEnv>;
@@ -42,7 +43,6 @@ const GARMIN_API_HOST = 'apis.garmin.com';
 const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 /** Same competition start as the Polar / Strava / Suunto imports. */
-const COMPETITION_MIN_DATE = new Date('2026-03-02T00:00:00Z');
 /** Garmin recommends refreshing at least 600 s before the access token expires. */
 const TOKEN_REFRESH_MARGIN_MS = 10 * 60 * 1000;
 /** Minimum spacing between stored GPS points (Garmin samples every second). */
@@ -373,7 +373,7 @@ export async function importGarminActivity(storage: WorkerStorage, account: Garm
 
   if (!isGarminFootActivity(detail.activityType)) return skip('excluded_type');
   if (startMs === null || !Number.isFinite(startMs)) return skip('bad_date');
-  if (startMs < COMPETITION_MIN_DATE.getTime()) return skip('before_competition');
+  if (startMs < runsCountFromMs()) return skip('before_competition');
   if (distance < 100) return skip('distance_too_short');
   if (duration < 60) return skip('duration_too_short');
   if (track.length < 2) return skip('no_gps');
@@ -403,7 +403,7 @@ export async function processGarminActivity(env: Env, storage: WorkerStorage, ac
   if (!activity.summaryPolyline) return skip('no_gps');
   const startDate = new Date(activity.startDate);
   if (Number.isNaN(startDate.getTime())) return skip('bad_date');
-  if (startDate < COMPETITION_MIN_DATE) return skip('before_competition');
+  if (startDate.getTime() < runsCountFromMs()) return skip('before_competition');
 
   const coordinates: Array<[number, number]> = decodePolyline(activity.summaryPolyline).map((coord: [number, number]) => [coord[0], coord[1]]);
   if (coordinates.length < 2) return skip('no_gps');

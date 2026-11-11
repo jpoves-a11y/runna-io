@@ -31,6 +31,7 @@ import type { SuuntoAccount, SuuntoActivity, Route } from '../../shared/schema';
 import { parseFit, isFootSport, fitSportLabel, fitTrack, FIT_SPORT, FIT_SUB_SPORT, type FitActivity } from './fit';
 import { encodePolyline, decodePolyline } from './territory';
 import { generateFeedEvents, reprocessUserTerritories } from './routes';
+import { runsCountFromMs } from './gameStorage';
 import { sendPushToUser } from './pushHelper';
 
 type AppContext = Context<AppEnv>;
@@ -40,7 +41,6 @@ const SUUNTO_API_BASE = 'https://cloudapi.suunto.com';
 const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 /** Same competition start as the Polar / Strava imports. */
-const COMPETITION_MIN_DATE = new Date('2026-03-02T00:00:00Z');
 const SYNC_DAYS = 30;
 /** FIT downloads per /sync call (keeps a call well under the Worker subrequest limit). */
 const FIT_FETCH_BUDGET = 5;
@@ -394,7 +394,7 @@ export async function importSuuntoWorkout(
   };
 
   // Cheap checks from the list entry, before downloading anything
-  if (summary.startTime !== null && summary.startTime < COMPETITION_MIN_DATE.getTime()) {
+  if (summary.startTime !== null && summary.startTime < runsCountFromMs()) {
     await save({ status: 'skipped', reason: 'before_competition' });
     return { kind: 'skipped', reason: 'before_competition' };
   }
@@ -456,7 +456,7 @@ export async function importSuuntoWorkout(
     await save({ status: 'skipped', reason: 'bad_date', ...details });
     return { kind: 'skipped', reason: 'bad_date' };
   }
-  if (startMs < COMPETITION_MIN_DATE.getTime()) {
+  if (startMs < runsCountFromMs()) {
     await save({ status: 'skipped', reason: 'before_competition', ...details });
     return { kind: 'skipped', reason: 'before_competition' };
   }
@@ -514,7 +514,7 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
   if (!activity.summaryPolyline) return skip('no_gps');
   const startDate = new Date(activity.startDate);
   if (Number.isNaN(startDate.getTime())) return skip('bad_date');
-  if (startDate < COMPETITION_MIN_DATE) return skip('before_competition');
+  if (startDate.getTime() < runsCountFromMs()) return skip('before_competition');
 
   const coordinates: Array<[number, number]> = decodePolyline(activity.summaryPolyline).map((coord: [number, number]) => [coord[0], coord[1]]);
   if (coordinates.length < 2) return skip('no_gps');

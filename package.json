@@ -8,7 +8,8 @@
     "check": "tsc -p tsconfig.json",
     "db:push": "drizzle-kit push",
     "worker:dev": "wrangler dev -c wrangler.worker.toml",
-    "worker:deploy": "wrangler deploy -c wrangler.worker.toml"
+    "worker:deploy": "wrangler deploy -c wrangler.worker.toml",
+    "test": "node --import tsx --test worker/test/*.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.7",

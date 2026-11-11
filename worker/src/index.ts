@@ -4,6 +4,7 @@ import { logger } from 'hono/logger';
 import { registerRoutes } from './routes';
 import { registerSuuntoRoutes } from './suunto';
 import { registerGarminRoutes } from './garmin';
+import { registerGameRoutes } from './gameRoutes';
 import type { AppEnv } from './auth';
 import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 import { configurePush } from './pushHelper';
@@ -11,6 +12,8 @@ import { runScheduledTasks } from './cron';
 import { registerPublicPages } from './pages';
 import { createDb } from './db';
 import { WorkerStorage } from './storage';
+import { setSeasonAnchor } from './cycles';
+import { refreshRunsCountFrom } from './gameStorage';
 
 export interface Env {
   DATABASE_URL: string;
@@ -62,6 +65,8 @@ export interface Env {
   APNS_BUNDLE_ID?: string;
   // Cloudflare Queue for async territory processing
   TERRITORY_QUEUE: Queue<TerritoryQueueMessage>;
+  // Optional: local date (YYYY-MM-DD, a Friday) of the first competition; default in shared/game.ts
+  SEASON_ANCHOR_DATE?: string;
 }
 
 const app = new Hono<AppEnv>();
@@ -91,6 +96,7 @@ app.use('*', cors({
 }));
 
 registerRoutes(app);
+registerGameRoutes(app);
 registerSuuntoRoutes(app);
 registerGarminRoutes(app);
 registerPublicPages(app);
@@ -107,6 +113,16 @@ function ensureSchema(env: Env): Promise<void> {
   } catch (error) {
     console.error('[SCHEMA] Could not open the database:', error);
     return Promise.resolve();
+  }
+}
+
+/** Season cutoff (runs before the reset never count), re-read at most once a minute. */
+async function refreshSeasonCutoff(env: Env): Promise<void> {
+  if (!env.DATABASE_URL) return;
+  try {
+    await refreshRunsCountFrom(createDb(env.DATABASE_URL, env.TURSO_AUTH_TOKEN));
+  } catch (error) {
+    console.error('[SEASON] Could not refresh the season cutoff:', error);
   }
 }
 
@@ -129,22 +145,28 @@ function needsDatabase(request: Request): boolean {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     configurePush(env);
+    setSeasonAnchor(env.SEASON_ANCHOR_DATE);
     if (needsDatabase(request)) {
       await ensureSchema(env);
+      await refreshSeasonCutoff(env);
       ensureIndexesInBackground(env, ctx);
     }
     return app.fetch(request, env, ctx);
   },
   async queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
     configurePush(env);
+    setSeasonAnchor(env.SEASON_ANCHOR_DATE);
     await ensureSchema(env);
+    await refreshSeasonCutoff(env);
     return handleQueueBatch(batch, env);
   },
   scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     // Cloudflare Cron Trigger ("*/5 * * * *"): runs the due /api/tasks/* in-process (see cron.ts)
     configurePush(env);
+    setSeasonAnchor(env.SEASON_ANCHOR_DATE);
     ctx.waitUntil(
       ensureSchema(env)
+        .then(() => refreshSeasonCutoff(env))
         .then(() => runScheduledTasks(app, event.scheduledTime, env, ctx))
         .catch((err) => {
           console.error('[CRON] Scheduled run failed:', err);

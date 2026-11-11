@@ -106,6 +106,7 @@ import {
 } from '../../shared/schema';
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
+import { applyGameSchema, applyCompetitionColumns, GameStorage } from './gameStorage';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
 function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
@@ -121,6 +122,16 @@ function safeParseGeometry(geometry: any): any {
     try { return JSON.parse(geometry); } catch { return null; }
   }
   return geometry;
+}
+
+function parseReasons(value: unknown): string[] {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
 }
 
 // Helper to safely compute union of two geometries, returning null on failure
@@ -145,6 +156,11 @@ export class WorkerStorage {
   private static inactivityRemindersTableEnsured = false;
   private static territoryLossNotificationsTableEnsured = false;
   constructor(private db: Database) {}
+
+  /** The drizzle database (for the game modules in gameStorage.ts). */
+  get database(): Database {
+    return this.db;
+  }
 
   async getUser(id: string): Promise<User | undefined> {
     const [user] = await this.db.select().from(users).where(eq(users.id, id));
@@ -205,6 +221,8 @@ export class WorkerStorage {
     await this.deleteAuthSessionsByUserId(userId);
     await this.ensureSchemaUpgrades();
     await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
+    // Clubs, competitions, global map, inventory, challenges (hands over a club the user owns)
+    await new GameStorage(this.db).removeUserGameData(userId);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
@@ -298,6 +316,10 @@ export class WorkerStorage {
       expires_at INTEGER NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0
     )`);
+    // Global mode, clubs and seasons (worker/src/gameStorage.ts). The competition tables are created
+    // first so their new columns exist before any drizzle select lists them.
+    await this.ensureCompetitionTables();
+    await applyGameSchema(this.db);
   }
 
   // ===== Login attempt limits (see worker/src/rateLimit.ts) =====
@@ -807,12 +829,15 @@ export class WorkerStorage {
           }
         }
 
+        // trackMeta (per-point timestamps) is only for the anti-cheat: not sent to clients
+        const { trackMeta: _trackMeta, ...publicRoute } = route as typeof route & { trackMeta?: string | null };
         return {
-          ...route,
+          ...publicRoute,
           coordinates: parsedCoordinates,
           territory: territory || undefined,
           ranTogetherWithUsers,
-        };
+          validationReasons: parseReasons(route.validationReasons),
+        } as any;
       })
     );
 
@@ -3583,8 +3608,8 @@ export class WorkerStorage {
       )`);
       await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_user ON territory_fortifications(user_id)`);
       await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_fortifications_bbox ON territory_fortifications(bbox_min_lng, bbox_min_lat, bbox_max_lng, bbox_max_lat)`);
-      // Add zone column to treasures
-      try { await this.db.run(sql`ALTER TABLE treasures ADD COLUMN zone TEXT`); } catch (_) { /* column already exists */ }
+      // Columns added later (zone, hidden, city_key, scope, source, unused_expires_at)
+      await applyCompetitionColumns(this.db);
       WorkerStorage.competitionTablesEnsured = true;
     } catch (_) {}
   }

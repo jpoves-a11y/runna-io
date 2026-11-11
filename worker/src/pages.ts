@@ -7,7 +7,7 @@ import type { AppEnv } from './auth';
 const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 const CONTACT_EMAIL = 'runna.io.service@gmail.com';
 const APP_SCHEME = 'runnaio';
-const APP_TABS = ['map', 'rankings', 'activity', 'friends', 'profile'] as const;
+const APP_TABS = ['map', 'rankings', 'activity', 'club', 'friends', 'profile'] as const;
 
 /** Public base URL of this Worker: env WORKER_URL, else the request origin. No trailing slash. */
 export function publicBaseUrl(c: Context<AppEnv>): string {
@@ -493,8 +493,29 @@ ${FOOTER}`), 404);
     return c.html(landing(c, {
       title: 'Invitación a Runna.io',
       heading: 'Te han invitado a Runna.io',
-      text: 'Un amigo quiere que corras con él y os robéis territorio. Abre la invitación en la app para aceptarla.',
+      text: 'Un amigo quiere seguirte en Runna.io y ver tu territorio. Abre la invitación en la app para aceptarla.',
       appLink: `${APP_SCHEME}://friends/accept/${token}`,
+    }));
+  });
+
+  // Club invite link (see /api/clubs/:id/invites): opens runnaio://clubs/join/<token>
+  app.get('/club-invite/:token', (c) => {
+    const token = c.req.param('token');
+    if (!TOKEN_PATTERN.test(token)) {
+      return html(c, page('Invitación no válida · Runna.io', `
+<div class="landing">
+<div class="logo">🛡️</div>
+<h1>Invitación no válida</h1>
+<p>Este enlace de invitación a un club no es correcto. Pide uno nuevo a alguien del club.</p>
+</div>
+${FOOTER}`), 404);
+    }
+    c.header('Cache-Control', 'no-store');
+    return c.html(landing(c, {
+      title: 'Invitación a un club · Runna.io',
+      heading: 'Te han invitado a un club',
+      text: 'Únete al club para competir con ellos cada dos semanas. Abre la invitación en la app para unirte.',
+      appLink: `${APP_SCHEME}://clubs/join/${token}`,
     }));
   });
 
@@ -504,7 +525,7 @@ ${FOOTER}`), 404);
     return html(c, landing(c, {
       title: 'Abrir Runna.io',
       heading: 'Abre Runna.io',
-      text: 'Sal a correr, conquista territorio y defiéndelo de tus amigos.',
+      text: 'Sal a correr, conquista el mapa y compite con tu club.',
       appLink: `${APP_SCHEME}://tab/${tab}`,
     }));
   });

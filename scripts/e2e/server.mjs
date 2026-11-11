@@ -26,8 +26,20 @@ globalThis.fetch = async (input, init) => {
 
 const worker = (await import('./.build/worker.mjs')).default;
 
+// Season calendar for the tests: the first competition started on the last Friday at least 2 days
+// ago, so "now" is inside a running competition (day 3 to 9). E2E_SEASON_ANCHOR overrides it.
+function defaultSeasonAnchor() {
+  const day = new Date();
+  day.setUTCHours(12, 0, 0, 0);
+  day.setUTCDate(day.getUTCDate() - 2);
+  while (day.getUTCDay() !== 5) day.setUTCDate(day.getUTCDate() - 1);
+  return day.toISOString().slice(0, 10);
+}
+const seasonAnchor = process.env.E2E_SEASON_ANCHOR || defaultSeasonAnchor();
+
 const env = {
   DATABASE_URL: databaseUrl,
+  SEASON_ANCHOR_DATE: seasonAnchor,
   ENVIRONMENT: 'test',
   UPSTASH_CRON_SECRET: 'e2e-cron-secret',
   FRONTEND_URL: 'http://localhost:5000',
@@ -47,7 +59,7 @@ const env = {
 const ctx = { waitUntil: (promise) => { Promise.resolve(promise).catch(() => {}); }, passThroughOnException() {} };
 
 serve({ fetch: (request) => worker.fetch(request, env, ctx), port, hostname: '127.0.0.1' }, () => {
-  console.log(`[e2e] API listening on http://127.0.0.1:${port} (${databaseUrl})`);
+  console.log(`[e2e] API listening on http://127.0.0.1:${port} (${databaseUrl}), season anchor ${seasonAnchor}`);
   if (process.env.E2E_RUN_CRON === '1') runCronOnce();
 });
 

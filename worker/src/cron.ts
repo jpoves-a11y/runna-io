@@ -9,7 +9,7 @@
 
 export const CRON_TIME_ZONE = 'Europe/Madrid';
 
-export type CronTask = 'polar-auto-sync' | 'suunto-auto-sync' | 'spawn-treasure' | 'inactivity-check' | 'weekly-summary';
+export type CronTask = 'season-tick' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check';
 
 /** The trigger fires every 5 minutes, so "at minute 0" means the run in [:00, :05). */
 const SLOT_MINUTES = 5;
@@ -49,19 +49,17 @@ export function madridTime(time: number): LocalTime {
 
 /**
  * Tasks to run for a cron trigger scheduled at `scheduledTime` (ms since epoch):
+ * - season-tick: every run (one-time reset, start/end of competitions, rest-phase chests; see season.ts)
  * - polar-auto-sync: every run (every 5 minutes)
- * - spawn-treasure: at minute 0 of every hour (the handler decides whether today's spawn hour has come)
  * - inactivity-check: 10:00 and 19:00
- * - weekly-summary: Sundays at 20:00
  * - suunto-auto-sync: at minute 30 of every hour (fallback poll; Suunto's webhook is the primary path)
+ * The old daily treasure spawn and weekly summary are replaced by the season engine.
  */
 export function tasksDue(scheduledTime: number): CronTask[] {
-  const { weekday, hour, minute } = madridTime(scheduledTime);
+  const { hour, minute } = madridTime(scheduledTime);
   const topOfHour = minute < SLOT_MINUTES;
-  const tasks: CronTask[] = [];
-  if (topOfHour) tasks.push('spawn-treasure');
+  const tasks: CronTask[] = ['season-tick'];
   if (topOfHour && (hour === 10 || hour === 19)) tasks.push('inactivity-check');
-  if (topOfHour && weekday === 0 && hour === 20) tasks.push('weekly-summary');
   if (minute >= 30 && minute < 30 + SLOT_MINUTES) tasks.push('suunto-auto-sync');
   // Last: it is the slowest (up to ~25 s) and runs every time anyway
   tasks.push('polar-auto-sync');
@@ -84,7 +82,7 @@ export async function runScheduledTasks<E extends object>(
   for (const task of tasksDue(scheduledTime)) {
     try {
       const response = await app.fetch(
-        new Request(`https://internal/api/tasks/${task}`, { method: 'POST' }),
+        new Request(`https://internal/api/tasks/${task}?at=${scheduledTime}`, { method: 'POST' }),
         internalEnv,
         ctx,
       );

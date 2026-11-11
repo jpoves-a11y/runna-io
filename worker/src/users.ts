@@ -2,8 +2,9 @@
 // Database rows include the password hash, email and email verification code, which must never
 // reach other users. The account owner can see their own email.
 
-const PRIVATE_FIELDS = ['password', 'email', 'emailVerified', 'verificationCode', 'verificationCodeExpiresAt'] as const;
-const SELF_HIDDEN_FIELDS = ['password', 'verificationCode', 'verificationCodeExpiresAt'] as const;
+// homeLat/homeLng are where the runner lives (from their first runs): never shown to anyone
+const PRIVATE_FIELDS = ['password', 'email', 'emailVerified', 'verificationCode', 'verificationCodeExpiresAt', 'homeLat', 'homeLng', 'locationUpdatedAt', 'streakLastDate'] as const;
+const SELF_HIDDEN_FIELDS = ['password', 'verificationCode', 'verificationCodeExpiresAt', 'homeLat', 'homeLng'] as const;
 
 function omit<T extends object>(user: T, fields: readonly string[]): Partial<T> {
   const copy: Record<string, unknown> = { ...(user as Record<string, unknown>) };
