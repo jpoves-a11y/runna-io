@@ -528,7 +528,10 @@ export class GameStorage {
 
   /** Remembers where the first runs start, for users who haven't set a city yet. */
   async setHomeIfMissing(userId: string, lat: number, lng: number): Promise<void> {
-    await this.db.run(sql`UPDATE users SET home_lat = ${lat}, home_lng = ${lng} WHERE id = ${userId} AND home_lat IS NULL`);
+    // Rounded to ~1 km: it only places the city (chests), never the exact home
+    const roundedLat = Math.round(lat * 100) / 100;
+    const roundedLng = Math.round(lng * 100) / 100;
+    await this.db.run(sql`UPDATE users SET home_lat = ${roundedLat}, home_lng = ${roundedLng} WHERE id = ${userId} AND home_lat IS NULL`);
   }
 
   async setUserTitle(userId: string, title: string | null): Promise<void> {

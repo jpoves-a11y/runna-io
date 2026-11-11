@@ -8,6 +8,7 @@ import { publicBaseUrl } from './pages';
 import {
   GameStorage,
   setRunsCountFrom,
+  cityKeyOf,
   type ClubRow,
   type CompetitionRow,
   type InventoryRow,
@@ -26,7 +27,7 @@ import {
 } from './season';
 import { competitionContextFor, rebuildGlobalForUser, rebuildCompetitionForUser } from './runPipeline';
 import { parseGeometry } from './globalTerritory';
-import { withReasons } from './antiCheat';
+import { withReasons, haversineMeters } from './antiCheat';
 import {
   ITEMS,
   MODE_INFO,
@@ -405,7 +406,16 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     let chests: any[] = [];
     if (await game.getMembership(userId)) {
       const canSeeHidden = (await game.activeEffects([userId], now)).some((e) => e.itemId === 'reveal');
+      // Only the chests of my city (or near my home): others are noise, and a small city's chests
+      // would hint where its few runners live
+      const me = await game.getUserGameRow(userId);
+      const homeLat = Number(me?.home_lat);
+      const homeLng = Number(me?.home_lng);
+      const hasHome = me?.home_lat !== null && me?.home_lat !== undefined && Number.isFinite(homeLat) && Number.isFinite(homeLng);
+      const myCity = hasHome ? cityKeyOf(me?.country_code, me?.city, homeLat, homeLng) : null;
+      const near = (t: any) => hasHome && haversineMeters([homeLat, homeLng], [Number(t.lat), Number(t.lng)]) <= 30_000;
       chests = (await game.activeChests(now))
+        .filter((t) => t.city_key === myCity || near(t))
         .filter((t) => Number(t.hidden) !== 1 || canSeeHidden)
         .map((t) => ({
           id: t.id, name: t.name, itemId: t.power_type, item: ITEMS[t.power_type] ?? null, rarity: rarityJson(t.rarity),
