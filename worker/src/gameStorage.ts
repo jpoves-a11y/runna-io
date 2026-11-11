@@ -1143,6 +1143,12 @@ export class GameStorage {
     return { id, discarded };
   }
 
+  /** End of a competition: competition effects waiting for a run don't carry over to the next one. */
+  async expirePendingCompetitionEffects(): Promise<void> {
+    await this.db.run(sql`UPDATE user_powers SET status = 'expired' WHERE status = 'active' AND expires_at IS NULL
+      AND COALESCE(scope, 'competition') = 'competition'`);
+  }
+
   /** Marks unused items past their deadline (and finished timed effects) as expired. */
   async expireItems(userId: string | null, now = Date.now()): Promise<void> {
     const iso = new Date(now).toISOString();

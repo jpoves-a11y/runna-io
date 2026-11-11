@@ -588,6 +588,7 @@ export async function finishCycle(storage: WorkerStorage, game: GameStorage, env
   const current = cycleAt(at);
   if (!(current.phase === 'competition' && current.number > number)) {
     await game.resetCompetitionMap();
+    await game.expirePendingCompetitionEffects();
   }
   await game.upsertCycle(number, { status: 'rest', endedAt: new Date().toISOString(), restStartedAt: new Date().toISOString() });
   console.log(`[SEASON] Cycle ${number} finished: ${competitions.length} competitions`);

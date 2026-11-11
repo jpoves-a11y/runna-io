@@ -284,6 +284,9 @@ check('standings include bonus and stolen area', current.competition.standings.l
 
 // ───────────── End of the competition ─────────────
 
+// A "next run" power activated at the end of the competition must not carry over
+const lastMinute = await grant(cris, 'magnet');
+await call('POST', `/api/inventory/${lastMinute}/activate`, { token: cris.token, body: {} });
 const endTime = Date.parse(season0.cycle.competitionEndsAt) + 10 * 60_000;
 const finish = await admin('/api/admin/season/tick', { time: new Date(endTime).toISOString() });
 check('end tick finishes cycle 0', finish.data.finished_0 === 3 && finish.data.phase === 'rest', finish.data);
@@ -298,6 +301,8 @@ const clubAfter = await one('select league_points from clubs where id = ?', [clu
 check('league point for a club where most members ran', Number(clubAfter.league_points) >= 1, clubAfter);
 const territoriesLeft = await one('select count(*) as n, (select max(total_area) from users) as m from territories');
 check('the competition map is wiped', Number(territoriesLeft.n) === 0 && Number(territoriesLeft.m) === 0, territoriesLeft);
+const carried = await one('select status from user_powers where id = ?', [lastMinute]);
+check('pending competition effects expire with the competition', carried.status === 'expired', carried);
 const anaGlobal3 = Number((await one('select global_area from users where id = ?', [ana.id])).global_area);
 check('the global map is kept', Math.abs(anaGlobal3 - anaGlobal2) < 1);
 const history = (await call('GET', `/api/clubs/${club1.id}/history`, { token: ana.token })).data;
