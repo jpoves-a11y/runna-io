@@ -5,13 +5,23 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 ## Qué incluye
 
 - **Cuenta**: inicio de sesión, "He olvidado mi contraseña" (código por email), registro con código por email (la cuenta se crea al confirmar el email) (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez.
-- **Mapa**: tu territorio y el de tus amigos (MapKit), filtro por amigo, toca un territorio para ver de quién es, tus recorridos, fortificaciones y castillos.
-- **Competiciones**: banner con la cuenta atrás, cofres en el mapa (común, raro, épico y legendario) que se recogen corriendo, **poderes** que se activan desde el botón ⚡, apodos, ranking de la competición, **resumen semanal** y podio final.
+- **Mapa** con un interruptor arriba:
+  - **Global**: tu mapa del mundo, que nadie te puede quitar. Puedes superponer, a título informativo, el de tus amigos o tu club.
+  - **Competición**: el mapa de la competición de tu club, con tus fortificaciones y los cofres de los días de descanso.
+  - En ambos: fase de la temporada con cuenta atrás e inventario.
+- **Club** (pestaña que incluye también **Amigos**):
+  - Crear un club público o privado con escudo (editor con piezas desbloqueables) y eslogan.
+  - Buscar clubes públicos, unirse con código o enlace, solicitudes e invitaciones.
+  - Miembros con roles, competición en curso, retos, historial y trofeos.
+- **Ranking**:
+  - Global: mundo, país, ciudad, amigos y club; desde siempre y del mes.
+  - Competición de tu club.
+  - Clubes: por puntos de liga o por área.
+- **Inventario**: poderes de competición, extras globales con tope y cosméticos (títulos y piezas de escudo), con caducidad.
 - **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, **Live Activity** en la pantalla bloqueada y la Dynamic Island (tiempo que corre solo, distancia, ritmo y aviso de pausa), pausa/reanudar, aviso si la ubicación no es exacta, recuperación si iOS cierra la app a mitad de carrera, y cola sin conexión: la carrera se guarda en el móvil y se sube después (sin duplicados).
-- **Después de correr**: territorio conquistado y robado, a quién se lo has robado, cofres recogidos, **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Strava, Polar o Apple Salud muestran el mismo resumen al abrir la app.
+- **Después de correr**: área nueva en el mapa global, territorio conquistado y robado en la competición, retos completados, cofres recogidos, si la carrera no cuenta o está en revisión (y por qué), **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Strava, Polar o Apple Salud muestran el mismo resumen al abrir la app.
 - **Actividad**: feed de tus amigos (carreras, robos, cofres, apodos, récords) con "me gusta"/"no me gusta" y comentarios con respuestas y @menciones; tus carreras con mapa, renombrar y borrar.
-- **Ranking** de amigos y de la competición.
-- **Amigos**: solicitudes, búsqueda, perfiles con sus amigos y actividades, enlace de invitación para compartir (`/invite/<token>` abre la app y pide confirmar).
+- **Amigos** (dentro de la pestaña Club): solicitudes, búsqueda, perfiles con sus amigos y actividades, enlace de invitación para compartir (`/invite/<token>` abre la app y pide confirmar).
 - **Seguridad**: denunciar publicaciones, comentarios y usuarios; bloquear y desbloquear (Perfil → Usuarios bloqueados).
 - **Perfil**: foto, nombre, color del territorio, estadísticas de robos, apariencia clara/oscura, Strava, Polar y **Apple Salud** (importa las carreras del Apple Watch) en "Conectar dispositivos", notificaciones, soporte y enlaces legales.
 - **Notificaciones push** nativas (APNs): robos de territorio, solicitudes de amistad, comentarios, cofres, resumen semanal, importaciones automáticas, etc.

@@ -135,6 +135,25 @@ Si cambias la contraseña de esa cuenta de Google, sus contraseñas de aplicaci�
 
 Nunca subas credenciales al repositorio: `.env*` y `.dev.vars` están en `.gitignore` (hay una plantilla en `.env.example`).
 
+## Temporadas y reset de lanzamiento
+
+- **Reset inicial:** la primera vez que corre el cron de la versión nueva (`season-tick`) se hace un reset único del juego antiguo (`ensureSeasonReset` en `worker/src/season.ts`).
+  - Se borran todas las carreras, territorios, feed, métricas, poderes y cofres.
+  - Se conservan usuarios, amigos, clubes e integraciones.
+  - Las carreras empezadas antes del reset ya no se importan ni cuentan (`season_reset_at` en `app_settings`).
+  - Para repetirlo a mano: `POST /api/admin/season/reset` con `{"confirm":"RESET"}`.
+- **Calendario:** la primera competición empieza el viernes `SEASON_ANCHOR_DATE` de [`shared/game.ts`](shared/game.ts). La variable del Worker `SEASON_ANCHOR_DATE` (`YYYY-MM-DD`, un viernes) lo cambia sin tocar código. Antes de esa fecha es pretemporada (funcionan los cofres y retos de descanso).
+- **Endpoints de administración:**
+  - `POST /api/admin/season/tick` con `{"time":"<ISO>"}` ejecuta el motor de temporada como si fuera esa hora (pruebas).
+  - `POST /api/admin/season/runs-from` con `{"at":"<ISO>"}` mueve la fecha desde la que cuentan las carreras.
+- **Prueba de punta a punta del juego completo** (clubes, competición, duelos, Elo, descanso, cofres, retos, revisiones):
+
+  ```bash
+  rm -f scripts/e2e/.build/season.db
+  DATABASE_URL=file:scripts/e2e/.build/season.db npx drizzle-kit push --force
+  node scripts/e2e/season-test.mjs
+  ```
+
 ## Garmin
 
 Integración con el Garmin Connect Developer Program (Activity API), en `worker/src/garmin.ts`. Garmin **empuja** cada actividad (resumen + puntos GPS) al Worker unos minutos después de que el usuario sincronice el reloj con Garmin Connect; no hay sondeo. Con acceso Starter no hay histórico: solo llegan las actividades posteriores a la conexión.
@@ -167,7 +186,8 @@ node scripts/e2e/garmin-test.mjs
 | `/terms` | Condiciones de uso |
 | `/support` | Soporte (URL para App Store Connect) |
 | `/invite/<token>` | Enlace de invitación de amistad: abre `runnaio://friends/accept/<token>` en la app |
-| `/open?tab=<map\|rankings\|activity\|friends\|profile>` | Abre la app en una pestaña (lo usan los botones de los emails) |
+| `/club-invite/<token>` | Enlace de invitación a un club: abre `runnaio://clubs/join/<token>` en la app |
+| `/open?tab=<map\|rankings\|activity\|club\|friends\|profile>` | Abre la app en una pestaña (lo usan los botones de los emails) |
 
 En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms` y `/support`.
 
@@ -179,7 +199,21 @@ En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms
 - Límite de intentos (tabla `auth_attempts`, ver `worker/src/rateLimit.ts`): 10 contraseñas incorrectas por cuenta o 30 por IP en 15 minutos bloquean el inicio de sesión durante 15 minutos (respuesta 429 con `Retry-After`), y 5 códigos de verificación incorrectos bloquean ese paso igual. El error de inicio de sesión es el mismo si la cuenta no existe o si la contraseña está mal.
 - Registro con email confirmado: `POST /api/auth/register/start` comprueba el formulario y que el email y el usuario no estén ya en uso (sin distinguir mayúsculas) y envía un código de 6 dígitos (válido 15 minutos; como mucho 4 códigos por hora y email y 10 registros por hora e IP). La cuenta no se crea hasta que `POST /api/auth/register/confirm` recibe el código; entonces se crea ya verificada e inicia sesión. `POST /api/auth/register/resend` manda un código nuevo. Mientras tanto, los datos esperan en `pending_signups` (contraseña y código con hash; se borran un día después). 5 códigos incorrectos anulan el código. `POST /api/users` ya no crea cuentas (responde 426 a las versiones antiguas de la app).
 - "He olvidado mi contraseña": `POST /api/auth/password-reset/request` envía un código de 6 dígitos por email (válido 15 minutos, como mucho 3 emails por hora y cuenta; responde lo mismo exista o no la cuenta) y `POST /api/auth/password-reset/confirm` con el código y la contraseña nueva inicia sesión y cierra las demás sesiones. 5 códigos incorrectos anulan el código.
-- Juego limpio: una carrera con un ritmo medio de más de 21 km/h (a partir de 1 km), o con una duración mayor que el tiempo entre su inicio y su final, no conquista territorio ni recoge cofres (`checkRunPlausibility` en `worker/src/territory.ts`). La app recibe un 422 con el motivo; las importadas de Strava, Polar o Suunto se guardan, pero no cuentan. La distancia que cuenta es la mayor entre la declarada y la longitud del recorrido GPS.
+- Juego limpio (`worker/src/antiCheat.ts`): cada carrera queda como `accepted`, `flagged` (cuenta, pero en revisión) o `rejected` (se guarda en el historial, pero no cuenta). La app recibe el resultado en `validation` al subirla y en `/api/conquest-result`.
+  - **No cuentan:**
+    - Ritmo medio más rápido que 2:50 min/km o más lento que 12:00 min/km (andando), a partir de 1 km. Los tramos parados no cuentan para el ritmo cuando hay tiempos por punto.
+    - Más del 15 % de la distancia por encima de 25 km/h (bici o coche).
+    - Una duración mayor que el tiempo entre el inicio y el final.
+    - La misma carrera subida dos veces desde distintas fuentes: se solapa en el tiempo con otra y solo cuenta una.
+  - **Se recortan del territorio:** los tramos por encima de 30 km/h de más de 200 m y los saltos de GPS imposibles.
+  - **Van a revisión:**
+    - Más de 3 saltos de GPS.
+    - Un ritmo demasiado constante (coche con control de crucero).
+    - Una frecuencia cardíaca muy baja para la velocidad.
+    - Más de 10 km² de área nueva en una carrera o más de 20 km² en un día.
+  - La app manda los tiempos de cada punto (`pointTimes`) y las importaciones solo el recorrido, así que las comprobaciones por tramo solo se hacen cuando hay tiempos.
+  - Los administradores revisan con `GET /api/admin/runs/flagged` y `POST /api/admin/runs/<id>/review` (`{"action":"approve"}` o `{"action":"revert"}`); revertir reconstruye el mapa global y el de competición del corredor.
+- Privacidad del modo global: los rankings solo devuelven el área total, nunca geometrías. El mapa global solo superpone el territorio de amigos y compañeros de club. La ubicación de casa (`home_lat`/`home_lng`, redondeada a ~1 km) nunca sale de la API.
 - Los endpoints `/api/admin/*` y `/api/tasks/*` exigen el secreto de administración (o la ejecución interna del cron).
 - Denuncias y bloqueos (requisito 1.2 de Apple): los usuarios bloqueados se filtran del feed, comentarios, búsquedas, solicitudes e invitaciones en ambos sentidos. Cada denuncia se guarda y se avisa por email.
 - Los tokens de push que Apple da por muertos (410, `BadDeviceToken`) se borran automáticamente.
