@@ -191,9 +191,19 @@ export async function notifyUsers(storage: WorkerStorage, env: any, userIds: str
   if (!env || userIds.length === 0) return;
   try {
     const { sendPushToUser } = await import('./pushHelper');
-    for (const userId of [...new Set(userIds)].slice(0, 500)) {
+    const wanted = new Set(userIds);
+    // One query for everybody's subscriptions (instead of one per user)
+    const byUser = new Map<string, Array<{ endpoint: string; p256dh: string; auth: string }>>();
+    const all = wanted.size > 3 ? await storage.getAllPushSubscriptions() : [];
+    for (const sub of all) {
+      if (!wanted.has(sub.userId)) continue;
+      const list = byUser.get(sub.userId) ?? [];
+      list.push(sub);
+      byUser.set(sub.userId, list);
+    }
+    for (const userId of [...wanted].slice(0, 500)) {
       try {
-        const subs = await storage.getPushSubscriptionsByUserId(userId);
+        const subs = wanted.size > 3 ? (byUser.get(userId) ?? []) : await storage.getPushSubscriptionsByUserId(userId);
         if (subs.length === 0) continue;
         await sendPushToUser(
           subs.map((s) => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
@@ -397,8 +407,8 @@ interface Standing {
   rank: number;
 }
 
+/** Standings from the participants' stored scores (frozen by finishCycle before anything else). */
 async function standingsOf(game: GameStorage, competition: CompetitionRow): Promise<Standing[]> {
-  await game.syncParticipantAreas(competition.id);
   const participants = await game.getParticipants(competition.id);
   const users = await game.getUserLite(participants.map((p) => p.userId));
   const sorted = participants
@@ -547,8 +557,14 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
 }
 
 /** Finishes every active competition of cycle `number`, then wipes the competition map. */
-export async function finishCycle(storage: WorkerStorage, game: GameStorage, env: any, number: number): Promise<number> {
+export async function finishCycle(storage: WorkerStorage, game: GameStorage, env: any, number: number, at = Date.now()): Promise<number> {
   const competitions = (await game.getCompetitionsOfCycle(number)).filter((c) => c.status === 'active');
+  // 1. Freeze every participant's area while the map still exists. If this run stops half-way
+  //    (errors, subrequest limits), the next tick scores the rest from these frozen values.
+  if (!(await game.getSetting(`season_frozen_${number}`))) {
+    for (const competition of competitions) await game.syncParticipantAreas(competition.id);
+    await game.setSetting(`season_frozen_${number}`, new Date().toISOString());
+  }
   const doneMatches = new Set<string>();
   for (const competition of competitions) {
     try {
@@ -563,7 +579,16 @@ export async function finishCycle(storage: WorkerStorage, game: GameStorage, env
       console.error(`[SEASON] Could not finish competition ${competition.id}:`, error);
     }
   }
-  await game.resetCompetitionMap();
+  // 2. Wipe the map only when every competition of the cycle is scored (otherwise the next tick retries)
+  const pending = (await game.getCompetitionsOfCycle(number)).filter((c) => c.status === 'active');
+  if (pending.length > 0) {
+    throw new Error(`${pending.length} competition(s) of cycle ${number} still to finish`);
+  }
+  // The next cycle may already be running if the cron was down for days: then its map is kept
+  const current = cycleAt(at);
+  if (!(current.phase === 'competition' && current.number > number)) {
+    await game.resetCompetitionMap();
+  }
   await game.upsertCycle(number, { status: 'rest', endedAt: new Date().toISOString(), restStartedAt: new Date().toISOString() });
   console.log(`[SEASON] Cycle ${number} finished: ${competitions.length} competitions`);
   return competitions.length;
@@ -757,7 +782,7 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
     const lockKey = `season_finish_${number}`;
     if (!(await game.claimSetting(lockKey, String(now)))) continue;
     try {
-      report[`finished_${number}`] = await finishCycle(storage, game, env, number);
+      report[`finished_${number}`] = await finishCycle(storage, game, env, number, now);
     } catch (error) {
       console.error(`[SEASON] Finishing cycle ${number} failed, will retry:`, error);
       report[`finished_${number}`] = { error: String(error) };
