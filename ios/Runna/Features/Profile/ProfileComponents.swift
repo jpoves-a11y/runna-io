@@ -112,13 +112,11 @@ struct ProfileStatsCard: View {
         .padding(.vertical, DS.Spacing.s)
     }
 
+    /// Competition-map area (this competition) and friends; the global map is in the "Juego" section.
     private var mainRow: some View {
         let area = Format.areaParts(user.totalArea)
-        let rankTint: Color = user.rank == 1 ? Color.gold : Color.primary
         return HStack(spacing: 0) {
-            StatTile(value: area.value, label: "Territorio", unit: area.unit, tint: .brand)
-            StatDivider()
-            StatTile(value: user.rank.map { "#\($0)" } ?? "–", label: "Ranking", tint: rankTint)
+            StatTile(value: area.value, label: "Competición", unit: area.unit, tint: .brand)
             StatDivider()
             StatTile(value: "\(user.friendCount ?? 0)", label: "Amigos")
         }
@@ -183,7 +181,7 @@ struct ProfileRivalriesContent: View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Sin rivalidades todavía")
                 .font(.subheadline.weight(.semibold))
-            Text("Corre por el territorio de un amigo para robárselo.")
+            Text("En la competición de tu club, corre por el territorio de un rival para robárselo.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

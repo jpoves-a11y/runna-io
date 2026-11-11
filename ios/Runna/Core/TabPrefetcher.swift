@@ -25,8 +25,9 @@ enum TabPrefetcher {
     }
 
     private static func prefetch(userId: String) async {
-        var requests: [(path: String, query: [String: String])] = [
-            (path: "/api/leaderboard/friends/\(userId)", query: [:]),
+        let requests: [(path: String, query: [String: String])] = [
+            (path: "/api/rankings/global", query: ["scope": "world", "period": "all"]),
+            (path: "/api/clubs/mine", query: [:]),
             (path: "/api/feed/\(userId)", query: FeedModel.firstPageQuery),
             (path: "/api/friends/\(userId)", query: [:]),
             (path: "/api/friends/requests/\(userId)", query: [:]),
@@ -34,10 +35,6 @@ enum TabPrefetcher {
             (path: "/api/routes/\(userId)", query: [:]),
             (path: "/api/conquest-stats/\(userId)", query: [:]),
         ]
-        let competition = CompetitionStore.shared
-        if competition.isActive || competition.isFinished {
-            requests.append((path: "/api/competition/leaderboard", query: [:]))
-        }
         let pending = requests.filter { !APIClient.shared.isCacheFresh($0.path, query: $0.query) }
         await withTaskGroup(of: Void.self) { group in
             for request in pending {

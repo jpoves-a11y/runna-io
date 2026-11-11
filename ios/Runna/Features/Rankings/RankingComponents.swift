@@ -15,6 +15,8 @@ struct RankingItem: Identifiable, Hashable {
     var stolen: Double = 0
     var treasures: Int = 0
     var isMe: Bool = false
+    /// Extra line (club, title) shown under the username.
+    var detail: String? = nil
 
     var hasNickname: Bool {
         guard let nickname else { return false }
@@ -26,6 +28,10 @@ struct RankingItem: Identifiable, Hashable {
         let handle: String? = username.isEmpty ? nil : "@\(username)"
         if hasNickname {
             let parts: [String?] = [handle, "antes: \(name)"]
+            return parts.compactMap { $0 }.joined(separator: " · ")
+        }
+        if let detail, !detail.isEmpty {
+            let parts: [String?] = [handle, detail]
             return parts.compactMap { $0 }.joined(separator: " · ")
         }
         return handle

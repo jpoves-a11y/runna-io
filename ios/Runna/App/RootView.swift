@@ -72,9 +72,9 @@ struct MainTabView: View {
             ActivityView()
                 .tabItem { Label("Actividad", systemImage: "rectangle.stack") }
                 .tag(AppRouter.Tab.activity)
-            FriendsView()
-                .tabItem { Label("Amigos", systemImage: "person.2") }
-                .tag(AppRouter.Tab.friends)
+            ClubTabView()
+                .tabItem { Label("Club", systemImage: "shield.lefthalf.filled") }
+                .tag(AppRouter.Tab.club)
             ProfileView()
                 .tabItem { Label("Perfil", systemImage: "person.crop.circle") }
                 .tag(AppRouter.Tab.profile)

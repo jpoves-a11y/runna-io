@@ -90,6 +90,7 @@ struct ProfileView: View {
         List {
             if let user = session.user {
                 heroSection(user)
+                GameProfileSection()
                 statsSection(user)
                 rivalriesSection
             }
@@ -183,7 +184,7 @@ struct ProfileView: View {
         } header: {
             SocialSectionHeader(title: "Notificaciones")
         } footer: {
-            Text("Te avisamos cuando te roban territorio y cuando un amigo corre o te comenta.")
+            Text("Te avisamos de tu competición y tu club, de los cofres cercanos y cuando un amigo corre o te comenta.")
         }
         .listRowBackground(Color.surface)
     }

@@ -1,6 +1,15 @@
 # Runna.io
 
-Corre y conquista tu ciudad. Cada carrera convierte tu recorrido en territorio en el mapa. Si corres por el territorio de un amigo, se lo robas. En las competiciones aparecen cofres con poderes.
+Corre y conquista el mapa. Runna tiene dos modos a la vez:
+
+- **Modo global**: cada carrera suma al mapa del mundo el área nueva que encierra. Nadie te la puede quitar. Hay rankings mundial, de tu país, de tu ciudad, de tus amigos y de tu club, de siempre y del mes. Los rankings solo muestran el área total, nunca recorridos.
+- **Modo competición**: para quien está en un club. Ciclos de 14 días (hora de Madrid):
+  - **Competición:** de viernes a domingo de la semana siguiente (10 días), en un mapa que empieza vacío.
+  - **Descanso:** de lunes a jueves (4 días). Aparecen cofres alrededor de las ciudades de los clubes y cada miembro tiene 3 retos.
+  - **Modos:** se van turnando todos contra todos, por equipos, objetivo común y duelo contra otro club de nivel parecido.
+  - **Al terminar:** se reparten recompensas, puntos de liga y Elo, y el mapa de competición se borra.
+
+Las reglas y catálogos (poderes, caducidades, modos, retos, piezas de escudo, umbrales anti-trampas) están en [`shared/game.ts`](shared/game.ts).
 
 - **App de iPhone**: SwiftUI nativa (iOS 17+) en [`ios/`](ios/README.md). Es el único cliente: la web se ha retirado.
 - **API**: Cloudflare Worker (Hono) en [`worker/`](worker/), base de datos Turso (libSQL/SQLite) con Drizzle ORM.
@@ -13,7 +22,14 @@ runna-io/
 ├── worker/                 API en Cloudflare Workers (Hono)
 │   └── src/
 │       ├── index.ts        Entrada: fetch, cron (scheduled) y cola de territorio
-│       ├── routes.ts       Endpoints /api/*
+│       ├── routes.ts       Endpoints /api/* (cuenta, carreras, amigos, feed, integraciones)
+│       ├── gameRoutes.ts   Endpoints del juego: clubes, temporada, inventario, rankings, mapa global
+│       ├── runPipeline.ts  Procesado de cada carrera: anti-trampas, mapa global, competición, cofres, retos
+│       ├── antiCheat.ts    Validación de carreras (ritmo, vehículos, saltos de GPS, duplicados)
+│       ├── globalTerritory.ts  Geometría del mapa global
+│       ├── season.ts       Motor de temporada: ciclos, emparejamiento de duelos, puntuación, recompensas
+│       ├── cycles.ts       Calendario de ciclos (Europe/Madrid)
+│       ├── gameStorage.ts  Acceso a datos del juego
 │       ├── cron.ts         Tareas programadas (se ejecutan dentro del Worker)
 │       ├── pages.ts        Páginas públicas: /privacy, /terms, /support, /invite, /open
 │       ├── garmin.ts       Garmin Connect (OAuth2 PKCE + Activity API push)
@@ -23,6 +39,7 @@ runna-io/
 │       ├── email.ts        Emails (SendGrid / Resend)
 │       └── storage.ts      Acceso a datos
 ├── shared/schema.ts        Esquema de la base de datos (Drizzle)
+├── shared/game.ts          Reglas y catálogos del juego
 ├── migrations/             SQL de migraciones
 ├── wrangler.worker.toml    Configuración del Worker
 ├── scripts/e2e/            API local con datos de prueba (usada por el CI de iOS)
@@ -37,9 +54,10 @@ Necesitas Node.js 20 o superior.
 npm ci --legacy-peer-deps
 (cd worker && npm ci)
 npm run check        # comprueba los tipos de shared/
+npm test             # tests unitarios del juego (worker/test)
 ```
 
-La forma más rápida de tener una API local con datos es la de las pruebas end-to-end: ejecuta el Worker en Node con una base de datos SQLite de prueba y la llena con usuarios, amigos, carreras que crean y roban territorio, comentarios y una competición activa (cofres, poderes y resumen semanal).
+La forma más rápida de tener una API local con datos es la de las pruebas end-to-end: ejecuta el Worker en Node con una base de datos SQLite de prueba y la llena con usuarios, amigos, dos clubes, una competición en marcha (el servidor de prueba coloca "hoy" dentro de una), carreras que conquistan el mapa global y roban en el de competición, una carrera rechazada por el anti-trampas, objetos en el inventario, un cofre y comentarios.
 
 ```bash
 mkdir -p scripts/e2e/.build
@@ -68,10 +86,10 @@ npx wrangler deploy -c wrangler.worker.toml
 
 | Tarea | Cuándo |
 |---|---|
+| season-tick | cada 5 minutos: reset inicial (una vez), empieza y termina las competiciones, cofres de los días de descanso, caducidad de objetos |
 | polar-auto-sync | cada 5 minutos |
-| spawn-treasure | en el minuto 0 de cada hora (la tarea elige la hora del día) |
 | inactivity-check | 10:00 y 19:00 |
-| weekly-summary | domingos a las 20:00 |
+| suunto-auto-sync | en el minuto 30 de cada hora |
 
 **Upstash QStash ya no hace falta**: borra las programaciones antiguas. Los endpoints `/api/tasks/*` siguen aceptando `Authorization: Bearer <UPSTASH_CRON_SECRET>` (o una firma de QStash) para lanzarlos a mano.
 

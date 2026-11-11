@@ -75,7 +75,17 @@ enum PowerSymbol {
         case "battering_ram": return "burst"
         case "wall": return "square.stack.3d.up"
         case "sentinel": return "bell"
-        default: return "sparkle"
+        case "head_start": return "flag"
+        case "spy": return "binoculars"
+        case "sabotage": return "exclamationmark.triangle"
+        case "rally": return "megaphone"
+        case "explorer": return "safari"
+        case "wide_trail": return "road.lanes"
+        case "streak_saver": return "flame"
+        default:
+            if (powerType ?? "").hasPrefix("title_") { return "textformat" }
+            if (powerType ?? "").hasPrefix("crest_") { return "shield.lefthalf.filled" }
+            return "sparkle"
         }
     }
 }

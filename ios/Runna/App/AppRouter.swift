@@ -8,7 +8,12 @@ final class AppRouter {
     static let shared = AppRouter()
 
     enum Tab: Hashable {
-        case map, rankings, activity, friends, profile
+        case map, rankings, activity, club, profile
+    }
+
+    /// The Club tab shows my club or my friends.
+    enum ClubSection: Hashable {
+        case club, friends
     }
 
     enum ActivitySection: Hashable {
@@ -17,11 +22,14 @@ final class AppRouter {
 
     var selectedTab: Tab = .map
     var activitySection: ActivitySection = .feed
+    var clubSection: ClubSection = .club
+    /// Club invite opened from a runnaio://clubs/join/<token> link, shown once logged in.
+    var pendingClubInviteToken: String?
     /// Friend invite opened from a runnaio://friends/accept/<token> link, accepted once logged in.
     var pendingInviteToken: String?
     /// Bumped when something changed elsewhere (e.g. a notification arrived) so screens reload.
     var reloadSignal = 0
-    /// Opens the competition powers sheet on the map.
+    /// Opens the inventory (powers, boosts, cosmetics) on the map.
     var showPowers = false
     /// Opens the latest weekly competition summary in Rankings.
     var showWeeklySummary = false
@@ -36,18 +44,28 @@ final class AppRouter {
             // runnaio://friends/accept/<token>
             if parts.count >= 2, parts[0] == "accept" {
                 pendingInviteToken = parts[1]
-                selectedTab = .friends
+                showFriends()
+            }
+        case "clubs":
+            // runnaio://clubs/join/<token>
+            if parts.count >= 2, parts[0] == "join" {
+                pendingClubInviteToken = parts[1]
+                clubSection = .club
+                selectedTab = .club
             }
         case "tab":
-            // runnaio://tab/<map|rankings|activity|friends|profile>
+            // runnaio://tab/<map|rankings|activity|club|friends|profile>[/mine|feed|friends]
             switch parts.first {
             case "rankings": selectedTab = .rankings
             case "activity": selectedTab = .activity
-            case "friends": selectedTab = .friends
+            case "club":
+                clubSection = parts.count >= 2 && parts[1] == "friends" ? .friends : .club
+                selectedTab = .club
+            case "friends": showFriends()
             case "profile": selectedTab = .profile
             default: selectedTab = .map
             }
-            if parts.count >= 2 {
+            if parts.count >= 2, parts.first == "activity" {
                 activitySection = parts[1] == "mine" ? .mine : .feed
             }
         #if DEBUG
@@ -79,7 +97,13 @@ final class AppRouter {
     func openNotification(type: String?, routeId: String? = nil) {
         switch type {
         case "friend_request", "friend_accepted":
-            selectedTab = .friends
+            showFriends()
+        case "club_invite", "club_request", "club_request_accepted", "club_member_joined":
+            clubSection = .club
+            selectedTab = .club
+        case "season_competition_started", "season_competition_finished", "rally", "challenge_completed":
+            clubSection = .club
+            selectedTab = .club
         case "reaction", "comment", "feed_comment", "feed_reply", "feed_mention", "friend_activity",
              "biggest_conquest", "longest_run", "fastest_pace":
             activitySection = .feed
@@ -112,9 +136,16 @@ final class AppRouter {
 
     /// Back to the initial state (logout). A pending friend invite is kept unless the caller clears it,
     /// so a link opened before logging in still works.
+    /// Friends live in the Club tab.
+    func showFriends() {
+        clubSection = .friends
+        selectedTab = .club
+    }
+
     func reset() {
         selectedTab = .map
         activitySection = .feed
+        clubSection = .club
         showPowers = false
         showWeeklySummary = false
         reloadSignal += 1

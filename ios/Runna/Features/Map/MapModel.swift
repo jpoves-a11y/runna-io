@@ -13,6 +13,8 @@ struct TerritoryShape: Identifiable {
     let polygon: MKPolygon
     /// Outer ring and holes, for hit-testing taps.
     let rings: [[CLLocationCoordinate2D]]
+    /// Someone else's global map shown for information (lighter, not tappable as a rival).
+    var isOverlay: Bool = false
 }
 
 /// One of the user's own runs drawn as a thin line on the map.
@@ -23,49 +25,82 @@ struct RouteLine: Identifiable {
     let coordinates: [CLLocationCoordinate2D]
 }
 
+/// The two maps of the app: the user's world map (Global) and the running club competition.
+enum MapMode: String, CaseIterable, Identifiable {
+    case global, competition
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .global: return "Global"
+        case .competition: return "Competición"
+        }
+    }
+}
+
+/// Whose global maps are drawn over mine, for information only.
+enum GlobalOverlay: String, CaseIterable, Identifiable {
+    case onlyMe, friends, club, all
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .onlyMe: return "Solo yo"
+        case .friends: return "Amigos"
+        case .club: return "Mi club"
+        case .all: return "Amigos y club"
+        }
+    }
+
+    /// `include` query of GET /api/global/territories
+    var include: String {
+        switch self {
+        case .onlyMe: return "none"
+        case .friends: return "friends"
+        case .club: return "club"
+        case .all: return "friends,club"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class MapModel {
-    private(set) var shapes: [TerritoryShape] = []
-    private(set) var players: [UserRef] = []
-    private(set) var treasures: [Treasure] = []
+    private(set) var globalShapes: [TerritoryShape] = []
+    private(set) var competitionShapes: [TerritoryShape] = []
+    private(set) var chests: [Chest] = []
     private(set) var fortifications: [FortificationShape] = []
     private(set) var castles: [CastleZone] = []
     private(set) var routeLines: [RouteLine] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
-    var hiddenUserIds: Set<String> = []
+    /// The competition map has data to show (I take part in a running competition).
+    private(set) var hasCompetitionMap = false
+
+    /// Saved by the map screen (UserDefaults "map_mode" / "map_global_overlay").
+    var mode: MapMode = MapMode(rawValue: UserDefaults.standard.string(forKey: "map_mode") ?? "") ?? .global
+    var overlay: GlobalOverlay = GlobalOverlay(rawValue: UserDefaults.standard.string(forKey: "map_global_overlay") ?? "") ?? .onlyMe
 
     /// Most recent own runs drawn on the map.
     private let maxRouteLines = 40
 
+    /// What the map draws in the current mode.
     var visibleShapes: [TerritoryShape] {
-        hiddenUserIds.isEmpty ? shapes : shapes.filter { !hiddenUserIds.contains($0.userId) }
+        mode == .global ? globalShapes : competitionShapes
     }
 
-    var visibleFortifications: [FortificationShape] {
-        hiddenUserIds.isEmpty ? fortifications : fortifications.filter { !hiddenUserIds.contains($0.userId) }
-    }
+    var visibleFortifications: [FortificationShape] { mode == .competition ? fortifications : [] }
+    var visibleCastles: [CastleZone] { mode == .competition ? castles : [] }
+    var visibleRouteLines: [RouteLine] { routeLines }
 
-    var visibleCastles: [CastleZone] {
-        hiddenUserIds.isEmpty ? castles : castles.filter { !hiddenUserIds.contains($0.userId) }
-    }
-
-    var visibleRouteLines: [RouteLine] {
-        hiddenUserIds.isEmpty ? routeLines : routeLines.filter { !hiddenUserIds.contains($0.userId) }
-    }
-
-    /// Treasures that haven't expired yet.
-    var liveTreasures: [Treasure] {
+    /// Chests that haven't expired yet (competition map only).
+    var liveChests: [Chest] {
+        guard mode == .competition else { return [] }
         let now = Date()
-        return treasures.filter { treasure in
-            guard let expires = treasure.expiresDate else { return true }
+        return chests.filter { chest in
+            guard let expires = chest.expiresDate else { return true }
             return expires > now
         }
-    }
-
-    var visiblePlayerCount: Int {
-        players.filter { !hiddenUserIds.contains($0.id) }.count
     }
 
     // MARK: - Loading (stale-while-revalidate)
@@ -75,15 +110,21 @@ final class MapModel {
 
     /// Account the data belongs to.
     private var ownerId: String?
-    private var territoriesResource: CachedResource<[Territory]>?
-    private var friendsResource: CachedResource<[AppUser]>?
+    /// Overlay whose global map is drawn in `globalShapes`
+    @ObservationIgnored private var drawnOverlay: GlobalOverlay?
+    /// One resource per overlay choice (each is a different request)
+    @ObservationIgnored private var globalResources: [GlobalOverlay: CachedResource<GlobalTerritoriesResponse>] = [:]
+    private var globalResource: CachedResource<GlobalTerritoriesResponse> {
+        if let existing = globalResources[overlay] { return existing }
+        let created = CachedResource<GlobalTerritoriesResponse>("/api/global/territories", query: ["include": overlay.include])
+        globalResources[overlay] = created
+        return created
+    }
+    private let seasonMapResource = CachedResource<SeasonMapResponse>("/api/season/map")
     private var routesResource: CachedResource<[RunRoute]>?
-    private let treasuresResource = CachedResource<TreasuresResponse>("/api/treasures/active")
-    private let fortificationsResource = CachedResource<FortificationsResponse>("/api/territories/fortifications")
-    /// Friends as last received (players are rebuilt when the user's own name/colour changes).
-    private var friendList: [AppUser] = []
     private var latestRoutes: [RunRoute] = []
     private var routeColor: String?
+    private var ownColor: String = "#16A34A"
     /// Something was drawn (from the cache or the server).
     private(set) var hasContent = false
     var reloadTracker = ReloadSignalTracker()
@@ -91,124 +132,125 @@ final class MapModel {
     /// Forgets everything (logout).
     func reset() {
         ownerId = nil
-        territoriesResource = nil
-        friendsResource = nil
+        for resource in globalResources.values { resource.forget() }
+        globalResources = [:]
+        drawnOverlay = nil
+        seasonMapResource.forget()
         routesResource = nil
-        treasuresResource.forget()
-        fortificationsResource.forget()
-        friendList = []
         latestRoutes = []
         routeColor = nil
         hasContent = false
+        hasCompetitionMap = false
         reloadTracker = ReloadSignalTracker()
-        shapes = []
-        players = []
-        treasures = []
+        globalShapes = []
+        competitionShapes = []
+        chests = []
         fortifications = []
         castles = []
         routeLines = []
         isLoading = false
         errorMessage = nil
-        hiddenUserIds = []
     }
 
     private func prepare(for userId: String) {
         guard ownerId != userId else { return }
         reset()
         ownerId = userId
-        territoriesResource = CachedResource("/api/territories/friends/\(userId)")
-        friendsResource = CachedResource("/api/friends/\(userId)")
         routesResource = CachedResource("/api/routes/\(userId)")
     }
 
     /// Main data answered recently: switching back to the map doesn't refetch it.
     func isFresh(userId: String) -> Bool {
-        guard ownerId == userId, hasContent,
-              let territories = territoriesResource, let friends = friendsResource else { return false }
-        return territories.isFresh && friends.isFresh && CompetitionStore.shared.isFresh
+        guard ownerId == userId, hasContent else { return false }
+        return globalResource.isFresh && seasonMapResource.isFresh
     }
 
     /// Draws the last known data right away (memory, or disk after a cold start).
     func showCached(user: AppUser) async {
         prepare(for: user.id)
-        CompetitionStore.shared.loadCachedIfNeeded()
-        if let territories = await territoriesResource?.loadCached() {
-            shapes = Self.makeShapes(territories)
+        ownColor = user.color
+        if let global = await globalResource.loadCached() {
+            globalShapes = Self.makeGlobalShapes(global, ownColor: user.color)
+            drawnOverlay = overlay
+            hasContent = true
+        } else if drawnOverlay != overlay, let global = globalResource.value {
+            // Back to an overlay drawn before: its value was already handed out
+            globalShapes = Self.makeGlobalShapes(global, ownColor: user.color)
+            drawnOverlay = overlay
             hasContent = true
         }
-        if let friends = await friendsResource?.loadCached() {
-            friendList = friends
-            hasContent = true
+        if let season = await seasonMapResource.loadCached() {
+            applySeasonMap(season, ownColor: user.color)
         }
-        updatePlayers(user: user)
         if let routes = await routesResource?.loadCached() {
             latestRoutes = routes
         }
         updateRouteLines(user: user)
-        if CompetitionStore.shared.isActive {
-            if let response = await treasuresResource.loadCached() {
-                treasures = response.treasures
-            }
-            if let response = await fortificationsResource.loadCached() {
-                makeFortifications(response.fortifications)
-            }
-        }
     }
 
-    /// Cached data first, then everything refetched in parallel (territories, friends, routes and the
-    /// competition), then the competition overlays. With `force == false` fresh data isn't refetched.
+    /// Cached data first, then the global map, the competition map and my routes refetched in parallel.
+    /// With `force == false` fresh data isn't refetched.
     func load(user: AppUser, force: Bool = true) async {
         await showCached(user: user)
         guard force || !isFresh(userId: user.id) else {
-            updatePlayers(user: user)
             updateRouteLines(user: user)
             return
         }
-        guard let territoriesResource, let friendsResource, let routesResource else { return }
+        guard let routesResource else { return }
 
         // The spinner only shows while there is nothing to draw yet
         isLoading = !hasContent
         defer { isLoading = false }
 
-        let competitionStore: CompetitionStore = CompetitionStore.shared
-        async let territoriesResult = Self.fetch(territoriesResource)
-        async let friendsResult = Self.fetch(friendsResource)
+        let requestedOverlay: GlobalOverlay = overlay
+        let globalSource: CachedResource<GlobalTerritoriesResponse> = globalResource
+        let seasonSource: CachedResource<SeasonMapResponse> = seasonMapResource
+        async let globalResult = Self.fetch(globalSource)
+        async let seasonResult = Self.fetch(seasonSource)
         async let routesResult = Self.fetch(routesResource)
-        async let competitionRefresh: Void = competitionStore.refresh()
 
-        let territories: Result<[Territory]?, Error> = await territoriesResult
-        let friends: Result<[AppUser]?, Error> = await friendsResult
+        let global: Result<GlobalTerritoriesResponse?, Error> = await globalResult
+        let season: Result<SeasonMapResponse?, Error> = await seasonResult
         let routes: Result<[RunRoute]?, Error> = await routesResult
-        await competitionRefresh
 
         var failure: Error?
-        switch territories {
+        switch global {
         case .success(let value):
-            if let value { shapes = Self.makeShapes(value) }
+            // Ignored if the user switched overlays meanwhile (that overlay loads on its own)
+            if let value, requestedOverlay == overlay {
+                globalShapes = Self.makeGlobalShapes(value, ownColor: user.color)
+                drawnOverlay = requestedOverlay
+            }
         case .failure(let error):
             failure = error
         }
-        switch friends {
+        switch season {
         case .success(let value):
-            if let value { friendList = value }
+            if let value { applySeasonMap(value, ownColor: user.color) }
         case .failure(let error):
             failure = failure ?? error
         }
         if case .success(let value) = routes, let value {
             latestRoutes = value
         }
-        updatePlayers(user: user)
         updateRouteLines(user: user)
 
         if let failure {
             if failure is CancellationError { return }
             // With cached data on screen the refresh fails silently (it's retried on the next visit)
-            errorMessage = (territoriesResource.hasValue && friendsResource.hasValue) ? nil : failure.localizedDescription
+            errorMessage = globalSource.hasValue ? nil : failure.localizedDescription
         } else {
             errorMessage = nil
             hasContent = true
         }
-        await loadCompetition(userId: user.id)
+    }
+
+    /// Chests and the competition map (refreshed every minute while the map is visible).
+    func refreshCompetitionOverlays() async {
+        let seasonSource: CachedResource<SeasonMapResponse> = seasonMapResource
+        if case .success(let value) = await Self.fetch(seasonSource), let value {
+            applySeasonMap(value, ownColor: ownColor)
+        }
     }
 
     private static func fetch<T: Decodable>(_ resource: CachedResource<T>) async -> Result<T?, Error> {
@@ -219,10 +261,11 @@ final class MapModel {
         }
     }
 
-    private func updatePlayers(user: AppUser) {
-        let me = UserRef(id: user.id, username: user.username, name: "Tú", color: user.color, avatar: user.avatar)
-        let updated = [me] + friendList.map { UserRef(id: $0.id, username: $0.username, name: $0.name, color: $0.color, avatar: $0.avatar) }
-        if updated != players { players = updated }
+    private func applySeasonMap(_ response: SeasonMapResponse, ownColor: String) {
+        competitionShapes = Self.makeShapes(response.territories)
+        chests = response.chests
+        hasCompetitionMap = response.competitionId != nil
+        makeFortifications(response.fortifications, ownColor: ownColor)
     }
 
     private func updateRouteLines(user: AppUser) {
@@ -239,55 +282,6 @@ final class MapModel {
             guard coordinates.count >= 2 else { return nil }
             return RouteLine(id: route.id, userId: user.id, color: color, coordinates: coordinates)
         }
-    }
-
-    /// Competition state, then treasures, fortifications and the powers badge while it is active.
-    private func loadCompetition(userId: String) async {
-        let store = CompetitionStore.shared
-        guard store.isActive else {
-            treasures = []
-            fortifications = []
-            castles = []
-            store.setAvailablePowerCount(0)
-            return
-        }
-        async let overlays: Void = refreshCompetitionOverlays()
-        async let powers: Void = store.refreshPowers(userId: userId)
-        await overlays
-        await powers
-    }
-
-    /// Treasures and fortifications (refreshed every minute while the map is visible), in parallel.
-    func refreshCompetitionOverlays() async {
-        guard CompetitionStore.shared.isActive else { return }
-        let treasuresSource: CachedResource<TreasuresResponse> = treasuresResource
-        let fortificationsSource: CachedResource<FortificationsResponse> = fortificationsResource
-        async let treasuresResult = Self.fetch(treasuresSource)
-        async let fortificationsResult = Self.fetch(fortificationsSource)
-        let treasuresOutcome: Result<TreasuresResponse?, Error> = await treasuresResult
-        let fortificationsOutcome: Result<FortificationsResponse?, Error> = await fortificationsResult
-        if case .success(let response) = treasuresOutcome, let response {
-            treasures = response.treasures
-        }
-        if case .success(let response) = fortificationsOutcome, let response {
-            makeFortifications(response.fortifications)
-        }
-    }
-
-    func toggle(_ userId: String) {
-        if hiddenUserIds.contains(userId) {
-            hiddenUserIds.remove(userId)
-        } else {
-            hiddenUserIds.insert(userId)
-        }
-    }
-
-    func showAll() {
-        hiddenUserIds = []
-    }
-
-    func hideAll() {
-        hiddenUserIds = Set(players.map(\.id))
     }
 
     /// The territory under a tapped coordinate, if any (topmost first).
@@ -311,60 +305,50 @@ final class MapModel {
 
     // MARK: - Fortifications
 
-    /// Fortified zones in the owner's colour (darker), and a castle on each zone fortified several times.
-    private func makeFortifications(_ groups: [FortificationsResponse.Group]) {
-        var colors: [String: Color] = [:]
-        for shape in shapes where colors[shape.userId] == nil {
-            colors[shape.userId] = shape.color
+    /// My fortified zones on the competition map (darker own colour), and a castle on each zone
+    /// fortified several times.
+    private func makeFortifications(_ records: [SeasonMapResponse.Fortification], ownColor: String) {
+        guard let ownerId else {
+            fortifications = []
+            castles = []
+            return
         }
-        for player in players {
-            colors[player.id] = Color(hex: player.color)
-        }
-
+        let color = Color(hex: ownColor).darkened(0.35)
         var newShapes: [FortificationShape] = []
-        var newCastles: [CastleZone] = []
-        for group in groups where group.layers >= 1 {
-            let baseColor = colors[group.userId] ?? Color.gray
-            let color = baseColor.darkened(0.35)
-            let level = 1 + Double(group.layers) * 0.5
-
-            // Zones: record centroids closer than 0.0005° are the same zone
-            var zones: [(lat: Double, lng: Double, sumLat: Double, sumLng: Double, count: Int)] = []
-
-            for (recordIndex, record) in group.records.enumerated() {
-                for (polygonIndex, rings) in record.polygons.enumerated() {
-                    guard let outer = rings.first else { continue }
-                    let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
-                    let polygon = MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
-                    newShapes.append(FortificationShape(
-                        id: "\(group.userId)-\(recordIndex)-\(polygonIndex)",
-                        userId: group.userId,
-                        color: color,
-                        polygon: polygon,
-                        level: level
-                    ))
-                }
-
-                guard group.layers >= 2, let centroid = Self.centroid(of: record.polygons) else { continue }
-                if let index = zones.firstIndex(where: { abs($0.lat - centroid.latitude) < 0.0005 && abs($0.lng - centroid.longitude) < 0.0005 }) {
-                    zones[index].sumLat += centroid.latitude
-                    zones[index].sumLng += centroid.longitude
-                    zones[index].count += 1
-                } else {
-                    zones.append((lat: centroid.latitude, lng: centroid.longitude, sumLat: centroid.latitude, sumLng: centroid.longitude, count: 1))
-                }
-            }
-
-            for (zoneIndex, zone) in zones.enumerated() {
-                let count = Double(zone.count)
-                newCastles.append(CastleZone(
-                    id: "\(group.userId)-castle-\(zoneIndex)",
-                    userId: group.userId,
-                    coordinate: CLLocationCoordinate2D(latitude: zone.sumLat / count, longitude: zone.sumLng / count),
-                    level: 1 + count * 0.5,
-                    color: color
+        // Zones: record centroids closer than 0.0005° are the same zone
+        var zones: [(sumLat: Double, sumLng: Double, lat: Double, lng: Double, count: Int)] = []
+        for (recordIndex, record) in records.enumerated() {
+            for (polygonIndex, rings) in record.polygons.enumerated() {
+                guard let outer = rings.first else { continue }
+                let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
+                let polygon = MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
+                newShapes.append(FortificationShape(
+                    id: "\(record.id)-\(recordIndex)-\(polygonIndex)",
+                    userId: ownerId,
+                    color: color,
+                    polygon: polygon,
+                    level: 1.5
                 ))
             }
+            guard let centroid = Self.centroid(of: record.polygons) else { continue }
+            if let index = zones.firstIndex(where: { abs($0.lat - centroid.latitude) < 0.0005 && abs($0.lng - centroid.longitude) < 0.0005 }) {
+                zones[index].sumLat += centroid.latitude
+                zones[index].sumLng += centroid.longitude
+                zones[index].count += 1
+            } else {
+                zones.append((sumLat: centroid.latitude, sumLng: centroid.longitude, lat: centroid.latitude, lng: centroid.longitude, count: 1))
+            }
+        }
+        var newCastles: [CastleZone] = []
+        for (zoneIndex, zone) in zones.enumerated() where zone.count >= 2 {
+            let count = Double(zone.count)
+            newCastles.append(CastleZone(
+                id: "\(ownerId)-castle-\(zoneIndex)",
+                userId: ownerId,
+                coordinate: CLLocationCoordinate2D(latitude: zone.sumLat / count, longitude: zone.sumLng / count),
+                level: 1 + count * 0.5,
+                color: color
+            ))
         }
         fortifications = newShapes
         castles = newCastles
@@ -387,23 +371,52 @@ final class MapModel {
         return CLLocationCoordinate2D(latitude: sumLat / Double(count), longitude: sumLng / Double(count))
     }
 
+    /// My global map first, then the overlays of friends / club mates (drawn lighter).
+    private static func makeGlobalShapes(_ response: GlobalTerritoriesResponse, ownColor: String) -> [TerritoryShape] {
+        var result: [TerritoryShape] = []
+        for overlay in response.overlays {
+            guard let user = overlay.user else { continue }
+            result += polygonsToShapes(
+                idPrefix: "overlay-\(user.id)", userId: user.id, ownerName: user.name, color: user.color,
+                polygons: overlay.polygons, isShared: false, isOverlay: true
+            )
+        }
+        if let me = response.me {
+            result += polygonsToShapes(
+                idPrefix: "me", userId: me.user?.id ?? "me", ownerName: "Tú", color: me.user?.color ?? ownColor,
+                polygons: me.polygons, isShared: false, isOverlay: false
+            )
+        }
+        return result
+    }
+
     private static func makeShapes(_ territories: [Territory]) -> [TerritoryShape] {
         var result: [TerritoryShape] = []
         for territory in territories {
-            for (index, rings) in territory.polygons.enumerated() {
-                guard let outer = rings.first else { continue }
-                let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
-                let polygon = MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
-                result.append(TerritoryShape(
-                    id: "\(territory.id)-\(index)",
-                    userId: territory.userId,
-                    ownerName: territory.owner?.name ?? "",
-                    color: Color(hex: territory.color),
-                    isShared: !territory.coRunnerColors.isEmpty,
-                    polygon: polygon,
-                    rings: rings
-                ))
-            }
+            result += polygonsToShapes(
+                idPrefix: territory.id, userId: territory.userId, ownerName: territory.owner?.name ?? "",
+                color: territory.color, polygons: territory.polygons, isShared: !territory.coRunnerColors.isEmpty, isOverlay: false
+            )
+        }
+        return result
+    }
+
+    private static func polygonsToShapes(idPrefix: String, userId: String, ownerName: String, color: String, polygons: [[[CLLocationCoordinate2D]]], isShared: Bool, isOverlay: Bool) -> [TerritoryShape] {
+        var result: [TerritoryShape] = []
+        for (index, rings) in polygons.enumerated() {
+            guard let outer = rings.first else { continue }
+            let holes = rings.dropFirst().map { MKPolygon(coordinates: $0, count: $0.count) }
+            let polygon = MKPolygon(coordinates: outer, count: outer.count, interiorPolygons: holes)
+            result.append(TerritoryShape(
+                id: "\(idPrefix)-\(index)",
+                userId: userId,
+                ownerName: ownerName,
+                color: Color(hex: color),
+                isShared: isShared,
+                polygon: polygon,
+                rings: rings,
+                isOverlay: isOverlay
+            ))
         }
         return result
     }

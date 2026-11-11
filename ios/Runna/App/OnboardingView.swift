@@ -28,27 +28,27 @@ struct OnboardingView: View {
     private let steps: [Step] = [
         Step(
             id: 0,
-            systemImage: "figure.run",
-            title: "Corre y conquista",
-            text: "Cada carrera convierte las calles que recorres en tu territorio. También puedes importar actividades de Apple Salud, Strava o Polar."
+            systemImage: "globe.europe.africa",
+            title: "Conquista el mapa",
+            text: "Cada carrera suma a tu mapa global el área nueva que encierra. Es tuya para siempre: nadie te la puede quitar. También puedes importar actividades de Apple Salud, Strava, Polar, Garmin o Suunto."
         ),
         Step(
             id: 1,
-            systemImage: "map",
-            title: "Defiende tu zona",
-            text: "Si corres por el territorio de otro corredor, pasa a ser tuyo. Ellos pueden hacer lo mismo con el tuyo."
+            systemImage: "shield.lefthalf.filled",
+            title: "Compite con tu club",
+            text: "Únete a un club o crea el tuyo. Cada dos semanas hay una competición de 10 días en un mapa nuevo: todos contra todos, por equipos, un objetivo común o un duelo contra otro club."
         ),
         Step(
             id: 2,
-            systemImage: "trophy",
-            title: "Compite con tus amigos",
-            text: "Sube en la clasificación, participa en competiciones y encuentra tesoros en el mapa."
+            systemImage: "gift",
+            title: "Cofres y retos",
+            text: "En los días de descanso aparecen cofres cerca de tu ciudad y tienes retos. Te dan poderes para la competición y pequeños extras para el mapa global."
         ),
         Step(
             id: 3,
             systemImage: "bell",
             title: "Mantente al día",
-            text: "Activa las notificaciones para saber cuándo pierdes territorio, cuándo corre un amigo o cuándo aparece un tesoro."
+            text: "Activa las notificaciones para saber cuándo empieza la competición, cuándo te roban territorio o cuándo aparece un cofre cerca."
         ),
     ]
 

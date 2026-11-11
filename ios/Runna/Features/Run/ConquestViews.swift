@@ -12,7 +12,18 @@ struct ConquestCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
-            conqueredHero
+            if let validation = result.validation, validation.isRejected || validation.isFlagged {
+                validationCard(validation)
+            }
+            if !result.isRejected {
+                conqueredHero
+                if let competition = result.competition {
+                    competitionCard(competition)
+                }
+                if !result.challengesCompleted.isEmpty {
+                    challengesCard
+                }
+            }
             let victims: [Victim] = result.stolenVictims
             if !victims.isEmpty {
                 stolenSection(victims)
@@ -20,23 +31,34 @@ struct ConquestCard: View {
         }
     }
 
+    /// Global map: the new area this run added (nobody can take it away).
     private var conqueredHero: some View {
-        let parts = Format.areaParts(result.newAreaConquered)
+        let parts = Format.areaParts(result.globalGained + result.globalBonus)
+        let gained: Double = result.globalGained + result.globalBonus
         return VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            Text("Territorio conquistado")
+            Text("Mapa global")
                 .statLabelStyle()
             StatValue(
-                value: result.newAreaConquered > 0 ? "+\(parts.value)" : parts.value,
+                value: gained > 0 ? "+\(parts.value)" : parts.value,
                 unit: parts.unit,
                 font: Font.stat(56, weight: .semibold),
-                tint: result.newAreaConquered > 0 ? Color.brand : Color.primary
+                tint: gained > 0 ? Color.brand : Color.primary
             )
-            if result.totalStolen > 0 {
-                stolenSummary
-            } else if result.newAreaConquered <= 0 {
-                Text("Esta carrera no ha sumado territorio nuevo.")
+            if result.globalBonus > 0 {
+                Text("Incluye \(Format.area(result.globalBonus)) del Explorador.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            } else if gained <= 0 {
+                Text("Ya habías corrido por aquí: esta carrera no suma área nueva al mapa global.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let total = result.globalTotal, total > 0 {
+                Text("Total: \(Format.area(total))")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -44,16 +66,82 @@ struct ConquestCard: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Competition map: area won (and stolen) in the running club competition.
+    private func competitionCard(_ competition: ConquestResult.CompetitionPart) -> some View {
+        let parts = Format.areaParts(competition.newArea)
+        return VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            Text("Competición de tu club")
+                .statLabelStyle()
+            HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.l) {
+                StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(30, weight: .semibold))
+                if result.totalStolen > 0 {
+                    stolenSummary
+                }
+            }
+            Text("Llevas \(Format.area(competition.totalArea)) en el mapa de competición.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+        .accessibilityElement(children: .combine)
+    }
+
+    private var challengesCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: result.challengesCompleted.count == 1 ? "Reto completado" : "Retos completados")
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                ForEach(result.challengesCompleted) { challenge in
+                    HStack(spacing: DS.Spacing.m) {
+                        Image(systemName: "checkmark.seal")
+                            .foregroundStyle(Color.brand)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(challenge.title)
+                                .font(.subheadline.weight(.semibold))
+                            if let reward = challenge.rewardName {
+                                Text("Recompensa: \(reward)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+        }
+    }
+
+    /// The anti-cheat refused the run, or sent it to review.
+    private func validationCard(_ validation: RunValidation) -> some View {
+        HStack(alignment: .top, spacing: DS.Spacing.m) {
+            Image(systemName: validation.isRejected ? "xmark.octagon" : "exclamationmark.triangle")
+                .font(.title3)
+                .foregroundStyle(validation.isRejected ? Color.steal : Color.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(validation.isRejected ? "Esta carrera no cuenta" : "Carrera en revisión")
+                    .font(.headline)
+                Text(validation.message ?? (validation.isRejected
+                    ? "No cumple las reglas de juego limpio."
+                    : "Cuenta, pero la revisaremos."))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+        .accessibilityElement(children: .combine)
+    }
+
     private var stolenSummary: some View {
         HStack(spacing: 4) {
-            Text("Incluye")
+            Text("Robado:")
                 .foregroundStyle(.secondary)
             Text(Format.area(result.totalStolen))
                 .foregroundStyle(Color.steal)
                 .fontWeight(.semibold)
                 .monospacedDigit()
-            Text("de otros corredores")
-                .foregroundStyle(.secondary)
         }
         .font(.subheadline)
         .lineLimit(1)

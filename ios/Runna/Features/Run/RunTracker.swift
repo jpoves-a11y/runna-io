@@ -32,6 +32,8 @@ final class RunTracker {
 
     private(set) var phase: Phase = .idle
     private(set) var coordinates: [CLLocationCoordinate2D] = []
+    /// Seconds since `startDate` of each point in `coordinates` (the server's anti-cheat checks the speed of each stretch).
+    private(set) var pointTimes: [Double] = []
     private(set) var distance: CLLocationDistance = 0
     private(set) var currentLocation: CLLocation?
     private(set) var gpsAccuracy: CLLocationAccuracy?
@@ -189,6 +191,7 @@ final class RunTracker {
             requestFullAccuracy()
         }
         coordinates = []
+        pointTimes = []
         distance = 0
         pausedTotal = 0
         pausedAt = nil
@@ -248,6 +251,9 @@ final class RunTracker {
             guard pair.count >= 2 else { return nil }
             return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
         }
+        // Timestamps only if they match the points (files from older versions have none)
+        let savedTimes: [Double] = saved.pointTimes ?? []
+        pointTimes = savedTimes.count == coordinates.count ? savedTimes : []
         distance = saved.distance
         startDate = saved.startDate
         pausedTotal = saved.pausedTotal
@@ -293,6 +299,7 @@ final class RunTracker {
             id: runId,
             ownerId: ownerId ?? RunOwner.currentUserId,
             coordinates: points,
+            pointTimes: pointTimes.count == points.count ? pointTimes : nil,
             distance: distance,
             duration: movingTime,
             startedAt: startDate ?? end,
@@ -322,6 +329,7 @@ final class RunTracker {
         bannerTask = nil
         phase = .idle
         coordinates = []
+        pointTimes = []
         distance = 0
         startDate = nil
         pausedAt = nil
@@ -388,6 +396,13 @@ final class RunTracker {
         }
 
         coordinates.append(location.coordinate)
+        if pointTimes.count == coordinates.count - 1 {
+            let seconds: Double = startDate.map { location.timestamp.timeIntervalSince($0) } ?? 0
+            pointTimes.append(max(pointTimes.last ?? 0, seconds))
+        } else {
+            // Out of step (e.g. a recovered run without timestamps): stop sending them for this run
+            pointTimes = []
+        }
         lastAcceptedAt = location.timestamp
         if coordinates.count % 10 == 0 {
             persist()
@@ -480,7 +495,8 @@ final class RunTracker {
             savedAt: Date(),
             id: runId,
             ownerId: ownerId,
-            collectedTreasureIds: Array(collectedTreasureIds)
+            collectedTreasureIds: Array(collectedTreasureIds),
+            pointTimes: pointTimes.count == coordinates.count ? pointTimes : nil
         ))
     }
 }
@@ -492,6 +508,8 @@ struct FinishedRun {
     /// Account that recorded the run.
     let ownerId: String?
     let coordinates: [CLLocationCoordinate2D]
+    /// Seconds since the start for each coordinate (nil when unknown)
+    let pointTimes: [Double]?
     let distance: CLLocationDistance
     let duration: Int
     let startedAt: Date
@@ -530,6 +548,8 @@ struct SavedRun: Codable {
     let id: String?
     let ownerId: String?
     let collectedTreasureIds: [String]?
+    /// Seconds since the start of each point (optional: older files don't have it)
+    let pointTimes: [Double]?
 }
 
 enum RunPersistence {

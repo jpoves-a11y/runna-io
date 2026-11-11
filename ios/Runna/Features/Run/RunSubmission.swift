@@ -96,6 +96,8 @@ enum PendingRuns {
         let ownerId: String?
         let name: String
         let coordinates: [[Double]]
+        /// Seconds since the start for each coordinate (nil for runs saved by older versions)
+        let pointTimes: [Double]?
         let distance: Double
         let duration: Int
         let startedAt: Date
@@ -111,6 +113,7 @@ enum PendingRuns {
             ownerId = run.ownerId
             name = run.defaultName
             coordinates = run.coordinates.map { [$0.latitude, $0.longitude] }
+            pointTimes = run.pointTimes
             distance = run.distance
             duration = run.duration
             startedAt = run.startedAt
@@ -122,7 +125,7 @@ enum PendingRuns {
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, ownerId, name, coordinates, distance, duration, startedAt, completedAt
+            case id, ownerId, name, coordinates, pointTimes, distance, duration, startedAt, completedAt
             case attempts, lastAttemptDay, lastError, rejected
         }
 
@@ -130,6 +133,7 @@ enum PendingRuns {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = try c.decode(String.self, forKey: .name)
             coordinates = try c.decode([[Double]].self, forKey: .coordinates)
+            pointTimes = try c.decodeIfPresent([Double].self, forKey: .pointTimes)
             distance = try c.decode(Double.self, forKey: .distance)
             duration = try c.decode(Int.self, forKey: .duration)
             startedAt = try c.decode(Date.self, forKey: .startedAt)
@@ -189,7 +193,7 @@ enum PendingRuns {
     // MARK: - Queue file
 
     static func body(for entry: Entry) -> [String: Any] {
-        [
+        var body: [String: Any] = [
             "name": entry.name,
             "coordinates": entry.coordinates,
             "distance": entry.distance,
@@ -198,6 +202,11 @@ enum PendingRuns {
             "completedAt": APIDate.string(entry.completedAt),
             "clientRunId": entry.id,
         ]
+        // The server's anti-cheat checks the speed of each stretch with these
+        if let times = entry.pointTimes, times.count == entry.coordinates.count {
+            body["pointTimes"] = times.map { ($0 * 10).rounded() / 10 }
+        }
+        return body
     }
 
     static func all() -> [Entry] {

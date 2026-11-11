@@ -140,11 +140,11 @@ jobs:
           shoot tab/rankings 2-rankings
           shoot tab/activity/feed 3-feed
           shoot tab/activity/mine 4-my-runs
-          shoot tab/friends 5-friends
+          shoot tab/club 5-club
+          shoot tab/club/friends 5b-friends
           shoot tab/profile 6-profile
           # Competition screens (DEBUG-only deep links handled by AppRouter)
-          shoot powers 7-powers
-          shoot weekly-summary 8-weekly-summary
+          shoot powers 7-inventory
           if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
             echo "App crashed while showing the screens"
             exit 1

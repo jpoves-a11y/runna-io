@@ -389,7 +389,7 @@ private struct FeedList: View {
                 title: "Sin actividad todavía",
                 message: "Las carreras, conquistas y tesoros tuyos y de tus amigos aparecerán aquí.",
                 actionTitle: "Buscar amigos",
-                action: { router.selectedTab = .friends }
+                action: { router.showFriends() }
             )
             .padding(.top, 40)
         }

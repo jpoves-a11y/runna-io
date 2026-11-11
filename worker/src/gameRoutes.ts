@@ -283,11 +283,17 @@ async function competitionView(game: GameStorage, competition: CompetitionRow, u
     const runnersCounted = Number(competition.config?.runnersCounted) || 0;
     const opponentClub = competition.opponentClubId ? await game.getClub(competition.opponentClubId) : null;
     let opponentScore = 0;
+    let opponentStandings: Array<{ userId: string; user: PublicUserLite | null; score: number }> = [];
     if (competition.opponentClubId) {
       const opponentComp = await game.getClubCompetition(competition.opponentClubId, competition.cycleNumber);
       if (opponentComp) {
         if (opponentComp.status === 'active') await game.syncParticipantAreas(opponentComp.id);
-        opponentScore = duelScore((await game.getParticipants(opponentComp.id)).map(participantScore), runnersCounted);
+        const opponents = await game.getParticipants(opponentComp.id);
+        opponentScore = duelScore(opponents.map(participantScore), runnersCounted);
+        const opponentUsers = await game.getUserLite(opponents.map((p) => p.userId));
+        opponentStandings = opponents
+          .map((p) => ({ userId: p.userId, user: opponentUsers.get(p.userId) ?? null, score: participantScore(p) }))
+          .sort((a, b) => b.score - a.score);
       }
     }
     view.duel = {
@@ -296,6 +302,8 @@ async function competitionView(game: GameStorage, competition: CompetitionRow, u
       perRunnerCap: Number(competition.config?.perRunnerCap) || DUEL_PER_RUNNER_CAP_M2,
       myClubScore: duelScore(standings.map((s) => s.score), runnersCounted),
       opponentScore,
+      // Rival runners (targets of Espía / Sabotaje / Pluma del Troll)
+      opponentStandings: opponentStandings.slice(0, 50),
     };
   }
   return view;

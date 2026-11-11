@@ -256,21 +256,112 @@ struct RunRoute: Decodable, Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
+/// Anti-cheat result of a run: "accepted", "flagged" (counts, under review) or "rejected" (doesn't count).
+struct RunValidation: Decodable, Hashable {
+    let status: String
+    let reasons: [String]
+    let message: String?
+
+    enum CodingKeys: String, CodingKey { case status, reasons, message }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = c.string(.status) ?? "accepted"
+        reasons = (try? c.decodeIfPresent([String].self, forKey: .reasons)) ?? []
+        message = c.string(.message)
+    }
+
+    var isRejected: Bool { status == "rejected" }
+    var isFlagged: Bool { status == "flagged" }
+}
+
 /// POST /api/routes
 struct CreateRouteResponse: Decodable {
     let route: RunRoute
+    /// Anti-cheat preview (the server confirms it while processing the run)
+    let validation: RunValidation?
+
+    enum CodingKeys: String, CodingKey { case route, validation }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        route = try c.decode(RunRoute.self, forKey: .route)
+        validation = try? c.decodeIfPresent(RunValidation.self, forKey: .validation)
+    }
 }
 
 /// GET /api/conquest-result/:routeId (polled until the territory has been processed)
 struct ConquestResult: Decodable {
+    /// What the run did on the competition map (only for participants of a running club competition)
+    struct CompetitionPart: Decodable, Hashable {
+        let mode: String
+        let newArea: Double
+        let areaStolen: Double
+        let totalArea: Double
+
+        enum CodingKeys: String, CodingKey { case mode, newArea, areaStolen, totalArea }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            mode = c.string(.mode) ?? "ffa"
+            newArea = c.double(.newArea) ?? 0
+            areaStolen = c.double(.areaStolen) ?? 0
+            totalArea = c.double(.totalArea) ?? 0
+        }
+    }
+
+    /// A rest-phase challenge the run completed
+    struct CompletedChallenge: Decodable, Hashable, Identifiable {
+        let type: String
+        let title: String
+        let rewardName: String?
+        var id: String { type }
+
+        enum CodingKeys: String, CodingKey { case type, title, rewardName }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            type = c.string(.type) ?? ""
+            title = c.string(.title) ?? "Reto"
+            rewardName = c.string(.rewardName)
+        }
+    }
+
+    private struct GlobalPart: Decodable {
+        let gained: Double
+        let bonus: Double
+        let total: Double
+
+        enum CodingKeys: String, CodingKey { case gained, bonus, total }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            gained = c.double(.gained) ?? 0
+            bonus = c.double(.bonus) ?? 0
+            total = c.double(.total) ?? 0
+        }
+    }
+
     let ready: Bool
+    /// New area on the global map (boosts included)
     let newAreaConquered: Double
     let areaStolen: Double
     let victims: [Victim]
-    /// Treasures the server collected along the route (and the ones collected live, once processed).
+    /// Chests collected along the route (rest days, club members).
     let treasuresCollected: [CollectedTreasure]
+    let validation: RunValidation?
+    /// Global map: geometric new area, boost area and new total
+    let globalGained: Double
+    let globalBonus: Double
+    let globalTotal: Double?
+    let competition: CompetitionPart?
+    let challengesCompleted: [CompletedChallenge]
+    let streak: Int?
 
-    enum CodingKeys: String, CodingKey { case ready, newAreaConquered, areaStolen, victims, treasuresCollected }
+    enum CodingKeys: String, CodingKey {
+        case ready, newAreaConquered, areaStolen, victims, treasuresCollected
+        case validation, globalArea, competition, challengesCompleted, streak
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -279,7 +370,18 @@ struct ConquestResult: Decodable {
         areaStolen = c.double(.areaStolen) ?? 0
         victims = (try? c.decodeIfPresent([Victim].self, forKey: .victims)) ?? []
         treasuresCollected = (try? c.decodeIfPresent([CollectedTreasure].self, forKey: .treasuresCollected)) ?? []
+        validation = try? c.decodeIfPresent(RunValidation.self, forKey: .validation)
+        let global = try? c.decodeIfPresent(GlobalPart.self, forKey: .globalArea)
+        globalGained = global?.gained ?? newAreaConquered
+        globalBonus = global?.bonus ?? 0
+        globalTotal = global?.total
+        competition = try? c.decodeIfPresent(CompetitionPart.self, forKey: .competition)
+        challengesCompleted = (try? c.decodeIfPresent([CompletedChallenge].self, forKey: .challengesCompleted)) ?? []
+        streak = c.int(.streak)
     }
+
+    /// The run doesn't count (anti-cheat)
+    var isRejected: Bool { validation?.isRejected ?? false }
 
     /// Victims that actually lost territory.
     var stolenVictims: [Victim] { victims.filter { $0.stolenArea > 0 } }

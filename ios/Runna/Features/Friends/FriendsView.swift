@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct FriendsView: View {
+    /// Inside the Club tab (which owns the NavigationStack).
+    var embedded: Bool = false
+
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
     @State private var model = FriendsModel.shared
@@ -30,7 +33,16 @@ struct FriendsView: View {
     private static let inviteMaxAge: TimeInterval = 6 * 24 * 3600
 
     var body: some View {
-        NavigationStack {
+        if embedded {
+            screen
+        } else {
+            NavigationStack {
+                screen
+            }
+        }
+    }
+
+    private var screen: some View {
             list
                 .navigationTitle("Amigos")
                 .toolbar { toolbarContent }
@@ -76,7 +88,6 @@ struct FriendsView: View {
                 }
                 .sensoryFeedback(.success, trigger: acceptedCount)
                 .errorToast($toastMessage)
-        }
     }
 
     private var profileTarget: Binding<FriendTarget?> {

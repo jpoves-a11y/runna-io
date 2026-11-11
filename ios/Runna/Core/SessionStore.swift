@@ -313,6 +313,8 @@ final class SessionStore {
         FriendsModel.shared.reset()
         ProfileModel.shared.reset()
         CompetitionStore.shared.clear()
+        SeasonStore.shared.reset()
+        ClubModel.shared.reset()
         ActivityMapSnapshots.removeAll()
         RemoteImageCache.shared.removeAll()
         ConquestInbox.shared.reset()
