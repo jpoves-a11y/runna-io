@@ -29,7 +29,7 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
-import { SEASON_INVENTORY, isBeforeSeason } from './gameStorage';
+import { GameStorage, SEASON_INVENTORY, isBeforeSeason } from './gameStorage';
 import { analyzeRun, REASON_MESSAGES, type ValidationReason } from './antiCheat';
 import {
   simplifyCoordinates,
@@ -1019,6 +1019,15 @@ export function pushFailureMessage(reason: string, status?: number): string {
       if (reason.startsWith('Network:')) return 'El servidor no ha podido conectar con Apple Push. Inténtalo de nuevo en unos minutos.';
       return `Apple ha rechazado la notificación (${reason}${status ? `, ${status}` : ''}).`;
   }
+}
+
+/** Runs (GPS tracks) are visible to the runner, their friends and their clubmates only. */
+export async function canSeeRunsOf(storage: WorkerStorage, viewerId: string | undefined, ownerId: string): Promise<boolean> {
+  if (!viewerId) return false;
+  if (viewerId === ownerId) return true;
+  const friendIds = await storage.getFriendIds(viewerId);
+  if (friendIds.includes(ownerId)) return true;
+  return new GameStorage(storage.database).sameClub(viewerId, ownerId);
 }
 
 export function registerRoutes(app: Hono<AppEnv>) {
@@ -2805,6 +2814,11 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
       const userId = c.req.param('userId');
+      // GPS tracks are private: only the runner, their friends and their clubmates see them (the global
+      // rankings show the area only)
+      if (!(await canSeeRunsOf(storage, c.get('authUserId'), userId))) {
+        return c.json({ error: 'private_runs', message: 'Sus carreras solo las ven sus amigos y los miembros de su club.' }, 403);
+      }
       const routes = await storage.getRoutesByUserId(userId);
       return c.json(routes);
     } catch (error: any) {
@@ -3166,11 +3180,18 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  app.get('/api/territories', async (c) => {
+  // Legacy (older app versions): competition territories of the caller and their clubmates only. The new
+  // app reads /api/season/map and /api/global/territories.
+  app.get('/api/territories', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
-      const territories = await storage.getAllTerritories();
+      const viewerId = c.get('authUserId');
+      const game = new GameStorage(db);
+      const membership = await game.getMembership(viewerId);
+      const visible = new Set(membership ? await game.getClubMemberIds(membership.clubId) : []);
+      visible.add(viewerId);
+      const territories = (await storage.getAllTerritories()).filter((t) => visible.has(t.userId));
       return c.json(territories);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -3600,7 +3621,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
           nickname: nicknameData.nickname,
           nicknameExpiresAt: nicknameData.nicknameExpiresAt,
         },
-        totalArea, // in m²
+        totalArea, // in m², competition map (resets with each competition)
+        globalArea: Number((user as any).globalArea ?? 0) || 0, // in m², global map (never shrinks)
+        title: (user as any).title ?? null,
         activitiesCount,
         lastActivity, // ISO string or null
         totalStolen, // total area this user has stolen globally (m²)
@@ -6523,35 +6546,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // POST /api/admin/competition — Create competition (admin)
   app.post('/api/admin/competition', async (c) => {
-    try {
-      if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const body = await c.req.json().catch(() => ({}));
-      const comp = await storage.createCompetition({
-        name: body.name || COMPETITION_NAME,
-        slug: body.slug || COMPETITION_SLUG,
-        startsAt: body.startsAt || COMPETITION_START,
-        endsAt: body.endsAt || COMPETITION_END,
-        config: body.config || null,
-      });
-      return c.json(comp);
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
+    // The friends competition is gone: club competitions start by themselves with the season calendar
+    return c.json({ error: 'Las competiciones de club las crea el calendario de temporadas (POST /api/admin/season/tick).' }, 410);
   });
 
   // POST /api/admin/reset-for-competition — Reset DB for competition
   app.post('/api/admin/reset-for-competition', async (c) => {
-    try {
-      if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const result = await storage.resetForCompetition();
-      return c.json({ success: true, ...result });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ error: 'Usa POST /api/admin/season/reset con {"confirm":"RESET"}.' }, 410);
   });
 
   // Helper: compute today's deterministic spawn hour for a competition
@@ -6650,48 +6653,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // GET /api/treasures/active — Active treasures for map (only during competition)
   // Auto-spawn fallback: if it's past today's spawn hour and no treasure was spawned today, spawn one
   app.get('/api/treasures/active', async (c) => {
-    try {
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const comp = await storage.getActiveCompetition();
-      if (!comp || !isCompetitionActive(comp)) {
-        return c.json({ treasures: [] });
-      }
-      let active = await storage.getActiveTreasures(comp.id);
-
-      // Auto-spawn fallback: only if past today's random spawn hour AND no treasure spawned today
-      // Use ?force=true to bypass hour check (admin use)
-      const forceSpawn = c.req.query('force') === 'true' && isAdminRequest(c, { allowWithoutSecret: false });
-      const spawnHour = getTodaySpawnHour(comp.id);
-      const currentHour = new Date().getUTCHours();
-      if (forceSpawn || currentHour >= spawnHour) {
-        const alreadySpawned = await wasTreasureSpawnedToday(storage, comp.id);
-        if (!alreadySpawned) {
-          try {
-            await spawnTreasureNow(storage, comp, c.env, 'AUTO-SPAWN');
-            active = await storage.getActiveTreasures(comp.id);
-          } catch (spawnErr) {
-            console.error('[TREASURE AUTO-SPAWN] Error:', spawnErr);
-          }
-        }
-      }
-
-      return c.json({
-        treasures: active.map(t => ({
-          id: t.id,
-          name: t.name,
-          powerType: t.powerType,
-          rarity: t.rarity,
-          lat: t.lat,
-          lng: t.lng,
-          spawnedAt: t.spawnedAt,
-          expiresAt: t.expiresAt,
-          power: TREASURE_POWERS[t.powerType as keyof typeof TREASURE_POWERS] || null,
-        })),
-      });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    // Legacy (older app versions): chests now belong to the rest days of the club seasons (/api/season/map)
+    // and open by running past them, so nothing is spawned or listed here
+    return c.json({ treasures: [] });
   });
 
   // POST /api/treasures/renotify — Re-send push notifications about active treasures
@@ -6967,224 +6931,22 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // POST /api/tasks/spawn-treasure — Cron: runs every hour, spawns at a random hour each day
   app.post('/api/tasks/spawn-treasure', async (c) => {
-    try {
-      if (!(await isUpstashAuthorized(c))) {
-        console.log('[TREASURE CRON] Auth failed. Headers:', JSON.stringify(Object.fromEntries([...new Map(c.req.raw.headers)])).slice(0, 200));
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const comp = await storage.getActiveCompetition();
-      if (!comp || !isCompetitionActive(comp)) {
-        return c.json({ skipped: true, reason: 'No active competition' });
-      }
-
-      // Determine today's random spawn hour
-      const spawnHour = getTodaySpawnHour(comp.id);
-      const currentHour = new Date().getUTCHours();
-
-      if (currentHour !== spawnHour) {
-        return c.json({ skipped: true, reason: `Not spawn hour (today=${spawnHour}h UTC, now=${currentHour}h UTC)` });
-      }
-
-      // Check if a treasure was already spawned today (checks ALL treasures, not just active)
-      const alreadySpawned = await wasTreasureSpawnedToday(storage, comp.id);
-      if (alreadySpawned) {
-        return c.json({ skipped: true, reason: 'Treasure already spawned today' });
-      }
-
-      const treasure = await spawnTreasureNow(storage, comp, c.env, 'CRON');
-      return c.json({ success: true, treasure });
-    } catch (error: any) {
-      console.error('[TREASURE CRON] Error:', error);
-      return c.json({ error: error.message }, 500);
-    }
+    if (!(await isUpstashAuthorized(c))) return c.json({ error: 'Unauthorized' }, 401);
+    // Rest-day chests are spawned by the season-tick task (season.ts)
+    return c.json({ skipped: true, reason: 'Los cofres los crea season-tick en los días de descanso' });
   });
 
   // POST /api/tasks/weekly-summary — Cron: generate weekly summary (Sundays 8PM)
   app.post('/api/tasks/weekly-summary', async (c) => {
-    try {
-      if (!(await isUpstashAuthorized(c))) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const comp = await storage.getActiveCompetition();
-      if (!comp || !isCompetitionActive(comp)) {
-        return c.json({ skipped: true, reason: 'No active competition' });
-      }
-
-      // Determine week number (1-based from competition start)
-      const startDate = new Date(comp.startsAt);
-      const now = new Date();
-      const weekNumber = Math.ceil((now.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
-
-      // Idempotent: a week's summary (and its push) is generated only once
-      const existingSummary = await storage.getWeeklySummary(comp.id, weekNumber);
-      if (existingSummary) {
-        return c.json({ skipped: true, reason: `Weekly summary for week ${weekNumber} already exists`, weekNumber });
-      }
-
-      // Get all stats for this competition
-      const leaderboard = await storage.getCompetitionLeaderboard(comp.id);
-      if (leaderboard.length === 0) {
-        return c.json({ skipped: true, reason: 'No participants yet' });
-      }
-
-      // Compute awards
-      const byArea = [...leaderboard].sort((a, b) => b.totalArea - a.totalArea);
-      const byStolen = [...leaderboard].sort((a, b) => b.areaStolen - a.areaStolen);
-      const byDistance = [...leaderboard].sort((a, b) => b.totalDistance - a.totalDistance);
-      const byActivities = [...leaderboard].sort((a, b) => b.activitiesCount - a.activitiesCount);
-      const byTreasures = [...leaderboard].sort((a, b) => b.treasuresCollected - a.treasuresCollected);
-      const byVictims = [...leaderboard].sort((a, b) => b.uniqueVictims - a.uniqueVictims);
-      const byRanTogether = [...leaderboard].sort((a, b) => b.ranTogetherCount - a.ranTogetherCount);
-
-      // MVP score: normalized combo of all metrics
-      const maxArea = byArea[0]?.totalArea || 1;
-      const maxStolen = byStolen[0]?.areaStolen || 1;
-      const maxDist = byDistance[0]?.totalDistance || 1;
-      const maxAct = byActivities[0]?.activitiesCount || 1;
-      const mvpScores = leaderboard.map(s => ({
-        ...s,
-        mvpScore: (s.totalArea / maxArea) * 0.3 + (s.areaStolen / maxStolen) * 0.25 +
-                  (s.totalDistance / maxDist) * 0.2 + (s.activitiesCount / maxAct) * 0.25,
-      })).sort((a, b) => b.mvpScore - a.mvpScore);
-
-      const summaryData = {
-        weekNumber,
-        generatedAt: now.toISOString(),
-        competitionName: comp.name,
-        participantCount: leaderboard.length,
-        awards: {
-          territory_king: { title: '🏆 Rey del Territorio', user: byArea[0]?.user, value: byArea[0]?.totalArea || 0, unit: 'm²' },
-          conqueror: { title: '🗡️ El Conquistador', user: byStolen[0]?.user, value: byStolen[0]?.areaStolen || 0, unit: 'm² robados' },
-          marathon: { title: '🏃 Maratonista', user: byDistance[0]?.user, value: byDistance[0]?.totalDistance || 0, unit: 'm' },
-          consistent: { title: '📊 El Constante', user: byActivities[0]?.user, value: byActivities[0]?.activitiesCount || 0, unit: 'actividades' },
-          treasure_hunter: { title: '💎 Cazatesoros', user: byTreasures[0]?.user, value: byTreasures[0]?.treasuresCollected || 0, unit: 'tesoros' },
-          precise: { title: '🎯 El Preciso', user: byVictims[0]?.user, value: byVictims[0]?.uniqueVictims || 0, unit: 'víctimas' },
-          social: { title: '🤝 Alma Social', user: byRanTogether[0]?.user, value: byRanTogether[0]?.ranTogetherCount || 0, unit: 'carreras juntos' },
-          mvp: { title: '⚡ MVP de la Semana', user: mvpScores[0]?.user, value: Math.round(mvpScores[0]?.mvpScore * 100) || 0, unit: 'puntos' },
-        },
-        ranking: byArea.slice(0, 10).map((s, i) => ({
-          rank: i + 1,
-          user: s.user,
-          totalArea: s.totalArea,
-          activitiesCount: s.activitiesCount,
-          areaStolen: s.areaStolen,
-        })),
-      };
-
-      await storage.createWeeklySummary({
-        competitionId: comp.id,
-        weekNumber,
-        data: JSON.stringify(summaryData),
-      });
-
-      // Push notification to all users
-      try {
-        const allSubs = await storage.getAllPushSubscriptions();
-        const { sendPushToUser } = await import('./pushHelper');
-        const payload = {
-          title: `📊 Resumen Semanal — Semana ${weekNumber}`,
-          body: `¡El resumen de ${comp.name} está listo! Abre la app para ver los premios.`,
-          tag: `weekly-summary-${weekNumber}`,
-          data: { type: 'weekly_summary', weekNumber },
-        };
-        const subsByUser = new Map<string, any[]>();
-        for (const sub of allSubs) {
-          if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-          subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-        }
-        for (const [_, userSubs] of subsByUser) {
-          try { await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY!, c.env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com'); } catch (_) {}
-        }
-      } catch (_) {}
-
-      return c.json({ success: true, weekNumber, summary: summaryData });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    if (!(await isUpstashAuthorized(c))) return c.json({ error: 'Unauthorized' }, 401);
+    // Each club competition keeps its own results (club history), written when the cycle ends
+    return c.json({ skipped: true, reason: 'Los resultados se guardan al cerrar cada competición de club' });
   });
 
   // POST /api/admin/spawn-treasure — Manual treasure spawn (admin/testing)
   app.post('/api/admin/spawn-treasure', async (c) => {
-    try {
-      if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const body = await c.req.json().catch(() => ({}));
-      const comp = await storage.getActiveCompetition();
-      if (!comp) return c.json({ error: 'No competition' }, 400);
-
-      const pick = body.powerType
-        ? { powerType: body.powerType, rarity: TREASURE_POWERS[body.powerType as keyof typeof TREASURE_POWERS]?.rarity || 'common', name: TREASURE_POWERS[body.powerType as keyof typeof TREASURE_POWERS]?.name || body.powerType }
-        : pickRandomTreasure();
-      const spot = body.lat && body.lng ? { lat: body.lat, lng: body.lng, zone: body.zone || 'Manual' } : pickRandomSpawnPoint();
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + (body.durationHours || 24) * 60 * 60 * 1000).toISOString();
-
-      const treasure = await storage.createTreasure({
-        competitionId: comp.id,
-        name: pick.name,
-        powerType: pick.powerType,
-        rarity: pick.rarity,
-        lat: spot.lat,
-        lng: spot.lng,
-        spawnedAt: now.toISOString(),
-        expiresAt,
-        zone: spot.zone,
-      });
-
-      // Create feed event for treasure spawn
-      try {
-        const systemUserId = await storage.ensureSystemUser();
-        await storage.createFeedEvent({
-          userId: systemUserId,
-          eventType: 'treasure_spawned',
-          routeId: null,
-          metadata: JSON.stringify({
-            treasureId: treasure.id,
-            treasureName: pick.name,
-            powerType: pick.powerType,
-            rarity: pick.rarity,
-            zone: spot.zone,
-            emoji: TREASURE_POWERS[pick.powerType as keyof typeof TREASURE_POWERS]?.emoji || '📦',
-          }),
-        });
-      } catch (_) {}
-
-      // Send push notification to all users
-      try {
-        const allSubs = await storage.getAllPushSubscriptions();
-        const { sendPushToUser } = await import('./pushHelper');
-        const payload = {
-          title: `🗺️ ¡Nuevo tesoro en ${spot.zone}!`,
-          body: `Un ${pick.name} (${pick.rarity === 'legendary' ? '💎 LEGENDARIO' : pick.rarity === 'epic' ? '✨ ÉPICO' : pick.rarity === 'rare' ? '🔵 RARO' : '🟤 COMÚN'}) ha aparecido. ¡Corre a por él!`,
-          tag: `treasure-${treasure.id}`,
-          data: { type: 'treasure_spawned', treasureId: treasure.id },
-        };
-        const subsByUser = new Map<string, any[]>();
-        for (const sub of allSubs) {
-          if (!subsByUser.has(sub.userId)) subsByUser.set(sub.userId, []);
-          subsByUser.get(sub.userId)!.push({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } });
-        }
-        let sent = 0;
-        for (const [_, userSubs] of subsByUser) {
-          try {
-            await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY!, c.env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
-            sent++;
-          } catch (_) {}
-        }
-        console.log(`[TREASURE-ADMIN] Spawned ${pick.name} at ${spot.zone}, notified ${sent} users`);
-      } catch (e) {
-        console.error('[TREASURE-ADMIN] Push error:', e);
-      }
-
-      return c.json({ success: true, treasure, zone: spot.zone });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ error: 'Los cofres los crea season-tick en los días de descanso.' }, 410);
   });
 
   // POST /api/admin/reset-skipped-polar — Delete all skipped Polar activities so they can be re-evaluated
@@ -7207,62 +6969,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // POST /api/admin/retrofix-route — Retroactively create feed event + collect treasures for a route that was missed
   app.post('/api/admin/retrofix-route', async (c) => {
-    try {
-      if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-      const body = await c.req.json();
-      const { routeId } = body;
-      if (!routeId) return c.json({ error: 'routeId required' }, 400);
-
-      const route = await storage.getRouteById(routeId);
-      if (!route) return c.json({ error: 'Route not found' }, 404);
-
-      const coords: [number, number][] = typeof route.coordinates === 'string'
-        ? JSON.parse(route.coordinates)
-        : route.coordinates;
-
-      // Check if feed event already exists for this route
-      const existingFeed = await storage.getFeedEventByRouteId(route.id);
-      let feedCreated = false;
-      if (!existingFeed) {
-        try {
-          await generateFeedEvents(storage, route.userId, route.id, route.distance || 0, route.duration || 0, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
-          feedCreated = true;
-          console.log(`[ADMIN RETROFIX] Feed event created for route ${routeId}`);
-        } catch (feedErr) {
-          console.error(`[ADMIN RETROFIX] Feed event creation failed:`, feedErr);
-        }
-      } else {
-        console.log(`[ADMIN RETROFIX] Feed event already exists for route ${routeId}`);
-      }
-
-      // Try to auto-collect treasures along the route
-      let treasuresCollected: any[] = [];
-      if (coords && coords.length > 0) {
-        try {
-          const competition = await storage.getActiveCompetition();
-          if (competition && isCompetitionActive(competition)) {
-            treasuresCollected = await autoCollectTreasuresAlongRoute(storage, route.userId, competition.id, coords);
-            console.log(`[ADMIN RETROFIX] Treasures collected: ${treasuresCollected.length}`);
-          }
-        } catch (tErr) {
-          console.error(`[ADMIN RETROFIX] Treasure collection failed:`, tErr);
-        }
-      }
-
-      return c.json({ 
-        success: true, 
-        routeId, 
-        userId: route.userId,
-        feedCreated,
-        feedAlreadyExisted: !!existingFeed,
-        treasuresCollected: treasuresCollected.length,
-        treasures: treasuresCollected,
-      });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    if (!requireAdminAuth(c)) return c.json({ error: 'Unauthorized' }, 401);
+    // Runs are re-evaluated with POST /api/admin/runs/:id/review, which rebuilds the global and competition maps
+    return c.json({ error: 'Usa POST /api/admin/runs/:id/review.' }, 410);
   });
 
   // POST /api/admin/broadcast — Send push notification to all users (admin)

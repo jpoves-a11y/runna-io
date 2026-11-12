@@ -277,6 +277,17 @@ const clubRank = (await call('GET', '/api/rankings/global?scope=club', { token: 
 check('club ranking only has club mates', clubRank.entries.every((e) => [ana.id, ben.id, cris.id, hugo.id].includes(e.user.id)), clubRank.entries.map((e) => e.user.name));
 const overlays = (await call('GET', '/api/global/territories', { token: ana.token })).data;
 check('global overlays only of friends and club mates', overlays.overlays.every((o) => [ben.id, cris.id, hugo.id].includes(o.user.id)) && overlays.overlays.length >= 2, overlays.overlays.map((o) => o.user.name));
+// Privacy: GPS tracks only for friends and club mates; the global ranking shows the area only
+const strangerRuns = await call('GET', `/api/routes/${dani.id}`, { token: ana.token });
+check('runs of someone outside your friends and club are private', strangerRuns.status === 403, strangerRuns);
+const mateRuns = await call('GET', `/api/routes/${ben.id}`, { token: ana.token });
+check('runs of a club mate are visible', mateRuns.status === 200 && Array.isArray(mateRuns.data) && mateRuns.data.length >= 1, mateRuns.status);
+const strangerStats = await call('GET', `/api/users/${dani.id}/stats`, { token: ana.token });
+check('public profile: global area, no routes', strangerStats.status === 200 && strangerStats.data.globalArea > 0 && !('routes' in strangerStats.data), strangerStats.data);
+check('legacy territory list needs a session', (await call('GET', '/api/territories')).status === 401);
+const legacyTerritories = await call('GET', '/api/territories', { token: dani.token });
+check('legacy territory list: only your own club', legacyTerritories.status === 200 && legacyTerritories.data.every((t) => ![ana.id, ben.id, cris.id].includes(t.userId)), legacyTerritories.data.map?.((t) => t.userId));
+check('legacy treasures: nothing spawned or listed', (await call('GET', '/api/treasures/active', { token: ana.token })).data.treasures.length === 0);
 const compMap = (await call('GET', '/api/season/map', { token: ana.token })).data;
 check('competition map: only my competition', compMap.territories.length >= 2 && compMap.territories.every((t) => [ana.id, ben.id, cris.id].includes(t.userId)), compMap.territories.map((t) => t.userId));
 const current = (await call('GET', '/api/season/current', { token: cris.token })).data;

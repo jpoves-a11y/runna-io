@@ -107,6 +107,7 @@ import {
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
 import { applyGameSchema, applyCompetitionColumns, GameStorage } from './gameStorage';
+import { messageFor, type ValidationReason } from './antiCheat';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
 function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
@@ -837,6 +838,8 @@ export class WorkerStorage {
           territory: territory || undefined,
           ranTogetherWithUsers,
           validationReasons: parseReasons(route.validationReasons),
+          // Why it doesn't count or is under review, ready to show (the reasons are codes)
+          validationMessage: messageFor(parseReasons(route.validationReasons) as ValidationReason[]) ?? null,
         } as any;
       })
     );
@@ -2505,12 +2508,12 @@ export class WorkerStorage {
     // Include the user themselves in the list
     const allIds = [userId, ...friendIds];
     
-    // Get all friends + user with stats, ordered by totalArea
+    // Friends + user, ranked by the global map (friends no longer compete on the competition map)
     const friends = await this.db
       .select()
       .from(users)
       .where(sql`${users.id} IN (${sql.join(allIds.map(id => sql`${id}`), sql`, `)})`)
-      .orderBy(desc(users.totalArea));
+      .orderBy(desc(users.globalArea), desc(users.totalArea));
 
     // friendCount of everyone in one grouped query (was one query per user)
     const friendCounts = await this.getFriendCounts(friends.map((friend) => friend.id));

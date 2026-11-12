@@ -628,7 +628,9 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
     const due = Math.ceil(perDay * dayFraction);
     const already = await game.countChestsSpawnedSince(city.cityKey, new Date(dayStart).toISOString());
     if (already >= due || already >= perDay) continue;
-    const random = seededRandom(`chest:${city.cityKey}:${now}`);
+    // `already` in the seed: two chests of the same day (or a retried tick with the same time) never
+    // land on the same spot with the same item
+    const random = seededRandom(`chest:${city.cityKey}:${now}:${already}`);
     const rarity = pickRarity(random);
     const itemId = pickRewardItem(rarity, random);
     const spot = randomPointAround(city.lat, city.lng, 300, 3000, random);

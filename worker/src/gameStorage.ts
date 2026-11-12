@@ -844,6 +844,13 @@ export class GameStorage {
     return rows.map((r) => r.user_id);
   }
 
+  /** Whether both users are members of the same club. */
+  async sameClub(a: string, b: string): Promise<boolean> {
+    const rows = await this.db.all<Row>(sql`SELECT 1 AS ok FROM club_members x JOIN club_members y ON y.club_id = x.club_id
+      WHERE x.user_id = ${a} AND y.user_id = ${b} LIMIT 1`);
+    return rows.length > 0;
+  }
+
   async addMember(clubId: string, userId: string, role: ClubRole = 'member'): Promise<boolean> {
     try {
       await this.db.run(sql`INSERT INTO club_members (user_id, club_id, role, joined_at) VALUES (${userId}, ${clubId}, ${role}, ${nowIso()})`);
