@@ -37,6 +37,7 @@ import {
   type AwardId,
 } from '../../shared/game';
 import { computeAwards, runDaysByUser, type AwardCandidate, type AwardContext } from './awards';
+import { CHAT_RETENTION_DAYS } from './clubChat';
 import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
 import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
@@ -525,6 +526,14 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
     const mode = competition.mode as CompetitionMode;
     const modeInfo = MODE_INFO[mode] ?? MODE_INFO[info.mode];
     const players = club.members.filter((id) => club.players.has(id));
+    const rival = competition.opponentClubId ? await game.getClub(competition.opponentClubId) : null;
+    const left = club.members.length - players.length;
+    await game.postSystemMessage(club.id, [
+      `Empieza la competición: ${modeInfo.name}${rival ? ` contra ${rival.name}` : ''}.`,
+      `Participan ${players.length} ${players.length === 1 ? 'miembro' : 'miembros'}.`,
+      left > 0 ? `${left} ${left === 1 ? 'no participa' : 'no participan'} por inactividad.` : '',
+      `Termina el domingo ${new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'long' }).format(new Date(Date.parse(info.competitionEndsAt) - 60_000))} a las 23:59.`,
+    ].filter(Boolean).join(' '));
     await notifyUsers(storage, env, players, {
       title: `${modeInfo.emoji} ¡Empieza la competición!`,
       body: `Modo de esta ronda: ${modeInfo.name}. El mapa de competición empieza de cero. Tienes 10 días.`,
@@ -822,6 +831,10 @@ export async function processEliminationCuts(storage: WorkerStorage, game: GameS
     const club = await game.getClub(competition.clubId);
     const survivors = alive.filter((p) => !eliminated.includes(p.userId)).map((p) => p.userId);
     const fallen = new Set(eliminated);
+    const fallenNames = [...(await game.getUserLite(eliminated)).values()].map((u) => u.name);
+    await game.postSystemMessage(competition.clubId, eliminated.length > 0
+      ? `Corte ${k}: ${eliminated.length === 1 ? 'cae' : 'caen'} ${listNames(fallenNames)}. ${survivors.length === 1 ? 'Queda 1 en pie.' : `Quedan ${survivors.length}.`}`
+      : `Corte ${k}: no cae nadie. Quedan ${survivors.length}.`);
     for (const p of alive) {
       if (!fallen.has(p.userId)) continue;
       await notifyUsers(storage, env, [p.userId], {
@@ -942,6 +955,38 @@ async function grantReward(game: GameStorage, userId: string, rarity: Rarity, co
   return itemId;
 }
 
+/** "Ana", "Ana y Ben", "Ana, Ben y Eva". */
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`;
+}
+
+/** The chat line with the result of a competition inside the club. */
+function internalResultMessage(mode: CompetitionMode, standings: Standing[], result: Record<string, unknown>, total: number, teamNames: string[] = ['Equipo Sol', 'Equipo Luna']): string {
+  const winner = standings.find((s) => s.userId === result.winnerUserId)?.name;
+  switch (mode) {
+    case 'target':
+      return result.achieved
+        ? `Fin de la competición. Objetivo conseguido: el club sumó ${km2(total)}.`
+        : `Fin de la competición. El club sumó ${km2(total)} de ${km2(Number(result.target))}: objetivo no alcanzado.`;
+    case 'teams': {
+      const scores = (result.teamScores as number[] | undefined) ?? [0, 0];
+      const winnerTeam = result.winnerTeam as number | null;
+      return winnerTeam === null || winnerTeam === undefined
+        ? `Fin de la competición. Empate entre equipos: ${km2(scores[0])} – ${km2(scores[1])}.`
+        : `Fin de la competición. Gana el ${teamNames[winnerTeam]}: ${km2(scores[winnerTeam])} contra ${km2(scores[1 - winnerTeam])}.`;
+    }
+    case 'elimination':
+      return winner ? `Fin de la Eliminación. ${winner} es el último en pie.` : 'Fin de la Eliminación.';
+    case 'flags':
+      return winner ? `Fin de la competición. Gana ${winner} con ${formatHours(standings[0]?.score ?? 0)} de bandera.` : 'Fin de la competición.';
+    case 'explorers':
+      return winner ? `Fin de la competición. Gana ${winner} con ${km2(standings[0]?.score ?? 0)} de mapa nuevo.` : 'Fin de la competición.';
+    default:
+      return winner ? `Fin de la competición. Gana ${winner} con ${km2(standings[0]?.score ?? 0)}.` : 'Fin de la competición.';
+  }
+}
+
 /**
  * Awards of a finished competition (stored for the profile). The numbers not in the standings
  * come from the participants (area held, area lost) and competition_runs (days with a run).
@@ -1042,6 +1087,7 @@ async function finishInternal(storage: WorkerStorage, game: GameStorage, env: an
   for (const s of standings) await game.updateParticipant(competition.id, s.userId, { finalRank: s.rank });
   await game.adjustClubStanding(competition.clubId, 0, leaguePoints);
   await game.updateCompetition(competition.id, { status: 'finished', score: total, result, finishedAt: new Date().toISOString() });
+  await game.postSystemMessage(competition.clubId, internalResultMessage(competition.mode as CompetitionMode, standings, result, total, competition.config?.teamNames));
 
   const modeInfo = MODE_INFO[competition.mode as CompetitionMode];
   for (const s of standings) {
@@ -1114,6 +1160,8 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
         awards,
       },
     });
+    const what = competition.mode === 'derby' ? 'Derbi' : 'Duelo';
+    await game.postSystemMessage(competition.clubId, `Fin de la competición. ${what} ${outcome === 'won' ? 'ganado' : outcome === 'draw' ? 'empatado' : 'perdido'} contra ${opponent?.name ?? 'el rival'}: ${km2(own)} – ${km2(rival)}.${mvpUserId ? ` MVP: ${standings[0].name}.` : ''}`);
     for (const s of standings) {
       await notifyUsers(storage, env, [s.userId], {
         title: competition.mode === 'derby'
@@ -1222,6 +1270,13 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
       itemId, rarity, lat: spot.lat, lng: spot.lng, expiresAt, zone: city.city, hidden, cityKey: city.cityKey, publicAt,
     });
     spawned++;
+    if (!hidden && rarity === 'legendary') {
+      // In the chat of every club with members in that city
+      const clubIds = new Set([...(await game.getMemberships(city.memberIds)).values()].map((m) => m.clubId));
+      for (const clubId of clubIds) {
+        await game.postSystemMessage(clubId, `Ha aparecido un cofre legendario en ${city.city}. Se ve en el mapa a partir de las ${new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).format(new Date(publicAt))}.`);
+      }
+    }
     if (!hidden && (rarity === 'epic' || rarity === 'legendary')) {
       await notifyUsers(storage, env, city.memberIds, {
         title: `🗝️ ¡Cofre ${RARITY_INFO[rarity].label.toLowerCase()} en ${city.city}!`,
@@ -1424,6 +1479,12 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
   }
 
   await game.expireItems(null, now);
+
+  // 4. Once a day: club chat messages older than 90 days go
+  const today = localDate(now);
+  if (await game.claimSetting(`chat_cleanup_${today}`, String(now))) {
+    report.chatDeleted = await game.deleteOldClubMessages(new Date(now - CHAT_RETENTION_DAYS * 86_400_000).toISOString());
+  }
   return report;
 }
 

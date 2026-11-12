@@ -71,3 +71,34 @@ CREATE INDEX IF NOT EXISTS idx_user_awards_user ON user_awards(user_id, created_
 
 -- Members who didn't take part see their club's result once: the last cycle they saw
 ALTER TABLE club_members ADD COLUMN result_seen_cycle INTEGER;
+
+-- Club chat: messages (system ones have no user), reactions, mutes and the last read time
+CREATE TABLE IF NOT EXISTS club_messages (
+  id TEXT PRIMARY KEY,
+  club_id TEXT NOT NULL,
+  user_id TEXT,
+  kind TEXT NOT NULL DEFAULT 'user',
+  body TEXT NOT NULL,
+  reply_to TEXT,
+  mentions TEXT,
+  created_at TEXT NOT NULL,
+  deleted_at TEXT,
+  deleted_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_club_messages_club ON club_messages(club_id, created_at);
+CREATE TABLE IF NOT EXISTS club_message_reactions (
+  message_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (message_id, user_id, emoji)
+);
+CREATE TABLE IF NOT EXISTS club_mutes (
+  club_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  until TEXT NOT NULL,
+  muted_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (club_id, user_id)
+);
+ALTER TABLE club_members ADD COLUMN last_read_at TEXT;

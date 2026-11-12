@@ -439,10 +439,12 @@ struct ClubDetailResponse: Decodable {
     let myRequests: [ClubOwnRequest]
     /// I can invite (personal invites, links) and see the code.
     let canInvite: Bool
+    /// Only in /api/clubs/mine: club chat messages I haven't read (99 at most)
+    let unreadCount: Int
 
     enum CodingKeys: String, CodingKey {
         case club, role, isMember, canInvite, members, competition, pendingRequests, history, trophies, unlockedCrestPieces
-        case requestPending, invites, myRequests
+        case requestPending, invites, myRequests, unreadCount
     }
 
     init(from decoder: Decoder) throws {
@@ -462,6 +464,7 @@ struct ClubDetailResponse: Decodable {
         requestPending = c.bool(.requestPending) ?? false
         invites = (try? c.decodeIfPresent([ClubInvite].self, forKey: .invites)) ?? []
         myRequests = (try? c.decodeIfPresent([ClubOwnRequest].self, forKey: .myRequests)) ?? []
+        unreadCount = c.int(.unreadCount) ?? 0
     }
 
     var isAdmin: Bool { role == "owner" || role == "admin" }
@@ -1733,4 +1736,119 @@ struct SeasonResultsPendingResponse: Decodable {
 
 struct SeasonResultResponse: Decodable {
     let result: CompetitionResultSummary
+}
+
+
+// MARK: - Club chat
+
+/// A message of the club chat (GET /api/clubs/:id/messages). System messages have no user.
+struct ClubChatMessage: Decodable, Identifiable, Hashable {
+    struct Reply: Decodable, Hashable {
+        let id: String
+        let userName: String
+        /// nil when it was deleted or its author is blocked
+        let body: String?
+
+        enum CodingKeys: String, CodingKey { case id, userName, body }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.string(.id) ?? ""
+            userName = c.string(.userName) ?? ""
+            body = c.string(.body)
+        }
+    }
+
+    struct Reaction: Decodable, Hashable, Identifiable {
+        let emoji: String
+        let count: Int
+        let mine: Bool
+        var id: String { emoji }
+
+        enum CodingKeys: String, CodingKey { case emoji, count, mine }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            emoji = c.string(.emoji) ?? ""
+            count = c.int(.count) ?? 0
+            mine = c.bool(.mine) ?? false
+        }
+    }
+
+    let id: String
+    let kind: String
+    let user: GameUser?
+    let body: String?
+    let deleted: Bool
+    let deletedByModerator: Bool
+    let replyTo: Reply?
+    let mentions: [String]
+    var reactions: [Reaction]
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey { case id, kind, user, body, deleted, deletedByModerator, replyTo, mentions, reactions, createdAt }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = c.string(.kind) ?? "user"
+        user = try? c.decodeIfPresent(GameUser.self, forKey: .user)
+        body = c.string(.body)
+        deleted = c.bool(.deleted) ?? false
+        deletedByModerator = c.bool(.deletedByModerator) ?? false
+        replyTo = try? c.decodeIfPresent(Reply.self, forKey: .replyTo)
+        mentions = (try? c.decodeIfPresent([String].self, forKey: .mentions)) ?? []
+        reactions = (try? c.decodeIfPresent([Reaction].self, forKey: .reactions)) ?? []
+        createdAt = c.string(.createdAt)
+    }
+
+    var isSystem: Bool { kind == "system" }
+    var date: Date? { APIDate.parse(createdAt) }
+}
+
+struct ClubChatResponse: Decodable {
+    struct Me: Decodable {
+        let role: String?
+        let canModerate: Bool
+        let mutedUntil: String?
+
+        enum CodingKeys: String, CodingKey { case role, canModerate, mutedUntil }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            role = c.string(.role)
+            canModerate = c.bool(.canModerate) ?? false
+            mutedUntil = c.string(.mutedUntil)
+        }
+    }
+
+    struct Mute: Decodable, Hashable {
+        let userId: String
+        let until: String
+    }
+
+    let messages: [ClubChatMessage]
+    let hasMore: Bool
+    let reactions: [String]
+    let me: Me?
+    let mutes: [Mute]
+
+    enum CodingKeys: String, CodingKey { case messages, hasMore, reactions, me, mutes }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        messages = (try? c.decodeIfPresent([ClubChatMessage].self, forKey: .messages)) ?? []
+        hasMore = c.bool(.hasMore) ?? false
+        reactions = (try? c.decodeIfPresent([String].self, forKey: .reactions)) ?? ["👍", "❤️", "🔥", "😂", "👏", "💪"]
+        me = try? c.decodeIfPresent(Me.self, forKey: .me)
+        mutes = (try? c.decodeIfPresent([Mute].self, forKey: .mutes)) ?? []
+    }
+}
+
+struct ClubChatPostResponse: Decodable {
+    let message: ClubChatMessage
+}
+
+struct ClubChatReactionResponse: Decodable {
+    let reactions: [ClubChatMessage.Reaction]
 }

@@ -5,6 +5,7 @@ import SwiftUI
 /// "Club" tab: my club (or how to join one) and, in the same tab, friends.
 struct ClubTabView: View {
     @Environment(AppRouter.self) private var router
+    @State private var model = ClubModel.shared
 
     var body: some View {
         @Bindable var router = router
@@ -13,6 +14,15 @@ struct ClubTabView: View {
                 switch router.clubSection {
                 case .club:
                     ClubHomeView()
+                case .chat:
+                    if let club = model.club {
+                        ClubChatView(clubId: club.id, members: model.detail?.members ?? [])
+                            .navigationTitle(club.name)
+                            .navigationBarTitleDisplayMode(.inline)
+                    } else {
+                        // Not in a club (any more): the club home shows how to join one
+                        ClubHomeView()
+                    }
                 case .friends:
                     FriendsView(embedded: true)
                 }
@@ -20,6 +30,10 @@ struct ClubTabView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 Picker("Sección", selection: $router.clubSection) {
                     Text("Mi club").tag(AppRouter.ClubSection.club)
+                    // The chat only with a club
+                    if model.isMember {
+                        Text(model.chatUnread > 0 ? "Chat (\(model.chatUnread))" : "Chat").tag(AppRouter.ClubSection.chat)
+                    }
                     Text("Amigos").tag(AppRouter.ClubSection.friends)
                 }
                 .pickerStyle(.segmented)

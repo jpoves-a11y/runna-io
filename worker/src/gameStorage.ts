@@ -261,6 +261,36 @@ export async function applyGameSchema(db: Database): Promise<void> {
   await db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_awards_user ON user_awards(user_id, created_at)`);
   // Members who didn't take part also see their club's result once (up to this cycle)
   await tryRun(db, sql`ALTER TABLE club_members ADD COLUMN result_seen_cycle INTEGER`);
+  // Club chat: messages (kind 'user' or 'system'), reactions, mutes and what each member read
+  await db.run(sql`CREATE TABLE IF NOT EXISTS club_messages (
+    id TEXT PRIMARY KEY,
+    club_id TEXT NOT NULL,
+    user_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'user',
+    body TEXT NOT NULL,
+    reply_to TEXT,
+    mentions TEXT,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT,
+    deleted_by TEXT
+  )`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_club_messages_club ON club_messages(club_id, created_at)`);
+  await db.run(sql`CREATE TABLE IF NOT EXISTS club_message_reactions (
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    emoji TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (message_id, user_id, emoji)
+  )`);
+  await db.run(sql`CREATE TABLE IF NOT EXISTS club_mutes (
+    club_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    until TEXT NOT NULL,
+    muted_by TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (club_id, user_id)
+  )`);
+  await tryRun(db, sql`ALTER TABLE club_members ADD COLUMN last_read_at TEXT`);
   await db.run(sql`CREATE TABLE IF NOT EXISTS club_matches (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     cycle_number INTEGER NOT NULL,
@@ -379,6 +409,36 @@ export interface ParticipantRow {
   /** Eliminación: the cut they fell in (null while still in) */
   eliminatedCut: number | null;
   eliminatedAt: string | null;
+}
+
+export interface ClubMessageRow {
+  id: string;
+  clubId: string;
+  /** null for system messages */
+  userId: string | null;
+  kind: 'user' | 'system';
+  body: string;
+  replyTo: string | null;
+  mentions: string[];
+  createdAt: string;
+  deletedAt: string | null;
+  deletedBy: string | null;
+}
+
+function toClubMessage(row: Row): ClubMessageRow {
+  const mentions = parseJson(row.mentions, []);
+  return {
+    id: row.id,
+    clubId: row.club_id,
+    userId: row.user_id ?? null,
+    kind: row.kind === 'system' ? 'system' : 'user',
+    body: row.body ?? '',
+    replyTo: row.reply_to ?? null,
+    mentions: Array.isArray(mentions) ? mentions : [],
+    createdAt: row.created_at,
+    deletedAt: row.deleted_at ?? null,
+    deletedBy: row.deleted_by ?? null,
+  };
 }
 
 export interface InventoryRow {
@@ -889,6 +949,13 @@ export class GameStorage {
       this.db.run(sql`DELETE FROM club_invite_links WHERE club_id = ${clubId}`),
       this.db.run(sql`DELETE FROM clubs WHERE id = ${clubId}`),
     ] as any);
+    for (const statement of [
+      sql`DELETE FROM club_message_reactions WHERE message_id IN (SELECT id FROM club_messages WHERE club_id = ${clubId})`,
+      sql`DELETE FROM club_messages WHERE club_id = ${clubId}`,
+      sql`DELETE FROM club_mutes WHERE club_id = ${clubId}`,
+    ]) {
+      await tryRun(this.db, statement);
+    }
   }
 
   async searchClubs(options: { query: string; countryCode?: string | null; city?: string | null; limit: number }): Promise<ClubRow[]> {
@@ -1114,6 +1181,137 @@ export class GameStorage {
       userId: r.user_id, routeId: r.route_id, startedAt: r.started_at,
       areaGained: Number(r.area_gained ?? 0), areaStolen: Number(r.area_stolen ?? 0), distance: Number(r.distance ?? 0),
     }));
+  }
+
+  // ─── Club chat ───
+
+  async addClubMessage(data: { clubId: string; userId: string | null; kind: 'user' | 'system'; body: string; replyTo?: string | null; mentions?: string[] }): Promise<ClubMessageRow> {
+    const id = newId();
+    // Strictly increasing per millisecond is enough: ties are ordered by id
+    const createdAt = nowIso();
+    await this.db.run(sql`INSERT INTO club_messages (id, club_id, user_id, kind, body, reply_to, mentions, created_at)
+      VALUES (${id}, ${data.clubId}, ${data.userId}, ${data.kind}, ${data.body}, ${data.replyTo ?? null}, ${JSON.stringify(data.mentions ?? [])}, ${createdAt})`);
+    return { id, clubId: data.clubId, userId: data.userId, kind: data.kind, body: data.body, replyTo: data.replyTo ?? null, mentions: data.mentions ?? [], createdAt, deletedAt: null, deletedBy: null };
+  }
+
+  /** A system message in the club's chat (start of a competition, cuts, results, members...). Never fails. */
+  async postSystemMessage(clubId: string, body: string): Promise<void> {
+    try {
+      await this.addClubMessage({ clubId, userId: null, kind: 'system', body });
+    } catch (error) {
+      console.error('[CHAT] System message failed:', error);
+    }
+  }
+
+  async getClubMessage(id: string): Promise<ClubMessageRow | null> {
+    const rows = await this.db.all<Row>(sql`SELECT * FROM club_messages WHERE id = ${id}`);
+    return rows[0] ? toClubMessage(rows[0]) : null;
+  }
+
+  async getClubMessagesByIds(ids: string[]): Promise<Map<string, ClubMessageRow>> {
+    const map = new Map<string, ClubMessageRow>();
+    if (ids.length === 0) return map;
+    const rows = await this.db.all<Row>(sql.join([sql`SELECT * FROM club_messages WHERE id IN (`, sql.join([...new Set(ids)].map((id) => sql`${id}`), sql`, `), sql`)`], sql``));
+    for (const row of rows) map.set(row.id, toClubMessage(row));
+    return map;
+  }
+
+  /**
+   * A page of the club's chat, oldest first: the latest `limit` messages, or the `limit` before
+   * the message `beforeId` (older pages). Messages of `hiddenUserIds` (blocks) are left out.
+   */
+  async getClubMessages(clubId: string, options: { beforeId?: string | null; limit: number; hiddenUserIds?: string[] }): Promise<{ messages: ClubMessageRow[]; hasMore: boolean }> {
+    const hidden = options.hiddenUserIds ?? [];
+    const notHidden = hidden.length > 0
+      ? sql.join([sql`AND (user_id IS NULL OR user_id NOT IN (`, sql.join(hidden.map((id) => sql`${id}`), sql`, `), sql`))`], sql``)
+      : sql``;
+    let before = sql``;
+    if (options.beforeId) {
+      const cursor = await this.getClubMessage(options.beforeId);
+      if (cursor && cursor.clubId === clubId) before = sql`AND (created_at < ${cursor.createdAt} OR (created_at = ${cursor.createdAt} AND id < ${cursor.id}))`;
+    }
+    const rows = await this.db.all<Row>(sql`SELECT * FROM club_messages WHERE club_id = ${clubId} ${before} ${notHidden}
+      ORDER BY created_at DESC, id DESC LIMIT ${options.limit + 1}`);
+    const hasMore = rows.length > options.limit;
+    return { messages: rows.slice(0, options.limit).reverse().map(toClubMessage), hasMore };
+  }
+
+  async deleteClubMessage(id: string, by: string): Promise<void> {
+    await this.db.run(sql`UPDATE club_messages SET deleted_at = ${nowIso()}, deleted_by = ${by} WHERE id = ${id} AND deleted_at IS NULL`);
+    await this.db.run(sql`DELETE FROM club_message_reactions WHERE message_id = ${id}`);
+  }
+
+  /** Adds the reaction, or removes it when it was there. Returns whether it is there now. */
+  async toggleReaction(messageId: string, userId: string, emoji: string): Promise<boolean> {
+    const existing = await this.db.all<Row>(sql`SELECT 1 AS ok FROM club_message_reactions WHERE message_id = ${messageId} AND user_id = ${userId} AND emoji = ${emoji}`);
+    if (existing.length > 0) {
+      await this.db.run(sql`DELETE FROM club_message_reactions WHERE message_id = ${messageId} AND user_id = ${userId} AND emoji = ${emoji}`);
+      return false;
+    }
+    await this.db.run(sql`INSERT OR IGNORE INTO club_message_reactions (message_id, user_id, emoji, created_at) VALUES (${messageId}, ${userId}, ${emoji}, ${nowIso()})`);
+    return true;
+  }
+
+  async getReactions(messageIds: string[]): Promise<Map<string, Array<{ userId: string; emoji: string }>>> {
+    const map = new Map<string, Array<{ userId: string; emoji: string }>>();
+    if (messageIds.length === 0) return map;
+    const rows = await this.db.all<Row>(sql.join([sql`SELECT message_id, user_id, emoji FROM club_message_reactions WHERE message_id IN (`,
+      sql.join(messageIds.map((id) => sql`${id}`), sql`, `), sql`) ORDER BY created_at ASC`], sql``));
+    for (const row of rows) map.set(row.message_id, [...(map.get(row.message_id) ?? []), { userId: row.user_id, emoji: row.emoji }]);
+    return map;
+  }
+
+  /** Until when the member can't write (null when they can). */
+  async getMuteUntil(clubId: string, userId: string, now = Date.now()): Promise<string | null> {
+    const rows = await this.db.all<Row>(sql`SELECT until FROM club_mutes WHERE club_id = ${clubId} AND user_id = ${userId}`);
+    const until = rows[0]?.until;
+    return until && Date.parse(until) > now ? until : null;
+  }
+
+  async setMute(clubId: string, userId: string, until: string | null, by: string): Promise<void> {
+    if (!until) {
+      await this.db.run(sql`DELETE FROM club_mutes WHERE club_id = ${clubId} AND user_id = ${userId}`);
+      return;
+    }
+    await this.db.run(sql`INSERT INTO club_mutes (club_id, user_id, until, muted_by, created_at) VALUES (${clubId}, ${userId}, ${until}, ${by}, ${nowIso()})
+      ON CONFLICT(club_id, user_id) DO UPDATE SET until = excluded.until, muted_by = excluded.muted_by, created_at = excluded.created_at`);
+  }
+
+  /** Members silenced right now, for the leader and officers. */
+  async getClubMutes(clubId: string, now = Date.now()): Promise<Array<{ userId: string; until: string }>> {
+    const rows = await this.db.all<Row>(sql`SELECT user_id, until FROM club_mutes WHERE club_id = ${clubId} AND until > ${new Date(now).toISOString()}`);
+    return rows.map((r) => ({ userId: r.user_id, until: r.until }));
+  }
+
+  async markChatRead(clubId: string, userId: string, at = nowIso()): Promise<void> {
+    await this.db.run(sql`UPDATE club_members SET last_read_at = ${at} WHERE club_id = ${clubId} AND user_id = ${userId}
+      AND (last_read_at IS NULL OR last_read_at < ${at})`);
+  }
+
+  async getChatReadAt(userId: string): Promise<string | null> {
+    const rows = await this.db.all<Row>(sql`SELECT last_read_at, joined_at FROM club_members WHERE user_id = ${userId}`);
+    return rows[0] ? (rows[0].last_read_at ?? rows[0].joined_at ?? null) : null;
+  }
+
+  /** Messages of others the member hasn't read (since joining at most), capped at 99. */
+  async chatUnreadCount(clubId: string, userId: string, hiddenUserIds: string[] = []): Promise<number> {
+    const since = await this.getChatReadAt(userId);
+    if (!since) return 0;
+    const notHidden = hiddenUserIds.length > 0
+      ? sql.join([sql`AND (user_id IS NULL OR user_id NOT IN (`, sql.join(hiddenUserIds.map((id) => sql`${id}`), sql`, `), sql`))`], sql``)
+      : sql``;
+    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM (SELECT 1 FROM club_messages WHERE club_id = ${clubId} AND created_at > ${since}
+      AND deleted_at IS NULL AND (user_id IS NULL OR user_id != ${userId}) ${notHidden} LIMIT 99)`);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** Deletes messages (and their reactions) older than `beforeIso`. */
+  async deleteOldClubMessages(beforeIso: string): Promise<number> {
+    await this.db.run(sql`DELETE FROM club_message_reactions WHERE message_id IN (SELECT id FROM club_messages WHERE created_at < ${beforeIso})`);
+    const before = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM club_messages WHERE created_at < ${beforeIso}`);
+    await this.db.run(sql`DELETE FROM club_messages WHERE created_at < ${beforeIso}`);
+    await this.db.run(sql`DELETE FROM club_mutes WHERE until < ${nowIso()}`);
+    return Number(before[0]?.n ?? 0);
   }
 
   // ─── Awards and end-of-competition summaries ───
@@ -1597,6 +1795,9 @@ export class GameStorage {
       sql`DELETE FROM competition_stats WHERE user_id = ${userId}`,
       sql`DELETE FROM user_awards WHERE user_id = ${userId}`,
       sql`DELETE FROM competition_runs WHERE user_id = ${userId}`,
+      sql`DELETE FROM club_message_reactions WHERE user_id = ${userId} OR message_id IN (SELECT id FROM club_messages WHERE user_id = ${userId})`,
+      sql`DELETE FROM club_messages WHERE user_id = ${userId}`,
+      sql`DELETE FROM club_mutes WHERE user_id = ${userId}`,
     ]) {
       try {
         await this.db.run(statement);

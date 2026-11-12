@@ -30,6 +30,8 @@ export const LIMITS = {
   signupEmail: { max: 4, windowMs: 60 * MINUTE, lockMs: 60 * MINUTE },
   /** Sign-up codes requested from one IP address, whatever the email */
   signupIp: { max: 10, windowMs: 60 * MINUTE, lockMs: 60 * MINUTE },
+  /** Club chat messages from one account (a burst of 15 in a minute waits a minute) */
+  chatMessage: { max: 15, windowMs: MINUTE, lockMs: MINUTE },
 } satisfies Record<string, AttemptLimit>;
 
 /** The caller's IP on Cloudflare; null elsewhere (local API), where IP limits are skipped. */

@@ -59,6 +59,8 @@ struct MainTabView: View {
     @Environment(AppRouter.self) private var router
     @Environment(RunTracker.self) private var tracker
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
+    /// For the unread chat messages on the Club tab
+    @State private var clubModel = ClubModel.shared
 
     var body: some View {
         @Bindable var router = router
@@ -74,6 +76,7 @@ struct MainTabView: View {
                 .tag(AppRouter.Tab.activity)
             ClubTabView()
                 .tabItem { Label("Club", systemImage: "shield.lefthalf.filled") }
+                .badge(clubModel.chatUnread)
                 .tag(AppRouter.Tab.club)
             ProfileView()
                 .tabItem { Label("Perfil", systemImage: "person.crop.circle") }
@@ -99,6 +102,8 @@ struct MainTabView: View {
         }
         .modifier(PendingPhotosModifier())
         .seasonResultsInbox()
+        // My club (and its unread chat messages) on launch and whenever something changes
+        .task(id: router.reloadSignal) { await clubModel.load() }
     }
 }
 

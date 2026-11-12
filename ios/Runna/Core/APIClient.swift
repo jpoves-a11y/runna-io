@@ -216,6 +216,8 @@ final class APIClient {
     /// A request that changes data succeeded: cached GETs must be revalidated on the next visit.
     private func noteMutation(_ method: String, path: String) {
         guard method != "GET", !Self.nonInvalidatingPrefixes.contains(where: { path.hasPrefix($0) }) else { return }
+        // Club chat writes (messages, reactions, reads, mutes) change nothing other screens show
+        guard !ResponseCache.isClubChat(path) else { return }
         ResponseCache.shared.invalidateAll()
     }
 

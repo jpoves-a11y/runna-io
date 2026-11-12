@@ -11,9 +11,9 @@ final class AppRouter {
         case map, rankings, activity, club, profile
     }
 
-    /// The Club tab shows my club or my friends.
+    /// The Club tab shows my club, its chat or my friends.
     enum ClubSection: Hashable {
-        case club, friends
+        case club, chat, friends
     }
 
     enum ActivitySection: Hashable {
@@ -54,12 +54,12 @@ final class AppRouter {
                 selectedTab = .club
             }
         case "tab":
-            // runnaio://tab/<map|rankings|activity|club|friends|profile>[/mine|feed|friends]
+            // runnaio://tab/<map|rankings|activity|club|friends|profile>[/mine|feed|friends|chat]
             switch parts.first {
             case "rankings": selectedTab = .rankings
             case "activity": selectedTab = .activity
             case "club":
-                clubSection = parts.count >= 2 && parts[1] == "friends" ? .friends : .club
+                clubSection = parts.count >= 2 && parts[1] == "friends" ? .friends : parts.count >= 2 && parts[1] == "chat" ? .chat : .club
                 selectedTab = .club
             case "friends": showFriends()
             case "profile": selectedTab = .profile
@@ -109,6 +109,9 @@ final class AppRouter {
             selectedTab = .club
         case "season_competition_started", "season_competition_finished", "season_inactive", "rally", "challenge_completed":
             clubSection = .club
+            selectedTab = .club
+        case "club_chat":
+            clubSection = .chat
             selectedTab = .club
         case "reaction", "comment", "feed_comment", "feed_reply", "feed_mention", "friend_activity",
              "biggest_conquest", "longest_run", "fastest_pace":

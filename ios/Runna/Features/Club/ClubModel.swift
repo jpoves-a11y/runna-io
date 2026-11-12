@@ -28,9 +28,19 @@ final class ClubModel {
     var invites: [ClubInvite] { detail?.invites ?? [] }
     var myRequests: [ClubOwnRequest] { detail?.myRequests ?? [] }
     var pendingCount: Int { (detail?.pendingRequests.count ?? 0) + (isMember ? 0 : invites.count) }
+    /// Chat messages I haven't read (the server's count, cleared while the chat is open).
+    var chatUnread: Int { chatReadLocally ? 0 : (detail?.unreadCount ?? 0) }
+    /// The chat was read on this device after the last load.
+    private var chatReadLocally = false
+
+    /// The chat is on screen: nothing unread until the next load.
+    func markChatRead() {
+        chatReadLocally = true
+    }
 
     func reset() {
         detail = nil
+        chatReadLocally = false
         isLoading = false
         hasLoaded = false
         errorMessage = nil
@@ -51,7 +61,10 @@ final class ClubModel {
         }
         do {
             if let value = try await mineResource.fetch() {
-                withAnimation(.snappy) { detail = value }
+                withAnimation(.snappy) {
+                    detail = value
+                    chatReadLocally = false
+                }
             }
             errorMessage = nil
         } catch is CancellationError {

@@ -142,6 +142,7 @@ jobs:
           shoot tab/activity/mine 4-my-runs
           shoot tab/club 5-club
           shoot tab/club/friends 5b-friends
+          shoot tab/club/chat 5c-chat
           shoot tab/profile 6-profile
           # Competition screens (DEBUG-only deep links handled by AppRouter)
           shoot powers 7-inventory

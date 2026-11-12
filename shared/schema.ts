@@ -560,7 +560,44 @@ export const clubMembers = sqliteTable("club_members", {
   role: text("role").notNull().default('member'), // owner | admin | member
   joinedAt: text("joined_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   resultSeenCycle: integer("result_seen_cycle"), // members who didn't take part: last club result they saw
+  lastReadAt: text("last_read_at"), // club chat: unread messages are the ones after this
 });
+
+// Club chat (members only). System messages (competition start, cuts, results, members) have no user.
+export const clubMessages = sqliteTable("club_messages", {
+  id: text("id").primaryKey(),
+  clubId: text("club_id").notNull(),
+  userId: text("user_id"),
+  kind: text("kind").notNull().default('user'), // user | system
+  body: text("body").notNull(),
+  replyTo: text("reply_to"),
+  mentions: text("mentions"), // JSON array of user ids
+  createdAt: text("created_at").notNull(),
+  deletedAt: text("deleted_at"), // shown as "Mensaje eliminado"
+  deletedBy: text("deleted_by"),
+}, (table) => ({
+  clubIdx: index("idx_club_messages_club").on(table.clubId, table.createdAt),
+}));
+
+export const clubMessageReactions = sqliteTable("club_message_reactions", {
+  messageId: text("message_id").notNull(),
+  userId: text("user_id").notNull(),
+  emoji: text("emoji").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.messageId, table.userId, table.emoji] }),
+}));
+
+// Members an officer silenced in the chat until a time
+export const clubMutes = sqliteTable("club_mutes", {
+  clubId: text("club_id").notNull(),
+  userId: text("user_id").notNull(),
+  until: text("until").notNull(),
+  mutedBy: text("muted_by").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.clubId, table.userId] }),
+}));
 
 export const clubRequests = sqliteTable("club_requests", {
   id: text("id").primaryKey().default(sql`(lower(hex(randomblob(16))))`),

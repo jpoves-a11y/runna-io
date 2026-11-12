@@ -3792,7 +3792,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // ==================== REPORTS & BLOCKS (App Store guideline 1.2) ====================
 
-  const REPORT_TARGET_TYPES = ['user', 'comment', 'feed_event', 'photo'] as const;
+  const REPORT_TARGET_TYPES = ['user', 'comment', 'feed_event', 'photo', 'club_message'] as const;
 
   app.post('/api/reports', requireAuth, async (c) => {
     let body: any;

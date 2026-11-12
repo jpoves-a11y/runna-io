@@ -10,6 +10,7 @@ import {
   setRunsCountFrom,
   cityKeyOf,
   type ClubRow,
+  type ClubMessageRow,
   type CompetitionRow,
   type InventoryRow,
   type PublicUserLite,
@@ -37,6 +38,8 @@ import { parseGeometry, unexploredSpots } from './globalTerritory';
 import * as turf from '@turf/turf';
 import { canInvite, isOfficer, joinDecision, parseEntryMode, entryModeFromVisibility, CLUB_DESCRIPTION_MAX, type JoinVia } from './clubRules';
 import { withReasons, haversineMeters } from './antiCheat';
+import { CHAT_PAGE_SIZE, CHAT_REACTIONS, canDeleteMessage, canMute, isReaction, muteHours, normalizeMessage, parseMentions } from './clubChat';
+import { LIMITS, lockedForSeconds, recordAttempt } from './rateLimit';
 import {
   ITEMS,
   MODE_INFO,
@@ -231,6 +234,7 @@ async function joinClub(storage: WorkerStorage, game: GameStorage, env: any, clu
   const joinedCompetition = competitionEntry === 'joined' || competitionEntry === 'participant';
   const admins = (await game.getClubMembers(club.id)).filter((m) => m.role !== 'member' && m.userId !== userId).map((m) => m.userId);
   const user = (await game.getUserLite([userId])).get(userId);
+  await game.postSystemMessage(club.id, `${user?.name ?? 'Alguien'} se ha unido al club.`);
   await notifyUsers(storage, env, admins, {
     title: `🛡️ Nuevo miembro en ${club.name}`,
     body: `${user?.name ?? 'Alguien'} se ha unido al club.`,
@@ -1184,7 +1188,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
   }));
 
   app.get('/api/clubs/mine', requireAuth, handler(async (c) => {
-    const { game } = stores(c);
+    const { storage, game } = stores(c);
     const userId = c.get('authUserId');
     const membership = await game.getMembership(userId);
     const invites = await game.getPendingInvitesForUser(userId);
@@ -1203,7 +1207,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       }),
     };
     if (!membership) return c.json({ club: null, role: null, ...base });
-    return c.json({ ...(await clubDetail(game, membership.clubId, userId)), ...base });
+    const unreadCount = await game.chatUnreadCount(membership.clubId, userId, await storage.getBlockedUserIds(userId));
+    return c.json({ ...(await clubDetail(game, membership.clubId, userId)), ...base, unreadCount });
   }));
 
   async function clubDetail(game: GameStorage, clubId: string, userId: string) {
@@ -1446,6 +1451,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       return c.json({ left: true, clubDeleted: true });
     }
     await game.removeMember(clubId, userId);
+    const leaving = (await game.getUserLite([userId])).get(userId);
+    await game.postSystemMessage(clubId, `${leaving?.name ?? 'Alguien'} ha dejado el club.`);
     return c.json({ left: true });
   }));
 
@@ -1462,6 +1469,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (target.role === 'admin' && role !== 'owner') return fail(c, 403, 'Solo el líder puede expulsar a un oficial.');
     if (await inRunningCompetition(game, targetId)) return fail(c, 409, 'No se puede expulsar a alguien mientras compite. Podrás hacerlo cuando acabe la competición.');
     await game.removeMember(clubId, targetId);
+    const removed = (await game.getUserLite([targetId])).get(targetId);
+    await game.postSystemMessage(clubId, `${removed?.name ?? 'Un miembro'} ya no está en el club.`);
     return c.json({ removed: true });
   }));
 
@@ -1506,6 +1515,191 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     }
     await game.deleteClub(clubId);
     return c.json({ deleted: true });
+  }));
+
+  // ── Club chat (members only) ──
+
+  /** The user's membership when it is of this club. */
+  async function chatMembership(game: GameStorage, clubId: string, userId: string) {
+    const membership = await game.getMembership(userId);
+    return membership && membership.clubId === clubId ? membership : null;
+  }
+
+  /** Messages as the app shows them: author, reply preview, reactions (with mine), deleted ones without text. */
+  async function messagesJson(game: GameStorage, messages: ClubMessageRow[], viewerId: string, hiddenUserIds: string[] = []) {
+    const hidden = new Set(hiddenUserIds);
+    const known = new Map(messages.map((m) => [m.id, m]));
+    const missing = messages.flatMap((m) => (m.replyTo && !known.has(m.replyTo) ? [m.replyTo] : []));
+    for (const [id, m] of await game.getClubMessagesByIds(missing)) known.set(id, m);
+    const users = await game.getUserLite([...known.values()].flatMap((m) => (m.userId ? [m.userId] : [])));
+    const reactions = await game.getReactions(messages.filter((m) => !m.deletedAt).map((m) => m.id));
+    return messages.map((m) => {
+      const deleted = m.deletedAt !== null;
+      const reply = m.replyTo ? known.get(m.replyTo) ?? null : null;
+      const list = reactions.get(m.id) ?? [];
+      return {
+        id: m.id,
+        kind: m.kind,
+        user: m.userId ? users.get(m.userId) ?? null : null,
+        body: deleted ? null : m.body,
+        deleted,
+        deletedByModerator: deleted && m.deletedBy !== m.userId,
+        replyTo: reply ? {
+          id: reply.id,
+          userName: reply.userId ? users.get(reply.userId)?.name ?? 'Corredor' : 'Runna',
+          body: reply.deletedAt || (reply.userId && hidden.has(reply.userId)) ? null : reply.body.slice(0, 140),
+          deleted: reply.deletedAt !== null,
+        } : null,
+        mentions: m.mentions,
+        reactions: CHAT_REACTIONS.flatMap((emoji) => {
+          const who = list.filter((r) => r.emoji === emoji);
+          return who.length > 0 ? [{ emoji, count: who.length, mine: who.some((r) => r.userId === viewerId) }] : [];
+        }),
+        createdAt: m.createdAt,
+      };
+    });
+  }
+
+  app.get('/api/clubs/:id/messages', requireAuth, handler(async (c) => {
+    const { storage, game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    const membership = await chatMembership(game, clubId, userId);
+    if (!membership) return fail(c, 404, 'No estás en este club.');
+    const hidden = await storage.getBlockedUserIds(userId);
+    const page = await game.getClubMessages(clubId, { beforeId: c.req.query('before') || null, limit: CHAT_PAGE_SIZE, hiddenUserIds: hidden });
+    const moderator = isOfficer(membership.role);
+    return c.json({
+      messages: await messagesJson(game, page.messages, userId, hidden),
+      hasMore: page.hasMore,
+      reactions: CHAT_REACTIONS,
+      me: {
+        role: membership.role,
+        canModerate: moderator,
+        mutedUntil: await game.getMuteUntil(clubId, userId),
+        lastReadAt: await game.getChatReadAt(userId),
+      },
+      // Who is silenced now (only the leader and officers see it)
+      mutes: moderator ? await game.getClubMutes(clubId) : [],
+    });
+  }));
+
+  app.post('/api/clubs/:id/messages', requireAuth, handler(async (c) => {
+    const { storage, game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    const membership = await chatMembership(game, clubId, userId);
+    if (!membership) return fail(c, 404, 'No estás en este club.');
+    const mutedUntil = await game.getMuteUntil(clubId, userId);
+    if (mutedUntil) return fail(c, 403, 'Un oficial te ha silenciado en el chat del club.', { code: 'muted', mutedUntil });
+    const rateKey = `chat:${userId}`;
+    const wait = await lockedForSeconds(storage, rateKey);
+    if (wait > 0) return c.json({ error: `Vas muy rápido. Espera ${wait} s para escribir de nuevo.`, code: 'rate_limited', retryAfter: wait }, 429);
+    const input = await body(c);
+    const text = normalizeMessage(input.body);
+    if (!text) return fail(c, 400, 'Escribe un mensaje de hasta 1000 caracteres.');
+    let replied: ClubMessageRow | null = null;
+    if (input.replyTo) {
+      replied = await game.getClubMessage(String(input.replyTo));
+      if (!replied || replied.clubId !== clubId || replied.deletedAt) return fail(c, 400, 'Ese mensaje ya no existe.');
+    }
+    const members = await game.getClubMembers(clubId);
+    const mentions = parseMentions(text, members.map((m) => ({ userId: m.userId, username: m.user.username })), userId);
+    const message = await game.addClubMessage({ clubId, userId, kind: 'user', body: text, replyTo: replied?.id ?? null, mentions });
+    await recordAttempt(storage, rateKey, LIMITS.chatMessage);
+    await game.markChatRead(clubId, userId, message.createdAt);
+
+    // Pushes only for mentions and replies, never for every message (and never across a block)
+    const blocked = new Set(await storage.getBlockedUserIds(userId));
+    const club = await game.getClub(clubId);
+    const author = members.find((m) => m.userId === userId)?.user.name ?? 'Alguien';
+    const excerpt = text.length > 120 ? `${text.slice(0, 119)}…` : text;
+    const mentioned = mentions.filter((id) => !blocked.has(id));
+    if (mentioned.length > 0) {
+      await notifyUsers(storage, c.env, mentioned, {
+        title: `💬 ${author} te ha mencionado en ${club?.name ?? 'tu club'}`,
+        body: excerpt,
+        tag: `club-chat-${clubId}`,
+        data: { type: 'club_chat', clubId, messageId: message.id },
+      });
+    }
+    const replyAuthor = replied?.userId;
+    if (replyAuthor && replyAuthor !== userId && !mentions.includes(replyAuthor) && !blocked.has(replyAuthor)) {
+      await notifyUsers(storage, c.env, [replyAuthor], {
+        title: `💬 ${author} ha respondido a tu mensaje`,
+        body: excerpt,
+        tag: `club-chat-${clubId}`,
+        data: { type: 'club_chat', clubId, messageId: message.id },
+      });
+    }
+    return c.json({ message: (await messagesJson(game, [message], userId))[0] });
+  }));
+
+  app.post('/api/clubs/:id/messages/read', requireAuth, handler(async (c) => {
+    const { storage, game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    if (!(await chatMembership(game, clubId, userId))) return fail(c, 404, 'No estás en este club.');
+    const input = await body(c);
+    const message = input.messageId ? await game.getClubMessage(String(input.messageId)) : null;
+    await game.markChatRead(clubId, userId, message && message.clubId === clubId ? message.createdAt : new Date().toISOString());
+    return c.json({ ok: true, unreadCount: await game.chatUnreadCount(clubId, userId, await storage.getBlockedUserIds(userId)) });
+  }));
+
+  app.delete('/api/clubs/:id/messages/:messageId', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    const membership = await chatMembership(game, clubId, userId);
+    if (!membership) return fail(c, 404, 'No estás en este club.');
+    const message = await game.getClubMessage(c.req.param('messageId'));
+    if (!message || message.clubId !== clubId) return fail(c, 404, 'Mensaje no encontrado.');
+    if (!canDeleteMessage(userId, membership.role, message)) return fail(c, 403, 'Solo puedes borrar tus mensajes. El líder y los oficiales pueden borrar cualquiera.');
+    await game.deleteClubMessage(message.id, userId);
+    return c.json({ deleted: true });
+  }));
+
+  app.post('/api/clubs/:id/messages/:messageId/reactions', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    if (!(await chatMembership(game, clubId, userId))) return fail(c, 404, 'No estás en este club.');
+    const message = await game.getClubMessage(c.req.param('messageId'));
+    if (!message || message.clubId !== clubId || message.deletedAt) return fail(c, 404, 'Mensaje no encontrado.');
+    const input = await body(c);
+    if (!isReaction(input.emoji)) return fail(c, 400, 'Reacción no válida.');
+    const added = await game.toggleReaction(message.id, userId, input.emoji);
+    const [json] = await messagesJson(game, [message], userId);
+    return c.json({ added, reactions: json.reactions });
+  }));
+
+  app.post('/api/clubs/:id/members/:userId/mute', requireAuth, handler(async (c) => {
+    const { storage, game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    const targetId = c.req.param('userId');
+    const actor = await chatMembership(game, clubId, userId);
+    const target = await chatMembership(game, clubId, targetId);
+    if (!actor) return fail(c, 404, 'No estás en este club.');
+    if (!target) return fail(c, 404, 'Ese usuario no está en el club.');
+    if (!canMute(userId, actor.role, targetId, target.role)) {
+      return fail(c, 403, target.role === 'owner' ? 'No se puede silenciar al líder.' : 'Solo el líder y los oficiales pueden silenciar (a los oficiales, solo el líder).');
+    }
+    const input = await body(c);
+    const hours = muteHours(input.hours);
+    if (hours === null) return fail(c, 400, 'Elige entre 1 y 168 horas (0 para quitar el silencio).');
+    const until = hours > 0 ? new Date(Date.now() + hours * 3600_000).toISOString() : null;
+    await game.setMute(clubId, targetId, until, userId);
+    if (until) {
+      const club = await game.getClub(clubId);
+      await notifyUsers(storage, c.env, [targetId], {
+        title: `🔇 Silenciado en el chat de ${club?.name ?? 'tu club'}`,
+        body: `Un oficial te ha silenciado durante ${hours} h. Puedes seguir leyendo el chat.`,
+        tag: `club-mute-${clubId}`,
+        data: { type: 'club_chat', clubId },
+      });
+    }
+    return c.json({ mutedUntil: until });
   }));
 
   // ── Cron and admin ──

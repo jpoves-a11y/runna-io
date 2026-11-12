@@ -58,7 +58,12 @@ final class ResponseCache {
     }
 
     func isCacheable(path: String) -> Bool {
-        !excludedPrefixes.contains { path.hasPrefix($0) }
+        !excludedPrefixes.contains { path.hasPrefix($0) } && !Self.isClubChat(path)
+    }
+
+    /// The club chat polls its latest page: never cached, and its writes don't invalidate the rest.
+    static func isClubChat(_ path: String) -> Bool {
+        path.hasPrefix("/api/clubs/") && (path.contains("/messages") || path.hasSuffix("/mute"))
     }
 
     /// Current generation, captured before a request starts and passed back to `store`.

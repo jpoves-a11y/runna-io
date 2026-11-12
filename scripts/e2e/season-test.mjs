@@ -203,10 +203,67 @@ check('search by name or city finds listed clubs only', search.data.clubs.some((
 const searchByText = await call('GET', '/api/clubs/search?q=solo%20gala', { token: hugo.token });
 check('search finds open clubs', searchByText.data.clubs.some((c) => c.id === club3.id), searchByText.data.clubs.map((c) => c.name));
 
+// ───────────── Club chat ─────────────
+
+const chat = async (user, clubId = club1.id, query = '') => (await call('GET', `/api/clubs/${clubId}/messages${query}`, { token: user.token })).data;
+const say = (user, body, extra = {}, clubId = club1.id) => call('POST', `/api/clubs/${clubId}/messages`, { token: user.token, body: { body, ...extra } });
+const anaMine = (await call('GET', '/api/clubs/mine', { token: ana.token })).data;
+check('chat: unread messages are counted for the club tab', anaMine.unreadCount >= 2, anaMine.unreadCount);
+const firstPage = await chat(ana);
+check('chat: system messages when members join', firstPage.messages.some((m) => m.kind === 'system' && m.body === 'Ben se ha unido al club.') && firstPage.me.canModerate === true, firstPage.messages.map((m) => m.body));
+check('chat: only members read it', (await call('GET', `/api/clubs/${club1.id}/messages`, { token: dani.token })).status === 404);
+const hello = await say(ben, 'Hola @ana, ¿salimos el jueves?');
+check('chat: a message with a mention', hello.status === 200 && hello.data.message.mentions.includes(ana.id) && hello.data.message.user.id === ben.id, hello.data);
+check('chat: empty messages are refused', (await say(ben, '   ')).status === 400);
+check('chat: over 1000 characters is refused', (await say(ben, 'x'.repeat(1001))).status === 400);
+const reply = await say(cris, 'Yo me apunto', { replyTo: hello.data.message.id });
+check('chat: replies show what they answer', reply.data.message.replyTo?.id === hello.data.message.id && reply.data.message.replyTo.userName === 'Ben', reply.data.message.replyTo);
+const react = (user, id, emoji) => call('POST', `/api/clubs/${club1.id}/messages/${id}/reactions`, { token: user.token, body: { emoji } });
+const liked = await react(ana, hello.data.message.id, '👍');
+check('chat: reacting', liked.data.added === true && liked.data.reactions[0]?.count === 1 && liked.data.reactions[0].mine === true, liked.data);
+check('chat: reacting again takes it back', (await react(ana, hello.data.message.id, '👍')).data.added === false);
+check('chat: only the six reactions', (await react(ana, hello.data.message.id, '💩')).status === 400);
+check("chat: a member can't delete someone else's message", (await call('DELETE', `/api/clubs/${club1.id}/messages/${hello.data.message.id}`, { token: cris.token })).status === 403);
+const own = await say(ben, 'Me equivoqué de chat');
+check('chat: authors delete their messages', (await call('DELETE', `/api/clubs/${club1.id}/messages/${own.data.message.id}`, { token: ben.token })).data.deleted === true);
+check('chat: the leader deletes any message', (await call('DELETE', `/api/clubs/${club1.id}/messages/${reply.data.message.id}`, { token: ana.token })).data.deleted === true);
+const afterDeletes = (await chat(cris)).messages;
+const ownDeleted = afterDeletes.find((m) => m.id === own.data.message.id);
+const modDeleted = afterDeletes.find((m) => m.id === reply.data.message.id);
+check('chat: deleted messages keep their place without text, and say who deleted them', ownDeleted?.deleted && ownDeleted.body === null && !ownDeleted.deletedByModerator
+  && modDeleted?.deleted && modDeleted.deletedByModerator === true, { ownDeleted, modDeleted });
+check('chat: members cannot mute', (await call('POST', `/api/clubs/${club1.id}/members/${cris.id}/mute`, { token: ben.token, body: { hours: 24 } })).status === 403);
+check('chat: nobody mutes the leader', (await call('POST', `/api/clubs/${club1.id}/members/${ana.id}/mute`, { token: ben.token, body: { hours: 1 } })).status === 403);
+const muted = await call('POST', `/api/clubs/${club1.id}/members/${cris.id}/mute`, { token: ana.token, body: { hours: 24 } });
+check('chat: the leader mutes a member for 24 h', !!muted.data.mutedUntil && Date.parse(muted.data.mutedUntil) > Date.now() + 23 * 3600_000, muted.data);
+const mutedPost = await say(cris, '¿Por qué?');
+check('chat: a muted member cannot write, and knows until when', mutedPost.status === 403 && mutedPost.data.code === 'muted' && (await chat(cris)).me.mutedUntil === muted.data.mutedUntil, mutedPost.data);
+check('chat: the leader sees who is muted', (await chat(ana)).mutes.some((m) => m.userId === cris.id) && (await chat(ben)).mutes.length === 0);
+await call('POST', `/api/clubs/${club1.id}/members/${cris.id}/mute`, { token: ana.token, body: { hours: 0 } });
+check('chat: lifting the mute', (await say(cris, 'Gracias')).status === 200);
+await call('POST', `/api/blocks/${ben.id}`, { token: cris.token, body: {} });
+await say(ben, 'Mensaje que Cris no verá');
+check("chat: messages of blocked users are hidden", !(await chat(cris)).messages.some((m) => m.user?.id === ben.id) && (await chat(ana)).messages.some((m) => m.body === 'Mensaje que Cris no verá'));
+await call('DELETE', `/api/blocks/${ben.id}`, { token: cris.token });
+const report = await call('POST', '/api/reports', { token: cris.token, body: { targetType: 'club_message', targetId: hello.data.message.id, reportedUserId: ben.id, reason: 'Prueba' } });
+check('chat: messages can be reported', report.status === 200, report.data);
+const read = await call('POST', `/api/clubs/${club1.id}/messages/read`, { token: ana.token, body: {} });
+check('chat: reading clears the unread count', read.data.unreadCount === 0 && (await call('GET', '/api/clubs/mine', { token: ana.token })).data.unreadCount === 0, read.data);
+let limited = null;
+for (let i = 0; i < 16 && !limited; i++) {
+  const res = await say(eva, `Mensaje ${i}`, {}, club2.id);
+  if (res.status === 429) limited = { at: i, res };
+}
+check('chat: writing too fast waits a minute', limited?.at === 15 && limited.res.data.code === 'rate_limited', limited);
+const older = (await chat(eva, club2.id)).hasMore;
+const page2 = await chat(eva, club2.id, `?before=${(await chat(eva, club2.id)).messages[0].id}`);
+check('chat: older messages page by page', older === false || page2.messages.length > 0, { older, page2: page2.messages?.length });
+
 // ───────────── The competition starts ─────────────
 
 const tick = await admin('/api/admin/season/tick');
 check('first tick: one-time reset and start of cycle 0', tick.data.reset === true && tick.data.cycle === 0 && tick.data.phase === 'competition' && tick.data.started?.competitions === 3, tick.data);
+check('chat: the start of the competition is announced in the club chat', (await chat(ana)).messages.some((m) => m.kind === 'system' && m.body.startsWith('Empieza la competición: Todos contra todos.')));
 const tickAgain = await admin('/api/admin/season/tick');
 check('the tick is idempotent', tickAgain.data.reset === false && !tickAgain.data.started, tickAgain.data);
 const competitions = await all('select club_id, mode from club_competitions where cycle_number = 0');
@@ -357,6 +414,8 @@ const lastMinute = await grant(cris, 'magnet');
 await call('POST', `/api/inventory/${lastMinute}/activate`, { token: cris.token, body: {} });
 check('the close is 6 hours after the end (Monday 06:00)', Date.parse(season0.cycle.competitionClosesAt) - Date.parse(season0.cycle.competitionEndsAt) === 6 * 3600_000, season0.cycle);
 // Monday 00:10: the competition is over but not scored yet (late runs still arriving)
+// A message from long ago: the daily clean-up removes it (90 days)
+await db.execute({ sql: "insert into club_messages (id, club_id, user_id, kind, body, created_at) values ('old-message', ?, ?, 'user', 'Hace mucho', '2025-01-01T00:00:00.000Z')", args: [club1.id, ben.id] });
 const endTime = Date.parse(season0.cycle.competitionEndsAt) + 10 * 60_000;
 const closingTick = await admin('/api/admin/season/tick', { time: new Date(endTime).toISOString() });
 check('at the end it is not scored yet: the close waits until 06:00', closingTick.data.finished_0 === undefined && closingTick.data.phase === 'rest', closingTick.data);
@@ -364,6 +423,8 @@ check('nobody leaves while the last runs arrive', (await call('POST', `/api/club
 const closeTime = Date.parse(season0.cycle.competitionClosesAt) + 10 * 60_000;
 const finish = await admin('/api/admin/season/tick', { time: new Date(closeTime).toISOString() });
 check('the close tick finishes cycle 0', finish.data.finished_0 === 3 && finish.data.phase === 'rest', finish.data);
+check('chat: the result is announced in the club chat', (await chat(ana)).messages.some((m) => m.kind === 'system' && m.body.startsWith('Fin de la competición. Gana ')));
+check('chat: messages older than 90 days are cleaned up', !(await one("select id from club_messages where id = 'old-message'")));
 const results = await all('select club_id, mode, status, result from club_competitions where cycle_number = 0');
 const r1 = JSON.parse(results.find((r) => r.club_id === club1.id).result);
 check('ffa result: ranking, winner, rewards', r1.standings.length === 3 && !!r1.winnerUserId && Object.keys(r1.rewards).length >= 2, { winner: r1.winnerUserId, rewards: r1.rewards });
@@ -447,6 +508,7 @@ check('Elo: +16 / -16 between equal ratings, 3 league points to the winner', Mat
 const duelResults = Object.fromEntries((await all('select club_id, result from club_competitions where cycle_number = 1')).map((r) => [r.club_id, JSON.parse(r.result)]));
 check('duel awards: Victoria for every runner of the winning club, none for the losers', [dani.id, eva.id, fede.id].every((id) => duelResults[club2.id].awards?.[id]?.includes('victory'))
   && !Object.values(duelResults[club1.id].awards ?? {}).flat().includes('victory') && duelResults[club1.id].awards?.[ana.id]?.includes('mvp'), { club1: duelResults[club1.id].awards, club2: duelResults[club2.id].awards });
+check('chat: the duel result is announced', (await chat(eva, club2.id)).messages.some((m) => m.kind === 'system' && m.body.startsWith('Fin de la competición. Duelo ganado contra Zaragoza Runners')));
 const duelSummary = (await call('GET', '/api/season/results/pending', { token: eva.token })).data.results[0];
 check('duel summary: rival, score, Elo and league points', duelSummary?.clubResult.outcome === 'won' && duelSummary.clubResult.opponent?.name && duelSummary.clubResult.ratingChange === 16 && duelSummary.clubResult.leaguePoints === 3, duelSummary?.clubResult);
 const duelView = (await call('GET', '/api/season/history', { token: ana.token })).data.history[0];

@@ -210,6 +210,19 @@ if (daveClub.pendingRequests?.length !== 1) throw new Error('dave should see eri
 if (erinClub.invites?.length !== 1 || erinClub.myRequests?.length !== 1) throw new Error('erin should have an invite and a request');
 if (inventory.items.length !== items.length) throw new Error('alice items were not stored');
 
+// Club chat: a conversation with a reply, a mention and reactions; bob's last message is unread for alice
+const say = async (user, body, replyTo) => (await call('POST', `/api/clubs/${club.id}/messages`, { token: user.token, body: { body, ...(replyTo ? { replyTo } : {}) } })).message;
+const plan = await say(bob, '¿Quién se apunta mañana a las 7:00 por la ribera? Ritmo suave, unos 10 km.');
+await say(carol, 'Yo voy. @alice ¿te vienes?', plan.id);
+const yes = await say(alice, 'Hecho, nos vemos en el puente de Piedra.');
+for (const user of [bob, carol]) {
+  await call('POST', `/api/clubs/${club.id}/messages/${yes.id}/reactions`, { token: user.token, body: { emoji: '👍' } });
+}
+await call('POST', `/api/clubs/${club.id}/messages/${plan.id}/reactions`, { token: alice.token, body: { emoji: '🔥' } });
+await say(bob, 'Por cierto, hoy os he quitado un buen trozo del Actur.');
+const aliceClub = await call('GET', '/api/clubs/mine', { token: alice.token });
+if (aliceClub.unreadCount !== 1) throw new Error(`alice should have 1 unread chat message, got ${aliceClub.unreadCount}`);
+
 // The previous competition, finished two days ago and not seen by alice yet: the end-of-competition
 // summary pops up (club result, her numbers, awards and two chests to open)
 const prevId = 'seed-previous-competition';
