@@ -25,6 +25,8 @@ struct UserProfileContent: View {
     @Environment(AppRouter.self) private var router
     @State private var stats: UserStats?
     @State private var routes: [RunRoute] = []
+    /// Their runs are private to us (not a friend or a clubmate): the server answers 403.
+    @State private var routesPrivate = false
     @State private var theirFriends: [AppUser] = []
     @State private var friendsLoaded = false
     @State private var isFriend = false
@@ -216,6 +218,11 @@ struct UserProfileContent: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
+                if let title = GameTitle.name(stats.title) {
+                    Label(title, systemImage: "rosette")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.brand)
+                }
             }
 
             HStack(spacing: 10) {
@@ -241,13 +248,13 @@ struct UserProfileContent: View {
     }
 
     private func statsGrid(_ stats: UserStats) -> some View {
-        let area = Format.areaParts(stats.totalArea)
+        let area = Format.areaParts(stats.globalArea)
         let stolen = Format.areaParts(stats.totalStolen)
         let lost = Format.areaParts(stats.totalLost)
         let activities = "\(max(stats.activitiesCount, routes.count))"
         return VStack(spacing: DS.Spacing.l) {
             HStack(spacing: 0) {
-                StatTile(value: area.value, label: "Territorio", unit: area.unit)
+                StatTile(value: area.value, label: "Mapa global", unit: area.unit)
                 StatDivider()
                 StatTile(value: activities, label: "Actividades")
             }
@@ -301,7 +308,12 @@ struct UserProfileContent: View {
 
     private func activitiesSection(_ stats: UserStats) -> some View {
         Section {
-            if routes.isEmpty {
+            if routesPrivate {
+                Label("Sus carreras solo las ven sus amigos y los miembros de su club.", systemImage: "lock")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.surface)
+            } else if routes.isEmpty {
                 Text(isMe ? "Aún no has registrado ninguna carrera." : "Todavía no ha registrado ninguna carrera.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -359,7 +371,7 @@ struct UserProfileContent: View {
     }
 
     private func friendLabel(_ friend: AppUser) -> some View {
-        let parts = Format.areaParts(friend.totalArea)
+        let parts = Format.areaParts(friend.globalArea)
         return HStack {
             PersonRow(name: friend.name, username: friend.username, avatar: friend.avatar, color: friend.color, size: 40)
             Spacer(minLength: 8)
@@ -440,7 +452,7 @@ struct UserProfileContent: View {
         }
 
         if let loaded = try? await APIClient.shared.request("GET", "/api/friends/\(userId)", as: [AppUser].self) {
-            theirFriends = loaded.sorted { $0.totalArea > $1.totalArea }
+            theirFriends = loaded.sorted { $0.globalArea > $1.globalArea }
         }
         friendsLoaded = true
 
@@ -466,8 +478,14 @@ struct UserProfileContent: View {
     }
 
     private func reloadRoutesNow() async {
-        if let loaded = try? await APIClient.shared.request("GET", "/api/routes/\(userId)", as: [RunRoute].self) {
-            routes = loaded
+        do {
+            routes = try await APIClient.shared.request("GET", "/api/routes/\(userId)", as: [RunRoute].self)
+            routesPrivate = false
+        } catch let error as APIError where error.status == 403 {
+            routes = []
+            routesPrivate = true
+        } catch {
+            // Keep what is shown
         }
     }
 
@@ -668,6 +686,7 @@ struct RouteRow: View {
                     .foregroundStyle(.secondary)
                 metrics
                     .padding(.top, 2)
+                RunValidationBadge(route: route)
             }
         }
         .padding(.vertical, 2)
@@ -688,9 +707,9 @@ struct RouteRow: View {
             metric(Format.distance(route.distance))
             separator
             metric(Format.duration(route.duration))
-            if let area = route.territoryArea, area > 0 {
+            if !route.isRejected, let area = route.globalAreaGained, area > 0 {
                 separator
-                metric(Format.area(area))
+                metric("+\(Format.area(area))")
             }
         }
     }

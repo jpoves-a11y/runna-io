@@ -36,6 +36,7 @@ struct RouteDetailView: View {
                 mapHeader
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     titleBlock
+                    validationSection
                     statsSection
                     conquestSection
                     companions
@@ -162,31 +163,79 @@ struct RouteDetailView: View {
         }
     }
 
+    // MARK: Anti-cheat
+
+    /// Why the run doesn't count or is under review.
+    @ViewBuilder
+    private var validationSection: some View {
+        if route.isRejected || route.isUnderReview {
+            HStack(alignment: .top, spacing: DS.Spacing.m) {
+                Image(systemName: route.isRejected ? "xmark.circle" : "hourglass")
+                    .font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(route.isRejected ? Color.steal : Color.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(route.isRejected ? "Esta carrera no cuenta" : "Carrera en revisión")
+                        .font(.subheadline.weight(.semibold))
+                    Text(validationText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .card()
+        }
+    }
+
+    private var validationText: String {
+        if let message = route.validationMessage, !message.isEmpty {
+            return route.isRejected ? message : "\(message) Cuenta mientras tanto; si no es válida, se quitará su área."
+        }
+        return route.isRejected
+            ? "El sistema anti-trampas no la ha aceptado, así que no suma área en ningún mapa."
+            : "Cuenta mientras tanto; si no es válida, se quitará su área."
+    }
+
     // MARK: Conquest
 
+    /// New area on the global map (the one that stays) and competition territory of this run.
     @ViewBuilder
     private var conquestSection: some View {
-        if let area = route.territoryArea, area > 0 {
-            let parts = ActivityFormat.areaParts(area)
+        let global = route.isRejected ? 0 : (route.globalAreaGained ?? 0)
+        let competition = route.isRejected ? 0 : (route.territoryArea ?? 0)
+        if global > 0 || competition > 0 {
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 SectionHeader(title: "Territorio")
-                HStack(alignment: .center, spacing: DS.Spacing.m) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(32, weight: .bold), tint: Color.brand)
-                        Text(editable ? "Si borras esta carrera, tu territorio se recalcula." : "Pintado en el mapa con su color.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                    HStack(spacing: 0) {
+                        areaTile(global, label: "Mapa global")
+                        if competition > 0 {
+                            StatDivider(height: 44)
+                            areaTile(competition, label: "Competición")
+                        }
                     }
-                    Spacer(minLength: 0)
-                    Image(systemName: "flag")
-                        .font(.system(size: 20, weight: .regular))
+                    Text(editable ? "Si borras esta carrera, tu mapa global y tu competición se recalculan." : "Área nueva que sumó esta carrera.")
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .card()
             }
         }
+    }
+
+    private func areaTile(_ area: Double, label: String) -> some View {
+        let parts = ActivityFormat.areaParts(area)
+        return VStack(alignment: .leading, spacing: 4) {
+            StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(28, weight: .semibold), tint: Color.brand)
+            Text(label)
+                .statLabelStyle()
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, DS.Spacing.xs)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: Companions
@@ -241,7 +290,7 @@ struct RouteDetailView: View {
                 }
                 .buttonStyle(SecondaryButtonStyle(tint: .steal))
             }
-            Text("Al borrarla, tu territorio se recalcula sin esta carrera.")
+            Text("Al borrarla, tus mapas se recalculan sin esta carrera.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
@@ -251,8 +300,8 @@ struct RouteDetailView: View {
 
     private var shareText: String {
         var text = "\(name): \(Format.distance(route.distance)) en \(Format.duration(route.duration))"
-        if let area = route.territoryArea, area > 0 {
-            text += " y +\(Format.area(area)) conquistados"
+        if !route.isRejected, let area = route.globalAreaGained, area > 0 {
+            text += " y +\(Format.area(area)) de mapa nuevo"
         }
         return text + " con Runna.io"
     }

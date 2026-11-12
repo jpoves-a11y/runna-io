@@ -185,7 +185,7 @@ struct FriendsView: View {
             SocialSectionHeader(title: "Amigos", count: friends.isEmpty ? nil : friends.count)
         } footer: {
             if !friends.isEmpty && friendQuery.isEmpty {
-                Text("Ordenados por territorio. Desliza a la izquierda para eliminar.")
+                Text("Ordenados por mapa global. Desliza a la izquierda para eliminar.")
             }
         }
     }
@@ -603,7 +603,7 @@ private struct FriendsListRow: View {
     }
 
     private var areaColumn: some View {
-        let parts = Format.areaParts(friend.totalArea)
+        let parts = Format.areaParts(friend.globalArea)
         return StatValue(value: parts.value, unit: parts.unit, font: Font.stat(19, weight: .semibold))
     }
 }
@@ -1094,7 +1094,7 @@ final class FriendsModel {
     }
 
     private static func sortedFriends(_ list: [AppUser]) -> [AppUser] {
-        list.sorted { $0.totalArea > $1.totalArea }
+        list.sorted { $0.globalArea > $1.globalArea }
     }
 
     private func pending(_ list: [FriendRequest]) -> [FriendRequest] {

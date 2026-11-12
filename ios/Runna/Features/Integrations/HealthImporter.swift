@@ -12,6 +12,7 @@ final class HealthImporter {
     struct Summary {
         var imported = 0
         var duplicates = 0
+        var beforeSeason = 0
         var withoutRoute = 0
         var failed = 0
 
@@ -19,6 +20,7 @@ final class HealthImporter {
             var parts: [String] = []
             if imported > 0 { parts.append("\(imported) carrera(s) importada(s)") }
             if duplicates > 0 { parts.append("\(duplicates) ya estaba(n) en Runna.io") }
+            if beforeSeason > 0 { parts.append("\(beforeSeason) anterior(es) a la nueva temporada (no cuentan)") }
             if withoutRoute > 0 { parts.append("\(withoutRoute) sin ruta GPS") }
             if failed > 0 { parts.append("\(failed) no se pudieron subir") }
             return parts.isEmpty ? "No hay carreras nuevas en Apple Salud." : parts.joined(separator: " · ")
@@ -141,7 +143,12 @@ final class HealthImporter {
                 ConquestInbox.shared.enqueue(routeId: response.route.id)
                 UploadedRuns.didUpload(response.route)
             } catch let error as APIError where error.status == 409 {
-                summary.duplicates += 1
+                // "before_season": started before the season reset, so it never counts
+                if error.message == "before_season" {
+                    summary.beforeSeason += 1
+                } else {
+                    summary.duplicates += 1
+                }
                 imported.insert(workoutId)
                 saveImported(imported, userId: userId)
             } catch is CancellationError {

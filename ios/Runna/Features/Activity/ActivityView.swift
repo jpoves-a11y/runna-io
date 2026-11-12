@@ -649,6 +649,7 @@ private struct ActivityRunRow: View {
                         .layoutPriority(1)
                 }
                 stats
+                RunValidationBadge(route: route)
             }
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
@@ -687,7 +688,8 @@ private struct ActivityRunRow: View {
             if showDuration {
                 StatValue(value: Format.duration(route.duration), font: Font.stat(19, weight: .semibold))
             }
-            if let area = route.territoryArea, area > 0 {
+            // New area on the global map (the one that stays); nothing for a run that doesn't count
+            if !route.isRejected, let area = route.globalAreaGained, area > 0 {
                 let parts = ActivityFormat.areaParts(area)
                 StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(19, weight: .semibold), tint: Color.brand)
             }
@@ -768,7 +770,7 @@ private struct ActivityWeekSummary {
                 distance += route.distance
                 duration += route.duration
                 runs += 1
-                area += route.territoryArea ?? 0
+                area += route.isRejected ? 0 : (route.globalAreaGained ?? 0)
                 let day = calendar.dateComponents([.day], from: week.start, to: calendar.startOfDay(for: date)).day ?? 0
                 let index = min(max(day, 0), 6)
                 dailyKm[index] += route.distance / 1000
@@ -883,7 +885,7 @@ private struct ActivityWeekCard: View {
             StatDivider()
             StatTile(value: Format.duration(summary.duration), label: "Tiempo")
             StatDivider()
-            StatTile(value: area.value, label: "Conquistado", unit: area.unit)
+            StatTile(value: area.value, label: "Área nueva", unit: area.unit)
         }
     }
 }

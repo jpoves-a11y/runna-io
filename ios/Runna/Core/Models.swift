@@ -11,7 +11,10 @@ struct AppUser: Codable, Identifiable, Hashable {
     var name: String
     var color: String
     var avatar: String?
+    /// Competition map area (resets with each competition).
     var totalArea: Double
+    /// Global map area (never shrinks): what friends are ranked by.
+    var globalArea: Double
     var email: String?
     var emailVerified: Bool?
     var rank: Int?
@@ -21,7 +24,7 @@ struct AppUser: Codable, Identifiable, Hashable {
     var token: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, username, name, color, avatar, totalArea, email, emailVerified, rank, friendCount
+        case id, username, name, color, avatar, totalArea, globalArea, email, emailVerified, rank, friendCount
         case nickname, createdAt, token
     }
 
@@ -33,6 +36,7 @@ struct AppUser: Codable, Identifiable, Hashable {
         color = c.string(.color) ?? "#16A34A"
         avatar = c.string(.avatar)
         totalArea = c.double(.totalArea) ?? 0
+        globalArea = c.double(.globalArea) ?? 0
         email = c.string(.email)
         emailVerified = c.bool(.emailVerified)
         rank = c.int(.rank)
@@ -81,7 +85,11 @@ struct UserRef: Decodable, Identifiable, Hashable {
 /// GET /api/users/:id/stats
 struct UserStats: Decodable {
     let user: UserRef
+    /// Competition map area (resets with each competition).
     let totalArea: Double
+    /// Global map area (never shrinks).
+    let globalArea: Double
+    let title: String?
     let activitiesCount: Int
     let lastActivity: String?
     let totalStolen: Double
@@ -90,13 +98,15 @@ struct UserStats: Decodable {
     let stolenByViewer: Double
 
     enum CodingKeys: String, CodingKey {
-        case user, totalArea, activitiesCount, lastActivity, totalStolen, totalLost, stolenFromViewer, stolenByViewer
+        case user, totalArea, globalArea, title, activitiesCount, lastActivity, totalStolen, totalLost, stolenFromViewer, stolenByViewer
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         user = try c.decode(UserRef.self, forKey: .user)
         totalArea = c.double(.totalArea) ?? 0
+        globalArea = c.double(.globalArea) ?? 0
+        title = c.string(.title)
         activitiesCount = c.int(.activitiesCount) ?? 0
         lastActivity = c.string(.lastActivity)
         totalStolen = c.double(.totalStolen) ?? 0
@@ -220,11 +230,20 @@ struct RunRoute: Decodable, Identifiable, Hashable {
     let duration: Int
     let startedAt: String
     let completedAt: String
+    /// Competition territory conquered by this run (only during a competition of your club).
     let territoryArea: Double?
+    /// New area this run added to your global map (nil while it is being processed).
+    let globalAreaGained: Double?
     let ranTogetherWith: [String]
+    /// Anti-cheat verdict: "accepted", "flagged" (counts, under review) or "rejected" (doesn't count).
+    let validationStatus: String?
+    let validationReasons: [String]
+    /// Why it doesn't count or is under review, ready to show.
+    let validationMessage: String?
 
     enum CodingKeys: String, CodingKey {
         case id, userId, name, coordinates, distance, duration, startedAt, completedAt, territory, ranTogetherWithUsers
+        case globalAreaGained, validationStatus, validationReasons, validationMessage
     }
 
     private struct TerritorySummary: Decodable {
@@ -244,8 +263,17 @@ struct RunRoute: Decodable, Identifiable, Hashable {
         startedAt = c.string(.startedAt) ?? ""
         completedAt = c.string(.completedAt) ?? ""
         territoryArea = (try? c.decodeIfPresent(TerritorySummary.self, forKey: .territory))?.area
+        globalAreaGained = c.double(.globalAreaGained)
         ranTogetherWith = (try? c.decodeIfPresent([NameRef].self, forKey: .ranTogetherWithUsers))?.map(\.name) ?? []
+        validationStatus = c.string(.validationStatus)
+        validationReasons = (try? c.decodeIfPresent([String].self, forKey: .validationReasons)) ?? []
+        validationMessage = c.string(.validationMessage)
     }
+
+    /// The anti-cheat rejected it: no area anywhere.
+    var isRejected: Bool { validationStatus == "rejected" }
+    /// Counts, but a person will review it (it can be reverted).
+    var isUnderReview: Bool { validationStatus == "flagged" }
 
     var startDate: Date? { APIDate.parse(startedAt) }
     var locations: [CLLocationCoordinate2D] {

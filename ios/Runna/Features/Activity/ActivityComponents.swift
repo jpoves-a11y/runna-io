@@ -537,6 +537,32 @@ struct ActivityKindBadge: View {
     }
 }
 
+/// "No cuenta" / "En revisión" on a run the anti-cheat rejected or flagged (quiet meta text: glyph + label).
+/// Shows nothing for an accepted run.
+struct RunValidationBadge: View {
+    let route: RunRoute
+
+    var body: some View {
+        if route.isRejected {
+            badge("No cuenta", icon: "xmark.circle", tint: Color.steal)
+        } else if route.isUnderReview {
+            badge("En revisión", icon: "hourglass", tint: Color.secondary)
+        }
+    }
+
+    private func badge(_ text: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.caption2.weight(.medium))
+            Text(text)
+                .font(Font.meta)
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// Segmented switch between the friends feed and your runs.
 struct ActivitySectionPicker: View {
     @Binding var selection: AppRouter.ActivitySection
