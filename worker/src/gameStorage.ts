@@ -1362,6 +1362,20 @@ export class GameStorage {
     await this.db.run(sql`UPDATE club_members SET result_seen_cycle = MAX(COALESCE(result_seen_cycle, -1), ${cycleNumber}) WHERE user_id = ${userId}`);
   }
 
+  /**
+   * A steal undone because attacker and victim turned out to have run together: off the attacker's
+   * stolen area (participant and that run) and off the victim's lost area.
+   */
+  async revertSteal(data: { attackerCompetitionId: string; attackerId: string; attackerRouteId: string; victimCompetitionId: string; victimId: string; area: number }): Promise<void> {
+    if (!(data.area > 0)) return;
+    await this.db.run(sql`UPDATE competition_participants SET area_stolen = MAX(0, area_stolen - ${data.area})
+      WHERE competition_id = ${data.attackerCompetitionId} AND user_id = ${data.attackerId}`);
+    await this.db.run(sql`UPDATE competition_runs SET area_stolen = MAX(0, area_stolen - ${data.area})
+      WHERE competition_id = ${data.attackerCompetitionId} AND route_id = ${data.attackerRouteId}`);
+    await this.db.run(sql`UPDATE competition_participants SET area_lost = MAX(0, area_lost - ${data.area})
+      WHERE competition_id = ${data.victimCompetitionId} AND user_id = ${data.victimId}`);
+  }
+
   async removeCompetitionRunsOfRoute(routeId: string): Promise<void> {
     await this.db.run(sql`DELETE FROM competition_runs WHERE route_id = ${routeId}`);
     await this.db.run(sql`DELETE FROM flag_captures WHERE route_id = ${routeId}`);

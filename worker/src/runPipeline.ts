@@ -21,7 +21,7 @@ import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, haversineMet
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
 import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
 import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry } from './season';
-import { routeToEnclosedPolygon, activitiesOverlapInTime, geometriesOverlapByPercentage, type ConquestVictimInfo } from './territory';
+import { detectRanTogether, type ConquestVictimInfo } from './territory';
 import {
   ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, FLAG_CAPTURE_RADIUS_M, ITEMS,
   TOURIST_MIN_DISTANCE_M, TOURIST_BONUS_CAP_M2, DAWN_HOUR, DAWN_BONUS_RATIO, DAWN_BONUS_CAP_M2,
@@ -142,18 +142,14 @@ async function updateStreak(game: GameStorage, userId: string, startedAt: string
   return { days, saverUsed };
 }
 
-/** Club mates who ran the same loop at the same time (for the "En equipo" challenge). */
-async function ranWithClubmates(storage: WorkerStorage, clubmateIds: string[], startedAt: string, completedAt: string, runGeometry: any): Promise<string[]> {
-  if (clubmateIds.length === 0 || !runGeometry) return [];
+/** Friends or club mates who ran this run side by side (Expedición, the "En equipo" challenge). Order of upload doesn't matter. */
+async function ranWithClubmates(storage: WorkerStorage, clubmateIds: string[], route: { id: string; coordinates: any; startedAt: string; completedAt: string }): Promise<string[]> {
+  if (clubmateIds.length === 0) return [];
   const together: string[] = [];
   try {
-    for (const other of await storage.getRoutesInTimeWindow(clubmateIds, startedAt)) {
-      if (!other.startedAt || !other.completedAt) continue;
-      if (!activitiesOverlapInTime(startedAt, completedAt, other.startedAt, other.completedAt)) continue;
-      const coords = parseCoordinates(other.coordinates);
-      if (coords.length < 10) continue;
-      const poly = routeToEnclosedPolygon(coords, 150);
-      if (poly && geometriesOverlapByPercentage(runGeometry, poly.geometry, 0.9) && !together.includes(other.userId)) together.push(other.userId);
+    const thisRun = { coordinates: route.coordinates, startedAt: route.startedAt, completedAt: route.completedAt, pointTimes: await storage.getRoutePointTimes(route.id).catch(() => null) };
+    for (const other of await storage.getRoutesOverlappingInterval(clubmateIds, '', route.startedAt, route.completedAt)) {
+      if (detectRanTogether(thisRun, other).level === 'together' && !together.includes(other.userId)) together.push(other.userId);
     }
   } catch (error) {
     console.error('[PIPELINE] ran-together with club mates failed:', error);
@@ -429,7 +425,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     const membership = await game.getMembership(userId);
     const clubmates = membership ? await game.getClubMemberIds(membership.clubId) : [];
     const friends = await storage.getFriendIds(userId);
-    companions = await ranWithClubmates(storage, [...new Set([...friends, ...clubmates])].filter((id) => id !== userId), route.startedAt, route.completedAt, runGeometry);
+    companions = await ranWithClubmates(storage, [...new Set([...friends, ...clubmates])].filter((id) => id !== userId), route);
   }
   const startPoint = coords[0];
   const homeLat = Number(me?.home_lat);
@@ -552,7 +548,18 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     for (const victim of conquest?.victims ?? []) {
       if (victim.stolenArea > 0) await game.updateParticipant(context.rivalCompetitionId ?? context.competition.id, victim.userId, { addAreaLost: victim.stolenArea });
     }
-    if (context.rivalCompetitionId && (conquest?.victims.length ?? 0) > 0) await game.syncParticipantAreas(context.rivalCompetitionId);
+    // Ran together with someone who uploaded first: their steals against me are undone
+    for (const revert of conquest?.coRunReverts ?? []) {
+      await game.revertSteal({
+        attackerCompetitionId: context.rivalCompetitionId ?? context.competition.id,
+        attackerId: revert.userId,
+        attackerRouteId: revert.routeId,
+        victimCompetitionId: context.competition.id,
+        victimId: userId,
+        area: revert.area,
+      });
+    }
+    if (context.rivalCompetitionId && ((conquest?.victims.length ?? 0) > 0 || (conquest?.coRunReverts.length ?? 0) > 0)) await game.syncParticipantAreas(context.rivalCompetitionId);
     // Banderas: the flags this run passed by
     const flags = mode === 'flags' ? await captureFlags(storage, game, env, context, route, analysis, now) : [];
     await game.recordCompetitionRun({
@@ -587,7 +594,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     const flat = analysis.segments.flat();
     result.chests = await collectChestsAlongRun(storage, game, userId, flat, routeId, now);
     const clubmates = (await game.getClubMemberIds(membership.clubId)).filter((id) => id !== userId);
-    const withMates = await ranWithClubmates(storage, clubmates, route.startedAt, route.completedAt, runGeometry);
+    const withMates = await ranWithClubmates(storage, clubmates, route);
     for (const id of withMates) if (!result.ranTogetherWith.includes(id)) result.ranTogetherWith.push(id);
     result.challengesCompleted = await applyRunToChallenges(game, userId, info, {
       startedAt: route.startedAt,
@@ -630,10 +637,8 @@ const FRIEND_ACTIVITY_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 async function sendRunNotifications(storage: WorkerStorage, env: any, userId: string, routeId: string, completedAt: string | null | undefined, distance: number, result: RunPipelineResult, globalBefore: number, globalAfter: number): Promise<void> {
   if (!env) return;
   try {
-    const { notifyTerritoryLoss, notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
-    for (const victim of (result.competition?.victims ?? []).slice(0, 3)) {
-      try { await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea); } catch (_) {}
-    }
+    const { notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
+    // "Te han robado" pushes are queued by the conquest and sent by the cron a few minutes later
     // Once per run, however often it's processed (another import of it, a retry, a rebuild)
     const ended = completedAt ? Date.parse(completedAt) : NaN;
     if (Number.isFinite(ended) && Date.now() - ended <= FRIEND_ACTIVITY_MAX_AGE_MS && await storage.claimFriendActivityNotification(routeId)) {

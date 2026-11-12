@@ -354,6 +354,26 @@ const again = await call('POST', `/api/inventory/${shield}/activate`, { token: a
 check('an item can only be used once', again.status === 409, again);
 const b2 = await run(ben, 'Asalto 2', loop(C[0] - 0.002, C[1] - 0.002, 450), t0 + 13 * 3600_000);
 check('the shield stops steals', b2.result.competition?.areaStolen === 0, b2.result.competition);
+
+// Ran together: the same result whoever uploads first. Cris owns a zone; Ben and Cris then run it
+// side by side. Ben uploads first and steals it (Cris's run isn't there yet); when Cris uploads,
+// the steal is undone.
+const Z2 = [C[0] - 0.05, C[1] - 0.05];
+await run(cris, 'Zona de Cris', loop(Z2[0], Z2[1], 400), t0 + 15 * 3600_000);
+const partOf = async (u) => one('select area, area_stolen, area_lost from competition_participants p join club_competitions c on c.id = p.competition_id where c.cycle_number = 0 and p.user_id = ?', [u.id]);
+const [benBefore, crisBefore] = [await partOf(ben), await partOf(cris)];
+const benFirst = await run(ben, 'Juntos (Ben)', loop(Z2[0], Z2[1], 400), t0 + 17 * 3600_000);
+check('ran together, first upload: it steals (the other run is not there yet)', benFirst.result.competition?.areaStolen > 300_000, benFirst.result.competition);
+const queued = await one('select stolen_area from pending_steal_notifications where route_id = ? and victim_id = ?', [benFirst.route.id, cris.id]);
+check('the "te han robado" push waits in the queue', Number(queued?.stolen_area) > 300_000, queued);
+const crisSecond = await run(cris, 'Juntos (Cris)', loop(Z2[0], Z2[1], 400), t0 + 17 * 3600_000 + 20_000);
+const [benAfter, crisAfter] = [await partOf(ben), await partOf(cris)];
+check('ran together, second upload: nothing stolen back and both listed', crisSecond.result.competition?.areaStolen === 0 && (await one('select ran_together_with from routes where id = ?', [crisSecond.route.id])).ran_together_with?.includes(ben.id)
+  && (await one('select ran_together_with from routes where id = ?', [benFirst.route.id])).ran_together_with.includes(cris.id), crisSecond.result);
+check('the steal is undone: Cris has the zone again, the stats go back', Number(crisAfter.area) >= Number(crisBefore.area) - 1000
+  && Math.abs(Number(crisAfter.area_lost) - Number(crisBefore.area_lost)) < 1000 && Math.abs(Number(benAfter.area_stolen) - Number(benBefore.area_stolen)) < 1000
+  && Number(benAfter.area) > Number(benBefore.area) + 300_000, { benBefore, benAfter, crisBefore, crisAfter });
+check('and the queued push is dropped', !(await one('select 1 as x from pending_steal_notifications where route_id = ? and victim_id = ?', [benFirst.route.id, cris.id])));
 const headStart = await grant(cris, 'head_start');
 await call('POST', `/api/inventory/${headStart}/activate`, { token: cris.token, body: {} });
 const crisPart = await one('select bonus from competition_participants where user_id = ?', [cris.id]);

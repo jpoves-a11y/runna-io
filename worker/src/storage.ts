@@ -813,7 +813,9 @@ export class WorkerStorage {
 
   async getRoutePointTimes(routeId: string): Promise<string | null> {
     await this.ensureSchemaUpgrades();
-    const rows = await this.db.all<{ times: string }>(sql`SELECT times FROM route_streams WHERE route_id = ${routeId} AND times IS NOT NULL`);
+    const rows = await this.db.all<{ times: string | null }>(sql`
+      SELECT COALESCE(t.times, CASE WHEN json_valid(r.track_meta) THEN json_extract(r.track_meta, '$.t') END) AS times
+      FROM routes r LEFT JOIN route_streams t ON t.route_id = r.id WHERE r.id = ${routeId}`);
     return rows[0]?.times ?? null;
   }
 
@@ -914,9 +916,11 @@ export class WorkerStorage {
       ? sql` AND r.user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`
       : sql``;
     const rows = await this.db.all<{ id: string; user_id: string; coordinates: string; started_at: string; completed_at: string; ran_together_with: string | null; times: string | null }>(sql`
-      SELECT r.id, r.user_id, r.coordinates, r.started_at, r.completed_at, r.ran_together_with, t.times
+      SELECT r.id, r.user_id, r.coordinates, r.started_at, r.completed_at, r.ran_together_with,
+        COALESCE(t.times, CASE WHEN json_valid(r.track_meta) THEN json_extract(r.track_meta, '$.t') END) AS times
       FROM routes r LEFT JOIN route_streams t ON t.route_id = r.id
       WHERE r.user_id != ${excludeUserId} AND r.started_at <= ${to} AND r.completed_at >= ${from}${userFilter}
+        AND (r.validation_status IS NULL OR r.validation_status != 'rejected')
       ORDER BY r.started_at
       LIMIT ${limit}`);
     return rows.map((r) => ({
