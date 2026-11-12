@@ -563,7 +563,7 @@ private struct ChatBubbleRow: View {
                     }
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(attributedBody)
+                attributedBody
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
                 if let date = message.date {
