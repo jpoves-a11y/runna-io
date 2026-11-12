@@ -122,8 +122,12 @@ final class ClubChatStore {
         }
     }
 
+    /// The last message already marked as read (only new ones are sent).
+    @ObservationIgnored private var readUpTo: String?
+
     func markRead() async {
-        guard let last = messages.last else { return }
+        guard let last = messages.last, last.id != readUpTo else { return }
+        readUpTo = last.id
         try? await APIClient.shared.send("POST", "/api/clubs/\(clubId)/messages/read", body: ["messageId": last.id])
     }
 }
