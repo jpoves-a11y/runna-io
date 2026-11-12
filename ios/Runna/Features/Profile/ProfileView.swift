@@ -92,6 +92,7 @@ struct ProfileView: View {
                 heroSection(user)
                 GameProfileSection()
                 statsSection(user)
+                ProfileAwardsSection(awards: model.awards)
                 rivalriesSection
             }
             IntegrationsSection()
@@ -610,15 +611,20 @@ final class ProfileModel {
     static let shared = ProfileModel()
 
     private(set) var conquest: ConquestStats?
+    /// Awards won at the close of competitions (showcase).
+    private(set) var awards: [AwardInfo] = []
     var reloadTracker = ReloadSignalTracker()
 
     private var ownerId: String?
     private var resource: CachedResource<ConquestStats>?
+    private var statsResource: CachedResource<UserStats>?
 
     func reset() {
         ownerId = nil
         resource = nil
+        statsResource = nil
         conquest = nil
+        awards = []
         reloadTracker = ReloadSignalTracker()
     }
 
@@ -627,15 +633,22 @@ final class ProfileModel {
             reset()
             ownerId = userId
             resource = CachedResource("/api/conquest-stats/\(userId)")
+            statsResource = CachedResource("/api/users/\(userId)/stats")
         }
-        guard let resource else { return }
+        guard let resource, let statsResource else { return }
         if let cached = await resource.loadCached() {
             conquest = cached
         }
-        if !force && conquest != nil && resource.isFresh { return }
+        if let cached = await statsResource.loadCached() {
+            awards = cached.awards
+        }
+        if !force && conquest != nil && resource.isFresh && statsResource.isFresh { return }
         // On failure the last known stats stay on screen
         if let loaded = try? await resource.fetch() {
             conquest = loaded
+        }
+        if let loaded = try? await statsResource.fetch() {
+            awards = loaded.awards
         }
     }
 }

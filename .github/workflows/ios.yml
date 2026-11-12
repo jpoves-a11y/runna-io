@@ -145,6 +145,10 @@ jobs:
           shoot tab/profile 6-profile
           # Competition screens (DEBUG-only deep links handled by AppRouter)
           shoot powers 7-inventory
+          # End-of-competition summary (Alicia has one pending in the seed): club, awards, rewards
+          shoot season/results 8-results
+          shoot season/results/awards 8b-results-awards
+          shoot season/results/rewards 8c-results-rewards
           if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
             echo "App crashed while showing the screens"
             exit 1

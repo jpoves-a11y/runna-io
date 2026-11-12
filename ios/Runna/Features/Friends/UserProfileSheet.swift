@@ -179,6 +179,8 @@ struct UserProfileContent: View {
                 SocialSectionHeader(title: "Estadísticas")
             }
 
+            ProfileAwardsSection(awards: stats.awards)
+
             if !isMe && (stats.stolenFromViewer > 0 || stats.stolenByViewer > 0) {
                 Section {
                     rivalryCard(stats)

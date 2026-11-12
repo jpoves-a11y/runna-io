@@ -14,7 +14,8 @@ import {
   type InventoryRow,
   type PublicUserLite,
 } from './gameStorage';
-import { cycleAt, cycleBounds, isRestLike, isClosing, monthPeriod, type CycleInfo } from './cycles';
+import { cycleAt, cycleBounds, isRestLike, isClosing, monthPeriod, modeForCycle, type CycleInfo } from './cycles';
+import { runDaysByUser } from './awards';
 import {
   seasonTick,
   joinRunningCompetition,
@@ -56,6 +57,8 @@ import {
   DEFAULT_CREST,
   DUEL_PER_RUNNER_CAP_M2,
   RARITY_INFO,
+  AWARDS,
+  type AwardId,
   type CompetitionMode,
   type Crest,
   type ClubRole,
@@ -307,6 +310,122 @@ function trophiesOf(history: Awaited<ReturnType<typeof clubHistory>>) {
   };
 }
 
+// ─── End-of-competition summary (the popup) ──────────────────────────────────
+
+/** Summaries older than this don't pop up any more (still reachable from the club history). */
+const RESULT_POPUP_DAYS = 15;
+
+function awardJson(id: string) {
+  const award = AWARDS[id as AwardId];
+  return award ? { id: award.id, name: award.name, emoji: award.emoji, symbol: award.symbol, description: award.description } : null;
+}
+
+/**
+ * Everything the end-of-competition window shows to `userId`: the club's result (by mode), their
+ * own numbers, awards, rewards and the next competition. Members who didn't take part get the
+ * club's result only (`participated: false`).
+ */
+async function competitionResultJson(game: GameStorage, competition: CompetitionRow, userId: string) {
+  const result = competition.result ?? {};
+  const standings: any[] = Array.isArray(result.standings) ? result.standings : [];
+  const participant = await game.getParticipant(competition.id, userId);
+  const mine = standings.find((s) => s.userId === userId) ?? null;
+  const club = await game.getClub(competition.clubId);
+  const users = await game.getUserLite([
+    ...standings.slice(0, 3).map((s) => s.userId),
+    ...(result.mvpUserId ? [result.mvpUserId] : []),
+    ...(result.winnerUserId ? [result.winnerUserId] : []),
+  ]);
+  const userJson = (id: string | null | undefined) => (id ? users.get(id) ?? null : null);
+  const myRuns = participant ? (await game.getCompetitionRuns(competition.id)).filter((r) => r.userId === userId) : [];
+  const rewards = participant ? await game.getRewardItems(userId, competition.id) : [];
+  const mode = competition.mode as CompetitionMode;
+  // The next competition: the one running now if it already started (seen days later), else the
+  // following cycle; its mode as the club plays it once it exists, the rotation's before
+  const now = cycleAt(Date.now());
+  const next = now.phase === 'competition' && now.number > competition.cycleNumber ? now.number : competition.cycleNumber + 1;
+  const nextMode = ((await game.getClubCompetition(competition.clubId, next))?.mode ?? modeForCycle(next)) as CompetitionMode;
+  return {
+    competitionId: competition.id,
+    cycleNumber: competition.cycleNumber,
+    mode,
+    modeInfo: MODE_INFO[mode] ?? null,
+    finishedAt: competition.finishedAt,
+    participated: Boolean(participant),
+    seen: participant ? participant.resultSeenAt !== null : false,
+    club: club ? { id: club.id, name: club.name, crest: { ...DEFAULT_CREST, ...club.crest }, color: club.color } : null,
+    clubResult: {
+      total: Number(result.total ?? competition.score ?? 0),
+      participants: standings.length,
+      winner: userJson(result.winnerUserId),
+      mvp: userJson(result.mvpUserId),
+      podium: standings.slice(0, 3).map((s) => ({ ...(users.get(s.userId) ?? { id: s.userId, name: s.name }), userId: s.userId, rank: s.rank, score: s.score })),
+      teamScores: result.teamScores ?? null,
+      teamNames: mode === 'teams' ? (competition.config?.teamNames ?? ['Equipo Sol', 'Equipo Luna']) : null,
+      winnerTeam: result.winnerTeam ?? null,
+      target: result.target ?? null,
+      achieved: result.achieved ?? null,
+      opponent: result.opponent ?? null,
+      outcome: result.outcome ?? null,
+      ratingChange: typeof result.ratingChange === 'number' ? Math.round(result.ratingChange) : null,
+      leaguePoints: Number(result.leaguePoints ?? 0),
+      cuts: Array.isArray(result.cuts) ? result.cuts.length : null,
+    },
+    me: participant ? {
+      rank: mine?.rank ?? null,
+      of: standings.length,
+      score: Number(mine?.score ?? 0),
+      team: participant.team,
+      areaStolen: participant.areaStolen,
+      areaLost: participant.areaLost,
+      distance: participant.distance,
+      runs: participant.runs,
+      days: runDaysByUser(myRuns).get(userId) ?? 0,
+      eliminatedCut: participant.eliminatedCut,
+    } : null,
+    awards: ((result.awards?.[userId] ?? []) as string[]).map(awardJson).filter(Boolean),
+    rewards: rewards.map(itemJson),
+    next: {
+      cycleNumber: next,
+      mode: nextMode,
+      modeInfo: MODE_INFO[nextMode] ?? null,
+      startsAt: new Date(cycleBounds(next).competitionStart).toISOString(),
+      running: Date.now() >= cycleBounds(next).competitionStart,
+    },
+  };
+}
+
+/**
+ * Summaries to pop up: finished competitions the user took part in and hasn't seen (last 15 days),
+ * plus, for a member who didn't take part, their club's last result once.
+ */
+async function pendingResults(game: GameStorage, userId: string, now = Date.now()): Promise<CompetitionRow[]> {
+  const since = new Date(now - RESULT_POPUP_DAYS * 86_400_000).toISOString();
+  const list = await game.getUnseenResults(userId, since, 3);
+  const membership = await game.getMembership(userId);
+  if (membership) {
+    const latest = (await game.getClubCompetitionHistory(membership.clubId, 1))[0];
+    const seenCycle = await game.getResultSeenCycle(userId);
+    if (
+      latest && latest.finishedAt && latest.finishedAt >= since
+      && !list.some((c) => c.id === latest.id)
+      && latest.cycleNumber > (seenCycle ?? -1)
+      && Date.parse(membership.joinedAt) < Date.parse(latest.finishedAt)
+      && !(await game.getParticipant(latest.id, userId))
+    ) {
+      list.push(latest);
+    }
+  }
+  return list.sort((a, b) => b.cycleNumber - a.cycleNumber);
+}
+
+/** The user can see the summary of a competition they took part in or of their club's. */
+async function canSeeResult(game: GameStorage, competition: CompetitionRow, userId: string): Promise<boolean> {
+  if (await game.getParticipant(competition.id, userId)) return true;
+  const membership = await game.getMembership(userId);
+  return membership?.clubId === competition.clubId;
+}
+
 // ─── Competition view ────────────────────────────────────────────────────────
 
 async function competitionView(game: GameStorage, competition: CompetitionRow, userId: string) {
@@ -509,6 +628,38 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const items = [];
     for (const h of history) items.push(await competitionView(game, h.competition, userId));
     return c.json({ history: items });
+  }));
+
+  // ── End-of-competition summaries ──
+
+  app.get('/api/season/results/pending', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const results = [];
+    for (const competition of await pendingResults(game, userId)) results.push(await competitionResultJson(game, competition, userId));
+    return c.json({ results });
+  }));
+
+  app.get('/api/season/results/:competitionId', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const competition = await game.getCompetition(c.req.param('competitionId'));
+    if (!competition || !(await canSeeResult(game, competition, userId))) return fail(c, 404, 'Competición no encontrada');
+    if (competition.status !== 'finished') return fail(c, 409, 'La competición aún no ha terminado', { code: 'not_finished' });
+    return c.json({ result: await competitionResultJson(game, competition, userId) });
+  }));
+
+  app.post('/api/season/results/:competitionId/seen', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const competition = await game.getCompetition(c.req.param('competitionId'));
+    if (!competition || !(await canSeeResult(game, competition, userId))) return fail(c, 404, 'Competición no encontrada');
+    if (await game.getParticipant(competition.id, userId)) {
+      await game.updateParticipant(competition.id, userId, { resultSeenAt: new Date().toISOString() });
+    } else {
+      await game.setResultSeenCycle(userId, competition.cycleNumber);
+    }
+    return c.json({ ok: true });
   }));
 
   /** Competition map: territories of my running competition + chests I can see. */

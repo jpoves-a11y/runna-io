@@ -77,6 +77,12 @@ final class AppRouter {
             // runnaio://weekly-summary (e2e screenshots)
             selectedTab = .rankings
             showWeeklySummary = true
+        case "season":
+            // runnaio://season/results (e2e screenshots): the pending end-of-competition summary pops
+            // up (SeasonResultsInbox only does so in tests when launched with this link)
+            if parts.first == "results" {
+                selectedTab = .club
+            }
         #endif
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)

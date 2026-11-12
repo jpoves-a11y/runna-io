@@ -98,6 +98,7 @@ struct MainTabView: View {
             }
         }
         .modifier(PendingPhotosModifier())
+        .seasonResultsInbox()
     }
 }
 

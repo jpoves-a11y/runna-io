@@ -30,6 +30,7 @@ import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { publicBaseUrl } from './pages';
 import { GameStorage, SEASON_INVENTORY, isBeforeSeason } from './gameStorage';
+import { AWARDS, type AwardId } from '../../shared/game';
 import { analyzeRun, REASON_MESSAGES, type ValidationReason } from './antiCheat';
 import {
   simplifyCoordinates,
@@ -3624,6 +3625,18 @@ export function registerRoutes(app: Hono<AppEnv>) {
         if (nn) nicknameData = { nickname: nn.nickname, nicknameExpiresAt: nn.expiresAt };
       } catch (_) {}
 
+      // Awards won at the close of competitions (the profile showcase)
+      let awards: Array<{ id: string; name: string; emoji: string; symbol: string; description: string; count: number }> = [];
+      try {
+        const summary = await new GameStorage(db).getAwardSummary(userId);
+        awards = summary.flatMap((a) => {
+          const def = AWARDS[a.award as AwardId];
+          return def ? [{ id: def.id, name: def.name, emoji: def.emoji, symbol: def.symbol, description: def.description, count: a.count }] : [];
+        });
+      } catch (e) {
+        console.error('Error fetching awards:', e);
+      }
+
       const stats = {
         user: {
           id: user.id,
@@ -3643,6 +3656,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         totalLost, // total area stolen from this user globally (m²)
         stolenFromViewer, // area this user stole from the viewer (m²)
         stolenByViewer, // area the viewer stole from this user (m²)
+        awards,
       };
 
       return c.json(stats);

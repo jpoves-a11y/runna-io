@@ -248,6 +248,19 @@ export async function applyGameSchema(db: Database): Promise<void> {
     PRIMARY KEY (competition_id, route_id)
   )`);
   await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_runs_user ON competition_runs(competition_id, user_id, started_at)`);
+  // Awards won when a competition closes (the profile shows how many of each)
+  await db.run(sql`CREATE TABLE IF NOT EXISTS user_awards (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    competition_id TEXT NOT NULL,
+    award TEXT NOT NULL,
+    cycle_number INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, competition_id, award)
+  )`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_awards_user ON user_awards(user_id, created_at)`);
+  // Members who didn't take part also see their club's result once (up to this cycle)
+  await tryRun(db, sql`ALTER TABLE club_members ADD COLUMN result_seen_cycle INTEGER`);
   await db.run(sql`CREATE TABLE IF NOT EXISTS club_matches (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     cycle_number INTEGER NOT NULL,
@@ -1103,6 +1116,54 @@ export class GameStorage {
     }));
   }
 
+  // ─── Awards and end-of-competition summaries ───
+
+  async addAwards(competition: { id: string; cycleNumber: number; mode: string }, awards: Record<string, string[]>): Promise<void> {
+    for (const [userId, list] of Object.entries(awards)) {
+      for (const award of list) {
+        await this.db.run(sql`INSERT OR IGNORE INTO user_awards (user_id, competition_id, award, cycle_number, mode, created_at)
+          VALUES (${userId}, ${competition.id}, ${award}, ${competition.cycleNumber}, ${competition.mode}, ${nowIso()})`);
+      }
+    }
+  }
+
+  /** How many times the user won each award, and the last time. */
+  async getAwardSummary(userId: string): Promise<Array<{ award: string; count: number; lastAt: string }>> {
+    const rows = await this.db.all<Row>(sql`SELECT award, COUNT(*) AS n, MAX(created_at) AS last_at FROM user_awards
+      WHERE user_id = ${userId} GROUP BY award ORDER BY n DESC, last_at DESC`);
+    return rows.map((r) => ({ award: r.award, count: Number(r.n), lastAt: r.last_at }));
+  }
+
+  /** Items the user got as rewards of a competition. */
+  async getRewardItems(userId: string, competitionId: string): Promise<InventoryRow[]> {
+    const rows = await this.db.all<Row>(sql`SELECT * FROM user_powers WHERE user_id = ${userId} AND source = 'reward' AND treasure_id = ${competitionId}
+      ORDER BY created_at ASC`);
+    return rows.map(toInventory);
+  }
+
+  /** Finished competitions the user took part in whose summary they haven't seen (newest first). */
+  async getUnseenResults(userId: string, sinceIso: string, limit = 3): Promise<CompetitionRow[]> {
+    const rows = await this.db.all<Row>(sql`SELECT c.* FROM competition_participants p JOIN club_competitions c ON c.id = p.competition_id
+      WHERE p.user_id = ${userId} AND c.status = 'finished' AND p.result_seen_at IS NULL AND c.finished_at >= ${sinceIso}
+      ORDER BY c.cycle_number DESC LIMIT ${limit}`);
+    return rows.map(toCompetition);
+  }
+
+  async getParticipant(competitionId: string, userId: string): Promise<ParticipantRow | null> {
+    const rows = await this.db.all<Row>(sql`SELECT * FROM competition_participants WHERE competition_id = ${competitionId} AND user_id = ${userId}`);
+    return rows[0] ? toParticipant(rows[0]) : null;
+  }
+
+  async getResultSeenCycle(userId: string): Promise<number | null> {
+    const rows = await this.db.all<Row>(sql`SELECT result_seen_cycle FROM club_members WHERE user_id = ${userId}`);
+    const value = rows[0]?.result_seen_cycle;
+    return value === null || value === undefined ? null : Number(value);
+  }
+
+  async setResultSeenCycle(userId: string, cycleNumber: number): Promise<void> {
+    await this.db.run(sql`UPDATE club_members SET result_seen_cycle = MAX(COALESCE(result_seen_cycle, -1), ${cycleNumber}) WHERE user_id = ${userId}`);
+  }
+
   async removeCompetitionRunsOfRoute(routeId: string): Promise<void> {
     await this.db.run(sql`DELETE FROM competition_runs WHERE route_id = ${routeId}`);
     await this.db.run(sql`DELETE FROM flag_captures WHERE route_id = ${routeId}`);
@@ -1534,6 +1595,8 @@ export class GameStorage {
       sql`DELETE FROM user_nicknames WHERE target_user_id = ${userId} OR set_by_user_id = ${userId}`,
       sql`DELETE FROM territory_fortifications WHERE user_id = ${userId}`,
       sql`DELETE FROM competition_stats WHERE user_id = ${userId}`,
+      sql`DELETE FROM user_awards WHERE user_id = ${userId}`,
+      sql`DELETE FROM competition_runs WHERE user_id = ${userId}`,
     ]) {
       try {
         await this.db.run(statement);

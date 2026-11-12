@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { sqliteTable, text, real, integer, primaryKey, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, real, integer, primaryKey, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -559,6 +559,7 @@ export const clubMembers = sqliteTable("club_members", {
   clubId: text("club_id").notNull().references(() => clubs.id, { onDelete: 'cascade' }),
   role: text("role").notNull().default('member'), // owner | admin | member
   joinedAt: text("joined_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  resultSeenCycle: integer("result_seen_cycle"), // members who didn't take part: last club result they saw
 });
 
 export const clubRequests = sqliteTable("club_requests", {
@@ -655,6 +656,19 @@ export const competitionRuns = sqliteTable("competition_runs", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => ({
   pk: primaryKey({ columns: [table.competitionId, table.routeId] }),
+}));
+
+// Awards won when a competition closes (Conquistador, Ladrón, Fondista…), shown on the profile
+export const userAwards = sqliteTable("user_awards", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  competitionId: text("competition_id").notNull(),
+  award: text("award").notNull(),
+  cycleNumber: integer("cycle_number").notNull(),
+  mode: text("mode").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.userId, table.competitionId, table.award] }),
+  userIdx: index("idx_user_awards_user").on(table.userId, table.createdAt),
 }));
 
 export const clubMatches = sqliteTable("club_matches", {

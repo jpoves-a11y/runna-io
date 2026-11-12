@@ -96,9 +96,11 @@ struct UserStats: Decodable {
     let totalLost: Double
     let stolenFromViewer: Double
     let stolenByViewer: Double
+    /// Awards won at the close of competitions, with how many times (profile showcase).
+    let awards: [AwardInfo]
 
     enum CodingKeys: String, CodingKey {
-        case user, totalArea, globalArea, title, activitiesCount, lastActivity, totalStolen, totalLost, stolenFromViewer, stolenByViewer
+        case user, totalArea, globalArea, title, activitiesCount, lastActivity, totalStolen, totalLost, stolenFromViewer, stolenByViewer, awards
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +115,7 @@ struct UserStats: Decodable {
         totalLost = c.double(.totalLost) ?? 0
         stolenFromViewer = c.double(.stolenFromViewer) ?? 0
         stolenByViewer = c.double(.stolenByViewer) ?? 0
+        awards = (try? c.decodeIfPresent([AwardInfo].self, forKey: .awards)) ?? []
     }
 }
 

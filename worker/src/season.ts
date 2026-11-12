@@ -33,7 +33,10 @@ import {
   type CompetitionMode,
   type Rarity,
   type ChallengeType,
+  AWARDS,
+  type AwardId,
 } from '../../shared/game';
+import { computeAwards, runDaysByUser, type AwardCandidate, type AwardContext } from './awards';
 import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
 import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
@@ -940,6 +943,40 @@ async function grantReward(game: GameStorage, userId: string, rarity: Rarity, co
 }
 
 /**
+ * Awards of a finished competition (stored for the profile). The numbers not in the standings
+ * come from the participants (area held, area lost) and competition_runs (days with a run).
+ */
+async function awardCompetition(
+  game: GameStorage,
+  competition: CompetitionRow,
+  standings: Standing[],
+  ctx: Omit<AwardContext, 'mode'>,
+): Promise<Record<string, AwardId[]>> {
+  const participants = new Map((await game.getParticipants(competition.id)).map((p) => [p.userId, p]));
+  const days = runDaysByUser(await game.getCompetitionRuns(competition.id));
+  const candidates: AwardCandidate[] = standings.map((s) => ({
+    userId: s.userId,
+    score: s.score,
+    area: participants.get(s.userId)?.area ?? 0,
+    areaStolen: s.areaStolen,
+    areaLost: participants.get(s.userId)?.areaLost ?? 0,
+    distance: s.distance,
+    runs: s.runs,
+    days: days.get(s.userId) ?? 0,
+    team: s.team,
+    eliminatedCut: s.eliminatedCut ?? null,
+  }));
+  const awards = computeAwards(candidates, { mode: competition.mode as CompetitionMode, ...ctx });
+  await game.addAwards(competition, awards);
+  return awards;
+}
+
+function awardsLine(list: AwardId[] | undefined): string {
+  if (!list?.length) return '';
+  return ` Logros: ${list.map((a) => `${AWARDS[a].emoji} ${AWARDS[a].name}`).join(', ')}.`;
+}
+
+/**
  * Scores a finished competition, gives rewards and league points, and stores the result.
  * Duels are scored together (both clubs' competitions) by finishDuel.
  */
@@ -994,6 +1031,13 @@ async function finishInternal(storage: WorkerStorage, game: GameStorage, env: an
   result.mvpUserId = mvp && mvp.score > 0 ? mvp.userId : null;
   result.rewards = rewards;
   result.leaguePoints = leaguePoints;
+  const awards = await awardCompetition(game, competition, standings, {
+    winnerUserId: (result.winnerUserId as string | null | undefined) ?? null,
+    mvpUserId: result.mvpUserId as string | null,
+    winnerTeam: (result.winnerTeam as number | null | undefined) ?? null,
+    achieved: result.achieved === true,
+  });
+  result.awards = awards;
 
   for (const s of standings) await game.updateParticipant(competition.id, s.userId, { finalRank: s.rank });
   await game.adjustClubStanding(competition.clubId, 0, leaguePoints);
@@ -1013,7 +1057,7 @@ async function finishInternal(storage: WorkerStorage, game: GameStorage, env: an
     if (competition.mode === 'teams') body = result.winnerTeam === null ? '¡Empate entre equipos!' : result.winnerTeam === s.team ? '¡Tu equipo ha ganado!' : 'Tu equipo ha perdido esta vez.';
     await notifyUsers(storage, env, [s.userId], {
       title: `${modeInfo?.emoji ?? '🏁'} Fin de la competición`,
-      body: `${body}${rewards[s.userId]?.length ? ' Tienes recompensas en tu inventario.' : ''}`,
+      body: `${body}${awardsLine(awards[s.userId])}${rewards[s.userId]?.length ? ' Tienes recompensas en tu inventario.' : ''}`,
       tag: `season-end-${competition.cycleNumber}`,
       data: { type: 'season_competition_finished', competitionId: competition.id },
     });
@@ -1053,6 +1097,8 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
     }
     const opponent = clubs.get(competition.opponentClubId ?? '');
     const outcome = result === 1 ? 'won' : result === 0.5 ? 'draw' : 'lost';
+    const mvpUserId = standings[0]?.score > 0 ? standings[0].userId : null;
+    const awards = await awardCompetition(game, competition, standings, { mvpUserId, outcome });
     for (const s of standings) await game.updateParticipant(competition.id, s.userId, { finalRank: s.rank });
     await game.updateCompetition(competition.id, {
       status: 'finished',
@@ -1063,18 +1109,21 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
         opponent: opponent ? { clubId: opponent.id, name: opponent.name, crest: opponent.crest, score: rival } : null,
         outcome, ratingChange: competition.clubId === match.club_a ? delta : -delta,
         leaguePoints: result === 1 ? 3 : result === 0.5 ? 1 : 0,
-        mvpUserId: standings[0]?.score > 0 ? standings[0].userId : null,
+        mvpUserId,
         rewards,
+        awards,
       },
     });
-    await notifyUsers(storage, env, standings.map((s) => s.userId), {
-      title: competition.mode === 'derby'
-        ? (outcome === 'won' ? '🏆 ¡Derbi ganado!' : outcome === 'draw' ? '🤝 Derbi empatado' : '🏟️ Derbi perdido')
-        : (outcome === 'won' ? '🏆 ¡Duelo ganado!' : outcome === 'draw' ? '🤝 Duelo empatado' : '⚔️ Duelo perdido'),
-      body: `Tu club ${km2(own)} – ${opponent?.name ?? 'rival'} ${km2(rival)}.`,
-      tag: `season-end-${competition.cycleNumber}`,
-      data: { type: 'season_competition_finished', competitionId: competition.id },
-    });
+    for (const s of standings) {
+      await notifyUsers(storage, env, [s.userId], {
+        title: competition.mode === 'derby'
+          ? (outcome === 'won' ? '🏆 ¡Derbi ganado!' : outcome === 'draw' ? '🤝 Derbi empatado' : '🏟️ Derbi perdido')
+          : (outcome === 'won' ? '🏆 ¡Duelo ganado!' : outcome === 'draw' ? '🤝 Duelo empatado' : '⚔️ Duelo perdido'),
+        body: `Tu club ${km2(own)} – ${opponent?.name ?? 'rival'} ${km2(rival)}.${awardsLine(awards[s.userId])}`,
+        tag: `season-end-${competition.cycleNumber}`,
+        data: { type: 'season_competition_finished', competitionId: competition.id },
+      });
+    }
   }
 }
 

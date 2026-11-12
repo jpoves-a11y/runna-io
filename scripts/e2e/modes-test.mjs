@@ -215,6 +215,8 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check('Banderas closes', closeTick.data.finished_2 === 3, closeTick.data);
   const result = JSON.parse((await competitionOf(2, clubA)).result);
   check('the most hours wins (Ben)', result.winnerUserId === ben.id && result.standings[0].userId === ben.id, result.standings?.map((s) => [s.name, s.score]));
+  check('Banderas: Ben is the Abanderado; no area awards in a mode without map', result.awards?.[ben.id]?.includes('flagbearer')
+    && !Object.values(result.awards ?? {}).flat().some((a) => ['conqueror', 'thief', 'wall'].includes(a)), result.awards);
 }
 
 // ───────────── Derbi ─────────────
@@ -244,7 +246,7 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check('Hugo steals from Ana and Ben', ['ana', 'ben'].every((k) => h1.result.victims?.some((v) => v.userId === users[k].id && v.stolenArea > 0)), h1.result.victims);
   const trap = await one("select metadata, status from user_powers where user_id = ? and power_type = 'sabotage' and source = 'ambush'", [ana.id]);
   check("Emboscada: the thief is sabotaged at once", trap?.status === 'active' && JSON.parse(trap.metadata).targetUserId === hugo.id, trap);
-  const ambushUsed = await one("select status from user_powers where user_id = ? and power_type = 'ambush'", [ana.id]);
+  const ambushUsed = await one("select status from user_powers where user_id = ? and power_type = 'ambush' and activated_at is not null", [ana.id]);
   check('Emboscada works once', ambushUsed.status === 'used', ambushUsed);
   const revengeRow = await one("select metadata from user_powers where user_id = ? and power_type = 'revenge' and status = 'active'", [ben.id]);
   check('Venganza remembers who stole', JSON.parse(revengeRow?.metadata || '{}').targets?.includes(hugo.id), revengeRow);
@@ -323,6 +325,8 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check('5 cuts: 1·1·1·1·1, exactly one left standing', JSON.stringify(cuts) === '[1,1,1,1,1]' && !!result.winnerUserId, cuts);
   check('the last one standing wins; the order follows the cuts', result.standings[0].userId === result.winnerUserId && result.standings.at(-1).userId === fede.id && result.standings.at(-2).userId === eva.id, result.standings.map((s) => [s.name, s.eliminatedCut]));
   check('the winner and the finalist get rewards', (result.rewards[result.winnerUserId] ?? []).length >= 1 && (result.rewards[result.standings[1].userId] ?? []).length >= 1, result.rewards);
+  check('Eliminación: the last one standing is the Superviviente', result.awards?.[result.winnerUserId]?.includes('survivor')
+    && Object.entries(result.awards ?? {}).every(([id, list]) => id === result.winnerUserId || !list.includes('survivor')), result.awards);
 }
 
 // ───────────── Exploradores ─────────────
@@ -346,6 +350,7 @@ const competitionOf = async (index, club) => one('select * from club_competition
   const closeTick = await tick(close + 10 * 60_000);
   const result = JSON.parse((await competitionOf(6, clubA)).result);
   check('Exploradores closes: the explorer wins', closeTick.data.finished_6 === 3 && result.winnerUserId === ana.id, { tick: closeTick.data, winner: result.winnerUserId });
+  check('Exploradores: Ana is the Exploradora', result.awards?.[ana.id]?.includes('explorer'), result.awards);
 }
 
 // ───────────── Global powers ─────────────
@@ -360,7 +365,7 @@ const competitionOf = async (index, club) => one('select * from club_competition
   const madrid = await run(ana, 'Madrid', loop(40.4168, -3.7038, 400), at('10:00'));
   check('Turista: far from home, the new area counts double', Math.abs((madrid.result.globalArea?.boosts?.tourist ?? 0) - madrid.result.globalArea.gained) < 1, madrid.result.globalArea);
   const nearHome = await run(ben, 'Cerca de casa', loop(Z[0] + 0.07, Z[1] + 0.07, 400), at('11:00'));
-  const benTourist = await one("select status from user_powers where user_id = ? and power_type = 'tourist'", [ben.id]);
+  const benTourist = await one("select status from user_powers where user_id = ? and power_type = 'tourist' and activated_at is not null", [ben.id]);
   check('Turista: near home it does nothing and keeps waiting', !nearHome.result.globalArea?.boosts?.tourist && benTourist.status === 'active', { boosts: nearHome.result.globalArea?.boosts, benTourist });
   // Alba: before 8:00
   check('Alba ready', (await activate(cris, 'dawn')).status === 200);

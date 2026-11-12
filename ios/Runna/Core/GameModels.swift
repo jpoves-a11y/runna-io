@@ -1463,3 +1463,274 @@ struct ClubRankingResponse: Decodable {
         myClubRank = c.int(.myClubRank)
     }
 }
+
+// MARK: - Awards and end-of-competition summary
+
+/// An award won when a competition closes (Conquistador, Ladrón, Fondista…).
+/// In a summary `count` is 1; on the profile it is how many times it was won.
+struct AwardInfo: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    /// SF Symbol sent by the API
+    let symbol: String
+    let description: String
+    let count: Int
+
+    enum CodingKeys: String, CodingKey { case id, name, symbol, description, count }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.string(.id) ?? UUID().uuidString
+        name = c.string(.name) ?? "Logro"
+        symbol = c.string(.symbol) ?? "rosette"
+        description = c.string(.description) ?? ""
+        count = c.int(.count) ?? 1
+    }
+}
+
+/// GET /api/season/results/pending and /api/season/results/:id: what the window shown when a
+/// competition closes tells each member.
+struct CompetitionResultSummary: Decodable, Identifiable, Hashable {
+    struct Club: Decodable, Hashable {
+        let id: String
+        let name: String
+        let crest: Crest
+
+        enum CodingKeys: String, CodingKey { case id, name, crest }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.string(.id) ?? ""
+            name = c.string(.name) ?? "Club"
+            crest = (try? c.decodeIfPresent(Crest.self, forKey: .crest)) ?? Crest()
+        }
+    }
+
+    /// A runner of the club (winner, MVP or podium).
+    struct Runner: Decodable, Hashable, Identifiable {
+        let id: String
+        let name: String
+        let avatar: String?
+        let color: String
+        let rank: Int?
+        let score: Double?
+
+        enum CodingKeys: String, CodingKey { case id, userId, name, avatar, color, rank, score }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = c.string(.userId) ?? c.string(.id) ?? UUID().uuidString
+            name = c.string(.name) ?? "Corredor"
+            avatar = c.string(.avatar)
+            color = c.string(.color) ?? "#888888"
+            rank = c.int(.rank)
+            score = c.double(.score)
+        }
+    }
+
+    struct Opponent: Decodable, Hashable {
+        let name: String
+        let crest: Crest?
+        let score: Double
+
+        enum CodingKeys: String, CodingKey { case name, crest, score }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = c.string(.name) ?? "Rival"
+            crest = try? c.decodeIfPresent(Crest.self, forKey: .crest)
+            score = c.double(.score) ?? 0
+        }
+    }
+
+    struct ClubResult: Decodable, Hashable {
+        let total: Double
+        let participants: Int
+        let winner: Runner?
+        let mvp: Runner?
+        let podium: [Runner]
+        let teamScores: [Double]
+        let teamNames: [String]
+        let winnerTeam: Int?
+        let target: Double?
+        let achieved: Bool?
+        let opponent: Opponent?
+        /// Duelo / Derbi: "won", "draw" or "lost"
+        let outcome: String?
+        let ratingChange: Int?
+        let leaguePoints: Int
+
+        enum CodingKeys: String, CodingKey {
+            case total, participants, winner, mvp, podium, teamScores, teamNames, winnerTeam, target, achieved, opponent, outcome, ratingChange, leaguePoints
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            total = c.double(.total) ?? 0
+            participants = c.int(.participants) ?? 0
+            winner = try? c.decodeIfPresent(Runner.self, forKey: .winner)
+            mvp = try? c.decodeIfPresent(Runner.self, forKey: .mvp)
+            podium = (try? c.decodeIfPresent([Runner].self, forKey: .podium)) ?? []
+            teamScores = (try? c.decodeIfPresent([Double].self, forKey: .teamScores)) ?? []
+            teamNames = (try? c.decodeIfPresent([String].self, forKey: .teamNames)) ?? []
+            winnerTeam = c.int(.winnerTeam)
+            target = c.double(.target)
+            achieved = c.bool(.achieved)
+            opponent = try? c.decodeIfPresent(Opponent.self, forKey: .opponent)
+            outcome = c.string(.outcome)
+            ratingChange = c.int(.ratingChange)
+            leaguePoints = c.int(.leaguePoints) ?? 0
+        }
+
+        func teamName(_ index: Int) -> String {
+            index < teamNames.count ? teamNames[index] : "Equipo \(index + 1)"
+        }
+    }
+
+    /// The user's own numbers (nil when they didn't take part).
+    struct Mine: Decodable, Hashable {
+        let rank: Int?
+        let of: Int
+        let score: Double
+        let team: Int?
+        let areaStolen: Double
+        let areaLost: Double
+        let distance: Double
+        let runs: Int
+        let days: Int
+        let eliminatedCut: Int?
+
+        enum CodingKeys: String, CodingKey { case rank, of, score, team, areaStolen, areaLost, distance, runs, days, eliminatedCut }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            rank = c.int(.rank)
+            of = c.int(.of) ?? 0
+            score = c.double(.score) ?? 0
+            team = c.int(.team)
+            areaStolen = c.double(.areaStolen) ?? 0
+            areaLost = c.double(.areaLost) ?? 0
+            distance = c.double(.distance) ?? 0
+            runs = c.int(.runs) ?? 0
+            days = c.int(.days) ?? 0
+            eliminatedCut = c.int(.eliminatedCut)
+        }
+    }
+
+    struct Next: Decodable, Hashable {
+        let cycleNumber: Int
+        let mode: String
+        let modeName: String
+        let modeDescription: String
+        let startsAt: String?
+        /// Already started (the summary was opened days later)
+        let running: Bool
+
+        private struct ModeInfoRef: Decodable { let name: String?; let description: String? }
+
+        enum CodingKeys: String, CodingKey { case cycleNumber, mode, modeInfo, startsAt, running }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            cycleNumber = c.int(.cycleNumber) ?? 0
+            mode = c.string(.mode) ?? "ffa"
+            let info = try? c.decodeIfPresent(ModeInfoRef.self, forKey: .modeInfo)
+            modeName = info?.name ?? mode
+            modeDescription = info?.description ?? ""
+            startsAt = c.string(.startsAt)
+            running = c.bool(.running) ?? false
+        }
+
+        var startDate: Date? { APIDate.parse(startsAt) }
+    }
+
+    let competitionId: String
+    let cycleNumber: Int
+    let mode: String
+    let modeName: String
+    let finishedAt: String?
+    let participated: Bool
+    let club: Club?
+    let clubResult: ClubResult
+    let me: Mine?
+    let awards: [AwardInfo]
+    let rewards: [InventoryItem]
+    let next: Next?
+    var id: String { competitionId }
+
+    private struct ModeInfoRef: Decodable { let name: String? }
+
+    enum CodingKeys: String, CodingKey {
+        case competitionId, cycleNumber, mode, modeInfo, finishedAt, participated, club, clubResult, me, awards, rewards, next
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        competitionId = c.string(.competitionId) ?? UUID().uuidString
+        cycleNumber = c.int(.cycleNumber) ?? 0
+        mode = c.string(.mode) ?? "ffa"
+        modeName = (try? c.decodeIfPresent(ModeInfoRef.self, forKey: .modeInfo))?.name ?? mode
+        finishedAt = c.string(.finishedAt)
+        participated = c.bool(.participated) ?? false
+        club = try? c.decodeIfPresent(Club.self, forKey: .club)
+        clubResult = try c.decode(ClubResult.self, forKey: .clubResult)
+        me = try? c.decodeIfPresent(Mine.self, forKey: .me)
+        awards = (try? c.decodeIfPresent([AwardInfo].self, forKey: .awards)) ?? []
+        rewards = (try? c.decodeIfPresent([InventoryItem].self, forKey: .rewards)) ?? []
+        next = try? c.decodeIfPresent(Next.self, forKey: .next)
+    }
+
+    /// How it went for the club, in one line.
+    func headline(myUserId: String?) -> String {
+        let r = clubResult
+        switch mode {
+        case "duel", "derby":
+            let name = mode == "derby" ? "Derbi" : "Duelo"
+            switch r.outcome {
+            case "won": return "\(name) ganado"
+            case "draw": return "\(name) empatado"
+            default: return "\(name) perdido"
+            }
+        case "target":
+            return r.achieved == true ? "Objetivo conseguido" : "Objetivo no alcanzado"
+        case "teams":
+            guard let winnerTeam = r.winnerTeam else { return "Empate entre equipos" }
+            if let myTeam = me?.team { return myTeam == winnerTeam ? "Tu equipo ha ganado" : "Ha ganado \(r.teamName(winnerTeam))" }
+            return "Ha ganado \(r.teamName(winnerTeam))"
+        case "elimination":
+            guard let winner = r.winner else { return "Eliminación terminada" }
+            return winner.id == myUserId ? "Eres el último en pie" : "\(winner.name) es el último en pie"
+        default:
+            guard let winner = r.winner ?? r.podium.first else { return "Competición terminada" }
+            return winner.id == myUserId ? "Has ganado" : "Ha ganado \(winner.name)"
+        }
+    }
+
+    /// The score behind the headline (both clubs, both teams, the target).
+    var scoreLine: String? {
+        let r = clubResult
+        switch mode {
+        case "duel", "derby":
+            guard let opponent = r.opponent else { return nil }
+            return "\(Format.area(r.total)) – \(Format.area(opponent.score)) contra \(opponent.name)"
+        case "target":
+            guard let target = r.target else { return nil }
+            return "\(Format.area(r.total)) de \(Format.area(target))"
+        case "teams":
+            guard r.teamScores.count >= 2 else { return nil }
+            return "\(r.teamName(0)) \(Format.area(r.teamScores[0])) · \(r.teamName(1)) \(Format.area(r.teamScores[1]))"
+        default:
+            return r.participants > 0 ? "\(r.participants) participantes" : nil
+        }
+    }
+
+    func scoreText(_ score: Double) -> String { ModeInfo.scoreText(mode: mode, score: score) }
+}
+
+struct SeasonResultsPendingResponse: Decodable {
+    let results: [CompetitionResultSummary]
+}
+
+struct SeasonResultResponse: Decodable {
+    let result: CompetitionResultSummary
+}

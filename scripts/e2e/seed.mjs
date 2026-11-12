@@ -210,4 +210,62 @@ if (daveClub.pendingRequests?.length !== 1) throw new Error('dave should see eri
 if (erinClub.invites?.length !== 1 || erinClub.myRequests?.length !== 1) throw new Error('erin should have an invite and a request');
 if (inventory.items.length !== items.length) throw new Error('alice items were not stored');
 
+// The previous competition, finished two days ago and not seen by alice yet: the end-of-competition
+// summary pops up (club result, her numbers, awards and two chests to open)
+const prevId = 'seed-previous-competition';
+const finishedAt = new Date(Date.now() - 2 * day).toISOString();
+const prevStandings = [
+  { userId: alice.id, name: 'Alicia', score: 1_840_000, team: null, runs: 6, areaStolen: 210_000, distance: 52_300, rank: 1 },
+  { userId: bob.id, name: 'Bruno', score: 1_220_000, team: null, runs: 5, areaStolen: 95_000, distance: 61_800, rank: 2 },
+  { userId: carol.id, name: 'Carla', score: 640_000, team: null, runs: 3, areaStolen: 0, distance: 24_100, rank: 3 },
+];
+const prevAwards = { [alice.id]: ['conqueror', 'thief', 'consistent'], [bob.id]: ['distance'] };
+const prevRewards = [
+  { id: 'seed-reward-tourist', type: 'tourist', scope: 'global' },
+  { id: 'seed-reward-master-key', type: 'master_key', scope: 'rest' },
+];
+await db.execute({
+  sql: `insert into club_competitions (id, cycle_number, club_id, mode, status, config, score, result, created_at, finished_at)
+        values (?, ?, ?, 'ffa', 'finished', '{}', ?, ?, ?, ?)`,
+  args: [prevId, current.cycle.number - 1, club.id, 3_700_000, JSON.stringify({
+    mode: 'ffa', standings: prevStandings, total: 3_700_000, winnerUserId: alice.id, mvpUserId: alice.id,
+    rewards: { [alice.id]: prevRewards.map((r) => r.type) }, leaguePoints: 1, awards: prevAwards,
+  }), new Date(Date.now() - 16 * day).toISOString(), finishedAt],
+});
+for (const [s, lost, seen] of [[prevStandings[0], 90_000, null], [prevStandings[1], 210_000, finishedAt], [prevStandings[2], 95_000, finishedAt]]) {
+  await db.execute({
+    sql: `insert into competition_participants (competition_id, user_id, area, bonus, area_stolen, runs, distance, final_rank, joined_at, area_lost, result_seen_at)
+          values (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [prevId, s.userId, s.score, s.areaStolen, s.runs, s.distance, s.rank, new Date(Date.now() - 16 * day).toISOString(), lost, seen],
+  });
+}
+// Alicia ran on 5 different days
+for (const [i, daysAgo] of [12, 11, 9, 9, 7, 4].entries()) {
+  await db.execute({
+    sql: `insert into competition_runs (competition_id, user_id, route_id, started_at, area_gained, area_stolen, distance) values (?, ?, ?, ?, ?, ?, ?)`,
+    args: [prevId, alice.id, `seed-previous-run-${i}`, new Date(Date.now() - daysAgo * day).toISOString(), 300_000, 35_000, 8_700],
+  });
+}
+for (const [userId, list] of Object.entries(prevAwards)) {
+  for (const award of list) {
+    await db.execute({
+      sql: `insert into user_awards (user_id, competition_id, award, cycle_number, mode, created_at) values (?, ?, ?, ?, 'ffa', ?)`,
+      args: [userId, prevId, award, current.cycle.number - 1, finishedAt],
+    });
+  }
+}
+for (const reward of prevRewards) {
+  await db.execute({
+    sql: `insert into user_powers (id, user_id, competition_id, power_type, treasure_id, status, scope, source, unused_expires_at, created_at)
+          values (?, ?, 'season', ?, ?, 'available', ?, 'reward', ?, ?)`,
+    args: [reward.id, alice.id, reward.type, prevId, reward.scope, new Date(Date.now() + 12 * day).toISOString(), finishedAt],
+  });
+}
+const pendingResults = await call('GET', '/api/season/results/pending', { token: alice.token });
+const summary = pendingResults.results?.[0];
+if (pendingResults.results?.length !== 1 || summary.awards.length !== 3 || summary.rewards.length !== 2 || summary.me?.days !== 5 || summary.next?.running !== true) {
+  throw new Error(`alice's pending summary: ${JSON.stringify(pendingResults)}`);
+}
+console.error(`[e2e seed] pending summary for alice: ${summary.awards.map((a) => a.name).join(', ')}; next ${summary.next.modeInfo?.name} (running)`);
+
 console.log(JSON.stringify({ token: alice.token, userId: alice.id }));

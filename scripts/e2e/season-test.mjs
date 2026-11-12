@@ -381,6 +381,30 @@ const anaGlobal3 = Number((await one('select global_area from users where id = ?
 check('the global map is kept', Math.abs(anaGlobal3 - anaGlobal2) < 1);
 const history = (await call('GET', `/api/clubs/${club1.id}/history`, { token: ana.token })).data;
 check('club history and trophies', history.history.length === 1 && history.trophies.competitions === 1, history.trophies);
+
+// Awards and the end-of-competition summary
+const winnerUser = [ana, ben, cris].find((u) => u.id === r1.winnerUserId);
+check('awards: the ffa winner is the Conquistador', r1.awards?.[r1.winnerUserId]?.includes('conqueror'), r1.awards);
+const storedAwards = await all('select user_id, award from user_awards where competition_id = (select id from club_competitions where cycle_number = 0 and club_id = ?)', [club1.id]);
+check('awards are stored for the profile', storedAwards.some((a) => a.user_id === r1.winnerUserId && a.award === 'conqueror'), storedAwards);
+const winnerStats = (await call('GET', `/api/users/${r1.winnerUserId}/stats`, { token: ana.token })).data;
+check('the profile shows the awards with how many times', winnerStats.awards?.some((a) => a.id === 'conqueror' && a.count === 1 && a.name === 'Conquistador'), winnerStats.awards);
+const pendingNow = (await call('GET', '/api/season/results/pending', { token: winnerUser.token })).data.results;
+const summary = pendingNow?.[0];
+check('the summary pops up for a participant: club result, own numbers, awards, rewards, next', pendingNow?.length === 1 && summary.participated === true
+  && summary.me?.rank === 1 && summary.me.of === 3 && summary.me.runs >= 1 && summary.me.days >= 1
+  && summary.clubResult.winner?.id === r1.winnerUserId && summary.clubResult.podium.length === 3
+  && summary.awards.some((a) => a.id === 'conqueror') && summary.rewards.length >= 1 && !!summary.rewards[0].definition
+  && summary.next.cycleNumber === 1 && summary.next.mode === 'duel', summary);
+const hugoPending = (await call('GET', '/api/season/results/pending', { token: hugo.token })).data.results;
+check('a member who did not take part sees the club result only', hugoPending.length === 1 && hugoPending[0].participated === false && hugoPending[0].me === null
+  && hugoPending[0].awards.length === 0 && hugoPending[0].rewards.length === 0, hugoPending);
+check('outsiders cannot open the summary', (await call('GET', `/api/season/results/${summary.competitionId}`, { token: dani.token })).status === 404);
+check('the summary can be opened again from the club history', (await call('GET', `/api/season/results/${summary.competitionId}`, { token: winnerUser.token })).data.result?.competitionId === summary.competitionId);
+check('marked as seen', (await call('POST', `/api/season/results/${summary.competitionId}/seen`, { token: winnerUser.token, body: {} })).data.ok === true);
+check('once seen it does not pop up again', (await call('GET', '/api/season/results/pending', { token: winnerUser.token })).data.results.length === 0);
+await call('POST', `/api/season/results/${hugoPending[0].competitionId}/seen`, { token: hugo.token, body: {} });
+check('nor for the member who did not take part', (await call('GET', '/api/season/results/pending', { token: hugo.token })).data.results.length === 0);
 const leaveNow = await call('POST', `/api/clubs/${club1.id}/leave`, { token: hugo.token, body: {} });
 check('leaving is allowed in the rest days', leaveNow.status === 200, leaveNow);
 
@@ -420,6 +444,11 @@ const winner = match.winner_club_id;
 check('the duel winner is club 2 (capped 3 + 0.1 > 2.1)', winner === club2.id, match);
 const ratings = Object.fromEntries((await all('select id, rating, league_points from clubs')).map((r) => [r.id, [Number(r.rating), Number(r.league_points)]]));
 check('Elo: +16 / -16 between equal ratings, 3 league points to the winner', Math.round(ratings[club2.id][0]) === 1016 && Math.round(ratings[club1.id][0]) === 984 && ratings[club2.id][1] >= 3, ratings);
+const duelResults = Object.fromEntries((await all('select club_id, result from club_competitions where cycle_number = 1')).map((r) => [r.club_id, JSON.parse(r.result)]));
+check('duel awards: Victoria for every runner of the winning club, none for the losers', [dani.id, eva.id, fede.id].every((id) => duelResults[club2.id].awards?.[id]?.includes('victory'))
+  && !Object.values(duelResults[club1.id].awards ?? {}).flat().includes('victory') && duelResults[club1.id].awards?.[ana.id]?.includes('mvp'), { club1: duelResults[club1.id].awards, club2: duelResults[club2.id].awards });
+const duelSummary = (await call('GET', '/api/season/results/pending', { token: eva.token })).data.results[0];
+check('duel summary: rival, score, Elo and league points', duelSummary?.clubResult.outcome === 'won' && duelSummary.clubResult.opponent?.name && duelSummary.clubResult.ratingChange === 16 && duelSummary.clubResult.leaguePoints === 3, duelSummary?.clubResult);
 const duelView = (await call('GET', '/api/season/history', { token: ana.token })).data.history[0];
 check('duel result visible in the history', duelView.mode === 'duel' && duelView.result.outcome === 'lost' && duelView.result.opponent?.name === 'Ebro Night Crew', duelView.result);
 

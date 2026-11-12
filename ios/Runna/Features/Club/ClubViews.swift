@@ -460,8 +460,22 @@ struct ClubHeaderCard: View {
 
 struct ClubHistoryRow: View {
     let entry: ClubHistoryEntry
+    @State private var showSummary = false
 
     var body: some View {
+        Button {
+            showSummary = true
+        } label: {
+            row
+        }
+        .buttonStyle(.pressable)
+        .accessibilityHint("Ver resumen")
+        .fullScreenCover(isPresented: $showSummary) {
+            CompetitionResultLoader(competitionId: entry.competitionId)
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: DS.Spacing.m) {
             Image(systemName: icon)
                 .foregroundStyle(entry.outcome == "won" || entry.achieved == true ? Color.gold : Color.secondary)
@@ -480,8 +494,12 @@ struct ClubHistoryRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.brand)
             }
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
         .padding(.vertical, DS.Spacing.s)
+        .contentShape(Rectangle())
     }
 
     private var subtitle: String {

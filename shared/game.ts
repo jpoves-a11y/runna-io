@@ -421,6 +421,44 @@ export const CHALLENGES: Record<ChallengeType, ChallengeDefinition> = {
 
 export const CHALLENGES_PER_REST = 3;
 
+// ─── Awards (given when a competition closes; collected on the profile) ──────
+
+export type AwardId =
+  | 'conqueror' | 'thief' | 'distance' | 'consistent' | 'wall' | 'mvp'
+  | 'survivor' | 'flagbearer' | 'explorer' | 'target' | 'victory';
+
+export interface AwardDefinition {
+  id: AwardId;
+  name: string;
+  emoji: string;
+  /** SF Symbol for the app */
+  symbol: string;
+  description: string;
+}
+
+export const AWARDS: Record<AwardId, AwardDefinition> = {
+  conqueror: { id: 'conqueror', name: 'Conquistador', emoji: '👑', symbol: 'crown.fill', description: 'Más territorio conquistado de la competición.' },
+  thief: { id: 'thief', name: 'Ladrón', emoji: '🦹', symbol: 'hand.raised.fill', description: 'Quien más territorio robó a los rivales.' },
+  distance: { id: 'distance', name: 'Fondista', emoji: '🏃', symbol: 'figure.run', description: 'Quien más kilómetros corrió.' },
+  consistent: { id: 'consistent', name: 'Constante', emoji: '📅', symbol: 'calendar', description: 'Quien corrió más días distintos (3 como mínimo).' },
+  wall: { id: 'wall', name: 'Muro', emoji: '🧱', symbol: 'shield.lefthalf.filled', description: 'Quien menos territorio perdió teniendo una zona grande.' },
+  mvp: { id: 'mvp', name: 'MVP', emoji: '⭐', symbol: 'star.fill', description: 'El que más aportó al club.' },
+  survivor: { id: 'survivor', name: 'Superviviente', emoji: '🏆', symbol: 'trophy.fill', description: 'El último en pie de la Eliminación.' },
+  flagbearer: { id: 'flagbearer', name: 'Abanderado', emoji: '🚩', symbol: 'flag.fill', description: 'Más horas con banderas en Banderas.' },
+  explorer: { id: 'explorer', name: 'Explorador', emoji: '🧭', symbol: 'map.fill', description: 'Más mapa nuevo descubierto en Exploradores.' },
+  target: { id: 'target', name: 'Objetivo cumplido', emoji: '🎯', symbol: 'scope', description: 'El club llegó al objetivo común.' },
+  victory: { id: 'victory', name: 'Victoria', emoji: '🥇', symbol: 'medal.fill', description: 'Tu equipo o tu club ganó.' },
+};
+
+/** Ladrón: at least this much stolen */
+export const AWARD_THIEF_MIN_M2 = 50_000;
+/** Muro: only those who held at least this much */
+export const AWARD_WALL_MIN_AREA_M2 = 100_000;
+/** Constante: at least this many different days with a run */
+export const AWARD_CONSISTENT_MIN_DAYS = 3;
+/** Fondista: at least this many metres */
+export const AWARD_DISTANCE_MIN_M = 5_000;
+
 // ─── Anti-cheat thresholds ───────────────────────────────────────────────────
 
 export const ANTI_CHEAT = {

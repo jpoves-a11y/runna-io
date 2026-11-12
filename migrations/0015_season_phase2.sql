@@ -56,3 +56,18 @@ CREATE INDEX IF NOT EXISTS idx_flag_captures_competition ON flag_captures(compet
 
 -- Mapa del Tesoro: everybody sees a chest from this time; its holders, from when it appears
 ALTER TABLE treasures ADD COLUMN public_at TEXT;
+
+-- Awards won when a competition closes (shown on the profile)
+CREATE TABLE IF NOT EXISTS user_awards (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  competition_id TEXT NOT NULL,
+  award TEXT NOT NULL,
+  cycle_number INTEGER NOT NULL,
+  mode TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, competition_id, award)
+);
+CREATE INDEX IF NOT EXISTS idx_user_awards_user ON user_awards(user_id, created_at);
+
+-- Members who didn't take part see their club's result once: the last cycle they saw
+ALTER TABLE club_members ADD COLUMN result_seen_cycle INTEGER;
