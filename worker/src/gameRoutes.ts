@@ -19,6 +19,10 @@ import {
   seasonTick,
   joinRunningCompetition,
   lateEntryOpen,
+  competitionStandings,
+  eliminationStatus,
+  flagHolders,
+  MAPLESS_MODES,
   ensureChallenges,
   duelScore,
   participantScore,
@@ -34,10 +38,12 @@ import { withReasons, haversineMeters } from './antiCheat';
 import {
   ITEMS,
   MODE_INFO,
+  itemUsableInMode,
   CHALLENGES,
   INVENTORY_CAP,
   HEAD_START_BONUS_M2,
   LATE_JOIN_HOURS,
+  ELIMINATION_CUTS,
   CLUB_MAX_MEMBERS,
   CLUB_NAME_MIN,
   CLUB_NAME_MAX,
@@ -304,11 +310,18 @@ function trophiesOf(history: Awaited<ReturnType<typeof clubHistory>>) {
 async function competitionView(game: GameStorage, competition: CompetitionRow, userId: string) {
   if (competition.status === 'active') await game.syncParticipantAreas(competition.id);
   const participants = await game.getParticipants(competition.id);
+  const byUser = new Map(participants.map((p) => [p.userId, p]));
   const users = await game.getUserLite(participants.map((p) => p.userId));
-  const standings = participants
-    .map((p) => ({ user: users.get(p.userId) ?? null, userId: p.userId, score: participantScore(p), area: p.area, bonus: p.bonus, team: p.team, runs: p.runs, areaStolen: p.areaStolen, distance: p.distance, finalRank: p.finalRank }))
-    .sort((a, b) => b.score - a.score || b.runs - a.runs || a.userId.localeCompare(b.userId))
-    .map((s, i) => ({ ...s, rank: i + 1 }));
+  // Scores and order by mode (flag hours, new global area, elimination order...)
+  const ranked = await competitionStandings(game, competition);
+  const standings = ranked.map((s) => {
+    const p = byUser.get(s.userId)!;
+    return {
+      user: users.get(s.userId) ?? null, userId: s.userId, score: s.score, area: p.area, bonus: p.bonus, team: p.team,
+      runs: p.runs, areaStolen: p.areaStolen, distance: p.distance, finalRank: p.finalRank, rank: s.rank,
+      eliminatedCut: p.eliminatedCut,
+    };
+  });
   const me = standings.find((s) => s.userId === userId) ?? null;
   const total = standings.reduce((sum, s) => sum + s.score, 0);
   const view: Record<string, unknown> = {
@@ -338,7 +351,31 @@ async function competitionView(game: GameStorage, competition: CompetitionRow, u
     const target = Number(competition.config?.target) || targetArea(standings.length);
     view.target = { target, total, achieved: total >= target, progress: Math.min(1, total / target) };
   }
-  if (competition.mode === 'duel') {
+  if (competition.mode === 'flags') {
+    const flags = await game.getFlags(competition.id);
+    const captures = await game.getFlagCaptures(competition.id);
+    const end = cycleBounds(competition.cycleNumber).competitionEnd;
+    const holders = flagHolders(flags.map((f) => f.id), captures, Math.min(Date.now(), end));
+    const holderUsers = await game.getUserLite([...holders.values()].map((h) => h.userId));
+    view.flags = flags.map((f) => {
+      const holder = holders.get(f.id) ?? null;
+      return { id: f.id, name: f.name, lat: f.lat, lng: f.lng, holderId: holder?.userId ?? null, holder: holder ? holderUsers.get(holder.userId) ?? null : null, since: holder?.since ?? null };
+    });
+    view.myFlags = flags.filter((f) => holders.get(f.id)?.userId === userId).length;
+  }
+  if (competition.mode === 'elimination') {
+    const status = await eliminationStatus(game, competition);
+    const fallenUsers = await game.getUserLite(status.cuts.flatMap((c) => c.eliminated));
+    view.elimination = {
+      cuts: status.cuts.map((c) => ({ index: c.index, at: c.at, remaining: c.remaining, eliminated: c.eliminated.map((id) => fallenUsers.get(id) ?? null).filter(Boolean) })),
+      next: status.next,
+      alive: status.alive,
+      totalCuts: ELIMINATION_CUTS,
+      window: status.window.map((w) => ({ ...w, user: users.get(w.userId) ?? null })),
+      myCut: byUser.get(userId)?.eliminatedCut ?? null,
+    };
+  }
+  if (competition.mode === 'duel' || competition.mode === 'derby') {
     const runnersCounted = Number(competition.config?.runnersCounted) || 0;
     const opponentClub = competition.opponentClubId ? await game.getClub(competition.opponentClubId) : null;
     let opponentScore = 0;
@@ -458,6 +495,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const participation = await game.getActiveParticipation(userId);
     let territories: any[] = [];
     let fortifications: any[] = [];
+    let flags: any[] = [];
     let competitionId: string | null = null;
     let mode: string | null = null;
     // The map of my competition while it is not scored (its 10 days and the close on Monday 06:00);
@@ -475,14 +513,31 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       mode = shown.mode;
       const participants = await game.getParticipants(competitionId);
       const teamOf = new Map(participants.map((p) => [p.userId, p.team]));
-      const ids = participants.map((p) => p.userId);
+      let ids = participants.filter((p) => p.eliminatedCut === null).map((p) => p.userId);
+      // Derbi: one map for both clubs; the rival club's zones are marked
+      const rivalIds = new Set<string>();
+      if (shown.mode === 'derby' && shown.opponentClubId) {
+        const rival = await game.getClubCompetition(shown.opponentClubId, shown.cycleNumber);
+        if (rival) for (const p of await game.getParticipants(rival.id)) rivalIds.add(p.userId);
+        ids = [...ids, ...rivalIds];
+      }
       const invisible = new Set((await game.activeEffects(ids, now)).filter((e) => e.itemId === 'invisibility' && e.userId !== userId).map((e) => e.userId));
-      territories = (await storage.getTerritoriesForUsers(ids))
+      territories = MAPLESS_MODES.includes(shown.mode as CompetitionMode) ? [] : (await storage.getTerritoriesForUsers(ids))
         .filter((t: any) => !invisible.has(t.userId))
         .map((t: any) => ({
           id: t.id, userId: t.userId, user: t.user, area: t.area, team: teamOf.get(t.userId) ?? null,
+          rival: rivalIds.has(t.userId),
           geometry: typeof t.geometry === 'string' ? JSON.parse(t.geometry) : t.geometry,
         }));
+      if (shown.mode === 'flags') {
+        const list = await game.getFlags(shown.id);
+        const holders = flagHolders(list.map((f) => f.id), await game.getFlagCaptures(shown.id), Math.min(now, cycleBounds(shown.cycleNumber).competitionEnd));
+        const holderUsers = await game.getUserLite([...holders.values()].map((h) => h.userId));
+        flags = list.map((f) => {
+          const holder = holders.get(f.id) ?? null;
+          return { id: f.id, name: f.name, lat: f.lat, lng: f.lng, holderId: holder?.userId ?? null, holder: holder ? holderUsers.get(holder.userId) ?? null : null, since: holder?.since ?? null };
+        });
+      }
       try {
         const own = participation ? await storage.getFortificationsByUserId(userId) : [];
         fortifications = own.map((f) => ({ id: f.id, geometry: JSON.parse(f.geometry), area: f.area }));
@@ -507,7 +562,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
           lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: Number(t.hidden) === 1, expiresAt: t.expires_at,
         }));
     }
-    return c.json({ cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, chests, participating: !!participation });
+    return c.json({ cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, flags, chests, participating: !!participation });
   }));
 
   // ── Inventory ──
@@ -541,6 +596,10 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       : null;
     if (def.usablePhase === 'competition' && !context) {
       return fail(c, 409, 'Este poder solo se puede usar mientras participas en una competición de tu club.');
+    }
+    // Some powers make no sense in some modes (no map in Banderas / Exploradores...)
+    if (context && def.scope === 'competition' && !itemUsableInMode(def, context.competition.mode as CompetitionMode)) {
+      return fail(c, 409, `${def.name} no sirve en el modo ${MODE_INFO[context.competition.mode as CompetitionMode]?.name ?? context.competition.mode}.`);
     }
 
     // One active effect of each type at a time
@@ -580,7 +639,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const targetUserId = typeof input.targetUserId === 'string' ? input.targetUserId : '';
     if (!context) return fail(c, 409, 'Necesitas estar en una competición.');
     let rivals = new Set(context.enemyIds);
-    if (context.competition.mode === 'duel' && context.competition.opponentClubId) {
+    if ((context.competition.mode === 'duel' || context.competition.mode === 'derby') && context.competition.opponentClubId) {
       const opponent = await game.getClubCompetition(context.competition.opponentClubId, context.competition.cycleNumber);
       if (opponent) rivals = new Set((await game.getParticipants(opponent.id)).map((p) => p.userId));
     }

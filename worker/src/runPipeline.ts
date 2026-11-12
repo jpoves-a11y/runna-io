@@ -17,12 +17,12 @@ import {
   type CompetitionRow,
   type ParticipantRow,
 } from './gameStorage';
-import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
+import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, haversineMeters, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
 import { cycleAt, cycleBounds, isRestLike, localDate, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
-import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, type CompetitionEntry } from './season';
+import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry } from './season';
 import { routeToEnclosedPolygon, activitiesOverlapInTime, geometriesOverlapByPercentage, type ConquestVictimInfo } from './territory';
-import { ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, ITEMS } from '../../shared/game';
+import { ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, FLAG_CAPTURE_RADIUS_M, ITEMS } from '../../shared/game';
 
 export interface RunPipelineInput {
   userId: string;
@@ -42,6 +42,10 @@ export interface RunPipelineResult {
     areaStolen: number;
     totalArea: number;
     victims: ConquestVictimInfo[];
+    /** Banderas: flags captured by this run */
+    flags?: Array<{ flagId: string; name: string; from: string | null }>;
+    /** Exploradores: new global area of this run (its score) */
+    explored?: number;
   };
   chests: Array<{ treasureId: string; treasureName: string; powerType: string; rarity: string; zone: string | null }>;
   challengesCompleted: Array<{ type: string; rewardItem: string }>;
@@ -52,7 +56,7 @@ export interface RunPipelineResult {
    * Why a run of a club member didn't count for the competition: it arrived after the close
    * (Monday 06:00), the mode doesn't let anyone in any more, or they joined the club too late.
    */
-  competitionNote?: 'after_close' | 'closed_entry' | 'next_cycle' | null;
+  competitionNote?: 'after_close' | 'closed_entry' | 'next_cycle' | 'eliminated' | null;
 }
 
 function parseCoordinates(value: unknown): Array<[number, number]> {
@@ -151,6 +155,8 @@ interface CompetitionContext {
   participant: ParticipantRow;
   participants: ParticipantRow[];
   enemyIds: string[];
+  /** Derbi: the rival club's competition (its participants are the enemies) */
+  rivalCompetitionId: string | null;
   areaFactor: number;
   sabotageIds: string[];
 }
@@ -168,16 +174,87 @@ export async function competitionContextFor(game: GameStorage, userId: string, r
 
   const participants = await game.getParticipants(participation.competition.id);
   const me = participants.find((p) => p.userId === userId) ?? participation.participant;
+  // Eliminación: whoever has fallen only adds to their global map
+  if (me.eliminatedCut !== null) return null;
+  const mode = participation.competition.mode;
   let enemyIds: string[] = [];
-  if (participation.competition.mode === 'ffa') enemyIds = participants.filter((p) => p.userId !== userId).map((p) => p.userId);
-  if (participation.competition.mode === 'teams') enemyIds = participants.filter((p) => p.userId !== userId && p.team !== me.team).map((p) => p.userId);
+  let rivalCompetitionId: string | null = null;
+  if (mode === 'ffa') enemyIds = participants.filter((p) => p.userId !== userId).map((p) => p.userId);
+  if (mode === 'elimination') enemyIds = participants.filter((p) => p.userId !== userId && p.eliminatedCut === null).map((p) => p.userId);
+  if (mode === 'teams') enemyIds = participants.filter((p) => p.userId !== userId && p.team !== me.team).map((p) => p.userId);
+  if (mode === 'derby' && participation.competition.opponentClubId) {
+    // Derbi: one shared map; only the rival club's runners can be stolen from
+    const rival = await game.getClubCompetition(participation.competition.opponentClubId, participation.competition.cycleNumber);
+    if (rival) {
+      rivalCompetitionId = rival.id;
+      enemyIds = (await game.getParticipants(rival.id)).map((p) => p.userId);
+    }
+  }
 
   let areaFactor = 1;
   const effects = await game.activeEffects(participants.map((p) => p.userId), now);
   if (effects.some((e) => e.itemId === 'rally')) areaFactor *= 1.5;
   const sabotages = await game.sabotagesAgainst(userId, now);
   if (sabotages.length > 0) areaFactor *= 0.8;
-  return { competition: participation.competition, participant: me, participants, enemyIds, areaFactor, sabotageIds: sabotages.map((s) => s.id) };
+  return { competition: participation.competition, participant: me, participants, enemyIds, rivalCompetitionId, areaFactor, sabotageIds: sabotages.map((s) => s.id) };
+}
+
+/** The user fell in the Eliminación of this cycle. */
+async function isEliminated(game: GameStorage, userId: string, cycleNumber: number): Promise<boolean> {
+  const participation = await game.getActiveParticipation(userId);
+  return !!participation && participation.competition.cycleNumber === cycleNumber && participation.participant.eliminatedCut !== null;
+}
+
+/**
+ * Banderas: captures the flags the run passed within FLAG_CAPTURE_RADIUS_M of (only its valid
+ * stretches: not the ones cut by the anti-cheat). The capture time is when it passed closest (from
+ * the per-point times, else interpolated). Flags held by someone with an active Escudo or Capa
+ * can't be taken; the previous holder is told.
+ */
+async function captureFlags(storage: WorkerStorage, game: GameStorage, env: any, context: CompetitionContext, route: any, analysis: RunAnalysis, now: number): Promise<Array<{ flagId: string; name: string; from: string | null }>> {
+  const flags = await game.getFlags(context.competition.id);
+  if (flags.length === 0) return [];
+  const raw = parseCoordinates(route.coordinates);
+  const times = parseTrackMeta(route.trackMeta ?? route.track_meta).t;
+  const start = Date.parse(route.startedAt);
+  const end = Date.parse(route.completedAt);
+  const valid = analysis.segments.flat();
+  const timeOf = (point: [number, number]): number => {
+    const index = raw.findIndex((p) => p[0] === point[0] && p[1] === point[1]);
+    if (index >= 0 && times && times.length === raw.length && Number.isFinite(times[index])) return start + times[index] * 1000;
+    const fraction = index >= 0 && raw.length > 1 ? index / (raw.length - 1) : 0.5;
+    return Number.isFinite(end) && end > start ? start + (end - start) * fraction : start;
+  };
+  const captures = await game.getFlagCaptures(context.competition.id);
+  const protectedHolders = new Set((await game.activeEffects(context.participants.map((p) => p.userId), now))
+    .filter((e) => e.itemId === 'shield' || e.itemId === 'invisibility').map((e) => e.userId));
+  const taken: Array<{ flagId: string; name: string; from: string | null }> = [];
+  for (const flag of flags) {
+    let best: { point: [number, number]; meters: number } | null = null;
+    for (const point of valid) {
+      const meters = haversineMeters([flag.lat, flag.lng], point);
+      if (meters <= FLAG_CAPTURE_RADIUS_M && (!best || meters < best.meters)) best = { point, meters };
+    }
+    if (!best) continue;
+    const at = timeOf(best.point);
+    const holder = flagHolders([flag.id], captures, at).get(flag.id) ?? null;
+    if (holder?.userId === context.participant.userId) continue; // already mine
+    if (holder && protectedHolders.has(holder.userId)) continue; // Escudo / Capa protect their flags
+    if (!(await game.addFlagCapture({ flagId: flag.id, competitionId: context.competition.id, userId: context.participant.userId, routeId: route.id, capturedAt: new Date(at).toISOString() }))) continue;
+    taken.push({ flagId: flag.id, name: flag.name, from: holder?.userId ?? null });
+  }
+  // Tell the ones who lost a flag
+  const me = (await game.getUserLite([context.participant.userId])).get(context.participant.userId);
+  for (const t of taken) {
+    if (!t.from) continue;
+    await notifyUsers(storage, env, [t.from], {
+      title: `🚩 Te han quitado la ${t.name}`,
+      body: `${me?.name ?? 'Alguien'} ha pasado corriendo por ella. Recupérala antes de que sume más horas.`,
+      tag: `flag-${t.flagId}`,
+      data: { type: 'season_flag_lost', competitionId: context.competition.id },
+    });
+  }
+  return taken;
 }
 
 /** Day of the run (Madrid) as [from, to) ISO strings. */
@@ -284,11 +361,15 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       if (await game.getMembership(userId)) result.competitionNote = 'after_close';
     } else if (entry === 'closed_entry' || entry === 'next_cycle') {
       result.competitionNote = entry;
+    } else if (entry === 'participant' && runCycle && await isEliminated(game, userId, runCycle.number)) {
+      result.competitionNote = 'eliminated';
     }
   }
   if (context) {
+    const mode = context.competition.mode;
     let conquest: Awaited<ReturnType<typeof processTerritoryConquest>> | null = null;
-    if (runGeometry) {
+    // Banderas and Exploradores have no competition map: no territory, no steals
+    if (runGeometry && !MAPLESS_MODES.includes(mode as any)) {
       conquest = await processTerritoryConquest(storage, userId, routeId, runGeometry, {
         competitionId: context.competition.id,
         enemyIds: context.enemyIds,
@@ -303,10 +384,14 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       addBonus: conquest?.timeBombPenalty ? -conquest.timeBombPenalty : 0,
     });
     await game.syncParticipantAreas(context.competition.id);
-    // Area other participants lost to this run, and the run itself (windows, awards, summaries)
+    // Area other participants lost to this run (in the Derbi, the rival club's competition), and the
+    // run itself (windows, awards, summaries)
     for (const victim of conquest?.victims ?? []) {
-      if (victim.stolenArea > 0) await game.updateParticipant(context.competition.id, victim.userId, { addAreaLost: victim.stolenArea });
+      if (victim.stolenArea > 0) await game.updateParticipant(context.rivalCompetitionId ?? context.competition.id, victim.userId, { addAreaLost: victim.stolenArea });
     }
+    if (context.rivalCompetitionId && (conquest?.victims.length ?? 0) > 0) await game.syncParticipantAreas(context.rivalCompetitionId);
+    // Banderas: the flags this run passed by
+    const flags = mode === 'flags' ? await captureFlags(storage, game, env, context, route, analysis, now) : [];
     await game.recordCompetitionRun({
       competitionId: context.competition.id,
       userId,
@@ -316,16 +401,19 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       areaStolen: conquest?.areaStolen ?? 0,
       distance: analysis.stats.distanceM,
     });
-    if (conquest) {
+    if (conquest || MAPLESS_MODES.includes(mode as any)) {
       result.competition = {
         competitionId: context.competition.id,
-        mode: context.competition.mode,
-        newArea: conquest.newAreaConquered,
-        areaStolen: conquest.areaStolen,
-        totalArea: conquest.totalArea,
-        victims: conquest.victims,
+        mode,
+        newArea: conquest?.newAreaConquered ?? 0,
+        areaStolen: conquest?.areaStolen ?? 0,
+        totalArea: conquest?.totalArea ?? 0,
+        victims: conquest?.victims ?? [],
+        flags,
+        // Exploradores scores the new global area of the run
+        explored: mode === 'explorers' ? globalNewArea : 0,
       };
-      result.ranTogetherWith.push(...conquest.ranTogetherWith);
+      if (conquest) result.ranTogetherWith.push(...conquest.ranTogetherWith);
     }
   }
 
@@ -354,7 +442,11 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     competitionNote: result.competitionNote ?? null,
     globalArea: { gained: globalNewArea, bonus, total: globalAfter },
     competition: result.competition
-      ? { competitionId: result.competition.competitionId, mode: result.competition.mode, newArea: result.competition.newArea, areaStolen: result.competition.areaStolen, totalArea: result.competition.totalArea }
+      ? {
+        competitionId: result.competition.competitionId, mode: result.competition.mode, newArea: result.competition.newArea,
+        areaStolen: result.competition.areaStolen, totalArea: result.competition.totalArea,
+        flags: result.competition.flags ?? [], explored: result.competition.explored ?? 0,
+      }
       : null,
     streak: streak.days,
     streakSaverUsed: streak.saverUsed,

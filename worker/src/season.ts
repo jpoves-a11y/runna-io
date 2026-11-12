@@ -9,6 +9,18 @@ import {
   MIN_ACTIVE_FOR_DUEL,
   ELO_K,
   LATE_JOIN_HOURS,
+  CLUB_VS_CLUB_MODES,
+  FLAG_MIN_DISTANCE_M,
+  FLAG_MAX_DISTANCE_M,
+  FLAG_MIN_SPACING_M,
+  ELIMINATION_CUTS,
+  ELIMINATION_CUT_DAYS,
+  ELIMINATION_CUT_DELAY_HOURS,
+  ELIMINATION_IMMUNITY_HOURS,
+  ELIMINATION_WARNING_HOURS,
+  COMPETITION_GRACE_HOURS,
+  flagCount,
+  eliminationsAt,
   CHALLENGES,
   CHALLENGES_PER_REST,
   ITEMS,
@@ -19,8 +31,8 @@ import {
   type Rarity,
   type ChallengeType,
 } from '../../shared/game';
-import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
-import { GameStorage, setRunsCountFrom, runsCountFromMs, type CompetitionRow, type ParticipantRow } from './gameStorage';
+import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
+import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
 import type { WorkerStorage } from './storage';
 
@@ -60,13 +72,89 @@ export function assignTeams(players: Array<{ userId: string; strength: number }>
 }
 
 /** The mode a club plays this cycle, given the cycle's mode and how many members can take part. */
-export function modeForClub(cycleMode: CompetitionMode, participants: number, duelPaired: boolean): CompetitionMode {
-  if (cycleMode === 'duel') return duelPaired ? 'duel' : 'target';
-  if (cycleMode === 'teams' && participants < MODE_INFO.teams.minParticipants) {
-    return participants >= MODE_INFO.ffa.minParticipants ? 'ffa' : 'target';
+/**
+ * The mode a club plays this cycle, given the cycle's mode and how many members take part:
+ * club-against-club modes need a rival (else "Objetivo común"); the others need their minimum
+ * of participants (else "Todos contra todos", or "Objetivo común" below two).
+ */
+export function modeForClub(cycleMode: CompetitionMode, participants: number, paired: boolean): CompetitionMode {
+  if (CLUB_VS_CLUB_MODES.includes(cycleMode)) return paired ? cycleMode : 'target';
+  if (cycleMode === 'target') return 'target';
+  if (participants >= MODE_INFO[cycleMode].minParticipants) return cycleMode;
+  return participants >= MODE_INFO.ffa.minParticipants ? 'ffa' : 'target';
+}
+
+/** Modes where each participant plays for themselves (ranking rewards, no MVP extra). */
+export const INDIVIDUAL_MODES: CompetitionMode[] = ['ffa', 'flags', 'elimination', 'explorers'];
+/** Modes without a competition map (no territory, no steals). */
+export const MAPLESS_MODES: CompetitionMode[] = ['flags', 'explorers'];
+
+// ─── Banderas ───
+
+/** Flags around a club's centre, at FLAG_MIN..MAX_DISTANCE_M and FLAG_MIN_SPACING_M from each other. */
+export function placeFlags(center: { lat: number; lng: number }, count: number, random: () => number): Array<{ idx: number; name: string; lat: number; lng: number }> {
+  const flags: Array<{ idx: number; name: string; lat: number; lng: number }> = [];
+  for (let i = 0; i < count; i++) {
+    let spot = randomPointAround(center.lat, center.lng, FLAG_MIN_DISTANCE_M, FLAG_MAX_DISTANCE_M, random);
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const tooClose = flags.some((f) => haversineMeters([f.lat, f.lng], [spot.lat, spot.lng]) < FLAG_MIN_SPACING_M);
+      if (!tooClose) break;
+      spot = randomPointAround(center.lat, center.lng, FLAG_MIN_DISTANCE_M, FLAG_MAX_DISTANCE_M, random);
+    }
+    flags.push({ idx: i, name: `Bandera ${String.fromCharCode(65 + i)}`, lat: spot.lat, lng: spot.lng });
   }
-  if (cycleMode === 'ffa' && participants < MODE_INFO.ffa.minParticipants) return 'target';
-  return cycleMode;
+  return flags;
+}
+
+/**
+ * Hours each runner held flags in [from, to): every capture makes its runner the holder of that
+ * flag until the next capture. Rebuilt from all captures, so late imports land in their place.
+ */
+export function flagHoldings(flagIds: string[], captures: Array<{ flagId: string; userId: string; capturedAt: string }>, from: number, to: number): Map<string, number> {
+  const hours = new Map<string, number>();
+  for (const flagId of flagIds) {
+    const list = captures
+      .filter((c) => c.flagId === flagId)
+      .map((c) => ({ userId: c.userId, at: Date.parse(c.capturedAt) }))
+      .filter((c) => Number.isFinite(c.at))
+      .sort((a, b) => a.at - b.at);
+    for (let i = 0; i < list.length; i++) {
+      const start = Math.max(from, list[i].at);
+      const end = Math.min(to, i + 1 < list.length ? list[i + 1].at : to);
+      if (end > start) hours.set(list[i].userId, (hours.get(list[i].userId) ?? 0) + (end - start) / 3_600_000);
+    }
+  }
+  return hours;
+}
+
+/** Who holds each flag at `time` (and since when). */
+export function flagHolders(flagIds: string[], captures: Array<{ flagId: string; userId: string; capturedAt: string }>, time: number): Map<string, { userId: string; since: string }> {
+  const holders = new Map<string, { userId: string; since: string }>();
+  for (const flagId of flagIds) {
+    let best: { userId: string; since: string; at: number } | null = null;
+    for (const c of captures) {
+      if (c.flagId !== flagId) continue;
+      const at = Date.parse(c.capturedAt);
+      if (!Number.isFinite(at) || at > time) continue;
+      if (!best || at >= best.at) best = { userId: c.userId, since: c.capturedAt, at };
+    }
+    if (best) holders.set(flagId, { userId: best.userId, since: best.since });
+  }
+  return holders;
+}
+
+// ─── Eliminación ───
+
+/** Cut k (1..ELIMINATION_CUTS): local midnight 2k days after the start (the last one is the end). */
+export function eliminationCutTime(info: Pick<CycleInfo, 'competitionStartsAt'>, k: number): number {
+  const startDay = localDate(Date.parse(info.competitionStartsAt));
+  return localMidnight(addDays(startDay, ELIMINATION_CUT_DAYS * k));
+}
+
+/** When cut k is processed: a little later (late imports); the last one at the competition's close. */
+export function eliminationCutProcessAt(info: Pick<CycleInfo, 'competitionStartsAt'>, k: number): number {
+  const cut = eliminationCutTime(info, k);
+  return cut + (k >= ELIMINATION_CUTS ? COMPETITION_GRACE_HOURS : ELIMINATION_CUT_DELAY_HOURS) * 60 * 60 * 1000;
 }
 
 export interface MatchCandidate {
@@ -220,6 +308,10 @@ export async function notifyUsers(storage: WorkerStorage, env: any, userIds: str
   }
 }
 
+function formatHours(hours: number): string {
+  return `${hours.toLocaleString('es-ES', { maximumFractionDigits: 1 })} h`;
+}
+
 function km2(m2: number): string {
   return `${(m2 / 1e6).toFixed(2).replace('.', ',')} km²`;
 }
@@ -257,6 +349,9 @@ interface ClubSnapshot {
   name: string;
   rating: number;
   members: string[];
+  /** City of the club (Derbi pairs clubs of the same city); null when unknown */
+  cityKey?: string | null;
+  center?: { lat: number; lng: number } | null;
   /** Ran in the last ACTIVE_WINDOW_DAYS: matchmaking of duels and their N */
   active: Set<string>;
   /** Take part in the competition: the active members (everyone while the season is young) */
@@ -283,7 +378,11 @@ async function snapshotClubs(game: GameStorage, now: number): Promise<ClubSnapsh
   for (const club of clubs) {
     const members = await game.getClubMemberIds(club.id);
     if (members.length === 0) continue;
-    result.push({ id: club.id, name: club.name, rating: club.rating, members, ...(await playersOf(game, members, now)) });
+    const hasCenter = club.centerLat !== null && club.centerLng !== null;
+    const center = hasCenter ? { lat: Number(club.centerLat), lng: Number(club.centerLng) } : null;
+    const cityKey = club.city ? cityKeyOf(club.countryCode, club.city, center?.lat ?? 0, center?.lng ?? 0)
+      : center ? cityKeyOf(null, null, center.lat, center.lng) : null;
+    result.push({ id: club.id, name: club.name, rating: club.rating, members, cityKey, center, ...(await playersOf(game, members, now)) });
   }
   return result;
 }
@@ -295,9 +394,20 @@ async function snapshotClubs(game: GameStorage, now: number): Promise<ClubSnapsh
  */
 async function createInternalCompetition(game: GameStorage, info: CycleInfo, club: ClubSnapshot, cycleMode: CompetitionMode, now: number): Promise<CompetitionRow | null> {
   const players = club.members.filter((id) => club.players.has(id));
-  const mode = modeForClub(cycleMode === 'duel' ? 'duel' : cycleMode, players.length, false);
+  let mode = modeForClub(cycleMode, players.length, false);
   const config: Record<string, unknown> = { cycleMode };
+  let flags: ReturnType<typeof placeFlags> | null = null;
+  if (mode === 'flags') {
+    // The flags go around the club's city: without one, nowhere to put them
+    const center = club.center ?? await game.getClubCenter(club.id);
+    if (center) {
+      flags = placeFlags(center, flagCount(players.length), seededRandom(`flags:${info.number}:${club.id}`));
+    } else {
+      mode = modeForClub('ffa', players.length, false);
+    }
+  }
   if (mode === 'target') config.target = targetArea(players.length);
+  if (mode === 'elimination') config.cuts = [];
   let teams: Map<string, 0 | 1> | null = null;
   if (mode === 'teams') {
     const strength = await game.globalGainByUsers(players, new Date(now - 28 * 24 * 3600 * 1000).toISOString(), new Date(now).toISOString());
@@ -307,6 +417,7 @@ async function createInternalCompetition(game: GameStorage, info: CycleInfo, clu
   const competition = await game.createCompetition({ cycleNumber: info.number, clubId: club.id, mode, config });
   if (!competition) return null;
   for (const userId of players) await game.addParticipant(competition.id, userId, teams ? teams.get(userId) ?? 0 : null);
+  if (flags) await game.createFlags(competition.id, flags);
   return competition;
 }
 
@@ -347,23 +458,42 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
   let competitions = 0;
   const handled = new Set<string>();
 
-  if (info.mode === 'duel') {
+  if (CLUB_VS_CLUB_MODES.includes(info.mode)) {
+    // Derbi: clubs of the same city first; the ones left without a rival there play a normal duel
     const recent = await game.recentOpponents(3);
-    const { pairs } = pairClubs(
-      clubs.map((c) => ({ id: c.id, rating: c.rating, active: c.active.size })),
-      recent,
-      seededRandom(`duel:${info.number}`),
-    );
+    const random = seededRandom(`duel:${info.number}`);
+    const candidates = (list: ClubSnapshot[]) => list.map((c) => ({ id: c.id, rating: c.rating, active: c.active.size }));
+    const pairings: Array<{ a: string; b: string; mode: CompetitionMode }> = [];
+    let left = clubs;
+    if (info.mode === 'derby') {
+      const byCity = new Map<string, ClubSnapshot[]>();
+      for (const club of clubs) {
+        if (!club.cityKey) continue;
+        byCity.set(club.cityKey, [...(byCity.get(club.cityKey) ?? []), club]);
+      }
+      const paired = new Set<string>();
+      for (const group of [...byCity.keys()].sort().map((key) => byCity.get(key)!)) {
+        if (group.length < 2) continue;
+        for (const [a, b] of pairClubs(candidates(group), recent, random).pairs) {
+          pairings.push({ a, b, mode: 'derby' });
+          paired.add(a);
+          paired.add(b);
+        }
+      }
+      left = clubs.filter((c) => !paired.has(c.id));
+    }
+    for (const [a, b] of pairClubs(candidates(left), recent, random).pairs) pairings.push({ a, b, mode: 'duel' });
+
     const byId = new Map(clubs.map((c) => [c.id, c]));
-    for (const [aId, bId] of pairs) {
-      const a = byId.get(aId)!;
-      const b = byId.get(bId)!;
+    for (const pairing of pairings) {
+      const a = byId.get(pairing.a)!;
+      const b = byId.get(pairing.b)!;
       const runnersCounted = Math.min(a.active.size, b.active.size);
       const matchId = await game.createMatch({ cycleNumber: info.number, clubA: a.id, clubB: b.id, runnersCounted });
       for (const [self, other] of [[a, b], [b, a]] as const) {
         const competition = await game.createCompetition({
-          cycleNumber: info.number, clubId: self.id, mode: 'duel', opponentClubId: other.id, matchId,
-          config: { cycleMode: 'duel', runnersCounted, perRunnerCap: DUEL_PER_RUNNER_CAP_M2 },
+          cycleNumber: info.number, clubId: self.id, mode: pairing.mode, opponentClubId: other.id, matchId,
+          config: { cycleMode: info.mode, runnersCounted, perRunnerCap: DUEL_PER_RUNNER_CAP_M2 },
         });
         if (competition) {
           competitions++;
@@ -420,7 +550,7 @@ export async function lateJoinCompetitions(game: GameStorage, info: CycleInfo, n
 
 /** A club born during the first 48 h of a club-against-club cycle can't be paired any more: "Objetivo común". */
 export function lateClubCycleMode(mode: CompetitionMode): CompetitionMode {
-  return mode === 'duel' ? 'target' : mode;
+  return CLUB_VS_CLUB_MODES.includes(mode) ? 'target' : mode;
 }
 
 /** What happened to a member's entry into their club's running competition. */
@@ -518,26 +648,285 @@ interface Standing {
   areaStolen: number;
   distance: number;
   rank: number;
+  /** Eliminación: the cut they fell in (null = still in / the winner) */
+  eliminatedCut?: number | null;
 }
 
-/** Standings from the participants' stored scores (frozen by finishCycle before anything else). */
-async function standingsOf(game: GameStorage, competition: CompetitionRow): Promise<Standing[]> {
+/**
+ * Score of every participant, by mode: competition-map area (+ bonuses) in most modes; hours with
+ * flags in Banderas; new global area (without power bonuses) in Exploradores. `now` caps the time
+ * counted for flags still held.
+ */
+export async function competitionScores(game: GameStorage, competition: CompetitionRow, now = Date.now()): Promise<Map<string, number>> {
+  const participants = await game.getParticipants(competition.id);
+  const bounds = cycleBounds(competition.cycleNumber);
+  if (competition.mode === 'flags') {
+    const flags = await game.getFlags(competition.id);
+    const captures = await game.getFlagCaptures(competition.id);
+    const hours = flagHoldings(flags.map((f) => f.id), captures, bounds.competitionStart, Math.min(now, bounds.competitionEnd));
+    return new Map(participants.map((p) => [p.userId, Math.round((hours.get(p.userId) ?? 0) * 10) / 10]));
+  }
+  if (competition.mode === 'explorers') {
+    // From when each one entered (late entries count from their first run)
+    const starts = new Map(participants.map((p) => {
+      const joined = Date.parse(p.joinedAt);
+      const from = Math.max(bounds.competitionStart, Number.isFinite(joined) ? joined - 5 * 60 * 1000 : bounds.competitionStart);
+      return [p.userId, new Date(from).toISOString()];
+    }));
+    const areas = await game.globalBaseAreaByUsers(starts, new Date(bounds.competitionEnd).toISOString());
+    return new Map(participants.map((p) => [p.userId, areas.get(p.userId) ?? 0]));
+  }
+  return new Map(participants.map((p) => [p.userId, participantScore(p)]));
+}
+
+/**
+ * Standings from the participants' stored scores (frozen by finishCycle before anything else).
+ * Eliminación: whoever is still in first, then the fallen by the cut they fell in (later first) and
+ * their score in that cut's window.
+ */
+async function standingsOf(game: GameStorage, competition: CompetitionRow, now = Date.now()): Promise<Standing[]> {
   const participants = await game.getParticipants(competition.id);
   const users = await game.getUserLite(participants.map((p) => p.userId));
+  const scores = await competitionScores(game, competition, now);
+  const cuts: Array<{ index: number; scores?: Record<string, number> }> = Array.isArray(competition.config?.cuts) ? competition.config.cuts : [];
+  const cutScore = (p: ParticipantRow) => Number(cuts.find((c) => c.index === p.eliminatedCut)?.scores?.[p.userId] ?? 0);
   const sorted = participants
     .map((p) => ({
       userId: p.userId,
       name: users.get(p.userId)?.name ?? 'Corredor',
-      score: participantScore(p),
+      score: scores.get(p.userId) ?? 0,
       team: p.team,
       runs: p.runs,
       areaStolen: p.areaStolen,
       distance: p.distance,
       rank: 0,
+      eliminatedCut: p.eliminatedCut,
+      _cutScore: competition.mode === 'elimination' ? cutScore(p) : 0,
     }))
-    .sort((a, b) => b.score - a.score || b.runs - a.runs || a.userId.localeCompare(b.userId));
-  sorted.forEach((s, i) => { s.rank = i + 1; });
-  return sorted;
+    .sort((a, b) => {
+      if (competition.mode === 'elimination') {
+        const ca = a.eliminatedCut ?? Number.MAX_SAFE_INTEGER;
+        const cb = b.eliminatedCut ?? Number.MAX_SAFE_INTEGER;
+        if (ca !== cb) return cb - ca;
+        if (a.eliminatedCut !== null && a.eliminatedCut !== undefined) return b._cutScore - a._cutScore || a.userId.localeCompare(b.userId);
+      }
+      return b.score - a.score || b.runs - a.runs || a.userId.localeCompare(b.userId);
+    });
+  return sorted.map(({ _cutScore, ...s }, i) => ({ ...s, rank: i + 1 }));
+}
+
+// ─── Eliminación: cuts ───────────────────────────────────────────────────────
+
+interface CutRecord {
+  index: number;
+  at: string;
+  eliminated: string[];
+  remaining: number;
+  /** Area conquered by every participant still in, in the window that ended at this cut */
+  scores: Record<string, number>;
+}
+
+/** Window scores (area conquered by runs that started in it) of the participants still in. */
+async function eliminationWindow(game: GameStorage, competition: CompetitionRow, k: number): Promise<{ alive: ParticipantRow[]; score: Map<string, number>; km: Map<string, number>; from: number; to: number }> {
+  const info = cycleInfo(competition.cycleNumber, 'competition');
+  const participants = await game.getParticipants(competition.id);
+  const alive = participants.filter((p) => p.eliminatedCut === null);
+  const to = eliminationCutTime(info, k);
+  const from = k === 1 ? Date.parse(info.competitionStartsAt) : eliminationCutTime(info, k - 1);
+  const score = new Map<string, number>(alive.map((p) => [p.userId, 0]));
+  const km = new Map<string, number>(alive.map((p) => [p.userId, 0]));
+  for (const run of await game.getCompetitionRuns(competition.id, new Date(from).toISOString(), new Date(to).toISOString())) {
+    if (!score.has(run.userId)) continue;
+    score.set(run.userId, (score.get(run.userId) ?? 0) + run.areaGained);
+    km.set(run.userId, (km.get(run.userId) ?? 0) + run.distance);
+  }
+  return { alive, score, km, from, to };
+}
+
+/**
+ * Who falls at cut k: the lowest window scores (ties: fewer km in the window, less total area, then
+ * by id). Late entries less than ELIMINATION_IMMUNITY_HOURS before the cut can't fall in it, except
+ * in the last one, which always leaves exactly one.
+ */
+export function pickEliminated(
+  alive: Array<{ userId: string; joinedAt: string; total: number }>,
+  score: Map<string, number>,
+  km: Map<string, number>,
+  k: number,
+  cutTime: number,
+): string[] {
+  const fall = eliminationsAt(alive.length, ELIMINATION_CUTS - k + 1);
+  if (fall <= 0) return [];
+  const immuneAfter = cutTime - ELIMINATION_IMMUNITY_HOURS * 60 * 60 * 1000;
+  const candidates = alive.filter((p) => k >= ELIMINATION_CUTS || !(Date.parse(p.joinedAt) > immuneAfter));
+  return candidates
+    .sort((a, b) => (score.get(a.userId) ?? 0) - (score.get(b.userId) ?? 0)
+      || (km.get(a.userId) ?? 0) - (km.get(b.userId) ?? 0)
+      || a.total - b.total
+      || a.userId.localeCompare(b.userId))
+    .slice(0, Math.min(fall, candidates.length))
+    .map((p) => p.userId);
+}
+
+/** Marks the fallen of every recorded cut (repairs a cut interrupted half-way). */
+async function applyCutMarks(storage: WorkerStorage, game: GameStorage, competition: CompetitionRow, cuts: CutRecord[], now: number): Promise<void> {
+  const participants = new Map((await game.getParticipants(competition.id)).map((p) => [p.userId, p]));
+  for (const cut of cuts) {
+    for (const userId of cut.eliminated) {
+      const p = participants.get(userId);
+      if (!p || p.eliminatedCut !== null) continue;
+      await game.updateParticipant(competition.id, userId, { eliminatedCut: cut.index, eliminatedAt: new Date(now).toISOString() });
+      // Their zones are freed (except at the last cut: the map is wiped right after)
+      if (cut.index < ELIMINATION_CUTS) {
+        await storage.deleteTerritoriesByUserId(userId);
+        await storage.updateUserTotalArea(userId, 0);
+      }
+    }
+  }
+}
+
+/**
+ * Processes the cuts of an Eliminación whose time has come (each one a little after its time; the
+ * last one at the close). Idempotent: a cut is recorded in the competition before marking anyone.
+ */
+export async function processEliminationCuts(storage: WorkerStorage, game: GameStorage, env: any, competitionId: string, now = Date.now()): Promise<number> {
+  let processed = 0;
+  for (;;) {
+    const competition = await game.getCompetition(competitionId);
+    if (!competition || competition.mode !== 'elimination' || competition.status !== 'active') return processed;
+    const info = cycleInfo(competition.cycleNumber, 'competition');
+    const cuts: CutRecord[] = Array.isArray(competition.config?.cuts) ? competition.config.cuts : [];
+    await applyCutMarks(storage, game, competition, cuts, now);
+    const k = cuts.length + 1;
+    if (k > ELIMINATION_CUTS || now < eliminationCutProcessAt(info, k)) return processed;
+    const { alive, score, km, to } = await eliminationWindow(game, competition, k);
+    const eliminated = pickEliminated(alive.map((p) => ({ userId: p.userId, joinedAt: p.joinedAt, total: participantScore(p) })), score, km, k, to);
+    const record: CutRecord = {
+      index: k,
+      at: new Date(to).toISOString(),
+      eliminated,
+      remaining: alive.length - eliminated.length,
+      scores: Object.fromEntries([...score].map(([id, value]) => [id, Math.round(value)])),
+    };
+    await game.updateCompetition(competition.id, { config: { ...competition.config, cuts: [...cuts, record] } });
+    await applyCutMarks(storage, game, competition, [record], now);
+    await game.syncParticipantAreas(competition.id);
+    processed++;
+
+    const club = await game.getClub(competition.clubId);
+    const survivors = alive.filter((p) => !eliminated.includes(p.userId)).map((p) => p.userId);
+    const fallen = new Set(eliminated);
+    for (const p of alive) {
+      if (!fallen.has(p.userId)) continue;
+      await notifyUsers(storage, env, [p.userId], {
+        title: `💀 Has caído en el corte ${k}`,
+        body: `Conquistaste ${km2(score.get(p.userId) ?? 0)} en estos 2 días. Tus carreras siguen sumando en tu mapa global.`,
+        tag: `elimination-${competition.id}-${k}`,
+        data: { type: 'season_elimination', competitionId: competition.id, cut: k },
+      });
+    }
+    if (k < ELIMINATION_CUTS && survivors.length > 1) {
+      const nextFall = eliminationsAt(survivors.length, ELIMINATION_CUTS - k);
+      const nextCut = eliminationCutTime(info, k + 1);
+      await notifyUsers(storage, env, survivors, {
+        title: `🔥 Sigues en pie en ${club?.name ?? 'tu club'}`,
+        body: eliminated.length > 0
+          ? `Han caído ${eliminated.length}. Quedáis ${survivors.length}. ${nextFall > 0 ? `En el próximo corte (${weekdayName(nextCut)}) caen ${nextFall}.` : 'En el próximo corte no cae nadie.'}`
+          : `Nadie ha caído esta vez. Quedáis ${survivors.length}. ${nextFall > 0 ? `En el próximo corte (${weekdayName(nextCut)}) caen ${nextFall}.` : ''}`.trim(),
+        tag: `elimination-${competition.id}-${k}`,
+        data: { type: 'season_elimination', competitionId: competition.id, cut: k },
+      });
+    }
+  }
+}
+
+/** Warns the ones in the danger zone ELIMINATION_WARNING_HOURS before each cut (once per cut). */
+export async function warnEliminationDanger(storage: WorkerStorage, game: GameStorage, env: any, competitionId: string, now = Date.now()): Promise<number> {
+  const competition = await game.getCompetition(competitionId);
+  if (!competition || competition.mode !== 'elimination' || competition.status !== 'active') return 0;
+  const info = cycleInfo(competition.cycleNumber, 'competition');
+  const cuts: CutRecord[] = Array.isArray(competition.config?.cuts) ? competition.config.cuts : [];
+  const k = cuts.length + 1;
+  if (k > ELIMINATION_CUTS) return 0;
+  const cutTime = eliminationCutTime(info, k);
+  if (now < cutTime - ELIMINATION_WARNING_HOURS * 60 * 60 * 1000 || now >= cutTime) return 0;
+  const warned: number[] = Array.isArray(competition.config?.warned) ? competition.config.warned : [];
+  if (warned.includes(k)) return 0;
+  if (!(await game.claimSetting(`elimination_warn_${competition.id}_${k}`, String(now)))) return 0;
+  const { alive, score, km } = await eliminationWindow(game, competition, k);
+  const danger = pickEliminated(alive.map((p) => ({ userId: p.userId, joinedAt: p.joinedAt, total: participantScore(p) })), score, km, k, cutTime);
+  await game.updateCompetition(competition.id, { config: { ...competition.config, warned: [...warned, k] } });
+  if (danger.length === 0) return 0;
+  await notifyUsers(storage, env, danger, {
+    title: '⚠️ Zona de peligro',
+    body: `En menos de ${ELIMINATION_WARNING_HOURS} h hay corte y caen ${danger.length}. Ahora mismo estás entre ellos: sal a correr para salvarte.`,
+    tag: `elimination-warning-${competition.id}-${k}`,
+    data: { type: 'season_elimination', competitionId: competition.id, cut: k },
+  });
+  return danger.length;
+}
+
+/**
+ * Where an Eliminación stands, for the app: the cuts done, the next one (when, how many fall) and
+ * the current window (area conquered since the last cut) with the danger zone.
+ */
+export async function eliminationStatus(game: GameStorage, competition: CompetitionRow): Promise<{
+  cuts: CutRecord[];
+  next: { index: number; at: string; falls: number } | null;
+  alive: number;
+  window: Array<{ userId: string; score: number; danger: boolean; immune: boolean }>;
+}> {
+  const info = cycleInfo(competition.cycleNumber, 'competition');
+  const cuts: CutRecord[] = Array.isArray(competition.config?.cuts) ? competition.config.cuts : [];
+  const k = cuts.length + 1;
+  const participants = await game.getParticipants(competition.id);
+  const aliveCount = participants.filter((p) => p.eliminatedCut === null).length;
+  if (k > ELIMINATION_CUTS || competition.status !== 'active') return { cuts, next: null, alive: aliveCount, window: [] };
+  const { alive, score, km, to } = await eliminationWindow(game, competition, k);
+  const danger = new Set(pickEliminated(alive.map((p) => ({ userId: p.userId, joinedAt: p.joinedAt, total: participantScore(p) })), score, km, k, to));
+  const immuneAfter = to - ELIMINATION_IMMUNITY_HOURS * 60 * 60 * 1000;
+  return {
+    cuts,
+    next: { index: k, at: new Date(to).toISOString(), falls: eliminationsAt(alive.length, ELIMINATION_CUTS - k + 1) },
+    alive: alive.length,
+    window: alive
+      .map((p) => ({
+        userId: p.userId,
+        score: Math.round(score.get(p.userId) ?? 0),
+        danger: danger.has(p.userId),
+        immune: k < ELIMINATION_CUTS && Date.parse(p.joinedAt) > immuneAfter,
+      }))
+      .sort((a, b) => b.score - a.score || a.userId.localeCompare(b.userId)),
+  };
+}
+
+/** Standings of a competition, by mode (see standingsOf). */
+export async function competitionStandings(game: GameStorage, competition: CompetitionRow, now = Date.now()) {
+  return standingsOf(game, competition, now);
+}
+
+/** The cuts and warnings of every Eliminación of a cycle (called by every tick). */
+async function advanceEliminations(storage: WorkerStorage, game: GameStorage, env: any, cycleNumber: number, now: number): Promise<number> {
+  let processed = 0;
+  for (const competition of await game.getCompetitionsOfCycle(cycleNumber)) {
+    if (competition.mode !== 'elimination' || competition.status !== 'active') continue;
+    const lock = `elimination_${competition.id}`;
+    if (!(await game.claimSetting(lock, String(now)))) continue;
+    try {
+      processed += await processEliminationCuts(storage, game, env, competition.id, now);
+      await warnEliminationDanger(storage, game, env, competition.id, now);
+    } catch (error) {
+      console.error(`[SEASON] Elimination ${competition.id} failed, will retry:`, error);
+    } finally {
+      await game.deleteSetting(lock);
+    }
+  }
+  return processed;
+}
+
+function weekdayName(time: number): string {
+  const day = new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', weekday: 'long' }).format(new Date(time));
+  return `el ${day} a las 00:00`;
 }
 
 async function grantReward(game: GameStorage, userId: string, rarity: Rarity, competitionId: string, random: () => number): Promise<string> {
@@ -564,9 +953,17 @@ async function finishInternal(storage: WorkerStorage, game: GameStorage, env: an
   const result: Record<string, unknown> = { mode: competition.mode, standings, total };
   let leaguePoints = ran.length * 2 >= Math.max(1, standings.length) ? 1 : 0;
 
-  if (competition.mode === 'ffa') {
+  if (competition.mode === 'ffa' || competition.mode === 'flags' || competition.mode === 'explorers') {
     for (const s of ran) await give(s.userId, s.rank === 1 ? 'legendary' : s.rank === 2 ? 'epic' : s.rank === 3 ? 'rare' : 'common');
     result.winnerUserId = ran[0]?.userId ?? null;
+  } else if (competition.mode === 'elimination') {
+    // The last one standing, the finalists (fell at the last cut), the ones who lasted (cuts 3-4)
+    for (const s of ran) {
+      const cut = s.eliminatedCut ?? null;
+      await give(s.userId, cut === null ? 'legendary' : cut >= ELIMINATION_CUTS ? 'epic' : cut >= 3 ? 'rare' : 'common');
+    }
+    result.winnerUserId = standings.find((s) => s.eliminatedCut === null || s.eliminatedCut === undefined)?.userId ?? null;
+    result.cuts = competition.config?.cuts ?? [];
   } else if (competition.mode === 'teams') {
     const teamScores = [0, 0];
     for (const s of standings) if (s.team === 0 || s.team === 1) teamScores[s.team] += s.score;
@@ -588,7 +985,7 @@ async function finishInternal(storage: WorkerStorage, game: GameStorage, env: an
   }
   // MVP of the club: an extra rare reward
   const mvp = ran[0];
-  if (mvp && mvp.score > 0 && competition.mode !== 'ffa') {
+  if (mvp && mvp.score > 0 && !INDIVIDUAL_MODES.includes(competition.mode as CompetitionMode)) {
     await give(mvp.userId, 'rare');
   }
   result.mvpUserId = mvp && mvp.score > 0 ? mvp.userId : null;
@@ -602,6 +999,13 @@ async function finishInternal(storage: WorkerStorage, game: GameStorage, env: an
   const modeInfo = MODE_INFO[competition.mode as CompetitionMode];
   for (const s of standings) {
     let body = `Has quedado ${s.rank}º de ${standings.length} con ${km2(s.score)}.`;
+    if (competition.mode === 'flags') body = `Has quedado ${s.rank}º de ${standings.length} con ${formatHours(s.score)} de bandera.`;
+    if (competition.mode === 'explorers') body = `Has quedado ${s.rank}º de ${standings.length} con ${km2(s.score)} nuevos en tu mapa global.`;
+    if (competition.mode === 'elimination') {
+      body = result.winnerUserId === s.userId
+        ? '¡Eres el último en pie!'
+        : `Caíste en el corte ${s.eliminatedCut ?? ELIMINATION_CUTS}. Has quedado ${s.rank}º de ${standings.length}.`;
+    }
     if (competition.mode === 'target') body = result.achieved ? `¡Objetivo conseguido! El club sumó ${km2(total)}.` : `El club sumó ${km2(total)} de ${km2(Number(result.target))}.`;
     if (competition.mode === 'teams') body = result.winnerTeam === null ? '¡Empate entre equipos!' : result.winnerTeam === s.team ? '¡Tu equipo ha ganado!' : 'Tu equipo ha perdido esta vez.';
     await notifyUsers(storage, env, [s.userId], {
@@ -652,7 +1056,7 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
       score: own,
       finishedAt: new Date().toISOString(),
       result: {
-        mode: 'duel', standings, total: own, runnersCounted, perRunnerCap: DUEL_PER_RUNNER_CAP_M2,
+        mode: competition.mode, standings, total: own, runnersCounted, perRunnerCap: DUEL_PER_RUNNER_CAP_M2,
         opponent: opponent ? { clubId: opponent.id, name: opponent.name, crest: opponent.crest, score: rival } : null,
         outcome, ratingChange: competition.clubId === match.club_a ? delta : -delta,
         leaguePoints: result === 1 ? 3 : result === 0.5 ? 1 : 0,
@@ -661,7 +1065,9 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
       },
     });
     await notifyUsers(storage, env, standings.map((s) => s.userId), {
-      title: outcome === 'won' ? '🏆 ¡Duelo ganado!' : outcome === 'draw' ? '🤝 Duelo empatado' : '⚔️ Duelo perdido',
+      title: competition.mode === 'derby'
+        ? (outcome === 'won' ? '🏆 ¡Derbi ganado!' : outcome === 'draw' ? '🤝 Derbi empatado' : '🏟️ Derbi perdido')
+        : (outcome === 'won' ? '🏆 ¡Duelo ganado!' : outcome === 'draw' ? '🤝 Duelo empatado' : '⚔️ Duelo perdido'),
       body: `Tu club ${km2(own)} – ${opponent?.name ?? 'rival'} ${km2(rival)}.`,
       tag: `season-end-${competition.cycleNumber}`,
       data: { type: 'season_competition_finished', competitionId: competition.id },
@@ -671,7 +1077,13 @@ async function finishDuel(storage: WorkerStorage, game: GameStorage, env: any, m
 
 /** Finishes every active competition of cycle `number`, then wipes the competition map. */
 export async function finishCycle(storage: WorkerStorage, game: GameStorage, env: any, number: number, at = Date.now()): Promise<number> {
-  const competitions = (await game.getCompetitionsOfCycle(number)).filter((c) => c.status === 'active');
+  let competitions = (await game.getCompetitionsOfCycle(number)).filter((c) => c.status === 'active');
+  // 0. Eliminación: the cuts still pending, the last one included (it leaves the winner)
+  const closeAt = cycleBounds(number).closeAt;
+  for (const competition of competitions) {
+    if (competition.mode === 'elimination') await processEliminationCuts(storage, game, env, competition.id, Math.max(at, closeAt));
+  }
+  competitions = (await game.getCompetitionsOfCycle(number)).filter((c) => c.status === 'active');
   // 1. Freeze every participant's area while the map still exists. If this run stops half-way
   //    (errors, subrequest limits), the next tick scores the rest from these frozen values.
   if (!(await game.getSetting(`season_frozen_${number}`))) {
@@ -681,7 +1093,7 @@ export async function finishCycle(storage: WorkerStorage, game: GameStorage, env
   const doneMatches = new Set<string>();
   for (const competition of competitions) {
     try {
-      if (competition.mode === 'duel' && competition.matchId) {
+      if (CLUB_VS_CLUB_MODES.includes(competition.mode as CompetitionMode) && competition.matchId) {
         if (doneMatches.has(competition.matchId)) continue;
         doneMatches.add(competition.matchId);
         await finishDuel(storage, game, env, competition.matchId);
@@ -916,6 +1328,11 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
       await game.resetCompetitionMap();
       await game.upsertCycle(info.number, { status: 'rest', endedAt: new Date(now).toISOString() });
     }
+  }
+
+  // Eliminación: cuts (each a little after its time) and danger warnings, until the close
+  if (info.phase === 'competition' || (info.phase === 'rest' && !closed)) {
+    report.eliminations = await advanceEliminations(storage, game, env, info.number, now);
   }
 
   // 2. Start the current competition

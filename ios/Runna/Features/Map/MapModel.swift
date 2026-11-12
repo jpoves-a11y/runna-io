@@ -15,6 +15,8 @@ struct TerritoryShape: Identifiable {
     let rings: [[CLLocationCoordinate2D]]
     /// Someone else's global map shown for information (lighter, not tappable as a rival).
     var isOverlay: Bool = false
+    /// Derbi: a zone of the rival club (red outline).
+    var isRival: Bool = false
 }
 
 /// One of the user's own runs drawn as a thin line on the map.
@@ -69,6 +71,8 @@ final class MapModel {
     private(set) var globalShapes: [TerritoryShape] = []
     private(set) var competitionShapes: [TerritoryShape] = []
     private(set) var chests: [Chest] = []
+    /// Banderas: the flags of my competition and who holds them.
+    private(set) var flags: [CompetitionFlag] = []
     private(set) var fortifications: [FortificationShape] = []
     private(set) var castles: [CastleZone] = []
     private(set) var routeLines: [RouteLine] = []
@@ -90,6 +94,7 @@ final class MapModel {
     }
 
     var visibleFortifications: [FortificationShape] { mode == .competition ? fortifications : [] }
+    var visibleFlags: [CompetitionFlag] { mode == .competition ? flags : [] }
     var visibleCastles: [CastleZone] { mode == .competition ? castles : [] }
     var visibleRouteLines: [RouteLine] { routeLines }
 
@@ -145,6 +150,7 @@ final class MapModel {
         globalShapes = []
         competitionShapes = []
         chests = []
+        flags = []
         fortifications = []
         castles = []
         routeLines = []
@@ -264,6 +270,7 @@ final class MapModel {
     private func applySeasonMap(_ response: SeasonMapResponse, ownColor: String) {
         competitionShapes = Self.makeShapes(response.territories)
         chests = response.chests
+        flags = response.flags
         hasCompetitionMap = response.competitionId != nil
         makeFortifications(response.fortifications, ownColor: ownColor)
     }
@@ -393,10 +400,14 @@ final class MapModel {
     private static func makeShapes(_ territories: [Territory]) -> [TerritoryShape] {
         var result: [TerritoryShape] = []
         for territory in territories {
-            result += polygonsToShapes(
+            var shapes = polygonsToShapes(
                 idPrefix: territory.id, userId: territory.userId, ownerName: territory.owner?.name ?? "",
                 color: territory.color, polygons: territory.polygons, isShared: !territory.coRunnerColors.isEmpty, isOverlay: false
             )
+            if territory.rival {
+                for index in shapes.indices { shapes[index].isRival = true }
+            }
+            result += shapes
         }
         return result
     }

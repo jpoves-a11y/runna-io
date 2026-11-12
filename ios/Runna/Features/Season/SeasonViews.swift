@@ -57,7 +57,10 @@ struct CompetitionCard: View {
             switch competition.mode {
             case "teams": teamsBoard
             case "target": targetBoard
-            case "duel": duelBoard
+            case "duel", "derby": duelBoard
+            case "flags": flagsBoard
+            case "elimination": eliminationBoard
+            case "explorers": explorersBoard
             default: EmptyView()
             }
             standingsList
@@ -158,6 +161,114 @@ struct CompetitionCard: View {
         }
     }
 
+    @ViewBuilder
+    private var flagsBoard: some View {
+        if !competition.flags.isEmpty {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                Text(competition.myFlags == 1 ? "Tienes 1 bandera" : "Tienes \(competition.myFlags) banderas")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(competition.myFlags > 0 ? Color.brand : Color.secondary)
+                ForEach(competition.flags) { flag in
+                    HStack(spacing: DS.Spacing.s) {
+                        Image(systemName: "flag.fill")
+                            .foregroundStyle(flag.holder.map { Color(hex: $0.color) } ?? Color.secondary)
+                            .frame(width: 20)
+                        Text(flag.name)
+                            .font(.subheadline)
+                        Spacer(minLength: 4)
+                        Text(flagHolderText(flag))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Text("Pasa corriendo a menos de 120 m de una bandera para quedártela. Sumas una hora por cada hora que la tienes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func flagHolderText(_ flag: CompetitionFlag) -> String {
+        guard let holder = flag.holder else { return "Libre" }
+        let name = flag.holderId == userId ? "Tuya" : holder.name
+        guard let since = APIDate.parse(flag.since) else { return name }
+        return "\(name) · \(Format.relative(since))"
+    }
+
+    @ViewBuilder
+    private var eliminationBoard: some View {
+        if let elimination = competition.elimination {
+            VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                HStack(spacing: 0) {
+                    eliminationStat("\(elimination.alive)", "Siguen")
+                    StatDivider(height: 40)
+                    eliminationStat("\(elimination.cuts.count)/\(elimination.totalCuts)", "Cortes")
+                    if let next = elimination.next {
+                        StatDivider(height: 40)
+                        eliminationStat("\(next.falls)", "Caen en el próximo")
+                    }
+                }
+                if let cut = elimination.myCut {
+                    Text("Caíste en el corte \(cut). Tus carreras siguen sumando en tu mapa global.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else if let next = elimination.next, let date = APIDate.parse(next.at) {
+                    Text(next.falls > 0
+                         ? "Próximo corte \(Format.relative(date)): cae quien menos área conquiste hasta entonces."
+                         : "Próximo corte \(Format.relative(date)): esta vez no cae nadie.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !elimination.window.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(elimination.window.enumerated()), id: \.element.id) { index, entry in
+                            if index > 0 { HairlineDivider() }
+                            HStack(spacing: DS.Spacing.s) {
+                                Image(systemName: entry.danger ? "exclamationmark.triangle.fill" : (entry.immune ? "shield" : "checkmark.circle"))
+                                    .foregroundStyle(entry.danger ? Color.steal : Color.secondary)
+                                    .frame(width: 20)
+                                Text(entry.userId == userId ? "Tú" : (entry.user?.name ?? "Corredor"))
+                                    .font(.subheadline.weight(entry.userId == userId ? .semibold : .regular))
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text(Format.area(entry.score))
+                                    .font(.subheadline.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(entry.danger ? Color.steal : Color.primary)
+                            }
+                            .padding(.vertical, 6)
+                        }
+                    }
+                    Text("Área de este tramo. En rojo, los que caerían si el corte fuera ahora.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func eliminationStat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(Font.stat(20, weight: .semibold))
+                .monospacedDigit()
+            Text(label)
+                .statLabelStyle()
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var explorersBoard: some View {
+        Text("Cuenta el área nueva que sumas a tu mapa global durante la competición (sin extras de poderes).")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private func duelSide(name: String, score: Double, highlight: Bool) -> some View {
         let parts = Format.areaParts(score)
         return VStack(spacing: 4) {
@@ -202,9 +313,15 @@ struct CompetitionCard: View {
                 }
             }
             Spacer(minLength: 4)
-            Text(Format.area(standing.score))
-                .font(Font.stat(17, weight: .semibold))
-                .monospacedDigit()
+            if competition.mode == "elimination", let cut = standing.eliminatedCut {
+                Text("Cayó en el corte \(cut)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(competition.scoreText(standing.score))
+                    .font(Font.stat(17, weight: .semibold))
+                    .monospacedDigit()
+            }
         }
         .padding(.vertical, 8)
         .contentShape(Rectangle())
@@ -214,6 +331,34 @@ struct CompetitionCard: View {
         } else {
             row
         }
+    }
+}
+
+// MARK: - Banderas
+
+/// A flag on the competition map: grey while nobody holds it, in its holder's colour, with a ring
+/// when it's mine.
+struct FlagMarker: View {
+    let flag: CompetitionFlag
+    let isMine: Bool
+
+    var body: some View {
+        let color: Color = flag.holder.map { Color(hex: $0.color) } ?? Color.secondary
+        VStack(spacing: 2) {
+            Image(systemName: "flag.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(color, in: Circle())
+                .overlay(Circle().strokeBorder(isMine ? Color.brand : Color.white, lineWidth: isMine ? 3 : 2))
+                .shadow(color: Color.black.opacity(0.25), radius: 2, x: 0, y: 1)
+            Text(flag.name.replacingOccurrences(of: "Bandera ", with: ""))
+                .font(.caption2.weight(.bold))
+                .padding(.horizontal, 5)
+                .background(.regularMaterial, in: Capsule())
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(flag.name). \(flag.holder.map { "La tiene \($0.name)" } ?? "Libre")")
     }
 }
 
@@ -561,14 +706,15 @@ struct InventorySheet: View {
     /// Rivals of my competition for target items.
     private var rivals: [GameUser] {
         guard let competition = season.competition else { return [] }
-        if competition.mode == "duel" {
+        if competition.mode == "duel" || competition.mode == "derby" {
             return competition.duel?.opponentStandings.compactMap(\.user) ?? []
         }
+        if competition.mode == "target" || competition.mode == "explorers" { return [] }
         let me = session.userId
         return competition.standings.compactMap { standing -> GameUser? in
             guard standing.userId != me, let user = standing.user else { return nil }
             if competition.mode == "teams", standing.team == competition.myTeam { return nil }
-            if competition.mode == "target" { return nil }
+            if competition.mode == "elimination", standing.eliminatedCut != nil { return nil }
             return user
         }
     }

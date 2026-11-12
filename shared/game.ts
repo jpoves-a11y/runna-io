@@ -40,10 +40,15 @@ export const INACTIVE_DAYS = 14;
 
 // ─── Competition modes ───────────────────────────────────────────────────────
 
-export type CompetitionMode = 'ffa' | 'teams' | 'target' | 'duel';
+export type CompetitionMode = 'ffa' | 'teams' | 'target' | 'duel' | 'flags' | 'derby' | 'elimination' | 'explorers';
 
-/** Mode of cycle n is MODE_ROTATION[n % length]; a club that can't play it gets the fallback. */
-export const MODE_ROTATION: CompetitionMode[] = ['ffa', 'duel', 'teams', 'target'];
+/**
+ * Mode of cycle n is MODE_ROTATION[n % length] (16 weeks); a club that can't play it gets the
+ * fallback (season.ts modeForClub). Inside the club and against other clubs alternate.
+ */
+export const MODE_ROTATION: CompetitionMode[] = ['ffa', 'duel', 'flags', 'teams', 'derby', 'elimination', 'explorers', 'target'];
+/** Club against club: paired by matchmaking (duel: any city; derby: same city). */
+export const CLUB_VS_CLUB_MODES: CompetitionMode[] = ['duel', 'derby'];
 
 /**
  * Who can still enter a running competition (inactive members who start running, or members who
@@ -83,7 +88,73 @@ export const MODE_INFO: Record<CompetitionMode, { name: string; emoji: string; d
     minParticipants: 3,
     lateEntry: 'none',
   },
+  flags: {
+    name: 'Banderas',
+    emoji: '🚩',
+    description: 'Hay banderas repartidas por tu ciudad. Pasa corriendo a menos de 120 m de una para capturarla; otro te la puede quitar pasando por ella. Gana quien sume más horas con banderas.',
+    minParticipants: 2,
+    lateEntry: 'open',
+  },
+  derby: {
+    name: 'Derbi',
+    emoji: '🏟️',
+    description: 'Tu club contra otro club de tu ciudad, en el mismo mapa: solo se roba al club rival. Cuentan los km² de vuestros mejores corredores, con el mismo número por club y un tope por persona.',
+    minParticipants: 3,
+    lateEntry: 'none',
+  },
+  elimination: {
+    name: 'Eliminación',
+    emoji: '💀',
+    description: 'Cada 2 días cae quien menos área ha conquistado en esos 2 días. Cuántos caen depende de cuántos quedan, para que al final quede uno. Gana el último en pie.',
+    minParticipants: 5,
+    lateEntry: 'until_first_cut',
+  },
+  explorers: {
+    name: 'Exploradores',
+    emoji: '🧭',
+    description: 'Gana quien más área nueva sume a su mapa global durante la competición. No hay mapa de competición ni robos: cuenta explorar.',
+    minParticipants: 2,
+    lateEntry: 'open',
+  },
 };
+
+// ─── Banderas ────────────────────────────────────────────────────────────────
+
+/** A run captures a flag passing this close. */
+export const FLAG_CAPTURE_RADIUS_M = 120;
+/** Flags are placed this far from the club's centre, and this far from each other. */
+export const FLAG_MIN_DISTANCE_M = 400;
+export const FLAG_MAX_DISTANCE_M = 3000;
+export const FLAG_MIN_SPACING_M = 300;
+/** Number of flags for A active participants: 3 + A/3, between 3 and 10. */
+export function flagCount(participants: number): number {
+  return Math.min(10, Math.max(3, 3 + Math.floor(participants / 3)));
+}
+
+// ─── Eliminación ─────────────────────────────────────────────────────────────
+
+/** Cuts every 2 days: days 2, 4, 6, 8 and the close (day 10). */
+export const ELIMINATION_CUTS = 5;
+export const ELIMINATION_CUT_DAYS = 2;
+/** A cut is processed this long after its time (late imports); the last one at the close. */
+export const ELIMINATION_CUT_DELAY_HOURS = 2;
+/** Who entered less than this before a cut can't fall in it. */
+export const ELIMINATION_IMMUNITY_HOURS = 24;
+/** Warning to the ones in danger, this long before each cut. */
+export const ELIMINATION_WARNING_HOURS = 6;
+
+/**
+ * How many fall at a cut with `remaining` participants still in and `cutsLeft` cuts to go
+ * (counting this one). Nobody falls while there are more cuts left than people to drop (small
+ * clubs skip the first cuts); otherwise they fall evenly. Exactly one is left after the last cut
+ * and, before it, never fewer than two.
+ */
+export function eliminationsAt(remaining: number, cutsLeft: number): number {
+  if (remaining <= 1 || cutsLeft <= 0) return 0;
+  const toDrop = remaining - 1;
+  if (toDrop < cutsLeft) return 0;
+  return Math.ceil(toDrop / cutsLeft);
+}
 
 /** "Objetivo común": km² to reach per participant (competition map, no stealing). */
 export const TARGET_AREA_PER_PARTICIPANT_M2 = 1_500_000;
@@ -172,6 +243,8 @@ export interface ItemDefinition {
   /** 'competition': can only be activated while a competition is running. 'any': whenever. */
   usablePhase: 'competition' | 'any';
   category: 'defense' | 'attack' | 'utility' | 'global' | 'cosmetic';
+  /** Only usable in these competition modes (all when missing) */
+  modes?: CompetitionMode[];
 }
 
 const DEFENSE_TTL = 72;
@@ -217,6 +290,19 @@ export const ITEMS: Record<string, ItemDefinition> = {
   crest_pattern_cross: { id: 'crest_pattern_cross', scope: 'cosmetic', name: 'Escudo: Cruz', description: 'Fondo para el escudo de tu club.', emoji: '✚', rarity: 'epic', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
   crest_pattern_stars: { id: 'crest_pattern_stars', scope: 'cosmetic', name: 'Escudo: Estrellas', description: 'Fondo para el escudo de tu club.', emoji: '🌟', rarity: 'legendary', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
 };
+
+/**
+ * Whether a competition item can be used in a mode. Banderas has no map (only Escudo and Capa, which
+ * protect your flags, and the utility items); Exploradores scores the global map (none of them);
+ * an item can also list the only modes it works in (`modes`).
+ */
+export function itemUsableInMode(item: ItemDefinition, mode: CompetitionMode): boolean {
+  if (item.scope !== 'competition') return true;
+  if (item.modes && !item.modes.includes(mode)) return false;
+  if (mode === 'explorers') return item.id === 'reveal';
+  if (mode === 'flags') return ['shield', 'invisibility', 'spy', 'nickname', 'reveal', 'sentinel'].includes(item.id);
+  return true;
+}
 
 /** Items of a scope you can hold unused at the same time; a new one replaces the oldest. */
 export const INVENTORY_CAP = 3;

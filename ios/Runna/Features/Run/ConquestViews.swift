@@ -70,19 +70,39 @@ struct ConquestCard: View {
 
     /// Competition map: area won (and stolen) in the running club competition.
     private func competitionCard(_ competition: ConquestResult.CompetitionPart) -> some View {
-        let parts = Format.areaParts(competition.newArea)
+        let parts = Format.areaParts(competition.mode == "explorers" ? competition.explored : competition.newArea)
         return VStack(alignment: .leading, spacing: DS.Spacing.s) {
             Text(result.joinedCompetition ? "¡Ya compites! Competición de tu club" : "Competición de tu club")
                 .statLabelStyle()
-            HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.l) {
-                StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(30, weight: .semibold))
-                if result.totalStolen > 0 {
-                    stolenSummary
+            switch competition.mode {
+            case "flags":
+                if competition.flags.isEmpty {
+                    Text("No has pasado por ninguna bandera libre o rival.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(competition.flags, id: \.flagId) { flag in
+                        Label(flag.from == nil ? "Has capturado la \(flag.name)" : "Has robado la \(flag.name)", systemImage: "flag.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.brand)
+                    }
                 }
+            case "explorers":
+                StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(30, weight: .semibold))
+                Text("Área nueva de tu mapa global: es lo que cuenta en Exploradores.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            default:
+                HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.l) {
+                    StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(30, weight: .semibold))
+                    if result.totalStolen > 0 {
+                        stolenSummary
+                    }
+                }
+                Text("Llevas \(Format.area(competition.totalArea)) en el mapa de competición.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            Text("Llevas \(Format.area(competition.totalArea)) en el mapa de competición.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
@@ -95,6 +115,7 @@ struct ConquestCard: View {
         case "after_close": return "Llegó después del cierre de la competición (el lunes a las 6:00): solo cuenta para el mapa global."
         case "closed_entry": return "La competición de tu club es por equipos y ya había empezado: entrarás en la próxima. Esta carrera cuenta para el mapa global."
         case "next_cycle": return "Entraste en el club después de las primeras 48 horas: compites desde la próxima competición."
+        case "eliminated": return "Caíste en la Eliminación: esta carrera cuenta para tu mapa global."
         default: return nil
         }
     }

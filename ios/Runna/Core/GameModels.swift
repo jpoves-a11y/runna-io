@@ -369,12 +369,13 @@ struct ClubHistoryEntry: Decodable, Identifiable, Hashable {
     /// One line describing how it went.
     var summary: String {
         switch mode {
-        case "duel":
+        case "duel", "derby":
             let rival = opponent.map { " contra \($0.name)" } ?? ""
+            let name = mode == "derby" ? "Derbi" : "Duelo"
             switch outcome {
-            case "won": return "Duelo ganado\(rival)"
-            case "draw": return "Duelo empatado\(rival)"
-            default: return "Duelo perdido\(rival)"
+            case "won": return "\(name) ganado\(rival)"
+            case "draw": return "\(name) empatado\(rival)"
+            default: return "\(name) perdido\(rival)"
             }
         case "target":
             return achieved == true ? "Objetivo conseguido" : "Objetivo no alcanzado"
@@ -549,8 +550,20 @@ struct ModeInfo: Decodable, Hashable {
         case "teams": return "person.2"
         case "target": return "scope"
         case "duel": return "flag.2.crossed"
+        case "derby": return "sportscourt"
+        case "flags": return "flag.fill"
+        case "elimination": return "flame"
+        case "explorers": return "safari"
         default: return "person.3"
         }
+    }
+
+    /// Scores of Banderas are hours with flags; the rest, km².
+    static func scoreText(mode: String, score: Double) -> String {
+        if mode == "flags" {
+            return "\(score.formatted(.number.precision(.fractionLength(0...1)).locale(Locale(identifier: "es_ES")))) h"
+        }
+        return Format.area(score)
     }
 }
 
@@ -618,9 +631,11 @@ struct CompetitionStanding: Decodable, Identifiable, Hashable {
     let runs: Int
     let areaStolen: Double
     let distance: Double
+    /// Eliminación: the cut they fell in (nil while still in).
+    let eliminatedCut: Int?
     var id: String { userId }
 
-    enum CodingKeys: String, CodingKey { case rank, userId, user, score, area, bonus, team, runs, areaStolen, distance }
+    enum CodingKeys: String, CodingKey { case rank, userId, user, score, area, bonus, team, runs, areaStolen, distance, eliminatedCut }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -634,6 +649,108 @@ struct CompetitionStanding: Decodable, Identifiable, Hashable {
         runs = c.int(.runs) ?? 0
         areaStolen = c.double(.areaStolen) ?? 0
         distance = c.double(.distance) ?? 0
+        eliminatedCut = c.int(.eliminatedCut)
+    }
+}
+
+/// Banderas: a flag of the competition and who holds it.
+struct CompetitionFlag: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let latitude: Double
+    let longitude: Double
+    let holderId: String?
+    let holder: GameUser?
+    let since: String?
+
+    enum CodingKeys: String, CodingKey { case id, name, lat, lng, holderId, holder, since }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.string(.id) ?? UUID().uuidString
+        name = c.string(.name) ?? "Bandera"
+        latitude = c.double(.lat) ?? 0
+        longitude = c.double(.lng) ?? 0
+        holderId = c.string(.holderId)
+        holder = try? c.decodeIfPresent(GameUser.self, forKey: .holder)
+        since = c.string(.since)
+    }
+
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
+}
+
+/// Eliminación: the cuts done, the next one and the current window (with the danger zone).
+struct CompetitionElimination: Decodable, Hashable {
+    struct Cut: Decodable, Hashable, Identifiable {
+        let index: Int
+        let at: String
+        let remaining: Int
+        let eliminated: [GameUser]
+        var id: Int { index }
+
+        enum CodingKeys: String, CodingKey { case index, at, remaining, eliminated }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            index = c.int(.index) ?? 0
+            at = c.string(.at) ?? ""
+            remaining = c.int(.remaining) ?? 0
+            eliminated = (try? c.decodeIfPresent([GameUser].self, forKey: .eliminated)) ?? []
+        }
+    }
+
+    struct NextCut: Decodable, Hashable {
+        let index: Int
+        let at: String
+        let falls: Int
+
+        enum CodingKeys: String, CodingKey { case index, at, falls }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            index = c.int(.index) ?? 1
+            at = c.string(.at) ?? ""
+            falls = c.int(.falls) ?? 0
+        }
+    }
+
+    struct WindowEntry: Decodable, Hashable, Identifiable {
+        let userId: String
+        let user: GameUser?
+        let score: Double
+        let danger: Bool
+        let immune: Bool
+        var id: String { userId }
+
+        enum CodingKeys: String, CodingKey { case userId, user, score, danger, immune }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            userId = c.string(.userId) ?? UUID().uuidString
+            user = try? c.decodeIfPresent(GameUser.self, forKey: .user)
+            score = c.double(.score) ?? 0
+            danger = c.bool(.danger) ?? false
+            immune = c.bool(.immune) ?? false
+        }
+    }
+
+    let cuts: [Cut]
+    let next: NextCut?
+    let alive: Int
+    let totalCuts: Int
+    let window: [WindowEntry]
+    let myCut: Int?
+
+    enum CodingKeys: String, CodingKey { case cuts, next, alive, totalCuts, window, myCut }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cuts = (try? c.decodeIfPresent([Cut].self, forKey: .cuts)) ?? []
+        next = try? c.decodeIfPresent(NextCut.self, forKey: .next)
+        alive = c.int(.alive) ?? 0
+        totalCuts = c.int(.totalCuts) ?? 5
+        window = (try? c.decodeIfPresent([WindowEntry].self, forKey: .window)) ?? []
+        myCut = c.int(.myCut)
     }
 }
 
@@ -748,9 +865,15 @@ struct ClubCompetition: Decodable, Identifiable, Hashable {
     let target: CompetitionTarget?
     let duel: CompetitionDuel?
     let result: CompetitionResultInfo?
+    /// Banderas
+    let flags: [CompetitionFlag]
+    let myFlags: Int
+    /// Eliminación
+    let elimination: CompetitionElimination?
 
     enum CodingKeys: String, CodingKey {
         case id, cycleNumber, mode, modeInfo, status, participants, myRank, myScore, myTeam, total, standings, teams, target, duel, result
+        case flags, myFlags, elimination
     }
 
     init(from decoder: Decoder) throws {
@@ -770,20 +893,33 @@ struct ClubCompetition: Decodable, Identifiable, Hashable {
         target = try? c.decodeIfPresent(CompetitionTarget.self, forKey: .target)
         duel = try? c.decodeIfPresent(CompetitionDuel.self, forKey: .duel)
         result = try? c.decodeIfPresent(CompetitionResultInfo.self, forKey: .result)
+        flags = (try? c.decodeIfPresent([CompetitionFlag].self, forKey: .flags)) ?? []
+        myFlags = c.int(.myFlags) ?? 0
+        elimination = try? c.decodeIfPresent(CompetitionElimination.self, forKey: .elimination)
     }
 
     var isActive: Bool { status == "active" }
+
+    /// A participant's score as the mode counts it: hours with flags, or km².
+    func scoreText(_ score: Double) -> String {
+        ModeInfo.scoreText(mode: mode, score: score)
+    }
     var modeName: String { modeInfo?.name ?? mode }
 
     /// One-line result of a finished competition, from the user's point of view.
     func resultLine(userId: String?) -> String {
         switch mode {
-        case "duel":
+        case "duel", "derby":
+            let name = mode == "derby" ? "derbi" : "duelo"
             switch result?.outcome {
-            case "won": return "Tu club ganó el duelo"
-            case "draw": return "Duelo empatado"
-            default: return "Tu club perdió el duelo"
+            case "won": return "Tu club ganó el \(name)"
+            case "draw": return "\(name.capitalized) empatado"
+            default: return "Tu club perdió el \(name)"
             }
+        case "elimination":
+            if let userId, result?.winnerUserId == userId { return "¡Fuiste el último en pie!" }
+            if let cut = standings.first(where: { $0.userId == userId })?.eliminatedCut { return "Caíste en el corte \(cut)" }
+            return "Eliminación terminada"
         case "target":
             return result?.achieved == true ? "Objetivo conseguido" : "Objetivo no alcanzado"
         case "teams":
@@ -1070,8 +1206,10 @@ struct SeasonMapResponse: Decodable {
     let territories: [Territory]
     let fortifications: [Fortification]
     let chests: [Chest]
+    /// Banderas: the flags and who holds them.
+    let flags: [CompetitionFlag]
 
-    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests }
+    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests, flags }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1080,6 +1218,7 @@ struct SeasonMapResponse: Decodable {
         territories = (try? c.decodeIfPresent([Territory].self, forKey: .territories)) ?? []
         fortifications = (try? c.decodeIfPresent([Fortification].self, forKey: .fortifications)) ?? []
         chests = (try? c.decodeIfPresent([Chest].self, forKey: .chests)) ?? []
+        flags = (try? c.decodeIfPresent([CompetitionFlag].self, forKey: .flags)) ?? []
     }
 }
 

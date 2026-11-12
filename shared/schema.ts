@@ -616,9 +616,31 @@ export const competitionParticipants = sqliteTable("competition_participants", {
   joinedAt: text("joined_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   areaLost: real("area_lost").notNull().default(0), // stolen from this participant by others
   resultSeenAt: text("result_seen_at"), // end-of-competition summary seen
+  eliminatedCut: integer("eliminated_cut"), // Eliminación: cut they fell in
+  eliminatedAt: text("eliminated_at"),
 }, (table) => ({
   pk: primaryKey({ columns: [table.competitionId, table.userId] }),
 }));
+
+// Banderas: the flags of a competition and every capture
+export const competitionFlags = sqliteTable("competition_flags", {
+  id: text("id").primaryKey(),
+  competitionId: text("competition_id").notNull(),
+  idx: integer("idx").notNull(),
+  name: text("name").notNull(),
+  lat: real("lat").notNull(),
+  lng: real("lng").notNull(),
+});
+
+export const flagCaptures = sqliteTable("flag_captures", {
+  id: text("id").primaryKey(),
+  flagId: text("flag_id").notNull(),
+  competitionId: text("competition_id").notNull(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").notNull(),
+  capturedAt: text("captured_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
 
 // Runs that counted in a competition (windows of Eliminación, awards, summaries)
 export const competitionRuns = sqliteTable("competition_runs", {

@@ -164,9 +164,11 @@ struct Territory: Decodable, Identifiable {
     let coRunnerColors: [String]
     /// Polygons (outer ring first, then holes) in map coordinates.
     let polygons: [[[CLLocationCoordinate2D]]]
+    /// Derbi: a zone of the rival club (drawn with a red outline).
+    let rival: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, userId, routeId, area, conqueredAt, user, ranTogetherWithColors, geometry
+        case id, userId, routeId, area, conqueredAt, user, ranTogetherWithColors, geometry, rival
     }
 
     private struct ColorRef: Decodable { let color: String }
@@ -181,6 +183,7 @@ struct Territory: Decodable, Identifiable {
         owner = try? c.decodeIfPresent(UserRef.self, forKey: .user)
         coRunnerColors = (try? c.decodeIfPresent([ColorRef].self, forKey: .ranTogetherWithColors))?.map(\.color) ?? []
         polygons = GeoJSON.polygons(from: c.jsonObject(.geometry))
+        rival = c.bool(.rival) ?? false
     }
 
     var color: String { owner?.color ?? "#888888" }
@@ -322,12 +325,32 @@ struct CreateRouteResponse: Decodable {
 struct ConquestResult: Decodable {
     /// What the run did on the competition map (only for participants of a running club competition)
     struct CompetitionPart: Decodable, Hashable {
+        struct CapturedFlag: Decodable, Hashable {
+            let flagId: String
+            let name: String
+            /// Who held it before (nil: it was free)
+            let from: String?
+
+            enum CodingKeys: String, CodingKey { case flagId, name, from }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                flagId = c.string(.flagId) ?? UUID().uuidString
+                name = c.string(.name) ?? "Bandera"
+                from = c.string(.from)
+            }
+        }
+
         let mode: String
         let newArea: Double
         let areaStolen: Double
         let totalArea: Double
+        /// Banderas: flags this run captured
+        let flags: [CapturedFlag]
+        /// Exploradores: new global area of this run (its score)
+        let explored: Double
 
-        enum CodingKeys: String, CodingKey { case mode, newArea, areaStolen, totalArea }
+        enum CodingKeys: String, CodingKey { case mode, newArea, areaStolen, totalArea, flags, explored }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -335,6 +358,8 @@ struct ConquestResult: Decodable {
             newArea = c.double(.newArea) ?? 0
             areaStolen = c.double(.areaStolen) ?? 0
             totalArea = c.double(.totalArea) ?? 0
+            flags = (try? c.decodeIfPresent([CapturedFlag].self, forKey: .flags)) ?? []
+            explored = c.double(.explored) ?? 0
         }
     }
 

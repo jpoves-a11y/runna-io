@@ -27,3 +27,29 @@ ALTER TABLE clubs ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'open';
 UPDATE clubs SET entry_mode = 'invite_only' WHERE visibility = 'private';
 ALTER TABLE clubs ADD COLUMN invite_permission TEXT NOT NULL DEFAULT 'all';
 ALTER TABLE clubs ADD COLUMN description TEXT;
+
+-- Eliminación: the cut a participant fell in
+ALTER TABLE competition_participants ADD COLUMN eliminated_cut INTEGER;
+ALTER TABLE competition_participants ADD COLUMN eliminated_at TEXT;
+
+-- Banderas: flags of a competition and their captures (holdings are rebuilt from them)
+CREATE TABLE IF NOT EXISTS competition_flags (
+  id TEXT PRIMARY KEY,
+  competition_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_competition_flags_competition ON competition_flags(competition_id);
+CREATE TABLE IF NOT EXISTS flag_captures (
+  id TEXT PRIMARY KEY,
+  flag_id TEXT NOT NULL,
+  competition_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  route_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_flag_captures_route ON flag_captures(flag_id, route_id);
+CREATE INDEX IF NOT EXISTS idx_flag_captures_competition ON flag_captures(competition_id, captured_at);

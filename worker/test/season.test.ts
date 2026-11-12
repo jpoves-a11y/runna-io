@@ -13,9 +13,14 @@ import {
   seededRandom,
   randomPointAround,
   lateEntryOpen,
+  flagHoldings,
+  flagHolders,
+  placeFlags,
+  pickEliminated,
+  eliminationCutTime,
 } from '../src/season';
-import { cycleAt } from '../src/cycles';
-import { ITEMS, CHALLENGES, CHALLENGES_PER_REST, DUEL_PER_RUNNER_CAP_M2, TARGET_AREA_PER_PARTICIPANT_M2, MODE_INFO, pickRewardItem, pickRarity } from '../../shared/game';
+import { cycleAt, cycleInfo, wallClock } from '../src/cycles';
+import { ITEMS, CHALLENGES, CHALLENGES_PER_REST, DUEL_PER_RUNNER_CAP_M2, TARGET_AREA_PER_PARTICIPANT_M2, MODE_INFO, MODE_ROTATION, ELIMINATION_CUTS, FLAG_MIN_SPACING_M, flagCount, eliminationsAt, itemUsableInMode, pickRewardItem, pickRarity } from '../../shared/game';
 import { haversineMeters } from '../src/antiCheat';
 
 test('teams are balanced by strength (snake draft) and have equal sizes', () => {
@@ -182,4 +187,116 @@ test('late entry: team against team never, individual and cooperative modes alwa
     assert.equal(lateEntryOpen(competition(mode), info, day1), true, mode);
     assert.equal(lateEntryOpen(competition(mode), info, day9), true, mode);
   }
+});
+
+test('the rotation keeps the first two modes (a running season is not changed) and has all eight', () => {
+  assert.deepEqual(MODE_ROTATION.slice(0, 2), ['ffa', 'duel']);
+  assert.equal(new Set(MODE_ROTATION).size, 8);
+  for (const mode of ['flags', 'derby', 'elimination', 'explorers']) assert.ok(MODE_ROTATION.includes(mode as any), mode);
+});
+
+test('fallbacks of the new modes', () => {
+  assert.equal(modeForClub('derby', 10, true), 'derby');
+  assert.equal(modeForClub('derby', 10, false), 'target');
+  assert.equal(modeForClub('elimination', 5, false), 'elimination');
+  assert.equal(modeForClub('elimination', 4, false), 'ffa');
+  assert.equal(modeForClub('elimination', 1, false), 'target');
+  assert.equal(modeForClub('flags', 2, false), 'flags');
+  assert.equal(modeForClub('flags', 1, false), 'target');
+  assert.equal(modeForClub('explorers', 3, false), 'explorers');
+  assert.equal(modeForClub('target', 30, false), 'target');
+});
+
+test('elimination: every club size ends with exactly one, nobody is left alone before the end', () => {
+  for (let players = 2; players <= 50; players++) {
+    let remaining = players;
+    const plan: number[] = [];
+    for (let k = 1; k <= ELIMINATION_CUTS; k++) {
+      const fall = eliminationsAt(remaining, ELIMINATION_CUTS - k + 1);
+      plan.push(fall);
+      remaining -= fall;
+      if (k < ELIMINATION_CUTS) assert.ok(remaining >= 2, `${players} players: ${remaining} left after cut ${k} (${plan})`);
+    }
+    assert.equal(remaining, 1, `${players} players end with ${remaining} (${plan})`);
+    // Even cuts: no cut drops more than one more than another non-empty cut
+    const nonEmpty = plan.filter((n) => n > 0);
+    assert.ok(Math.max(...nonEmpty) - Math.min(...nonEmpty.slice(0, -1).length ? nonEmpty.slice(0, -1) : nonEmpty) <= 2, `${players}: ${plan}`);
+  }
+  assert.deepEqual([5, 6, 8, 12, 20, 50].map((p) => {
+    let r = p;
+    return Array.from({ length: ELIMINATION_CUTS }, (_, i) => { const f = eliminationsAt(r, ELIMINATION_CUTS - i); r -= f; return f; }).join('·');
+  }), ['0·1·1·1·1', '1·1·1·1·1', '2·2·1·1·1', '3·2·2·2·2', '4·4·4·4·3', '10·10·10·10·9']);
+});
+
+test('elimination: the lowest window scores fall; ties by km, then total area; late entries are protected', () => {
+  const cutTime = Date.parse('2026-11-15T00:00:00Z');
+  const alive = ['a', 'b', 'c', 'd', 'e', 'f'].map((userId) => ({ userId, joinedAt: '2026-11-13T00:00:00Z', total: 0 }));
+  const score = new Map([['a', 500], ['b', 0], ['c', 0], ['d', 900], ['e', 300], ['f', 100]]);
+  const km = new Map([['b', 2000], ['c', 1000]]);
+  // 6 players, 5 cuts left: 1 falls; b and c tie on area, c ran less
+  assert.deepEqual(pickEliminated(alive, score, km, 1, cutTime), ['c']);
+  // c entered 10 h before the cut: protected; b falls instead
+  const late = alive.map((p) => p.userId === 'c' ? { ...p, joinedAt: '2026-11-14T14:00:00Z' } : p);
+  assert.deepEqual(pickEliminated(late, score, km, 1, cutTime), ['b']);
+  // The last cut leaves only the best one, protection or not
+  assert.deepEqual(pickEliminated(late, score, km, ELIMINATION_CUTS, cutTime).sort(), ['a', 'b', 'c', 'e', 'f']);
+});
+
+test('elimination cuts at local midnight every 2 days; the last one is the end', () => {
+  for (const n of [0, 5, 10, 11, 12]) {
+    const info = cycleInfo(n, 'competition');
+    for (let k = 1; k <= ELIMINATION_CUTS; k++) {
+      const clock = wallClock(eliminationCutTime(info, k));
+      assert.equal(clock.hour, 0, `cycle ${n} cut ${k}`);
+    }
+    assert.equal(new Date(eliminationCutTime(info, ELIMINATION_CUTS)).toISOString(), info.competitionEndsAt);
+  }
+});
+
+test('flags: hours held, rebuilt from captures in any order', () => {
+  const t = (h: number) => new Date(Date.parse('2026-11-13T00:00:00Z') + h * 3_600_000).toISOString();
+  const from = Date.parse(t(0));
+  const to = Date.parse(t(10));
+  const captures = [
+    { flagId: 'A', userId: 'ana', capturedAt: t(2) },
+    { flagId: 'A', userId: 'ben', capturedAt: t(7) },
+    // A late import of an earlier run: ben captured A at hour 1 (before ana)
+    { flagId: 'A', userId: 'ben', capturedAt: t(1) },
+    { flagId: 'B', userId: 'ana', capturedAt: t(8) },
+    { flagId: 'B', userId: 'ana', capturedAt: t(-3) }, // before the competition: counts from its start
+  ];
+  const hours = flagHoldings(['A', 'B'], captures, from, to);
+  // A: ben 1-2, ana 2-7, ben 7-10 -> ben 4 h, ana 5 h; B: ana 0-10 -> 10 h
+  assert.equal(Math.round((hours.get('ben') ?? 0) * 100) / 100, 4);
+  assert.equal(Math.round((hours.get('ana') ?? 0) * 100) / 100, 15);
+  const holders = flagHolders(['A', 'B', 'C'], captures, Date.parse(t(5)));
+  assert.equal(holders.get('A')?.userId, 'ana');
+  assert.equal(holders.get('B')?.userId, 'ana');
+  assert.equal(holders.has('C'), false);
+});
+
+test('flags: as many as the club needs, spread around its centre', () => {
+  assert.equal(flagCount(2), 3);
+  assert.equal(flagCount(9), 6);
+  assert.equal(flagCount(50), 10);
+  const flags = placeFlags({ lat: 41.65, lng: -0.88 }, 10, seededRandom('flags'));
+  assert.equal(flags.length, 10);
+  for (const f of flags) {
+    const d = haversineMeters([41.65, -0.88], [f.lat, f.lng]);
+    assert.ok(d >= 390 && d <= 3010, `${f.name} at ${d} m`);
+  }
+  let close = 0;
+  for (let i = 0; i < flags.length; i++) for (let j = i + 1; j < flags.length; j++) {
+    if (haversineMeters([flags[i].lat, flags[i].lng], [flags[j].lat, flags[j].lng]) < FLAG_MIN_SPACING_M) close++;
+  }
+  assert.equal(close, 0);
+});
+
+test('powers by mode: no map powers in Banderas, none in Exploradores', () => {
+  assert.equal(itemUsableInMode(ITEMS.double_area, 'flags'), false);
+  assert.equal(itemUsableInMode(ITEMS.shield, 'flags'), true);
+  assert.equal(itemUsableInMode(ITEMS.shield, 'explorers'), false);
+  assert.equal(itemUsableInMode(ITEMS.reveal, 'explorers'), true);
+  assert.equal(itemUsableInMode(ITEMS.double_area, 'elimination'), true);
+  assert.equal(itemUsableInMode(ITEMS.explorer, 'flags'), true); // global items are not competition items
 });

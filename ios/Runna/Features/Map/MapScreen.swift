@@ -122,7 +122,7 @@ struct MapScreen: View {
         ForEach(model.visibleShapes) { shape in
             MapPolygon(shape.polygon)
                 .foregroundStyle(shape.color.opacity(fillOpacity(for: shape)))
-                .stroke(shape.color.opacity(shape.isOverlay ? 0.6 : 1), style: strokeStyle(for: shape))
+                .stroke(shape.isRival ? Color.steal : shape.color.opacity(shape.isOverlay ? 0.6 : 1), style: strokeStyle(for: shape))
         }
         ForEach(model.visibleFortifications) { fort in
             MapPolygon(fort.polygon)
@@ -138,6 +138,11 @@ struct MapScreen: View {
         ForEach(model.visibleCastles) { zone in
             Annotation("", coordinate: zone.coordinate) {
                 CastleMarker(zone: zone)
+            }
+        }
+        ForEach(model.visibleFlags) { flag in
+            Annotation(flag.name, coordinate: flag.coordinate) {
+                FlagMarker(flag: flag, isMine: flag.holderId == session.userId)
             }
         }
         ForEach(model.liveChests) { chest in
@@ -163,10 +168,11 @@ struct MapScreen: View {
         return isMine(shape) ? 0.34 : 0.26
     }
 
-    /// 2.5pt outline, 3pt for your own; shared territories and overlays get a dashed outline.
+    /// 2.5pt outline, 3pt for your own; shared territories, overlays and the rival club's zones in
+    /// the Derbi get a dashed outline.
     private func strokeStyle(for shape: TerritoryShape) -> StrokeStyle {
         let width: CGFloat = shape.isOverlay ? 1.5 : (isMine(shape) ? 3 : 2.5)
-        if shape.isShared || shape.isOverlay {
+        if shape.isShared || shape.isOverlay || shape.isRival {
             return StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: [8, 5])
         }
         return StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)

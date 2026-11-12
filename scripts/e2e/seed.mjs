@@ -1,4 +1,4 @@
-// Fills the local e2e API with the new game: friends, two clubs (public and private, with a pending
+// Fills the local e2e API with the new game: friends, two clubs (open, and with approval and a pending
 // request and invite), a running club competition (scripts/e2e/server.mjs puts "now" inside one),
 // runs that conquer the global map and steal on the competition map, a run rejected by the
 // anti-cheat, inventory items, a chest, comments and reactions.
@@ -93,13 +93,14 @@ for (const user of [alice, bob, carol, dave, erin]) {
   });
 }
 
-// Clubs: alice's public club (bob joins directly, carol with the code); dave's private club, where
+// Clubs: alice's open club (bob joins directly, carol with the code); dave's club with approval, where
 // erin asks to join; alice also invites erin
 const { club } = await call('POST', '/api/clubs', {
   token: alice.token,
   body: {
     name: 'Corredores del Ebro',
     slogan: 'Cada calle cuenta',
+    description: 'Quedadas los martes y jueves por la ribera del Ebro. Todos los ritmos son bienvenidos.',
     visibility: 'public',
     crest: { shape: 'classic', pattern: 'stripes', primary: '#16A34A', secondary: '#FFFFFF', icon: 'flame.fill', initials: 'CE' },
   },
@@ -108,10 +109,10 @@ await call('POST', `/api/clubs/${club.id}/join`, { token: bob.token, body: {} })
 await call('POST', '/api/clubs/join-code', { token: carol.token, body: { code: club.joinCode } });
 const { club: privateClub } = await call('POST', '/api/clubs', {
   token: dave.token,
-  body: { name: 'Los Madrugadores', slogan: 'Antes de las 7', visibility: 'private', crest: { shape: 'round', pattern: 'chevron', primary: '#1D4ED8', secondary: '#FDE68A', icon: 'sun.max.fill', initials: 'LM' } },
+  body: { name: 'Los Madrugadores', slogan: 'Antes de las 7', entryMode: 'approval', description: 'Salimos a correr antes del trabajo, de lunes a viernes. Ritmo tranquilo.', crest: { shape: 'round', pattern: 'chevron', primary: '#1D4ED8', secondary: '#FDE68A', icon: 'sun.max.fill', initials: 'LM' } },
 });
 const joinPrivate = await call('POST', `/api/clubs/${privateClub.id}/join`, { token: erin.token, body: {} });
-if (!joinPrivate.requested) throw new Error('joining a private club must create a request');
+if (!joinPrivate.requested) throw new Error('joining a club with approval must create a request');
 await call('POST', `/api/clubs/${club.id}/invites`, { token: alice.token, body: { userId: erin.id } });
 
 // Season: the first tick does the one-time reset and starts the running competition with the clubs

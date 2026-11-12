@@ -211,6 +211,30 @@ export async function applyGameSchema(db: Database): Promise<void> {
   await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_participants_user ON competition_participants(user_id)`);
   await tryRun(db, sql`ALTER TABLE competition_participants ADD COLUMN area_lost REAL NOT NULL DEFAULT 0`);
   await tryRun(db, sql`ALTER TABLE competition_participants ADD COLUMN result_seen_at TEXT`);
+  // Eliminación: the cut a participant fell in (null while still in)
+  await tryRun(db, sql`ALTER TABLE competition_participants ADD COLUMN eliminated_cut INTEGER`);
+  await tryRun(db, sql`ALTER TABLE competition_participants ADD COLUMN eliminated_at TEXT`);
+  // Banderas: the flags of a competition and every capture (holdings are rebuilt from them)
+  await db.run(sql`CREATE TABLE IF NOT EXISTS competition_flags (
+    id TEXT PRIMARY KEY,
+    competition_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL
+  )`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_flags_competition ON competition_flags(competition_id)`);
+  await db.run(sql`CREATE TABLE IF NOT EXISTS flag_captures (
+    id TEXT PRIMARY KEY,
+    flag_id TEXT NOT NULL,
+    competition_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    route_id TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_flag_captures_route ON flag_captures(flag_id, route_id)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_flag_captures_competition ON flag_captures(competition_id, captured_at)`);
   // One row per run that counted in a competition: windows of Eliminación, awards, summaries
   await db.run(sql`CREATE TABLE IF NOT EXISTS competition_runs (
     competition_id TEXT NOT NULL,
@@ -337,6 +361,9 @@ export interface ParticipantRow {
   areaLost: number;
   /** When the participant saw the end-of-competition summary */
   resultSeenAt: string | null;
+  /** Eliminación: the cut they fell in (null while still in) */
+  eliminatedCut: number | null;
+  eliminatedAt: string | null;
 }
 
 export interface InventoryRow {
@@ -431,6 +458,8 @@ function toParticipant(row: Row): ParticipantRow {
     joinedAt: row.joined_at,
     areaLost: Number(row.area_lost ?? 0),
     resultSeenAt: row.result_seen_at ?? null,
+    eliminatedCut: row.eliminated_cut === null || row.eliminated_cut === undefined ? null : Number(row.eliminated_cut),
+    eliminatedAt: row.eliminated_at ?? null,
   };
 }
 
@@ -1074,6 +1103,60 @@ export class GameStorage {
 
   async removeCompetitionRunsOfRoute(routeId: string): Promise<void> {
     await this.db.run(sql`DELETE FROM competition_runs WHERE route_id = ${routeId}`);
+    await this.db.run(sql`DELETE FROM flag_captures WHERE route_id = ${routeId}`);
+  }
+
+  // ─── Banderas ───
+
+  async createFlags(competitionId: string, flags: Array<{ idx: number; name: string; lat: number; lng: number }>): Promise<void> {
+    for (const flag of flags) {
+      await this.db.run(sql`INSERT INTO competition_flags (id, competition_id, idx, name, lat, lng)
+        VALUES (${newId()}, ${competitionId}, ${flag.idx}, ${flag.name}, ${flag.lat}, ${flag.lng})`);
+    }
+  }
+
+  async getFlags(competitionId: string): Promise<Array<{ id: string; idx: number; name: string; lat: number; lng: number }>> {
+    const rows = await this.db.all<Row>(sql`SELECT * FROM competition_flags WHERE competition_id = ${competitionId} ORDER BY idx ASC`);
+    return rows.map((r) => ({ id: r.id, idx: Number(r.idx), name: r.name, lat: Number(r.lat), lng: Number(r.lng) }));
+  }
+
+  /** One capture per flag and run (idempotent when a run is processed again). */
+  async addFlagCapture(data: { flagId: string; competitionId: string; userId: string; routeId: string; capturedAt: string }): Promise<boolean> {
+    const before = await this.db.all<Row>(sql`SELECT id FROM flag_captures WHERE flag_id = ${data.flagId} AND route_id = ${data.routeId}`);
+    if (before.length > 0) return false;
+    await this.db.run(sql`INSERT INTO flag_captures (id, flag_id, competition_id, user_id, route_id, captured_at, created_at)
+      VALUES (${newId()}, ${data.flagId}, ${data.competitionId}, ${data.userId}, ${data.routeId}, ${data.capturedAt}, ${nowIso()})`);
+    return true;
+  }
+
+  async getFlagCaptures(competitionId: string): Promise<Array<{ flagId: string; userId: string; routeId: string; capturedAt: string }>> {
+    const rows = await this.db.all<Row>(sql`SELECT * FROM flag_captures WHERE competition_id = ${competitionId} ORDER BY captured_at ASC, created_at ASC`);
+    return rows.map((r) => ({ flagId: r.flag_id, userId: r.user_id, routeId: r.route_id, capturedAt: r.captured_at }));
+  }
+
+  /**
+   * Exploradores: new global area of each user (without power bonuses) from runs that started in
+   * [from, to), with a different start per user (when they entered the competition).
+   */
+  async globalBaseAreaByUsers(starts: Map<string, string>, toIso: string): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    for (const [userId, fromIso] of starts) {
+      const rows = await this.db.all<Row>(sql`SELECT COALESCE(SUM(area), 0) AS total FROM global_area_events
+        WHERE user_id = ${userId} AND run_at >= ${fromIso} AND run_at < ${toIso}`);
+      map.set(userId, Number(rows[0]?.total ?? 0));
+    }
+    return map;
+  }
+
+  /** Centre of a club: its stored centre, else the mean of its members' home cities. */
+  async getClubCenter(clubId: string): Promise<{ lat: number; lng: number } | null> {
+    const club = await this.getClub(clubId);
+    if (club && club.centerLat !== null && club.centerLng !== null) return { lat: Number(club.centerLat), lng: Number(club.centerLng) };
+    const rows = await this.db.all<Row>(sql`SELECT AVG(u.home_lat) AS lat, AVG(u.home_lng) AS lng FROM club_members m JOIN users u ON u.id = m.user_id
+      WHERE m.club_id = ${clubId} AND u.home_lat IS NOT NULL AND u.home_lng IS NOT NULL`);
+    const lat = Number(rows[0]?.lat);
+    const lng = Number(rows[0]?.lng);
+    return Number.isFinite(lat) && Number.isFinite(lng) && rows[0]?.lat !== null ? { lat, lng } : null;
   }
 
   async removeParticipant(competitionId: string, userId: string): Promise<void> {
@@ -1107,8 +1190,10 @@ export class GameStorage {
     return rows.map((row) => ({ participant: toParticipant(row), competition: toCompetition({ ...row, id: row.c_id }) }));
   }
 
-  async updateParticipant(competitionId: string, userId: string, data: Partial<{ team: number | null; area: number; addBonus: number; addAreaStolen: number; addAreaLost: number; addRuns: number; addDistance: number; finalRank: number; resultSeenAt: string }>): Promise<void> {
+  async updateParticipant(competitionId: string, userId: string, data: Partial<{ team: number | null; area: number; addBonus: number; addAreaStolen: number; addAreaLost: number; addRuns: number; addDistance: number; finalRank: number; resultSeenAt: string; eliminatedCut: number; eliminatedAt: string }>): Promise<void> {
     const sets: ReturnType<typeof sql>[] = [];
+    if (data.eliminatedCut !== undefined) sets.push(sql`eliminated_cut = ${data.eliminatedCut}`);
+    if (data.eliminatedAt !== undefined) sets.push(sql`eliminated_at = ${data.eliminatedAt}`);
     if (data.addAreaLost) sets.push(sql`area_lost = area_lost + ${data.addAreaLost}`);
     if (data.resultSeenAt !== undefined) sets.push(sql`result_seen_at = ${data.resultSeenAt}`);
     if (data.team !== undefined) sets.push(sql`team = ${data.team}`);
