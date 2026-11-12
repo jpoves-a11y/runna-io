@@ -9,15 +9,28 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
   - **Global**: tu mapa del mundo, que nadie te puede quitar. Puedes superponer, a título informativo, el de tus amigos o tu club.
   - **Competición**: el mapa de la competición de tu club, con tus fortificaciones y los cofres de los días de descanso.
   - En ambos: fase de la temporada con cuenta atrás e inventario.
-- **Club** (pestaña que incluye también **Amigos**):
-  - Crear un club público o privado con escudo (editor con piezas desbloqueables) y eslogan.
-  - Buscar clubes públicos, unirse con código o enlace, solicitudes e invitaciones.
-  - Miembros con roles, competición en curso, retos, historial y trofeos.
+- **Club** (pestaña con **Mi club**, **Chat** y **Amigos**):
+  - **Crear un club** con escudo (editor con piezas desbloqueables), eslogan y descripción. Tipo de entrada: abierto, con aprobación o solo con invitación. El líder decide quién puede invitar.
+  - **Entrar en un club**: buscar clubes abiertos o con aprobación, unirse con código o enlace, solicitudes e invitaciones.
+  - **Miembros y competición**: roles (líder, oficiales y miembros), la competición en curso (con banderas, cortes de la Eliminación, marcador del duelo o el derbi), retos, historial con "Ver resumen" y trofeos.
+  - **Chat del club**:
+    - Respuestas, reacciones y @menciones.
+    - Mensajes del sistema: inicio, cortes, resultados y altas.
+    - Al mantener pulsado un mensaje: denunciar, borrar y, si eres oficial, silenciar.
+    - Contador de no leídos en la pestaña.
 - **Ranking**:
   - Global: mundo, país, ciudad, amigos y club; desde siempre y del mes.
   - Competición de tu club.
   - Clubes: por puntos de liga o por área.
-- **Inventario**: poderes de competición, extras globales con tope y cosméticos (títulos y piezas de escudo), con caducidad.
+- **Inventario**: poderes de competición (solo los que valen en el modo en curso), extras globales con tope, poderes de los días de descanso y cosméticos (títulos y piezas de escudo), con caducidad. Radar y pines de la Brújula en el mapa global.
+- **Fin de la competición**: se abre sola una ventana a pantalla completa con varias páginas:
+  - El resultado del club.
+  - Tu puesto y tus números.
+  - Los logros conseguidos.
+  - Los cofres ganados: se tocan para abrirlos.
+  - La próxima competición.
+
+  Los logros se acumulan en el perfil.
 - **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, **Live Activity** en la pantalla bloqueada y la Dynamic Island (tiempo que corre solo, distancia, ritmo y aviso de pausa), pausa/reanudar, aviso si la ubicación no es exacta, recuperación si iOS cierra la app a mitad de carrera, y cola sin conexión: la carrera se guarda en el móvil y se sube después (sin duplicados).
 - **Después de correr**: área nueva en el mapa global, territorio conquistado y robado en la competición, retos completados, cofres recogidos, si la carrera no cuenta o está en revisión (y por qué), **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Strava, Polar o Apple Salud muestran el mismo resumen al abrir la app.
 - **Actividad**: feed de tus amigos (carreras, robos, cofres, apodos, récords) con "me gusta"/"no me gusta" y comentarios con respuestas y @menciones; tus carreras con mapa, renombrar y borrar.
@@ -110,7 +123,11 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
   - Política de privacidad: `https://runna-io-api.runna-io-api.workers.dev/privacy`
   - Soporte: `https://runna-io-api.runna-io-api.workers.dev/support`
   - Condiciones de uso (opcional, como EULA o en la descripción): `https://runna-io-api.runna-io-api.workers.dev/terms`
-- **Contenido generado por usuarios** (guideline 1.2): se puede denunciar y bloquear desde el perfil de un usuario, un comentario o una publicación. Las denuncias se revisan en 24 horas.
+- **Contenido generado por usuarios** (guideline 1.2):
+  - Se puede denunciar y bloquear desde el perfil de un usuario, un comentario, una publicación o un mensaje del chat del club.
+  - Los mensajes de usuarios bloqueados no se ven.
+  - Los oficiales del club pueden borrar mensajes y silenciar a miembros.
+  - Las denuncias se revisan en 24 horas.
 
 - **Ubicación en segundo plano**: solo se usa mientras grabas una carrera que has empezado tú. Si lo preguntan, explícalo en las notas de la revisión.
 - **HealthKit**: solo lectura de entrenamientos de carrera y sus rutas, para crear territorio.
@@ -120,4 +137,9 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 
 ## Compilación automática
 
-`.github/workflows/ios.yml` se lanza a mano (Actions → iOS build → Run workflow), porque en repositorios privados los minutos de Mac cuentan 10 veces: compila la app (simulador y dispositivo, sin firmar), la abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`) y hace una captura de cada pestaña. Las capturas se descargan desde la ejecución, en "Artifacts".
+`.github/workflows/ios.yml` se lanza a mano (Actions → iOS build → Run workflow), porque en repositorios privados los minutos de Mac cuentan 10 veces. Hace lo siguiente:
+- Compila la app para simulador y para dispositivo, sin firmar.
+- La abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`).
+- Hace una captura de cada pestaña, del chat del club, del inventario y de la ventana de fin de competición (páginas del club, logros y cofres).
+
+Las capturas se descargan desde la ejecución, en "Artifacts", y también se publican en la rama `ci-screenshots`. En las pruebas, la ventana de fin de competición solo se abre con su enlace de depuración `runnaio://season/results`, para no tapar el resto de capturas.

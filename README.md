@@ -4,10 +4,30 @@ Corre y conquista el mapa. Runna tiene dos modos a la vez:
 
 - **Modo global**: cada carrera suma al mapa del mundo el área nueva que encierra. Nadie te la puede quitar. Hay rankings mundial, de tu país, de tu ciudad, de tus amigos y de tu club, de siempre y del mes. Los rankings solo muestran el área total, nunca recorridos.
 - **Modo competición**: para quien está en un club. Ciclos de 14 días (hora de Madrid):
-  - **Competición:** de viernes a domingo de la semana siguiente (10 días), en un mapa que empieza vacío.
-  - **Descanso:** de lunes a jueves (4 días). Aparecen cofres alrededor de las ciudades de los clubes y cada miembro tiene 3 retos.
-  - **Modos:** se van turnando todos contra todos, por equipos, objetivo común y duelo contra otro club de nivel parecido.
-  - **Al terminar:** se reparten recompensas, puntos de liga y Elo, y el mapa de competición se borra.
+  - **Competición:** de viernes a domingo de la semana siguiente (10 días), en un mapa que empieza vacío. Se puntúa el lunes a las 6:00: hasta entonces cuentan las carreras que empezaron antes del domingo a las 23:59 y llegan tarde (reloj, Strava).
+  - **Quién participa:** los miembros que corrieron en los 14 días anteriores al inicio. Los inactivos reciben un aviso. En los modos individuales entran con su primera carrera (en Eliminación, solo antes del primer corte); en los de equipo contra equipo (Por equipos, Duelo, Derbi) la plantilla se cierra al empezar.
+  - **Descanso:** de lunes a jueves (4 días). Aparecen cofres ilustrados alrededor de las ciudades de los clubes y cada miembro tiene 3 retos.
+  - **Modos** (rotación de 8, con alternativas si el club no llega al mínimo):
+    - Todos contra todos.
+    - Duelo contra otro club de nivel parecido.
+    - Banderas: puntos por horas con banderas repartidas por la ciudad.
+    - Por equipos.
+    - Derbi contra un club de tu ciudad.
+    - Eliminación: cortes cada 2 días, ajustados al tamaño del club para que al final quede uno.
+    - Exploradores: gana quien más mapa global nuevo descubre.
+    - Objetivo común.
+  - **Poderes:** de competición (escudos, robos, Venganza, Emboscada, Radar…), globales con tope (Turista, Expedición, Alba…) y de descanso (Llave Maestra, Mapa del Tesoro…), con caducidad.
+  - **Al terminar:**
+    - Se reparten recompensas, puntos de liga y Elo.
+    - Cada uno recibe sus **logros** (Conquistador, Ladrón, Fondista, Constante, Muro, MVP…), que se guardan en el perfil.
+    - La app abre una ventana con el resumen: resultado del club, tus números, logros, cofres que abrir y la próxima competición.
+    - El mapa de competición se borra.
+  - **Clubes:**
+    - Tipos de entrada: abierto, con aprobación o solo con invitación.
+    - El líder decide quién puede invitar.
+    - Descripción del club.
+    - Roles: líder, oficiales y miembros.
+    - Chat con menciones, respuestas y reacciones. Los oficiales pueden borrar mensajes y silenciar, y se puede denunciar y bloquear.
 
 Las reglas y catálogos (poderes, caducidades, modos, retos, piezas de escudo, umbrales anti-trampas) están en [`shared/game.ts`](shared/game.ts).
 
@@ -86,7 +106,7 @@ npx wrangler deploy -c wrangler.worker.toml
 
 | Tarea | Cuándo |
 |---|---|
-| season-tick | cada 5 minutos: reset inicial (una vez), empieza y termina las competiciones, cofres de los días de descanso, caducidad de objetos |
+| season-tick | cada 5 minutos: reset inicial (una vez), empieza y termina las competiciones (cierre el lunes a las 6:00), cortes de la Eliminación, cofres de los días de descanso, caducidad de objetos y, una vez al día, borra los mensajes de chat de más de 90 días |
 | polar-auto-sync | cada 5 minutos |
 | inactivity-check | 10:00 y 19:00 |
 | suunto-auto-sync | en el minuto 30 de cada hora |
@@ -150,12 +170,32 @@ Nunca subas credenciales al repositorio: `.env*` y `.dev.vars` están en `.gitig
     - `/api/treasures/active` no lista nada.
     - `/api/tasks/spawn-treasure` y `/api/tasks/weekly-summary` responden `skipped`.
     - `/api/admin/competition`, `/api/admin/reset-for-competition`, `/api/admin/spawn-treasure` y `/api/admin/retrofix-route` responden 410 e indican el endpoint nuevo.
-- **Prueba de punta a punta del juego completo** (clubes, competición, duelos, Elo, descanso, cofres, retos, revisiones):
+- **Base de datos:** el Worker crea solo las tablas y columnas nuevas al arrancar. [`migrations/0015_season_phase2.sql`](migrations/0015_season_phase2.sql) recoge los mismos cambios por si se prefiere aplicarlos a mano. Son estos:
+  - `competition_runs`.
+  - Banderas.
+  - `user_awards`.
+  - Chat del club.
+  - Tipos de entrada de los clubes.
+- **Pruebas de punta a punta del juego completo:**
+  - `season-test.mjs`:
+    - Clubes, competición, inactivos y cierre a las 6:00.
+    - Duelos y Elo.
+    - Logros y resumen de fin de competición.
+    - Chat.
+    - Descanso, cofres y retos.
+    - Revisiones.
+  - `modes-test.mjs`: los modos Banderas, Derbi, Eliminación y Exploradores, y cada poder.
 
   ```bash
   rm -f scripts/e2e/.build/season.db
   DATABASE_URL=file:scripts/e2e/.build/season.db npx drizzle-kit push --force
   node scripts/e2e/season-test.mjs
+  ```
+
+  ```bash
+  rm -f scripts/e2e/.build/modes.db
+  DATABASE_URL=file:scripts/e2e/.build/modes.db npx drizzle-kit push --force
+  node scripts/e2e/modes-test.mjs
   ```
 
 ## Garmin
