@@ -33,6 +33,7 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
         run: |
           missing=""
           for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
@@ -41,6 +42,9 @@ jobs:
           if [ -n "$missing" ]; then
             echo "::error::Missing repository secrets:$missing (Settings -> Secrets and variables -> Actions)"
             exit 1
+          fi
+          if [ -z "$MAPBOX_ACCESS_TOKEN" ]; then
+            echo "::warning::MAPBOX_ACCESS_TOKEN is not set: the replay's map won't load"
           fi
 
       - name: Write App Store Connect API key
@@ -59,6 +63,8 @@ jobs:
         working-directory: ios
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Mapbox's public token (the replay's map), written into Info.plist as MBXAccessToken
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
         run: |
           set -o pipefail
           # Each run gets a higher build number than the last (1000 + run number)
@@ -75,6 +81,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            MAPBOX_ACCESS_TOKEN="$MAPBOX_ACCESS_TOKEN" \
             > archive.log 2>&1 || { grep -E "error:" archive.log | sort -u; tail -60 archive.log; exit 1; }
           echo "Archive created"
 

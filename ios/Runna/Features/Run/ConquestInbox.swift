@@ -27,6 +27,10 @@ final class ConquestInbox {
     @ObservationIgnored private var seen: [String] = []
     @ObservationIgnored private var seenSet: Set<String> = []
     @ObservationIgnored private var isDiscovering = false
+    /// When the app last looked for new routes on coming to the foreground
+    @ObservationIgnored private var lastForegroundCheck: Date?
+    /// Results the server has been told the user saw
+    @ObservationIgnored private var reportedSeen: Set<String> = []
 
     private let maxSeen = 600
 
@@ -88,6 +92,28 @@ final class ConquestInbox {
         }
     }
 
+    /// The app is on screen again: looks for activities imported meanwhile (a watch synced while the
+    /// app was closed or in the background), so their result shows on entering the app whatever tab
+    /// is open. When there are any, the screens reload too (the map has new territory).
+    func appBecameActive(userId: String) async {
+        if let last = lastForegroundCheck, Date().timeIntervalSince(last) < 10 { return }
+        lastForegroundCheck = Date()
+        let waiting = queue.count
+        await discoverNewRoutes(userId: userId)
+        if queue.count > waiting {
+            AppRouter.shared.reloadSignal += 1
+        }
+    }
+
+    /// The user is looking at a route's result: its "tu carrera está lista" push isn't needed any more.
+    func reportSeen(routeId: String) {
+        guard !routeId.isEmpty, !reportedSeen.contains(routeId) else { return }
+        reportedSeen.insert(routeId)
+        Task {
+            try? await APIClient.shared.send("POST", "/api/routes/\(routeId)/result-seen", body: [:])
+        }
+    }
+
     /// Marks a route as shown (its result was seen, or it's a live run with its own summary).
     func markShown(routeId: String) {
         guard !routeId.isEmpty else { return }
@@ -104,6 +130,8 @@ final class ConquestInbox {
         ownerId = nil
         seen = []
         seenSet = []
+        lastForegroundCheck = nil
+        reportedSeen = []
     }
 
     // MARK: - Storage
@@ -155,8 +183,8 @@ final class ConquestInbox {
 // MARK: - Presentation
 
 extension View {
-    /// Presents, one after another, the conquest results the user hasn't seen yet.
-    /// Needs RunTracker, AppRouter and SessionStore in the environment (as on the map screen).
+    /// Presents, one after another, the conquest results the user hasn't seen yet, over whatever tab
+    /// is open. Needs RunTracker and SessionStore in the environment (as on the tab view).
     @MainActor
     func conquestInbox() -> some View {
         modifier(ConquestInboxModifier())
@@ -166,14 +194,15 @@ extension View {
 @MainActor
 private struct ConquestInboxModifier: ViewModifier {
     @Environment(RunTracker.self) private var tracker
-    @Environment(AppRouter.self) private var router
     @Environment(SessionStore.self) private var session
+    @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
 
     private var inbox: ConquestInbox { ConquestInbox.shared }
 
     private var presentedItem: ConquestInbox.Item? {
-        // Never on top of a run being recorded, and only from the map tab
-        guard session.state == .loggedIn, !tracker.isPresented, router.selectedTab == .map else { return nil }
+        // Never on top of a run being recorded or of the first-launch tour
+        guard session.state == .loggedIn, !tracker.isPresented else { return nil }
+        guard onboardingDone || OnboardingView.isDisabledForTests else { return nil }
         return inbox.current
     }
 
@@ -204,6 +233,9 @@ private struct ConquestInboxView: View {
     @State private var isLoading = true
     @State private var tauntVictim: Victim?
     @State private var sentVictimIds: Set<String> = []
+    @State private var showsShareEditor = false
+    /// Name given on this screen
+    @State private var renamedTo: String?
 
     var body: some View {
         NavigationStack {
@@ -211,18 +243,37 @@ private struct ConquestInboxView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     RunCelebrationHeader(
                         title: headerTitle,
-                        subtitle: route?.name ?? "Actividad importada",
+                        subtitle: renamedTo ?? route?.name ?? "Actividad importada",
                         isWorking: isLoading
                     )
                     .padding(.top, DS.Spacing.s)
                     if let route {
+                        // Name it now, while it's fresh (imported names are generic)
+                        ActivityNameEditor(
+                            routeId: route.id,
+                            currentName: renamedTo ?? route.name,
+                            startDate: route.startDate,
+                            distance: route.distance
+                        ) { name in
+                            renamedTo = name
+                        }
                         VStack(spacing: DS.Spacing.m) {
                             if route.locations.count >= 2 {
                                 RouteReplayView(
                                     coordinates: route.locations,
                                     color: Color.brand,
-                                    height: 220
+                                    distance: route.distance,
+                                    duration: route.duration,
+                                    height: 260,
+                                    activity: ReplayActivity(route: route)
                                 )
+                                Button {
+                                    showsShareEditor = true
+                                } label: {
+                                    Label("Compartir vídeo del recorrido", systemImage: "square.and.arrow.up")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(SecondaryButtonStyle(tint: .primary))
                             }
                             RunStatsCard(distance: route.distance, duration: route.duration)
                         }
@@ -236,6 +287,20 @@ private struct ConquestInboxView: View {
             .screenBackground()
             .safeAreaInset(edge: .bottom) {
                 doneButton
+            }
+            .fullScreenCover(isPresented: $showsShareEditor) {
+                if let route {
+                    RouteShareEditor(
+                        coordinates: route.locations,
+                        distance: route.distance,
+                        duration: route.duration,
+                        title: renamedTo ?? route.name,
+                        date: route.startDate,
+                        area: result.map { (r: ConquestResult) -> Double? in r.isRejected ? nil : r.globalGained + r.globalBonus } ?? route.globalAreaGained,
+                        color: Color.brand,
+                        activity: ReplayActivity(route: route)
+                    )
+                }
             }
             .navigationTitle("Nueva actividad")
             .navigationBarTitleDisplayMode(.inline)
@@ -296,6 +361,7 @@ private struct ConquestInboxView: View {
     private func load() async {
         route = initialRoute
         isLoading = true
+        ConquestInbox.shared.reportSeen(routeId: routeId)
         if route == nil, let userId = session.userId,
            let routes: [RunRoute] = try? await APIClient.shared.request("GET", "/api/routes/\(userId)") {
             route = routes.first { $0.id == routeId }

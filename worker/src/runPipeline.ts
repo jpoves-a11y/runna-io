@@ -619,19 +619,26 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     })),
   });
 
-  await sendRunNotifications(storage, env, userId, route.distance, result, before, globalAfter);
+  await sendRunNotifications(storage, env, userId, routeId, route.completedAt, route.distance, result, before, globalAfter);
   console.log(`[PIPELINE] Route ${routeId}: ${analysis.status} global +${(result.globalGain / 1e6).toFixed(4)} km²${result.competition ? `, competition +${(result.competition.newArea / 1e6).toFixed(4)} km²` : ''}`);
   return result;
 }
 
-async function sendRunNotifications(storage: WorkerStorage, env: any, userId: string, distance: number, result: RunPipelineResult, globalBefore: number, globalAfter: number): Promise<void> {
+/** The "X ha salido a correr" push only for runs that ended this recently (not for old imports). */
+const FRIEND_ACTIVITY_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+async function sendRunNotifications(storage: WorkerStorage, env: any, userId: string, routeId: string, completedAt: string | null | undefined, distance: number, result: RunPipelineResult, globalBefore: number, globalAfter: number): Promise<void> {
   if (!env) return;
   try {
     const { notifyTerritoryLoss, notifyFriendNewActivity, notifyAreaOvertake } = await import('./notifications');
     for (const victim of (result.competition?.victims ?? []).slice(0, 3)) {
       try { await notifyTerritoryLoss(storage, victim.userId, userId, env, victim.stolenArea); } catch (_) {}
     }
-    await notifyFriendNewActivity(storage, userId, (distance || 0) / 1000, result.globalGain / 1e6, env);
+    // Once per run, however often it's processed (another import of it, a retry, a rebuild)
+    const ended = completedAt ? Date.parse(completedAt) : NaN;
+    if (Number.isFinite(ended) && Date.now() - ended <= FRIEND_ACTIVITY_MAX_AGE_MS && await storage.claimFriendActivityNotification(routeId)) {
+      await notifyFriendNewActivity(storage, userId, (distance || 0) / 1000, result.globalGain / 1e6, env);
+    }
     // Overtakes in the global ranking among friends
     const friendIds = await storage.getFriendIds(userId);
     if (friendIds.length > 0 && globalAfter > globalBefore) {

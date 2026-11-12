@@ -166,7 +166,7 @@ struct UserProfileContent: View {
                     .listRowInsets(EdgeInsets(top: DS.Spacing.l, leading: DS.Spacing.s, bottom: DS.Spacing.l, trailing: DS.Spacing.s))
                     .listRowBackground(Color.surface)
                 NavigationLink {
-                    UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
+                    UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, owner: ReplayRunner(user: stats.user), onChange: { reloadRoutes() })
                 } label: {
                     SocialSettingsLabel(
                         title: "Todas sus actividades",
@@ -323,7 +323,7 @@ struct UserProfileContent: View {
             }
             ForEach(routes.prefix(10)) { route in
                 NavigationLink {
-                    RouteDetailView(route: route, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
+                    RouteDetailView(route: route, color: stats.user.color, editable: isMe, owner: ReplayRunner(user: stats.user), onChange: { reloadRoutes() })
                 } label: {
                     RouteRow(route: route, color: Color(hex: stats.user.color))
                 }
@@ -331,7 +331,7 @@ struct UserProfileContent: View {
             }
             if routes.count > 10 {
                 NavigationLink {
-                    UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, onChange: { reloadRoutes() })
+                    UserRoutesList(routes: routes, name: stats.user.name, color: stats.user.color, editable: isMe, owner: ReplayRunner(user: stats.user), onChange: { reloadRoutes() })
                 } label: {
                     Text("Ver todas (\(routes.count))")
                         .font(.subheadline.weight(.medium))
@@ -593,13 +593,15 @@ struct UserRoutesList: View {
     let name: String
     let color: String
     let editable: Bool
+    /// The runner, for the flag of the replays
+    var owner: ReplayRunner? = nil
     let onChange: () -> Void
 
     var body: some View {
         List {
             ForEach(routes) { route in
                 NavigationLink {
-                    RouteDetailView(route: route, color: color, editable: editable, onChange: onChange)
+                    RouteDetailView(route: route, color: color, editable: editable, owner: owner, onChange: onChange)
                 } label: {
                     RouteRow(route: route, color: Color(hex: color))
                 }

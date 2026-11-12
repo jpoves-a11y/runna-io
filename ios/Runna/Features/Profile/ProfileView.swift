@@ -54,8 +54,8 @@ struct ProfileView: View {
                     let pending = PendingRuns.pendingCount
                     if pending > 0 {
                         Text(pending == 1
-                             ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se borrará de este iPhone."
-                             : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se borrarán de este iPhone.")
+                             ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se quedará en este iPhone y se subirá cuando vuelvas a entrar con tu cuenta."
+                             : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se quedarán en este iPhone y se subirán cuando vuelvas a entrar con tu cuenta.")
                     }
                 }
                 .confirmationDialog("¿Quitar tu foto de perfil?", isPresented: $confirmRemoveAvatar, titleVisibility: .visible) {

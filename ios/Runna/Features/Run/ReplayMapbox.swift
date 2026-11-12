@@ -1,0 +1,684 @@
+import CoreLocation
+// Some of what the replay uses (Standard Satellite among them) may still be experimental in v11
+@_spi(Experimental) import MapboxMaps
+import UIKit
+
+// MARK: - What the replay draws on the map (Mapbox)
+
+/// The replay's map (Mapbox's view), for the files that don't import Mapbox.
+typealias ReplayMapView = MapView
+
+/// The replay's drawing on a Mapbox map: the look (satellite or map, 3D terrain in 3D), the faint
+/// whole route, the route run so far (the same line trimmed to the runner's distance), the area it
+/// encloses at the end, the start marker, and the runner's flag. The replay in the app and the video
+/// renderer both use it, so they look the same.
+///
+/// The flag is a view annotation bound to the end of the line: Mapbox places it itself on its 3D
+/// terrain (not on buildings), in step with the map it draws, so its foot stays on the line's end.
+@MainActor
+final class ReplayScene {
+    let timeline: RouteReplayTimeline
+    let color: UIColor
+    /// The runner's flag, its foot on the end of the line
+    let runnerFlag: RunnerFlagView
+
+    private static let routeSource = "replay-route"
+    private static let areaSource = "replay-area"
+    private static let startSource = "replay-start"
+    private static let demSource = "replay-dem"
+    private static let ghostLayer = "replay-ghost"
+    private static let casingLayer = "replay-casing"
+    private static let lineLayer = "replay-line"
+    private static let areaLayer = "replay-area-fill"
+    private static let startLayer = "replay-start-dot"
+
+    private weak var mapView: MapView?
+    private let flagHolder: FlagHolderView
+    private var flagAnnotation: ViewAnnotation?
+    /// The style and the route's layers are in
+    private(set) var isReady = false
+    /// Mapbox's light: "day" or "night" (the app's dark mode)
+    private var lightPreset = "day"
+    private var drawn: Double = 0
+    private var areaShown = false
+    /// The flag's opacity, and where it's fading to (a quarter of a second)
+    private var flagAlpha: CGFloat = 0
+    private var flagAlphaTarget: CGFloat = 0
+    /// The activity: when it was run sets the sun's light (and the weather) as the runner goes
+    var activity: ReplayActivity?
+    /// The pace of each km and the weather of that day (they may arrive after the replay starts)
+    private(set) var extras = ReplayExtras()
+    /// The weather effect on the map now (to change it only when it changes)
+    private var weatherKey = ""
+    /// Rain, snow or fog on the screen's glass (over the map, so the video has them too)
+    private let wetGlass = WetGlassView()
+    /// The boxes drawn over the map that the weather goes round
+    private var glassBoxes = ShareBoxLayout()
+    /// A marker at each km (or 5 km on long routes): its distance along the route and its view
+    private var kmMarkers: [(distance: Double, view: KmMarkerView, annotation: ViewAnnotation)] = []
+    /// Lowers the map's tile budget if iOS runs short of memory
+    private var memoryObserver: NSObjectProtocol?
+    /// iOS has run short of memory: from then on the maps keep Mapbox's own (small) tile budget
+    private static var memoryIsTight = false
+
+    /// Tiles each of the map's sources keeps in memory: far more than Mapbox's own budget (a few
+    /// dozen, for the screen's size), so every tile loaded before the replay is still there, parsed,
+    /// when the replay gets to it (the heavy ones near towns most of all); as many as the iPhone's
+    /// memory allows.
+    static var tileBudget: Int {
+        let gigabytes = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        if gigabytes <= 4.5 { return 120 }
+        if gigabytes <= 6.5 { return 200 }
+        return 300
+    }
+
+    var plan: RouteReplayPlan { timeline.plan }
+
+    init(timeline: RouteReplayTimeline, color: UIColor, runner: ReplayRunner) {
+        self.timeline = timeline
+        self.color = color
+        runnerFlag = RunnerFlagView(runner: runner)
+        flagHolder = FlagHolderView(flag: runnerFlag)
+    }
+
+    deinit {
+        if let memoryObserver {
+            NotificationCenter.default.removeObserver(memoryObserver)
+        }
+    }
+
+    /// A map for the replay: no ornaments but the logo and attribution Mapbox requires, no gestures.
+    static func makeMapView(frame: CGRect) -> MapView {
+        let mapView = MapView(frame: frame)
+        mapView.ornaments.options.scaleBar.visibility = .hidden
+        mapView.ornaments.options.compass.visibility = .hidden
+        setInteractive(false, on: mapView)
+        return mapView
+    }
+
+    static func setInteractive(_ on: Bool, on mapView: MapView) {
+        mapView.gestures.options.panEnabled = on
+        mapView.gestures.options.pinchEnabled = on
+        mapView.gestures.options.rotateEnabled = on
+        mapView.gestures.options.pitchEnabled = on
+        mapView.gestures.options.doubleTapToZoomInEnabled = on
+        mapView.gestures.options.doubleTouchToZoomOutEnabled = on
+        mapView.gestures.options.quickZoomEnabled = on
+    }
+
+    /// Loads the look (satellite with roads and names, or the standard map with its 3D buildings;
+    /// 3D terrain in 3D) and puts the route on it. `isReady` once done.
+    func install(on mapView: MapView, satellite: Bool, mode: RouteReplayMode, dark: Bool, activity: ReplayActivity?) {
+        self.activity = activity
+        self.mapView = mapView
+        isReady = false
+        drawn = 0
+        areaShown = false
+        // Every flag and km marker of an earlier replay goes (it would stay where that replay stopped)
+        mapView.viewAnnotations.removeAll()
+        flagAnnotation = nil
+        kmMarkers = []
+        weatherKey = ""
+        keepTilesInMemory(on: mapView)
+        wetGlass.reset()
+        wetGlass.frame = mapView.bounds
+        wetGlass.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        if wetGlass.superview !== mapView {
+            mapView.addSubview(wetGlass)
+        }
+        // Over everything on the map (the flag too): it's the glass
+        mapView.bringSubviewToFront(wetGlass)
+        // The sun's light where and when the run started; without a date, light or dark like the
+        // app (satellite imagery then always in daylight)
+        if let preset = sunPreset(atFraction: 0) {
+            lightPreset = preset
+        } else {
+            lightPreset = dark && !satellite ? "night" : "day"
+        }
+        // Mapbox Standard Satellite (photos, relief and names), or the Standard map with its 3D
+        // buildings, landmarks and trees
+        let style: StyleURI = satellite ? .standardSatellite : .standard
+        if mapView.mapboxMap.styleURI == style && mapView.mapboxMap.isStyleLoaded {
+            // The same look, loaded already: only the route again
+            addRoute(to: mapView, mode: mode)
+            return
+        }
+        mapView.mapboxMap.loadStyle(style) { [weak self, weak mapView] _ in
+            MainActor.assumeIsolated {
+                guard let self, let mapView, self.mapView === mapView else { return }
+                self.addRoute(to: mapView, mode: mode)
+            }
+        }
+    }
+
+    /// Keeps many tiles in memory (in tiles, not megabytes: a budget in megabytes compresses the
+    /// satellite photos); if iOS warns that memory is short, the map lets go of what it can and goes
+    /// back to Mapbox's own budget.
+    private func keepTilesInMemory(on mapView: MapView) {
+        if !Self.memoryIsTight {
+            mapView.mapboxMap.setTileCacheBudget(size: .tiles(Self.tileBudget))
+        }
+        if let memoryObserver {
+            NotificationCenter.default.removeObserver(memoryObserver)
+        }
+        memoryObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak mapView] _ in
+            MainActor.assumeIsolated {
+                ReplayScene.memoryIsTight = true
+                guard let map = mapView?.mapboxMap else { return }
+                map.setTileCacheBudget(size: nil)
+                map.reduceMemoryUse()
+            }
+        }
+    }
+
+    private func addRoute(to mapView: MapView, mode: RouteReplayMode) {
+        let map = mapView.mapboxMap!
+        // Standard's look: its light, 3D buildings, landmarks and trees (with facades in 3D), no
+        // points of interest
+        let config: [String: Any] = [
+            "lightPreset": lightPreset,
+            "show3dObjects": true,
+            "show3dBuildings": true,
+            "show3dLandmarks": true,
+            "show3dTrees": true,
+            // The detailed facades come out plain white
+            "show3dFacades": false,
+            "showPointOfInterestLabels": false,
+            "showTransitLabels": false,
+            "showPedestrianRoads": true,
+        ]
+        // The light changes smoothly (the sun setting as the runner goes)
+        map.styleTransition = TransitionOptions(duration: 2.5, delay: 0)
+        for (key, value) in config {
+            try? map.setStyleImportConfigProperty(for: "basemap", config: key, value: value)
+        }
+        for layer in [Self.startLayer, Self.lineLayer, Self.casingLayer, Self.ghostLayer, Self.areaLayer] where map.layerExists(withId: layer) {
+            try? map.removeLayer(withId: layer)
+        }
+        for source in [Self.routeSource, Self.areaSource, Self.startSource] where map.sourceExists(withId: source) {
+            try? map.removeSource(withId: source)
+        }
+
+        // 3D terrain in 3D (the line lies on it); flat in 2D
+        if mode == .threeD {
+            if !map.sourceExists(withId: Self.demSource) {
+                var dem = RasterDemSource(id: Self.demSource)
+                dem.url = "mapbox://mapbox.mapbox-terrain-dem-v1"
+                dem.tileSize = 514
+                try? map.addSource(dem)
+            }
+            try? map.setTerrain(Terrain(sourceId: Self.demSource))
+        } else {
+            map.removeTerrain()
+        }
+
+        let coordinates = plan.points
+        var route = GeoJSONSource(id: Self.routeSource)
+        route.data = .geometry(.lineString(LineString(coordinates)))
+        route.lineMetrics = true
+        try? map.addSource(route)
+
+        // The whole route, faint and dashed
+        var ghost = LineLayer(id: Self.ghostLayer, source: Self.routeSource)
+        ghost.lineColor = .constant(StyleColor(color.withAlphaComponent(0.4)))
+        ghost.lineWidth = .constant(2)
+        ghost.lineCap = .constant(.round)
+        ghost.lineDasharray = .constant([1, 2.5])
+        ghost.lineEmissiveStrength = .constant(1)
+        try? map.addLayer(ghost)
+
+        // The route run so far: white casing and the coloured line, trimmed to the runner's distance
+        var casing = LineLayer(id: Self.casingLayer, source: Self.routeSource)
+        casing.lineColor = .constant(StyleColor(UIColor.white.withAlphaComponent(0.92)))
+        casing.lineWidth = .constant(7)
+        casing.lineCap = .constant(.round)
+        casing.lineJoin = .constant(.round)
+        casing.lineTrimOffset = .constant([0, 1])
+        casing.lineEmissiveStrength = .constant(1)
+        try? map.addLayer(casing)
+        var line = LineLayer(id: Self.lineLayer, source: Self.routeSource)
+        line.lineColor = .constant(StyleColor(color))
+        line.lineWidth = .constant(4.5)
+        line.lineCap = .constant(.round)
+        line.lineJoin = .constant(.round)
+        line.lineTrimOffset = .constant([0, 1])
+        // Its own colour, not shaded by the map's light (day or night)
+        line.lineEmissiveStrength = .constant(1)
+        try? map.addLayer(line)
+
+        // The start: a white dot ringed in the runner's colour
+        var start = GeoJSONSource(id: Self.startSource)
+        start.data = .geometry(.point(Point(coordinates.first ?? plan.center)))
+        try? map.addSource(start)
+        var dot = CircleLayer(id: Self.startLayer, source: Self.startSource)
+        dot.circleRadius = .constant(5)
+        dot.circleColor = .constant(StyleColor(.white))
+        dot.circleStrokeColor = .constant(StyleColor(color))
+        dot.circleStrokeWidth = .constant(3)
+        dot.circlePitchAlignment = .constant(.viewport)
+        dot.circleEmissiveStrength = .constant(1)
+        try? map.addLayer(dot)
+
+        // The runner's flag, bound to the end of the line
+        let annotation = ViewAnnotation(coordinate: coordinates.first ?? plan.center, view: flagHolder)
+        annotation.variableAnchors = [ViewAnnotationAnchorConfig(anchor: .bottom)]
+        annotation.allowOverlap = true
+        mapView.viewAnnotations.add(annotation)
+        flagAnnotation = annotation
+        flagHolder.alpha = flagAlpha
+
+        isReady = true
+        addKmMarkers(to: mapView)
+        applyWeather(at: activity?.date(atFraction: 0))
+        let distance = drawn
+        drawn = -1
+        drawTrail(to: distance)
+    }
+
+    /// Points the camera (the replay's camera: distance from the centre, pitch and heading).
+    func setCamera(_ camera: ReplayCamera) {
+        guard let mapView else { return }
+        mapView.mapboxMap.setCamera(to: Self.cameraOptions(for: camera, viewHeight: mapView.bounds.height))
+    }
+
+    /// Mapbox's camera for one of the replay's: the zoom at which the centre is `distance` metres
+    /// from the camera (Mapbox's field of view is about 36.87° high: the camera is 1.5 view heights
+    /// away from the centre, in pixels).
+    static func cameraOptions(for camera: ReplayCamera, viewHeight: CGFloat) -> CameraOptions {
+        let height = Double(max(100, viewHeight))
+        let metresPerPointAtZoomZero = 40_075_016.686 * cos(camera.center.latitude * .pi / 180) / 512
+        let zoom = log2(metresPerPointAtZoomZero * 1.5 * height / max(1, camera.distance))
+        return CameraOptions(
+            center: camera.center,
+            zoom: CGFloat(min(22, max(0, zoom))),
+            bearing: camera.heading,
+            pitch: CGFloat(min(85, max(0, camera.pitch)))
+        )
+    }
+
+    /// Draws the route up to `distance` metres (the line trimmed past it).
+    func drawTrail(to distance: Double) {
+        let target = min(max(0, distance), plan.length)
+        guard isReady, let map = mapView?.mapboxMap, abs(target - drawn) > 0.01 else {
+            if !isReady { drawn = target }
+            return
+        }
+        drawn = target
+        let fraction = plan.length > 0 ? target / plan.length : 0
+        // Trimmed from the runner's distance to the end (nothing trimmed at the end)
+        let trim: [Double] = fraction >= 1 ? [1, 1] : [fraction, 1]
+        try? map.setLayerProperty(for: Self.casingLayer, property: "line-trim-offset", value: trim)
+        try? map.setLayerProperty(for: Self.lineLayer, property: "line-trim-offset", value: trim)
+        showKmMarkers(upTo: target)
+    }
+
+    // MARK: Sun, weather and km markers
+
+    /// The pace of each km and the weather of that day, once loaded: the km markers get their pace
+    /// and the weather shows.
+    func setExtras(_ extras: ReplayExtras) {
+        guard extras != self.extras else { return }
+        self.extras = extras
+        guard isReady, let mapView else { return }
+        addKmMarkers(to: mapView)
+        weatherKey = ""
+        applyWeather(at: activity?.date(atFraction: drawn / max(1, plan.length)))
+    }
+
+    /// The sun's light (and the weather) when the runner had run `fraction` of the route: dawn, day,
+    /// dusk or night, changing smoothly.
+    func updateSky(fraction: Double) {
+        guard isReady, let map = mapView?.mapboxMap else { return }
+        if let preset = sunPreset(atFraction: fraction), preset != lightPreset {
+            lightPreset = preset
+            try? map.setStyleImportConfigProperty(for: "basemap", config: "lightPreset", value: preset)
+        }
+        applyWeather(at: activity?.date(atFraction: fraction))
+    }
+
+    /// Mapbox's light for the sun where the route is, when the runner had run `fraction` of it.
+    private func sunPreset(atFraction fraction: Double) -> String? {
+        guard let date = activity?.date(atFraction: fraction) else { return nil }
+        return SunPosition.lightPreset(at: plan.coordinate(at: plan.length * fraction), date: date)
+    }
+
+    /// Rain or snow on the screen's glass if it rained or snowed at `date`, as heavy as it was (our
+    /// own drops and flakes; the map's own rain and snow look worse and aren't used).
+    private func applyWeather(at date: Date?) {
+        let hour = date.flatMap { extras.weather(at: $0) }
+        let kind = hour?.kind ?? .dry
+        let level = hour.map { $0.kind == .dry ? 0 : min(1, 0.3 + $0.amount / 5) } ?? 0
+        let fog = hour?.fog ?? 0
+        let key = "\(String(describing: kind))-\(Int((level * 4).rounded()))-\(Int((fog * 10).rounded()))"
+        guard key != weatherKey else { return }
+        weatherKey = key
+        wetGlass.setWeather(kind, level: level, fog: fog)
+    }
+
+    /// The boxes drawn over the map (the shared video's counters and altitude profile): the rain
+    /// runs round them and the snow piles up on them.
+    func setGlassBoxes(_ boxes: ShareBoxLayout) {
+        guard boxes != glassBoxes else { return }
+        glassBoxes = boxes
+        if boxes.isEmpty {
+            wetGlass.setShelves(nil)
+        } else {
+            wetGlass.setShelves { size in boxes.shelves(in: size) }
+        }
+    }
+
+    /// A marker at each km of the route (each 5 km on routes over 15 km), with that km's pace if
+    /// known; each one shows as the line gets there.
+    private func addKmMarkers(to mapView: MapView) {
+        for marker in kmMarkers {
+            marker.annotation.remove()
+        }
+        kmMarkers = []
+        let step = plan.length > 15_000 ? 5 : 1
+        let count = Int(plan.length / 1000)
+        guard count >= 1 else { return }
+        for km in stride(from: step, through: count, by: step) {
+            let distance = Double(km) * 1000
+            guard distance < plan.length - 50 else { continue }
+            let pace = km <= extras.kmPaces.count ? extras.kmPaces[km - 1] : nil
+            let view = KmMarkerView(km: km, pace: pace)
+            let annotation = ViewAnnotation(coordinate: plan.coordinate(at: distance), view: view)
+            // The dot on the route point, the label beside it
+            annotation.variableAnchors = [ViewAnnotationAnchorConfig(anchor: .left, offsetX: -KmMarkerView.dotSize / 2)]
+            annotation.allowOverlap = true
+            mapView.viewAnnotations.add(annotation)
+            kmMarkers.append((distance, view, annotation))
+        }
+        showKmMarkers(upTo: drawn)
+    }
+
+    /// Fades each km marker in as the line passes it (over about a quarter of a second of running).
+    private func showKmMarkers(upTo distance: Double) {
+        guard !kmMarkers.isEmpty else { return }
+        let fade = max(20, 0.25 * plan.length / max(1, timeline.run))
+        for marker in kmMarkers {
+            let alpha = CGFloat(min(1, max(0, (distance - marker.distance) / fade)))
+            if marker.view.alpha != alpha {
+                marker.view.alpha = alpha
+            }
+        }
+    }
+
+    /// The area the route encloses, under the lines (once, at the reveal).
+    func addArea() {
+        guard isReady, !areaShown, let map = mapView?.mapboxMap else { return }
+        areaShown = true
+        var points = plan.points
+        if let first = points.first { points.append(first) }
+        var area = GeoJSONSource(id: Self.areaSource)
+        area.data = .geometry(.polygon(Polygon([points])))
+        try? map.addSource(area)
+        var fill = FillLayer(id: Self.areaLayer, source: Self.areaSource)
+        fill.fillColor = .constant(StyleColor(color.withAlphaComponent(0.2)))
+        fill.fillOutlineColor = .constant(StyleColor(color.withAlphaComponent(0.45)))
+        fill.fillEmissiveStrength = .constant(1)
+        try? map.addLayer(fill, layerPosition: .below(Self.ghostLayer))
+    }
+
+    /// Moves the flag to the end of the line and on by `dt` (`streamBearing`: where its cloth is
+    /// blown, nil: planted, it keeps its way). Call it after `drawTrail`.
+    func updateFlag(streamBearing: Double?, moving: Bool, dt: Double) {
+        guard let mapView else { return }
+        if flagAlpha != flagAlphaTarget {
+            let step = CGFloat(max(0, dt) / 0.25)
+            flagAlpha = flagAlpha < flagAlphaTarget ? min(flagAlphaTarget, flagAlpha + step) : max(flagAlphaTarget, flagAlpha - step)
+        }
+        flagHolder.alpha = flagAlpha
+        if let flagAnnotation {
+            let end = plan.coordinate(at: drawn)
+            flagAnnotation.annotatedFeature = .geometry(Point(end))
+        }
+        let camera = mapView.mapboxMap.cameraState
+        runnerFlag.update(streamBearing: streamBearing, moving: moving, cameraHeading: camera.bearing, cameraPitch: Double(camera.pitch), dt: dt)
+        wetGlass.step(dt: dt)
+    }
+
+    /// Shows the flag; `animated` fades it in a quarter of a second (as `updateFlag` goes).
+    func setFlagAlpha(_ alpha: CGFloat, animated: Bool) {
+        flagAlphaTarget = alpha
+        if !animated {
+            flagAlpha = alpha
+            flagHolder.alpha = alpha
+        }
+    }
+}
+
+/// Holds the flag for Mapbox's view annotation: its size is the flag's, the foot of the pole the
+/// middle of its bottom edge (the annotation's anchor).
+final class FlagHolderView: UIView {
+    private let flag: RunnerFlagView
+
+    init(flag: RunnerFlagView) {
+        self.flag = flag
+        super.init(frame: CGRect(origin: .zero, size: RunnerFlagView.flagSize))
+        isUserInteractionEnabled = false
+        clipsToBounds = false
+        flag.alpha = 1
+        addSubview(flag)
+        flag.stand(at: CGPoint(x: bounds.midX, y: bounds.maxY))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: CGSize { RunnerFlagView.flagSize }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize { RunnerFlagView.flagSize }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize { RunnerFlagView.flagSize }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize, withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority, verticalFittingPriority: UILayoutPriority) -> CGSize {
+        RunnerFlagView.flagSize
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        flag.stand(at: CGPoint(x: bounds.midX, y: bounds.maxY))
+    }
+}
+
+// MARK: - Waiting for Mapbox
+
+/// When Mapbox has drawn the map completely (every tile, no transition going on), from its render
+/// events, and ways to wait for it.
+@MainActor
+final class MapLoadState {
+    /// Frames Mapbox has finished drawing, and those drawn with everything they need and nothing moving
+    private var frames = 0
+    private var completeFrames = 0
+    private var idles = 0
+    /// Resources Mapbox couldn't load (tiles, with no network say); a passing error (a rate limit,
+    /// which Mapbox retries) doesn't matter, many in a row with views that won't settle do
+    private(set) var errors = 0
+    private var observers: [AnyCancelable] = []
+
+    func attach(to mapView: MapView) {
+        observers = [
+            mapView.mapboxMap.onRenderFrameFinished.observe { [weak self] event in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.frames += 1
+                    // Drawn with every tile it needs (terrain transitions may keep it repainting)
+                    if event.renderMode == .full {
+                        self.completeFrames += 1
+                    }
+                }
+            },
+            mapView.mapboxMap.onMapIdle.observe { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.idles += 1
+                }
+            },
+            mapView.mapboxMap.onMapLoadingError.observe { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.errors += 1
+                }
+            },
+        ]
+    }
+
+    /// Waits until the map shows what was just set (camera, line): at least `minRefreshes` screen
+    /// refreshes, then until Mapbox has drawn a complete frame since (or gone idle, or drawn nothing
+    /// at all for a refresh more: nothing changed), and `isReady` holds. Gives up after `maxSeconds`;
+    /// whether it settled.
+    func settle(
+        clock: FrameClock,
+        maxSeconds: Double,
+        minRefreshes: Int = 2,
+        isReady: (Int) -> Bool = { _ in true }
+    ) async -> Bool {
+        let startFrames = frames
+        let startComplete = completeFrames
+        let startIdles = idles
+        let maxRefreshes = max(minRefreshes, Int((maxSeconds * Double(clock.rate)).rounded()))
+        var refreshes = 0
+        while refreshes < maxRefreshes {
+            await clock.next()
+            if Task.isCancelled { return false }
+            refreshes += 1
+            guard refreshes >= minRefreshes, isReady(refreshes) else { continue }
+            let complete = completeFrames > startComplete + 1 || idles > startIdles
+            let untouched = frames == startFrames && refreshes >= minRefreshes + 1
+            if complete || untouched { return true }
+        }
+        return false
+    }
+
+    /// Puts the map through `cameras` (via `scene`), each until Mapbox has loaded and drawn it
+    /// completely (up to 4 s each; the first, a wide view, up to 5 s), so they are all in memory when
+    /// the replay plays; then through `warm`, the views the replay starts with, so they are the
+    /// freshest there. After three views in a row that didn't load with Mapbox reporting errors (no
+    /// network), it doesn't wait for the rest. Waits first for the map to be on screen and its style and route in. The clock
+    /// at `rate` Hz. `onProgress` gets 0...1. False if cancelled.
+    func preload(_ cameras: [ReplayCamera], warm: [ReplayCamera] = [], on mapView: MapView, scene: ReplayScene, rate: Int = 60, onProgress: (Double) -> Void) async -> Bool {
+        let clock = FrameClock(rate: rate)
+        clock.start()
+        defer { clock.stop() }
+        var waited = 0
+        while mapView.window == nil || mapView.bounds.width < 1 || (!scene.isReady && waited < 15 * clock.rate) {
+            await clock.next()
+            if Task.isCancelled { return false }
+            waited += 1
+        }
+        let all = cameras + warm
+        var failing = 0
+        for (index, camera) in all.enumerated() {
+            scene.setCamera(camera)
+            let warming = index >= cameras.count
+            let errorsBefore = errors
+            let settled = await settle(clock: clock, maxSeconds: failing >= 3 ? 0.3 : (index == 0 ? 5 : 4), minRefreshes: warming ? 3 : 2)
+            failing = !settled && errors > errorsBefore ? failing + 1 : 0
+            if Task.isCancelled { return false }
+            onProgress(Double(index + 1) / Double(all.count))
+        }
+        return true
+    }
+}
+
+/// A km marker: a small white dot on the route and, beside it, a discreet dark label with the km and
+/// its pace ("3 km | 5:12 /km").
+final class KmMarkerView: UIView {
+    static let dotSize: CGFloat = 9
+    private let size: CGSize
+
+    init(km: Int, pace: Double?) {
+        let dot = Self.dotSize
+        let height: CGFloat = 18
+        let padding: CGFloat = 7
+        let gap: CGFloat = 6
+
+        let kmLabel = UILabel()
+        let kmText = NSMutableAttributedString(string: "\(km)", attributes: [
+            .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: UIColor.white,
+        ])
+        kmText.append(NSAttributedString(string: " km", attributes: [
+            .font: UIFont.systemFont(ofSize: 9, weight: .medium),
+            .foregroundColor: UIColor.white.withAlphaComponent(0.65),
+        ]))
+        kmLabel.attributedText = kmText
+        let kmWidth = ceil(kmLabel.intrinsicContentSize.width)
+
+        var paceLabel: UILabel?
+        if let pace, pace.isFinite, pace > 0 {
+            let seconds = Int(pace.rounded())
+            let label = UILabel()
+            let text = NSMutableAttributedString(string: String(format: "%d:%02d", seconds / 60, seconds % 60), attributes: [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.9),
+            ])
+            text.append(NSAttributedString(string: " /km", attributes: [
+                .font: UIFont.systemFont(ofSize: 8.5, weight: .medium),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.55),
+            ]))
+            label.attributedText = text
+            paceLabel = label
+        }
+        let paceWidth = paceLabel.map { ceil($0.intrinsicContentSize.width) } ?? 0
+        let pillWidth = padding + kmWidth + (paceLabel == nil ? 0 : gap + 1 + gap + paceWidth) + padding
+        let pillX = dot + 4
+        size = CGSize(width: pillX + pillWidth, height: height)
+        super.init(frame: CGRect(origin: .zero, size: size))
+        isUserInteractionEnabled = false
+        alpha = 0
+
+        // The dot on the route
+        let marker = UIView(frame: CGRect(x: 0, y: (height - dot) / 2, width: dot, height: dot))
+        marker.backgroundColor = .white
+        marker.layer.cornerRadius = dot / 2
+        marker.layer.borderWidth = 1
+        marker.layer.borderColor = UIColor.black.withAlphaComponent(0.28).cgColor
+        marker.layer.shadowColor = UIColor.black.cgColor
+        marker.layer.shadowOpacity = 0.3
+        marker.layer.shadowRadius = 2
+        marker.layer.shadowOffset = CGSize(width: 0, height: 1)
+        marker.layer.shadowPath = UIBezierPath(ovalIn: marker.bounds).cgPath
+        addSubview(marker)
+
+        // The label beside it
+        let pill = UIView(frame: CGRect(x: pillX, y: 0, width: pillWidth, height: height))
+        pill.backgroundColor = UIColor(white: 0.06, alpha: 0.68)
+        pill.layer.cornerRadius = height / 2
+        pill.layer.borderWidth = 0.5
+        pill.layer.borderColor = UIColor.white.withAlphaComponent(0.16).cgColor
+        pill.layer.shadowColor = UIColor.black.cgColor
+        pill.layer.shadowOpacity = 0.2
+        pill.layer.shadowRadius = 3
+        pill.layer.shadowOffset = CGSize(width: 0, height: 1)
+        pill.layer.shadowPath = UIBezierPath(roundedRect: pill.bounds, cornerRadius: height / 2).cgPath
+        addSubview(pill)
+        kmLabel.frame = CGRect(x: padding, y: 0, width: kmWidth, height: height)
+        pill.addSubview(kmLabel)
+        if let paceLabel {
+            let divider = UIView(frame: CGRect(x: padding + kmWidth + gap, y: (height - 9) / 2, width: 1, height: 9))
+            divider.backgroundColor = UIColor.white.withAlphaComponent(0.25)
+            pill.addSubview(divider)
+            paceLabel.frame = CGRect(x: divider.frame.maxX + gap, y: 0, width: paceWidth, height: height)
+            pill.addSubview(paceLabel)
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: CGSize { size }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize { self.size }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize) -> CGSize { size }
+
+    override func systemLayoutSizeFitting(_ targetSize: CGSize, withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority, verticalFittingPriority: UILayoutPriority) -> CGSize {
+        size
+    }
+}

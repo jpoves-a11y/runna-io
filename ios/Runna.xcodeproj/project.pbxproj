@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4A1D0000000000000000001B /* RunnaLive.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 4A1D00000000000000000010 /* RunnaLive.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		4A1D000000000000000000A1 /* MapboxMaps in Frameworks */ = {isa = PBXBuildFile; productRef = 4A1D000000000000000000A3 /* MapboxMaps */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +63,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A1D000000000000000000A1 /* MapboxMaps in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -117,6 +119,7 @@
 			);
 			name = Runna;
 			packageProductDependencies = (
+				4A1D000000000000000000A3 /* MapboxMaps */,
 			);
 			productName = Runna;
 			productReference = 4A1D00000000000000000001 /* Runna.app */;
@@ -172,6 +175,9 @@
 			);
 			mainGroup = 4A1D00000000000000000004;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4A1D000000000000000000A2 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A1D00000000000000000005 /* Products */;
 			projectDirPath = "";
@@ -496,6 +502,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4A1D000000000000000000A2 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mapbox/mapbox-maps-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 11.20.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4A1D000000000000000000A3 /* MapboxMaps */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A1D000000000000000000A2 /* XCRemoteSwiftPackageReference "mapbox-maps-ios" */;
+			productName = MapboxMaps;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4A1D00000000000000000009 /* Project object */;
 }

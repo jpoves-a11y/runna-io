@@ -1,4 +1,4 @@
-// Scheduled tasks run by the Cloudflare Cron Trigger ("*/5 * * * *" in wrangler.worker.toml).
+// Scheduled tasks run by the Cloudflare Cron Trigger ("* * * * *", every minute, in wrangler.worker.toml).
 //
 // Every trigger calls the Hono app in-process (no HTTP round trip to our own workers.dev URL,
 // which needs the cron secret and can fail with Cloudflare error 1042). The internal request
@@ -9,10 +9,12 @@
 
 export const CRON_TIME_ZONE = 'Europe/Madrid';
 
-export type CronTask = 'season-tick' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check';
+export type CronTask = 'season-tick' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check' | 'steal-notifications';
 
-/** The trigger fires every 5 minutes, so "at minute 0" means the run in [:00, :05). */
-const SLOT_MINUTES = 5;
+/** The device poll (Polar's fallback) runs on the minutes divisible by this. */
+const DEVICE_POLL_MINUTES = 3;
+/** The season engine (resets, competitions, cuts, chests) runs on the minutes divisible by this. */
+const SEASON_TICK_MINUTES = 5;
 
 export interface LocalTime {
   /** 0 = Sunday ... 6 = Saturday */
@@ -48,21 +50,28 @@ export function madridTime(time: number): LocalTime {
 }
 
 /**
- * Tasks to run for a cron trigger scheduled at `scheduledTime` (ms since epoch):
- * - season-tick: every run (one-time reset, start/end of competitions, rest-phase chests; see season.ts)
- * - polar-auto-sync: every run (every 5 minutes)
+ * Tasks to run for a cron trigger scheduled at `scheduledTime` (ms since epoch); the trigger fires
+ * every minute:
+ * - steal-notifications: every minute (sends the queued "te han robado" and "tu carrera está lista"
+ *   pushes that are due, 3 minutes after the run arrived)
+ * - season-tick: every 5 minutes (one-time reset, start/end of competitions, Eliminación cuts,
+ *   rest-phase chests, chat clean-up; see season.ts)
+ * - polar-auto-sync: every 3 minutes (fallback poll; Polar's webhook imports at once)
  * - inactivity-check: 10:00 and 19:00
  * - suunto-auto-sync: at minute 30 of every hour (fallback poll; Suunto's webhook is the primary path)
  * The old daily treasure spawn and weekly summary are replaced by the season engine.
  */
 export function tasksDue(scheduledTime: number): CronTask[] {
   const { hour, minute } = madridTime(scheduledTime);
-  const topOfHour = minute < SLOT_MINUTES;
-  const tasks: CronTask[] = ['season-tick'];
+  const topOfHour = minute === 0;
+  const tasks: CronTask[] = [];
+  // First: it is quick, and the pushes it sends are the ones people are waiting for
+  tasks.push('steal-notifications');
+  if (minute % SEASON_TICK_MINUTES === 0) tasks.push('season-tick');
   if (topOfHour && (hour === 10 || hour === 19)) tasks.push('inactivity-check');
-  if (minute >= 30 && minute < 30 + SLOT_MINUTES) tasks.push('suunto-auto-sync');
-  // Last: it is the slowest (up to ~25 s) and runs every time anyway
-  tasks.push('polar-auto-sync');
+  if (minute === 30) tasks.push('suunto-auto-sync');
+  // Last: it is the slowest (up to ~25 s)
+  if (minute % DEVICE_POLL_MINUTES === 0) tasks.push('polar-auto-sync');
   return tasks;
 }
 

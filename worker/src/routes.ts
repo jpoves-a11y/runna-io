@@ -7,7 +7,10 @@ import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CO
 import { LIMITS, clientIp, lockedForSeconds, recordAttempt, clearAttempts, tooManyAttempts } from './rateLimit';
 import { sql } from 'drizzle-orm';
 import { apnsSecretProblems } from './pushHelper';
+import { RUN_SETTLE_DELAY_MS, queueActivityReadyPush, sendDueActivityReadyNotifications } from './notifications';
 import { USER_COLORS } from '../../shared/colors';
+import { isRunningActivityType } from './sports';
+import { analyzeProfile, buildProfile, parseGpxPoints, parseStoredProfile, stravaStreamsToPoints, type StoredProfile } from './profile';
 import type { Env } from './index';
 import {
   type AppEnv,
@@ -35,8 +38,16 @@ import { analyzeRun, REASON_MESSAGES, type ValidationReason } from './antiCheat'
 import {
   simplifyCoordinates,
   routeToEnclosedPolygon,
+  detectRanTogether,
   activitiesOverlapInTime,
   geometriesOverlapByPercentage,
+  sharedRunArea,
+  parseCoordinates,
+  parseUserIds,
+  unionGeometries,
+  differenceGeometries,
+  intersectGeometries,
+  parsePointTimes,
   isCompetitionActive,
   isCompetitionUpcoming,
   encodePolyline,
@@ -527,6 +538,231 @@ export async function autoCollectTreasuresAlongRoute(
   return treasuresCollected;
 }
 
+/** "Te han robado" pushes wait this long (the victim may have run with the attacker and upload later). */
+export const STEAL_NOTIFICATION_DELAY_MS = RUN_SETTLE_DELAY_MS;
+/** A push held because the victim is recording a run is looked at again this often. */
+const STEAL_NOTIFICATION_RECHECK_MS = 2 * 60 * 1000;
+/** ...and keep waiting while the victim is recording a run in the app, up to this long. */
+export const STEAL_NOTIFICATION_MAX_HOLD_MS = 12 * 60 * 60 * 1000;
+
+type CoRun = {
+  userId: string;
+  routeId: string;
+  level: 'together' | 'partial';
+  /** Area both runs enclose (partial only). */
+  sharedArea: any | null;
+  /** The co-runner's route ran_together_with before this run. */
+  ranTogetherWith: string | null;
+  /** The co-runner's route didn't list this user yet. */
+  isNewPair: boolean;
+};
+
+/**
+ * Makes "ran together" independent of who uploads first. When this run turns out to have been run
+ * with routes that were processed before it, those routes' steals against this user are undone
+ * (all of them when together, the shared area when partial): the area goes back to this user,
+ * the conquest metric, the co-runner's feed event and competition stats are corrected, and the
+ * queued "te han robado" push is dropped. The co-runner's route also gets this user in its list.
+ */
+async function settleCoRuns(
+  storage: WorkerStorage,
+  userId: string,
+  territory: any,
+  coRuns: CoRun[],
+  knownTerritories: any[],
+  competitionId: string | null
+): Promise<{ territory: any; restoredArea: number }> {
+  const coRunByRoute = new Map(coRuns.map((r) => [r.routeId, r]));
+  const coRunnerIds = new Set(coRuns.map((r) => r.userId));
+  const revertedByRoute = new Map<string, number>();
+  let restore: any | null = null;
+  const deleteIds: string[] = [];
+
+  const metrics = await storage.getConquestMetricsByRoutesAgainst([...coRunByRoute.keys()], userId);
+  for (const metric of metrics) {
+    const run = coRunByRoute.get(metric.routeId);
+    if (!run) continue;
+    let stolen: any | null = null;
+    try { stolen = metric.stolenGeometry ? JSON.parse(metric.stolenGeometry) : null; } catch (_) { stolen = null; }
+    if (run.level === 'together') {
+      // Without the stolen shape (older steals) the metric is still dropped: this run's own area covers it
+      deleteIds.push(metric.id);
+      revertedByRoute.set(run.routeId, (revertedByRoute.get(run.routeId) || 0) + metric.areaStolen);
+      if (stolen) restore = restore ? (unionGeometries(restore, stolen) ?? restore) : stolen;
+      continue;
+    }
+    if (!stolen || !run.sharedArea) continue;
+    const back = intersectGeometries(stolen, run.sharedArea);
+    if (!back) continue;
+    let remaining: any | null;
+    try {
+      remaining = differenceGeometries(stolen, run.sharedArea);
+    } catch (err) {
+      console.error('[TERRITORY] Could not split a shared steal, leaving it:', err);
+      continue;
+    }
+    const backArea = turf.area(back);
+    const left = metric.areaStolen - backArea;
+    if (!remaining || left < 1) {
+      deleteIds.push(metric.id);
+      revertedByRoute.set(run.routeId, (revertedByRoute.get(run.routeId) || 0) + metric.areaStolen);
+    } else {
+      await storage.updateConquestMetricSteal(metric.id, left, remaining);
+      revertedByRoute.set(run.routeId, (revertedByRoute.get(run.routeId) || 0) + backArea);
+    }
+    restore = restore ? (unionGeometries(restore, back) ?? restore) : back;
+  }
+  await storage.deleteConquestMetricsByIds(deleteIds);
+
+  // Give the area back, except what someone else (not a co-runner) has taken since
+  let restoredArea = 0;
+  if (restore) {
+    for (const other of knownTerritories) {
+      if (!restore) break;
+      if (other.userId === userId || coRunnerIds.has(other.userId)) continue;
+      try {
+        const geometry = typeof other.geometry === 'string' ? JSON.parse(other.geometry) : other.geometry;
+        if (geometry) restore = differenceGeometries(restore, geometry);
+      } catch (_) { /* keep restoring the rest */ }
+    }
+    if (restore) {
+      const merged = await storage.unionIntoTerritory(territory, restore);
+      territory = merged.territory;
+      restoredArea = merged.addedArea;
+      console.log(`[TERRITORY] Gave back ${(restoredArea / 1e6).toFixed(4)} km² stolen by co-runners before this run was uploaded`);
+    }
+  }
+
+  // The co-runners' side
+  let myName: string | null = null;
+  for (const run of coRuns) {
+    const reverted = revertedByRoute.get(run.routeId) || 0;
+    try {
+      if (run.isNewPair) {
+        await storage.updateRouteRanTogether(run.routeId, [...new Set([...parseUserIds(run.ranTogetherWith), userId])]);
+      }
+      if (run.isNewPair || reverted > 0) {
+        if (myName == null) {
+          const me = await storage.getUser(userId);
+          myName = me?.name || me?.username || 'Usuario';
+        }
+        await addCoRunnerToFeedEvent(storage, run.routeId, userId, myName, reverted, run.level === 'together');
+      }
+      if (run.level === 'together') {
+        await storage.reducePendingStealNotification(run.routeId, userId, null);
+      } else if (reverted > 0) {
+        await storage.reducePendingStealNotification(run.routeId, userId, reverted);
+      }
+      if (competitionId && (run.isNewPair || reverted > 0)) {
+        await storage.incrementCompetitionStats(competitionId, run.userId, {
+          ranTogether: run.isNewPair ? 1 : 0,
+          areaStolen: reverted > 0 ? -reverted : 0,
+        });
+      }
+    } catch (err) {
+      console.error(`[TERRITORY] Error updating co-runner route ${run.routeId}:`, err);
+    }
+  }
+
+  return { territory, restoredArea };
+}
+
+/**
+ * Sends the queued territory-loss pushes that are due (one per victim and attacker, areas added up).
+ * A victim recording a run in the app that started before the attacker's run ended may be running
+ * with them: their push waits (up to STEAL_NOTIFICATION_MAX_HOLD_MS) until that run is uploaded,
+ * which undoes the steal and drops the push if they did run together.
+ */
+export async function sendDueStealNotifications(
+  storage: WorkerStorage,
+  env: any,
+  now: Date = new Date()
+): Promise<{ sent: number; postponed: number; dropped: number }> {
+  const due = await storage.getDuePendingStealNotifications(now.toISOString(), 100);
+  if (due.length === 0) return { sent: 0, postponed: 0, dropped: 0 };
+
+  const activeRuns = await storage.getActiveRunsForUsers([...new Set(due.map((n) => n.victimId))]);
+  const postpone: string[] = [];
+  const ready = new Map<string, { victimId: string; attackerId: string; area: number; ids: string[] }>();
+  const dropIds: string[] = [];
+  const staleActiveRuns = new Set<string>();
+  for (const notification of due) {
+    const active = activeRuns.get(notification.victimId);
+    if (active) {
+      const activeStart = Date.parse(active.startedAt);
+      const runEnd = Date.parse(notification.routeCompletedAt ?? notification.createdAt);
+      const heldFor = now.getTime() - Date.parse(notification.createdAt);
+      const activeAge = now.getTime() - activeStart;
+      if (!(activeAge <= STEAL_NOTIFICATION_MAX_HOLD_MS)) {
+        staleActiveRuns.add(notification.victimId); // forgotten: the app never uploaded nor discarded it
+      } else if (activeStart <= runEnd && heldFor < STEAL_NOTIFICATION_MAX_HOLD_MS) {
+        postpone.push(notification.id);
+        continue;
+      }
+    }
+    if (notification.stolenArea < 1) {
+      dropIds.push(notification.id);
+      continue;
+    }
+    const key = `${notification.victimId}:${notification.attackerId}`;
+    const entry = ready.get(key) ?? { victimId: notification.victimId, attackerId: notification.attackerId, area: 0, ids: [] };
+    entry.area += notification.stolenArea;
+    entry.ids.push(notification.id);
+    ready.set(key, entry);
+  }
+
+  if (postpone.length > 0) {
+    await storage.postponePendingStealNotifications(postpone, new Date(now.getTime() + STEAL_NOTIFICATION_RECHECK_MS).toISOString());
+  }
+  for (const userId of staleActiveRuns) {
+    try { await storage.clearActiveRun(userId); } catch (_) {}
+  }
+
+  await storage.deletePendingStealNotifications(dropIds);
+
+  let sent = 0;
+  const { notifyTerritoryLoss } = await import('./notifications');
+  for (const entry of ready.values()) {
+    try {
+      await notifyTerritoryLoss(storage, entry.victimId, entry.attackerId, env, entry.area);
+      sent++;
+    } catch (err) {
+      console.error('[STEAL NOTIFICATIONS] Push failed:', err);
+    }
+    // Sent or not, never twice
+    await storage.deletePendingStealNotifications(entry.ids);
+  }
+  return { sent, postponed: postpone.length, dropped: dropIds.length };
+}
+
+/** Shows the co-runner in a route's feed event and takes the undone steal off its victims. */
+async function addCoRunnerToFeedEvent(
+  storage: WorkerStorage,
+  routeId: string,
+  coRunnerId: string,
+  coRunnerName: string,
+  revertedArea: number,
+  removeVictim: boolean
+): Promise<void> {
+  const event = await storage.getFeedEventByRouteId(routeId);
+  if (!event) return;
+  let metadata: any = {};
+  try { metadata = event.metadata ? JSON.parse(event.metadata) : {}; } catch (_) { metadata = {}; }
+  if (!metadata || typeof metadata !== 'object') metadata = {};
+  if (Array.isArray(metadata.victims)) {
+    metadata.victims = metadata.victims
+      .map((v: any) => v?.userId === coRunnerId
+        ? { ...v, stolenArea: removeVictim ? 0 : Math.max(0, (Number(v.stolenArea) || 0) - revertedArea) }
+        : v)
+      .filter((v: any) => (Number(v?.stolenArea) || 0) >= 1);
+    if (metadata.victims.length === 0) delete metadata.victims;
+  }
+  const coRunners: Array<{ id: string; name: string }> = Array.isArray(metadata.ranTogetherWith) ? metadata.ranTogetherWith : [];
+  if (!coRunners.some((u) => u?.id === coRunnerId)) coRunners.push({ id: coRunnerId, name: coRunnerName });
+  metadata.ranTogetherWith = coRunners;
+  await storage.updateFeedEvent(event.id, { metadata: JSON.stringify(metadata) });
+}
+
 /**
  * Competition-map conquest for one run (only called for participants of a running club
  * competition, see runPipeline.ts). `scope.enemyIds` are the participants this runner may steal
@@ -888,6 +1124,73 @@ function coerceDate(value: string | number | Date): Date | null {
 }
 
 // Helper to refresh Strava access token if expired
+/** Profiles that couldn't be found (no source, API down) are looked for again after this long. */
+const PROFILE_RETRY_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The stored profile of a route, or found now from where the run came from: captured at import
+ * (Garmin, Suunto), Strava streams or the Polar GPX (also for activities imported before profiles
+ * existed). Saved on the route, so the source is asked once.
+ */
+async function loadRouteProfile(storage: WorkerStorage, env: Env, route: Route): Promise<StoredProfile | null> {
+  const stored = await storage.getRouteProfile(route.id);
+  const parsed = parseStoredProfile(stored?.profile);
+  if (parsed) return parsed;
+  if (stored?.checkedAt && Date.now() - Date.parse(stored.checkedAt) < PROFILE_RETRY_MS) return null;
+
+  const startMs = Date.parse(route.startedAt);
+  let profile: StoredProfile | null = null;
+  try {
+    const sources = await storage.getRouteSources(route.id);
+    if (!profile && sources.garmin) profile = parseStoredProfile(await storage.getSourceProfile('garmin', sources.garmin));
+    if (!profile && sources.suunto) profile = parseStoredProfile(await storage.getSourceProfile('suunto', sources.suunto));
+    if (!profile && sources.strava) {
+      const account = await storage.getStravaAccountByUserId(route.userId);
+      const token = account ? await getValidStravaToken(account as any, storage, env) : null;
+      if (token) {
+        const response = await fetch(
+          `https://www.strava.com/api/v3/activities/${sources.strava.activityId}/streams?keys=latlng,time,altitude,distance&key_by_type=true`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (response.ok) {
+          const stravaStart = Date.parse(sources.strava.startDate);
+          profile = buildProfile(stravaStreamsToPoints(await response.json(), Number.isFinite(stravaStart) ? stravaStart : startMs), Number.isFinite(stravaStart) ? stravaStart : startMs);
+        } else {
+          console.log(`[PROFILE] Strava streams for route ${route.id}: ${response.status}`);
+        }
+      }
+    }
+    if (!profile && sources.polar) {
+      const account = await storage.getPolarAccountByUserId(route.userId);
+      if (account?.accessToken) {
+        const response = await fetch(`https://www.polaraccesslink.com/v3/exercises/${sources.polar.exerciseId}/gpx`, {
+          headers: { Authorization: `Bearer ${account.accessToken}`, Accept: 'application/gpx+xml' },
+        });
+        if (response.ok) {
+          profile = buildProfile(parseGpxPoints(await response.text()), startMs);
+        } else {
+          console.log(`[PROFILE] Polar GPX for route ${route.id}: ${response.status}`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[PROFILE] Could not fetch the profile of route ${route.id}:`, err);
+  }
+
+  // Without a source, the route's own point times (iOS app) still give the pace
+  if (!profile) {
+    const times = parsePointTimes(await storage.getRoutePointTimes(route.id), parseCoordinates(route.coordinates).length);
+    if (times && Number.isFinite(startMs)) {
+      profile = buildProfile(parseCoordinates(route.coordinates).map(([lat, lng], i) => ({ lat, lng, time: startMs + times[i] * 1000 })), startMs);
+    }
+  }
+
+  // A profile needs times or altitudes to be worth drawing
+  if (profile && !profile.t && !profile.e) profile = null;
+  await storage.saveRouteProfile(route.id, profile ? JSON.stringify(profile) : null);
+  return profile;
+}
+
 async function getValidStravaToken(
   stravaAccount: {
     userId: string;
@@ -1792,12 +2095,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
       delete body.source;
 
-      // Per-point timestamps (seconds since the start) and average heart rate feed the anti-cheat
+      // Per-point timestamps (seconds since the start) and average heart rate feed the anti-cheat;
+      // they also let "ran together" compare runs at the same moment
       const pointTimes = Array.isArray(body.pointTimes) ? body.pointTimes.map(Number) : null;
+      const rawPointTimes = body.pointTimes;
       const avgHeartRate = Number.isFinite(Number(body.avgHeartRate)) && Number(body.avgHeartRate) > 0 ? Number(body.avgHeartRate) : null;
       delete body.pointTimes;
       delete body.avgHeartRate;
       delete body.trackMeta;
+      // Altitude of each GPS point (null where unknown): altitude profile and climbs of the activity
+      const rawAltitudes = body.altitudes;
+      delete body.altitudes;
 
       // Ensure coordinates is a JSON string (clients may send array or string)
       if (body.coordinates && typeof body.coordinates !== 'string') {
@@ -1853,6 +2161,31 @@ export function registerRoutes(app: Hono<AppEnv>) {
         }
         throw createError;
       }
+
+      // Before the territory is processed (the queue reads them)
+      try {
+        const points: [number, number][] = JSON.parse(routeData.coordinates);
+        const pointTimes = parsePointTimes(rawPointTimes, points.length);
+        if (pointTimes) await storage.saveRoutePointTimes(route.id, pointTimes.map((t) => Math.round(t)));
+        // Activity profile (charts of the activity screen)
+        const startMs = Date.parse(routeData.startedAt);
+        const altitudes = Array.isArray(rawAltitudes) && rawAltitudes.length === points.length ? rawAltitudes : null;
+        if (pointTimes || altitudes) {
+          const profile = buildProfile(points.map(([lat, lng], i) => ({
+            lat,
+            lng,
+            time: pointTimes && Number.isFinite(startMs) ? startMs + pointTimes[i] * 1000 : null,
+            ele: altitudes && typeof altitudes[i] === 'number' ? altitudes[i] : null,
+          })), startMs);
+          if (profile) await storage.saveRouteProfile(route.id, JSON.stringify(profile));
+        }
+      } catch (err) {
+        console.error('[ROUTES] Could not save point times / profile:', err);
+      }
+      // The run is no longer being recorded: steal pushes against this user stop waiting for it
+      try {
+        await storage.clearActiveRunForRoute(routeData.userId, routeData.startedAt);
+      } catch (_) { /* non-critical */ }
 
       // CRITICAL FIX: Create a basic feed event IMMEDIATELY after route creation.
       // This guarantees the feed event exists even if territory processing exhausts
@@ -1924,6 +2257,71 @@ export function registerRoutes(app: Hono<AppEnv>) {
       console.error('[ROUTES] POST /api/routes failed:', error);
       // Not a validation problem (those return 400 above): the client must keep the run and retry
       return c.json({ error: error?.message || 'Error interno' }, 500);
+    }
+  });
+
+  // The app is recording a run (sent when it starts or resumes one): "te han robado" pushes to this
+  // user wait until the run is uploaded, in case the attacker ran with them (see sendDueStealNotifications)
+  app.post('/api/runs/active', requireAuth, async (c) => {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const startedAt = typeof body?.startedAt === 'string' ? body.startedAt : '';
+      const started = Date.parse(startedAt);
+      if (!Number.isFinite(started) || started > Date.now() + 5 * 60 * 1000) {
+        return c.json({ error: 'startedAt no válido' }, 400);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.setActiveRun(c.get('authUserId'), new Date(started).toISOString());
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[ROUTES] POST /api/runs/active failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // The run was thrown away
+  app.delete('/api/runs/active', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.clearActiveRun(c.get('authUserId'));
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[ROUTES] DELETE /api/runs/active failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
+    }
+  });
+
+  // Cron (every minute): sends the queued pushes that are due, "te han robado" to the victims of a
+  // run and "tu carrera está lista" to the runner of an imported activity
+  app.post('/api/tasks/steal-notifications', async (c) => {
+    try {
+      if (!(await isCronRequest(c))) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      const result = await sendDueStealNotifications(storage, c.env);
+      let activityReady = { sent: 0, skipped: 0 };
+      try {
+        activityReady = await sendDueActivityReadyNotifications(storage, c.env);
+      } catch (error) {
+        console.error('[CRON ACTIVITY READY] Error:', error);
+      }
+      return c.json({ success: true, ...result, activityReady });
+    } catch (error: any) {
+      console.error('[CRON STEAL NOTIFICATIONS] Error:', error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // The app has shown this route's result to its runner: the queued "tu carrera está lista" push isn't needed
+  app.post('/api/routes/:routeId/result-seen', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      await storage.closeActivityReadyNotification(c.req.param('routeId'), c.get('authUserId'));
+      return c.json({ success: true });
+    } catch (error: any) {
+      console.error('[ROUTES] POST /api/routes/:routeId/result-seen failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
     }
   });
 
@@ -2184,229 +2582,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // Admin: Reprocess territories for a user's FRIEND GROUP with full chronological stealing.
   // This is lighter than the global reprocess because it only processes one friend group.
   // Supports batching via batchSize/offset to avoid CPU timeout (error 1102).
+  // Friends no longer steal from each other: there is no friend group to replay. Each user's maps are
+  // rebuilt from their own runs (POST /api/admin/runs/:id/review, route deletion).
   app.post('/api/admin/reprocess-friend-group/:userId', async (c) => {
-    try {
-      const userId = c.req.param('userId');
-      const db = getDb(c.env);
-      const storage = new WorkerStorage(db);
-
-      const user = await storage.getUser(userId);
-      if (!user) {
-        return c.json({ error: `User '${userId}' not found` }, 404);
-      }
-
-      const body = await c.req.json().catch(() => ({}));
-      const batchSize = body.batchSize || 30;
-      const offset = body.offset || 0;
-
-      // 1. Determine friend group
-      const friendIds = await storage.getFriendIds(userId);
-      const groupUserIds = [userId, ...friendIds];
-
-      // 2. On first batch, wipe territories and conquest metrics for this group
-      if (offset === 0) {
-        await storage.deleteTerritoriesForUsers(groupUserIds);
-        await storage.resetTotalAreaForUsers(groupUserIds);
-        await storage.deleteConquestMetricsForUsers(groupUserIds);
-      }
-
-      // 3. Get ALL routes from group, oldest first
-      const allRoutes = await storage.getRoutesForUsersChronological(groupUserIds);
-      const totalRoutes = allRoutes.length;
-
-      // 4. If continuing from offset > 0, rebuild geometry state up to offset
-      //    by loading persisted territory geometries (from previous batch's save)
-      const userGeometries = new Map<string, any>();
-      if (offset > 0) {
-        for (const uid of groupUserIds) {
-          const territories = await storage.getTerritoriesByUserId(uid);
-          if (territories.length > 0) {
-            try {
-              const geom = typeof territories[0].geometry === 'string'
-                ? JSON.parse(territories[0].geometry)
-                : territories[0].geometry;
-              userGeometries.set(uid, geom);
-            } catch (_) { /* skip invalid */ }
-          }
-        }
-      }
-
-      // Build friendship lookup
-      const friendshipMap = await storage.getFriendshipMap(groupUserIds);
-
-      // Pre-build route polygon cache for ran-together checks
-      const routePolygonCache = new Map<string, any>();
-      const routesByUser = new Map<string, typeof allRoutes>();
-      for (const r of allRoutes) {
-        if (!routesByUser.has(r.userId)) routesByUser.set(r.userId, []);
-        routesByUser.get(r.userId)!.push(r);
-      }
-
-      const toFeature = (geom: any) => geom.type === 'MultiPolygon'
-        ? turf.multiPolygon(geom.coordinates)
-        : turf.polygon(geom.coordinates);
-
-      // 5. Process batch of routes
-      const batchEnd = Math.min(offset + batchSize, totalRoutes);
-      let processed = 0;
-
-      // NOTE: We do NOT pre-compute polygons for routes before offset.
-      // That would use too much CPU with turf.buffer(). Instead, ran-together
-      // polygon checks compute lazily only when a time overlap is detected.
-
-      for (let i = offset; i < batchEnd; i++) {
-        const route = allRoutes[i];
-        try {
-          const coords: [number, number][] = Array.isArray(route.coordinates)
-            ? route.coordinates
-            : typeof route.coordinates === 'string'
-              ? JSON.parse(route.coordinates)
-              : [];
-
-          if (coords.length < 10) continue;
-          // Runs too fast to be on foot don't count (see checkRunPlausibility)
-          if (!checkRunPlausibility({ ...route, coordinates: coords }).ok) continue;
-
-          const enclosedPoly = routeToEnclosedPolygon(coords, 150);
-          if (!enclosedPoly) continue;
-
-          const routeGeometry = enclosedPoly.geometry;
-          routePolygonCache.set(route.id, routeGeometry);
-          const routeOwnerFriends = friendshipMap.get(route.userId) || new Set();
-
-          // Steal from friends whose territory overlaps this route
-          for (const [otherUserId, otherGeometry] of userGeometries) {
-            if (otherUserId === route.userId) continue;
-            if (!routeOwnerFriends.has(otherUserId)) continue;
-
-            try {
-              const otherFeature = toFeature(otherGeometry);
-              const routeFeature = toFeature(routeGeometry);
-
-              const intersection = turf.intersect(turf.featureCollection([otherFeature, routeFeature]));
-              if (intersection) {
-                // Ran-together exception
-                if (route.startedAt && route.completedAt) {
-                  const otherRoutes = routesByUser.get(otherUserId) || [];
-                  let ranTogether = false;
-                  for (const otherRoute of otherRoutes) {
-                    if (!otherRoute.startedAt || !otherRoute.completedAt) continue;
-                    const timeOverlap = activitiesOverlapInTime(
-                      route.startedAt, route.completedAt,
-                      otherRoute.startedAt, otherRoute.completedAt
-                    );
-                    if (timeOverlap) {
-                      // Lazy-compute polygon for older route if not cached
-                      let otherRoutePolygon = routePolygonCache.get(otherRoute.id);
-                      if (!otherRoutePolygon) {
-                        try {
-                          const otherCoords: [number, number][] = Array.isArray(otherRoute.coordinates)
-                            ? otherRoute.coordinates
-                            : typeof otherRoute.coordinates === 'string'
-                              ? JSON.parse(otherRoute.coordinates)
-                              : [];
-                          if (otherCoords.length >= 10) {
-                            const otherPoly = routeToEnclosedPolygon(otherCoords, 150);
-                            if (otherPoly) {
-                              otherRoutePolygon = otherPoly.geometry;
-                              routePolygonCache.set(otherRoute.id, otherRoutePolygon);
-                            }
-                          }
-                        } catch (_) { /* skip */ }
-                      }
-                      if (otherRoutePolygon) {
-                        const areaOverlap = geometriesOverlapByPercentage(routeGeometry, otherRoutePolygon, 0.90);
-                        if (areaOverlap) {
-                          ranTogether = true;
-                          break;
-                        }
-                      }
-                    }
-                  }
-                  if (ranTogether) continue;
-                }
-
-                const stolenArea = turf.area(intersection);
-                if (stolenArea > 0) {
-                  const remaining = turf.difference(turf.featureCollection([otherFeature, routeFeature]));
-                  if (remaining) {
-                    userGeometries.set(otherUserId, remaining.geometry);
-                  } else {
-                    userGeometries.delete(otherUserId);
-                  }
-                  try {
-                    await storage.recordConquestMetric(route.userId, otherUserId, stolenArea, route.id);
-                  } catch (_e) { /* best-effort */ }
-                }
-              }
-            } catch (_e) { /* geometry op failed */ }
-          }
-
-          // Merge route into owner's territory
-          const existing = userGeometries.get(route.userId);
-          if (existing) {
-            try {
-              const merged = turf.union(turf.featureCollection([toFeature(existing), toFeature(routeGeometry)]));
-              if (merged) userGeometries.set(route.userId, merged.geometry);
-            } catch (_e) { /* keep existing */ }
-          } else {
-            userGeometries.set(route.userId, routeGeometry);
-          }
-
-          processed++;
-        } catch (err) {
-          console.error(`[FRIEND GROUP REPROCESS] Error on route ${route.id}:`, err);
-        }
-      }
-
-      // 6. Persist current geometries
-      for (const [uid, geometry] of userGeometries) {
-        const totalArea = turf.area(geometry);
-        // Delete existing territories first, then create new
-        await storage.deleteTerritoriesByUserId(uid);
-        await storage.updateTerritoryGeometry(uid, null, geometry, totalArea);
-        await storage.updateUserTotalArea(uid, totalArea);
-      }
-      // Users with no territory
-      for (const uid of groupUserIds) {
-        if (!userGeometries.has(uid)) {
-          await storage.deleteTerritoriesByUserId(uid);
-          await storage.updateUserTotalArea(uid, 0);
-        }
-      }
-
-      const done = batchEnd >= totalRoutes;
-      const nextOffset = done ? null : batchEnd;
-
-      // Build summary
-      const summary: any[] = [];
-      for (const uid of groupUserIds) {
-        const u = await storage.getUser(uid);
-        summary.push({
-          userId: uid,
-          name: u?.name,
-          totalArea: u?.totalArea || 0,
-        });
-      }
-
-      return c.json({
-        success: true,
-        userId,
-        friendGroupSize: groupUserIds.length,
-        totalRoutes,
-        processed,
-        offset,
-        batchEnd,
-        nextOffset,
-        done,
-        summary,
-      });
-    } catch (error: any) {
-      return c.json({ error: error.message }, 500);
-    }
+    return c.json({ error: 'gone', message: 'Friends no longer steal territory from each other; use the season admin endpoints.' }, 410);
   });
 
-  // Admin: Full cleanup of a user's data (routes, territories, activities) so they can reimport fresh
   app.post('/api/admin/cleanup-user/:username', async (c) => {
     try {
       const username = c.req.param('username');
@@ -2834,6 +3015,27 @@ export function registerRoutes(app: Hono<AppEnv>) {
       return c.json(routes);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Activity screen: altitude/distance profile, pace chart, km splits, climbs and highlights
+  app.get('/api/routes/:routeId/profile', requireAuth, async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const route = await storage.getRouteById(c.req.param('routeId'));
+      if (!route) return c.json({ error: 'Route not found' }, 404);
+      const viewer = c.get('authUserId');
+      if (viewer !== route.userId && (await storage.getBlockedUserIds(viewer)).includes(route.userId)) {
+        return c.json({ error: 'Route not found' }, 404);
+      }
+      // Runs are private outside friends and club mates
+      if (!(await canSeeRunsOf(storage, viewer, route.userId))) return c.json({ error: 'private_runs' }, 403);
+      const profile = await loadRouteProfile(storage, c.env, route);
+      if (!profile) return c.json({ available: false });
+      return c.json({ available: true, ...analyzeProfile(profile, route.distance) });
+    } catch (error: any) {
+      console.error('[ROUTES] GET /api/routes/:routeId/profile failed:', error);
+      return c.json({ error: 'Error interno' }, 500);
     }
   });
 
@@ -4376,14 +4578,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
             if (activityResponse.ok) {
               const activity: any = await activityResponse.json();
               
-              if (['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+              // Only runs (road and trail): no walks, hikes or other sports
+              if (isRunningActivityType(activity.sport_type || activity.type)) {
                 await storage.createStravaActivity({
                   stravaActivityId: activity.id,
                   userId: stravaAccount.userId,
                   routeId: null,
                   territoryId: null,
                   name: activity.name,
-                  activityType: activity.type,
+                  activityType: activity.sport_type || activity.type,
                   distance: activity.distance,
                   duration: activity.moving_time,
                   startDate: new Date(activity.start_date),
@@ -4468,32 +4671,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
                         console.log(`[STRAVA WEBHOOK] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-                        // Send push notification
-                        try {
-                          const { sendPushToUser } = await import('./pushHelper');
-                          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-                          if (subscriptions.length > 0) {
-                            const distKm = (activity.distance / 1000).toFixed(1);
-                            const pushSubs = subscriptions.map((sub: any) => ({
-                              endpoint: sub.endpoint,
-                              keys: { p256dh: sub.p256dh, auth: sub.auth },
-                            }));
-                            await sendPushToUser(
-                              pushSubs,
-                              {
-                                title: '🏃 ¡Carrera registrada!',
-                                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                                tag: `strava-auto-${activity.id}`,
-                                data: { type: 'strava_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-                              },
-                              (c.env as any).VAPID_PUBLIC_KEY || '',
-                              (c.env as any).VAPID_PRIVATE_KEY || '',
-                              (c.env as any).VAPID_SUBJECT || 'mailto:notifications@runna.io'
-                            );
-                          }
-                        } catch (pushErr) {
-                          console.warn(`[STRAVA WEBHOOK] Push notification failed:`, pushErr);
-                        }
+                        // The runner's "tu carrera está lista" push goes out a few minutes later, with the settled result
+                        await queueActivityReadyPush(storage, userId, route.id, 'strava');
                       } else {
                         // Short route (<10 coords) — create route + feed event without territory
                         try {
@@ -4772,8 +4951,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         if (stravaActivitiesList.length === 0) break; // No more activities
 
         for (const activity of stravaActivitiesList) {
-          // Only process runs and walks
-          if (!['Run', 'Walk', 'Hike', 'Trail Run'].includes(activity.type)) {
+          // Only runs (road and trail): no walks, hikes or other sports
+          if (!isRunningActivityType(activity.sport_type || activity.type)) {
             continue;
           }
 
@@ -4821,7 +5000,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             routeId: null,
             territoryId: null,
             name: activity.name,
-            activityType: activity.type,
+            activityType: activity.sport_type || activity.type,
             distance: activity.distance,
             duration: activity.moving_time,
             startDate: new Date(activity.start_date),
@@ -5393,8 +5572,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
             }
           }
 
-          const excludeTypes = ['sleep', 'rest', 'pause', 'meditation', 'breathing'];
-          const isExcluded = excludeTypes.some(t => activityType.includes(t));
+          // Only runs (road and trail): no walks, hikes, cycling or other sports
+          const isExcluded = !isRunningActivityType(activityType);
 
           if (isExcluded) {
             console.log(`[DIRECT SYNC]    ❌ Excluded type (${sport})`);
@@ -5505,7 +5684,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   /**
    * One Polar user: imports new exercises (GET /v3/exercises), turns up to 3 of them into routes
    * (feed event + territory queue) and sends the "¡Carrera registrada!" push (polar_auto_import).
-   * Shared by the 5-minute cron and the Polar webhook.
+   * Shared by the 3-minute cron and the Polar webhook.
    */
   const autoSyncPolarUser = async (
     env: Env,
@@ -5639,32 +5818,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         processed++;
         console.log(`[POLAR AUTO-SYNC] ✅ Auto-processed activity ${activity.id} → route ${route.id}`);
 
-        // 3. Send push notification to user about the new activity
-        try {
-          const { sendPushToUser } = await import('./pushHelper');
-          const subscriptions = await storage.getPushSubscriptionsByUserId(userId);
-          if (subscriptions.length > 0) {
-            const distKm = (activity.distance / 1000).toFixed(1);
-            const pushSubs = subscriptions.map((sub: any) => ({
-              endpoint: sub.endpoint,
-              keys: { p256dh: sub.p256dh, auth: sub.auth },
-            }));
-            await sendPushToUser(
-              pushSubs,
-              {
-                title: '🏃 ¡Carrera registrada!',
-                body: `${activity.name} · ${distKm} km — Entra para ver tu conquista`,
-                tag: `polar-auto-${activity.id}`,
-                data: { type: 'polar_auto_import', routeId: route.id, url: '/?showPendingAnimation=true' },
-              },
-              env.VAPID_PUBLIC_KEY || '',
-              env.VAPID_PRIVATE_KEY || '',
-              env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
-            );
-          }
-        } catch (pushErr) {
-          console.warn(`[POLAR AUTO-SYNC] Push notification failed for ${userId}:`, pushErr);
-        }
+        // 3. The runner's "tu carrera está lista" push goes out a few minutes later, with the settled result
+        await queueActivityReadyPush(storage, userId, route.id, 'polar');
       } catch (procErr) {
         console.error(`[POLAR AUTO-SYNC] ❌ Error processing activity ${activity.id}:`, procErr);
       }
@@ -5677,7 +5832,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   // ({event: "EXERCISE", user_id, entity_id, timestamp, url}), signed with "Polar-Webhook-Signature"
   // = hex HMAC-SHA256 of the raw body with the webhook's signature_secret_key (POLAR_WEBHOOK_SECRET).
   // We answer 200 at once and import that user's exercises in the background with the same code as
-  // the 5-minute cron (which stays as the fallback). The exercise data is always read from Polar's
+  // the 3-minute cron (which stays as the fallback). The exercise data is always read from Polar's
   // API with the user's token, never taken from the payload.
 
   /** Users whose webhook import is running in this isolate (Polar may send the same event twice). */
@@ -6879,7 +7034,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
-  // POST /api/tasks/polar-auto-sync — Cron: runs every 5 minutes, auto-syncs Polar activities
+  // POST /api/tasks/polar-auto-sync — Cron: runs every 3 minutes, auto-syncs Polar activities
   // Checks all connected Polar accounts for new exercises, processes them, and notifies users
   app.post('/api/tasks/polar-auto-sync', async (c) => {
     try {
@@ -6896,7 +7051,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const cronStart = Date.now();
       const MAX_CRON_TIME = 25000; // 25s safety limit
       const MAX_USERS_PER_INVOCATION = 5; // Process at most 5 users per cron run
-      const SYNC_STALE_MINUTES = 4; // Only sync users not synced in last 4 minutes
+      const SYNC_STALE_MINUTES = 2; // Only sync users not synced in the last 2 minutes (the poll runs every 3)
 
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);

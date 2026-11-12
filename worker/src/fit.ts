@@ -33,6 +33,7 @@ export const FIT_SUB_SPORT = {
   trail: 3,
   track: 4,
   indoorWalking: 27,
+  indoorRunning: 45,
   virtualActivity: 58,
 } as const;
 
@@ -43,6 +44,8 @@ export interface FitPoint {
   time: number | null;
   /** metres from the start, when known */
   distance: number | null;
+  /** metres above sea level, when known */
+  altitude?: number | null;
 }
 
 export interface FitSession {
@@ -273,11 +276,15 @@ export function parseFit(input: ArrayBuffer | Uint8Array): FitActivity {
           const valid = Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && !(lat === 0 && lng === 0);
           if (valid) {
             const distRaw = values.get(5);
+            // enhanced_altitude (78) or altitude (2): scale 5, offset 500
+            const altRaw = values.get(78) ?? values.get(2);
+            const altitude = altRaw !== undefined && altRaw !== null ? altRaw / 5 - 500 : null;
             points.push({
               lat,
               lng,
               time: fitTimeToMs(timestamp),
               distance: distRaw !== undefined && distRaw !== null ? distRaw / 100 : null,
+              altitude: altitude !== null && altitude > -500 && altitude < 9000 ? altitude : null,
             });
           }
         }
@@ -341,15 +348,12 @@ export function parseFit(input: ArrayBuffer | Uint8Array): FitActivity {
   };
 }
 
-/** True for FIT sports that count as running/walking on foot outdoors (Runna.io's import filter). */
-export function isFootSport(sport: number | null, subSport: number | null): boolean {
-  if (sport === FIT_SPORT.running) {
-    return subSport !== FIT_SUB_SPORT.treadmill && subSport !== FIT_SUB_SPORT.virtualActivity;
-  }
-  if (sport === FIT_SPORT.walking) {
-    return subSport !== FIT_SUB_SPORT.indoorWalking;
-  }
-  return sport === FIT_SPORT.hiking;
+/** True for FIT sports Runna.io imports: running and trail running outdoors (no walks, hikes, treadmill). */
+export function isRunningSport(sport: number | null, subSport: number | null): boolean {
+  if (sport !== FIT_SPORT.running) return false;
+  return subSport !== FIT_SUB_SPORT.treadmill
+    && subSport !== FIT_SUB_SPORT.indoorRunning
+    && subSport !== FIT_SUB_SPORT.virtualActivity;
 }
 
 /** Spanish label for a FIT sport, used to name imported activities. */

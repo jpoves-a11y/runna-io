@@ -1839,6 +1839,12 @@ export class GameStorage {
       sql`UPDATE coros_activities SET processed = 1, route_id = NULL, territory_id = NULL, skip_reason = 'before_season'`,
       sql`UPDATE suunto_activities SET status = 'skipped', processed = 1, route_id = NULL, skip_reason = 'before_season'`,
       sql`UPDATE garmin_activities SET status = 'skipped', processed = 1, route_id = NULL, skip_reason = 'before_season'`,
+      // Leftovers of the old game's runs (ran together, delayed pushes, activity profiles)
+      sql`DELETE FROM pending_steal_notifications`,
+      sql`DELETE FROM activity_ready_notifications`,
+      sql`DELETE FROM friend_activity_notified`,
+      sql`DELETE FROM active_runs`,
+      sql`DELETE FROM route_streams`,
       sql`DELETE FROM routes`,
       sql`UPDATE users SET total_area = 0, global_area = 0, global_bonus_area = 0, streak_days = 0, streak_last_date = NULL`,
     ];

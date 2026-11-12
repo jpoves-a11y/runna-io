@@ -1,4 +1,5 @@
 import * as turf from '@turf/turf';
+import { isRunningActivityType, NOT_RUNNING_SKIP_REASON } from './sports';
 import {
   users,
   routes,
@@ -224,6 +225,11 @@ export class WorkerStorage {
     await this.db.run(sql`DELETE FROM password_resets WHERE user_id = ${userId}`);
     // Clubs, competitions, global map, inventory, challenges (hands over a club the user owns)
     await new GameStorage(this.db).removeUserGameData(userId);
+    await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE victim_id = ${userId} OR attacker_id = ${userId}`);
+    await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
+    await this.db.run(sql`DELETE FROM activity_ready_notifications WHERE user_id = ${userId}`);
+    await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
@@ -321,6 +327,68 @@ export class WorkerStorage {
     // first so their new columns exist before any drizzle select lists them.
     await this.ensureCompetitionTables();
     await applyGameSchema(this.db);
+    // migrations/0016_ran_together_profiles.sql
+    try {
+      await this.db.run(sql`ALTER TABLE conquest_metrics ADD COLUMN stolen_geometry TEXT`);
+    } catch (_) { /* column already exists */ }
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_conquest_metrics_route_defender ON conquest_metrics(route_id, defender_id)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_streams (
+      route_id TEXT PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
+      times TEXT,
+      profile TEXT,
+      profile_checked_at TEXT
+    )`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS source_profiles (
+      source TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (source, source_id)
+    )`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS pending_steal_notifications (
+      id TEXT PRIMARY KEY,
+      victim_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      attacker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      route_id TEXT REFERENCES routes(id) ON DELETE CASCADE,
+      stolen_area REAL NOT NULL,
+      route_completed_at TEXT,
+      due_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_pending_steal_due ON pending_steal_notifications(due_at)`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_pending_steal_route_victim ON pending_steal_notifications(route_id, victim_id)`);
+    // "Tu carrera está lista" pushes of activities imported from a watch: sent a few minutes after the
+    // import (sendDueActivityReadyNotifications), once per route (the row stays, with sent_at)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS activity_ready_notifications (
+      route_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      due_at TEXT NOT NULL,
+      sent_at TEXT,
+      created_at TEXT NOT NULL
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_activity_ready_due ON activity_ready_notifications(sent_at, due_at)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS active_runs (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      started_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    // Runs whose "X ha salido a correr" push went out (once per run, however often it's processed)
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS friend_activity_notified (
+      route_id TEXT PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
+      notified_at TEXT NOT NULL
+    )`);
+  }
+
+  /**
+   * Claims the "has gone for a run" push of a route: true only the first time for that route (one
+   * atomic insert), so a run processed again (another import of it, a retry) doesn't notify again.
+   */
+  async claimFriendActivityNotification(routeId: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const result = await this.db.run(sql`INSERT OR IGNORE INTO friend_activity_notified (route_id, notified_at)
+      VALUES (${routeId}, ${new Date().toISOString()})`);
+    return (result.rowsAffected || 0) > 0;
   }
 
   // ===== Login attempt limits (see worker/src/rateLimit.ts) =====
@@ -722,18 +790,6 @@ export class WorkerStorage {
   }
 
   // Get routes from specific users that started within a time window of a given timestamp
-  async getRoutesInTimeWindow(userIds: string[], centerTime: string, windowMs: number = 15 * 60 * 1000): Promise<Route[]> {
-    if (userIds.length === 0) return [];
-    const center = new Date(centerTime).getTime();
-    const minTime = new Date(center - windowMs).toISOString();
-    const maxTime = new Date(center + windowMs).toISOString();
-    const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
-    return await this.db
-      .select()
-      .from(routes)
-      .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} >= ${minTime} AND ${routes.startedAt} <= ${maxTime}`);
-  }
-
   // Get routes from specific users that started after a given timestamp
   // Used to detect "future routes" — enemy routes that were run after the current route
   async getRoutesStartedAfter(userIds: string[], afterTime: string): Promise<Route[]> {
@@ -744,6 +800,311 @@ export class WorkerStorage {
       .select()
       .from(routes)
       .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} > ${minTime}`);
+  }
+
+  // ===== Ran together =====
+
+  /** Per-point times of a run (seconds since startedAt, same length as coordinates). */
+  async saveRoutePointTimes(routeId: string, times: number[]): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO route_streams (route_id, times) VALUES (${routeId}, ${JSON.stringify(times)})
+      ON CONFLICT(route_id) DO UPDATE SET times = excluded.times`);
+  }
+
+  async getRoutePointTimes(routeId: string): Promise<string | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ times: string }>(sql`SELECT times FROM route_streams WHERE route_id = ${routeId} AND times IS NOT NULL`);
+    return rows[0]?.times ?? null;
+  }
+
+  /** Point times of every route of these users, by route id (reprocesses). */
+  async getPointTimesForUsers(userIds: string[]): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    if (userIds.length === 0) return map;
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ route_id: string; times: string }>(sql`
+      SELECT t.route_id, t.times FROM route_streams t JOIN routes r ON r.id = t.route_id
+      WHERE t.times IS NOT NULL AND r.user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
+    for (const row of rows) map.set(row.route_id, row.times);
+    return map;
+  }
+
+  async deleteRanTogetherDataForRoute(routeId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM route_streams WHERE route_id = ${routeId}`);
+    await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id = ${routeId}`);
+  }
+
+  // ===== Activity profile (altitude/distance, pace, splits, climbs) =====
+
+  async getRouteProfile(routeId: string): Promise<{ profile: string | null; checkedAt: string | null } | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ profile: string | null; profile_checked_at: string | null }>(
+      sql`SELECT profile, profile_checked_at FROM route_streams WHERE route_id = ${routeId}`
+    );
+    return rows[0] ? { profile: rows[0].profile, checkedAt: rows[0].profile_checked_at } : null;
+  }
+
+  /** Saves the profile (or, with null, that none could be found now: retried later). */
+  async saveRouteProfile(routeId: string, profile: string | null): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO route_streams (route_id, profile, profile_checked_at) VALUES (${routeId}, ${profile}, ${now})
+      ON CONFLICT(route_id) DO UPDATE SET profile = COALESCE(excluded.profile, route_streams.profile), profile_checked_at = excluded.profile_checked_at`);
+  }
+
+  /** Profile captured when an activity was imported, before its route exists (Garmin, Suunto). */
+  async saveSourceProfile(source: string, sourceId: string, profile: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`INSERT INTO source_profiles (source, source_id, profile, created_at) VALUES (${source}, ${sourceId}, ${profile}, ${new Date().toISOString()})
+      ON CONFLICT(source, source_id) DO UPDATE SET profile = excluded.profile`);
+  }
+
+  /** Where a route came from: the imported activities linked to it (any source). */
+  async getRouteSources(routeId: string): Promise<{
+    garmin: string | null;
+    suunto: string | null;
+    strava: { activityId: number; startDate: string } | null;
+    polar: { exerciseId: string } | null;
+  }> {
+    await this.ensureSchemaUpgrades();
+    const first = async <T>(query: any): Promise<T | null> => {
+      try {
+        const rows = await this.db.all<T>(query);
+        return rows[0] ?? null;
+      } catch (_) {
+        return null; // table not created yet (integration never used)
+      }
+    };
+    const garmin = await first<{ summary_id: string }>(sql`SELECT summary_id FROM garmin_activities WHERE route_id = ${routeId} LIMIT 1`);
+    const suunto = await first<{ workout_key: string }>(sql`SELECT workout_key FROM suunto_activities WHERE route_id = ${routeId} LIMIT 1`);
+    const strava = await first<{ strava_activity_id: number; start_date: string }>(sql`SELECT strava_activity_id, start_date FROM strava_activities WHERE route_id = ${routeId} LIMIT 1`);
+    const polar = await first<{ polar_exercise_id: string }>(sql`SELECT polar_exercise_id FROM polar_activities WHERE route_id = ${routeId} LIMIT 1`);
+    return {
+      garmin: garmin?.summary_id ?? null,
+      suunto: suunto?.workout_key ?? null,
+      strava: strava ? { activityId: Number(strava.strava_activity_id), startDate: strava.start_date } : null,
+      polar: polar ? { exerciseId: String(polar.polar_exercise_id) } : null,
+    };
+  }
+
+  async getSourceProfile(source: string, sourceId: string): Promise<string | null> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ profile: string }>(sql`SELECT profile FROM source_profiles WHERE source = ${source} AND source_id = ${sourceId}`);
+    return rows[0]?.profile ?? null;
+  }
+
+  /**
+   * Other users' routes recorded during [startedAt, completedAt] (any overlap), with their point times.
+   * `userIds` null means every user (competition: all against all).
+   */
+  async getRoutesOverlappingInterval(
+    userIds: string[] | null,
+    excludeUserId: string,
+    startedAt: string,
+    completedAt: string,
+    limit: number = 40
+  ): Promise<Array<{ id: string; userId: string; coordinates: string; startedAt: string; completedAt: string; ranTogetherWith: string | null; pointTimes: string | null }>> {
+    if (userIds && userIds.length === 0) return [];
+    await this.ensureSchemaUpgrades();
+    // A minute of slack for timestamps stored with different precision
+    const from = new Date(new Date(startedAt).getTime() - 60_000).toISOString();
+    const to = new Date(new Date(completedAt).getTime() + 60_000).toISOString();
+    const userFilter = userIds
+      ? sql` AND r.user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`
+      : sql``;
+    const rows = await this.db.all<{ id: string; user_id: string; coordinates: string; started_at: string; completed_at: string; ran_together_with: string | null; times: string | null }>(sql`
+      SELECT r.id, r.user_id, r.coordinates, r.started_at, r.completed_at, r.ran_together_with, t.times
+      FROM routes r LEFT JOIN route_streams t ON t.route_id = r.id
+      WHERE r.user_id != ${excludeUserId} AND r.started_at <= ${to} AND r.completed_at >= ${from}${userFilter}
+      ORDER BY r.started_at
+      LIMIT ${limit}`);
+    return rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      coordinates: r.coordinates,
+      startedAt: r.started_at,
+      completedAt: r.completed_at,
+      ranTogetherWith: r.ran_together_with,
+      pointTimes: r.times,
+    }));
+  }
+
+  /** Steals that the given routes made against `defenderId` (to undo them when they ran together). */
+  async getConquestMetricsByRoutesAgainst(routeIds: string[], defenderId: string): Promise<Array<{ id: string; attackerId: string; routeId: string; areaStolen: number; stolenGeometry: string | null }>> {
+    if (routeIds.length === 0) return [];
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ id: string; attacker_id: string; route_id: string; area_stolen: number; stolen_geometry: string | null }>(sql`
+      SELECT id, attacker_id, route_id, area_stolen, stolen_geometry FROM conquest_metrics
+      WHERE defender_id = ${defenderId} AND route_id IN (${sql.join(routeIds.map((id) => sql`${id}`), sql`, `)})`);
+    return rows.map((r) => ({ id: r.id, attackerId: r.attacker_id, routeId: r.route_id, areaStolen: Number(r.area_stolen) || 0, stolenGeometry: r.stolen_geometry }));
+  }
+
+  async deleteConquestMetricsByIds(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.run(sql`DELETE FROM conquest_metrics WHERE id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  async updateConquestMetricSteal(id: string, areaStolen: number, stolenGeometry: any | null): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`UPDATE conquest_metrics SET area_stolen = ${areaStolen}, stolen_geometry = ${stolenGeometry ? JSON.stringify(stolenGeometry) : null} WHERE id = ${id}`);
+  }
+
+  /** Adds `geometry` to a territory (gives back area that was taken). Returns the area actually added. */
+  async unionIntoTerritory(territory: Territory, geometry: any): Promise<{ territory: Territory; addedArea: number }> {
+    const current = safeParseGeometry(territory.geometry);
+    if (!current) return { territory, addedArea: 0 };
+    const merged = safeUnion(current, geometry);
+    if (!merged) return { territory, addedArea: 0 };
+    const before = turf.area(current);
+    const after = turf.area(merged);
+    if (!isFinite(after) || after <= before) return { territory, addedArea: 0 };
+    const [updated] = await this.db
+      .update(territories)
+      .set({ geometry: JSON.stringify(merged), area: after })
+      .where(eq(territories.id, territory.id))
+      .returning();
+    return { territory: updated ?? territory, addedArea: after - before };
+  }
+
+  // ===== Delayed territory-loss notifications =====
+
+  /**
+   * Queues "te han robado" pushes instead of sending them at once: the victim may have run with
+   * the attacker and not have uploaded yet, and then the steal is undone and the push cancelled.
+   */
+  async schedulePendingStealNotifications(
+    rows: Array<{ victimId: string; attackerId: string; routeId: string; stolenArea: number; routeCompletedAt?: string | null }>,
+    delayMs: number
+  ): Promise<void> {
+    if (rows.length === 0) return;
+    await this.ensureSchemaUpgrades();
+    const now = new Date();
+    const due = new Date(now.getTime() + delayMs).toISOString();
+    for (const row of rows) {
+      await this.db.run(sql`INSERT INTO pending_steal_notifications (id, victim_id, attacker_id, route_id, stolen_area, route_completed_at, due_at, created_at)
+        VALUES (${crypto.randomUUID()}, ${row.victimId}, ${row.attackerId}, ${row.routeId}, ${row.stolenArea}, ${row.routeCompletedAt ?? null}, ${due}, ${now.toISOString()})`);
+    }
+  }
+
+  /** Removes `area` (or everything, with null) from the queued push of a route's steal against a victim. */
+  async reducePendingStealNotification(routeId: string, victimId: string, area: number | null): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    if (area == null) {
+      await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id = ${routeId} AND victim_id = ${victimId}`);
+      return;
+    }
+    await this.db.run(sql`UPDATE pending_steal_notifications SET stolen_area = stolen_area - ${area} WHERE route_id = ${routeId} AND victim_id = ${victimId}`);
+    await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id = ${routeId} AND victim_id = ${victimId} AND stolen_area < 1`);
+  }
+
+  async getDuePendingStealNotifications(nowIso: string, limit: number = 50): Promise<Array<{ id: string; victimId: string; attackerId: string; routeId: string | null; stolenArea: number; routeCompletedAt: string | null; createdAt: string }>> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ id: string; victim_id: string; attacker_id: string; route_id: string | null; stolen_area: number; route_completed_at: string | null; created_at: string }>(sql`
+      SELECT id, victim_id, attacker_id, route_id, stolen_area, route_completed_at, created_at FROM pending_steal_notifications
+      WHERE due_at <= ${nowIso} ORDER BY due_at LIMIT ${limit}`);
+    return rows.map((r) => ({ id: r.id, victimId: r.victim_id, attackerId: r.attacker_id, routeId: r.route_id, stolenArea: Number(r.stolen_area) || 0, routeCompletedAt: r.route_completed_at, createdAt: r.created_at }));
+  }
+
+  async deletePendingStealNotifications(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  async postponePendingStealNotifications(ids: string[], dueAtIso: string): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.run(sql`UPDATE pending_steal_notifications SET due_at = ${dueAtIso} WHERE id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  // ===== Delayed "tu carrera está lista" notifications (imported activities) =====
+
+  /**
+   * Queues the push that tells a user their imported activity is ready, once per route: a route
+   * imported or processed again doesn't notify again. Returns whether it was queued now.
+   */
+  async scheduleActivityReadyNotification(userId: string, routeId: string, source: string, delayMs: number): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date();
+    const due = new Date(now.getTime() + delayMs).toISOString();
+    const result = await this.db.run(sql`INSERT OR IGNORE INTO activity_ready_notifications (route_id, user_id, source, due_at, sent_at, created_at)
+      VALUES (${routeId}, ${userId}, ${source}, ${due}, NULL, ${now.toISOString()})`);
+    return (result.rowsAffected || 0) > 0;
+  }
+
+  async getDueActivityReadyNotifications(nowIso: string, limit: number = 50): Promise<Array<{ routeId: string; userId: string; source: string }>> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ route_id: string; user_id: string; source: string }>(sql`
+      SELECT route_id, user_id, source FROM activity_ready_notifications
+      WHERE sent_at IS NULL AND due_at <= ${nowIso} ORDER BY due_at LIMIT ${limit}`);
+    return rows.map((r) => ({ routeId: r.route_id, userId: r.user_id, source: r.source }));
+  }
+
+  /**
+   * Closes a route's queued push (sent, or no longer needed because the user has already seen the
+   * result in the app). True only for the caller that closes it, so it is never sent twice.
+   */
+  async closeActivityReadyNotification(routeId: string, userId?: string): Promise<boolean> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date().toISOString();
+    const result = userId
+      ? await this.db.run(sql`UPDATE activity_ready_notifications SET sent_at = ${now} WHERE route_id = ${routeId} AND user_id = ${userId} AND sent_at IS NULL`)
+      : await this.db.run(sql`UPDATE activity_ready_notifications SET sent_at = ${now} WHERE route_id = ${routeId} AND sent_at IS NULL`);
+    return (result.rowsAffected || 0) > 0;
+  }
+
+  /** Forgets closed rows older than `beforeIso` (the once-per-route guard only matters for recent imports). */
+  async deleteOldActivityReadyNotifications(beforeIso: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM activity_ready_notifications WHERE created_at < ${beforeIso}`);
+  }
+
+  // ===== Runs being recorded in the app =====
+
+  async setActiveRun(userId: string, startedAt: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const now = new Date().toISOString();
+    await this.db.run(sql`INSERT INTO active_runs (user_id, started_at, updated_at) VALUES (${userId}, ${startedAt}, ${now})
+      ON CONFLICT(user_id) DO UPDATE SET started_at = excluded.started_at, updated_at = excluded.updated_at`);
+  }
+
+  async clearActiveRun(userId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
+  }
+
+  /** Clears the active run once its route has been uploaded (a run uploaded later from the queue leaves it alone). */
+  async clearActiveRunForRoute(userId: string, routeStartedAt: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ started_at: string }>(sql`SELECT started_at FROM active_runs WHERE user_id = ${userId}`);
+    const active = rows[0];
+    if (!active) return;
+    const diff = Math.abs(new Date(active.started_at).getTime() - new Date(routeStartedAt).getTime());
+    if (!Number.isFinite(diff) || diff <= 10 * 60 * 1000) {
+      await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
+    }
+  }
+
+  async getActiveRunsForUsers(userIds: string[]): Promise<Map<string, { startedAt: string; updatedAt: string }>> {
+    const map = new Map<string, { startedAt: string; updatedAt: string }>();
+    if (userIds.length === 0) return map;
+    await this.ensureSchemaUpgrades();
+    const rows = await this.db.all<{ user_id: string; started_at: string; updated_at: string }>(sql`
+      SELECT user_id, started_at, updated_at FROM active_runs WHERE user_id IN (${sql.join(userIds.map((id) => sql`${id}`), sql`, `)})`);
+    for (const row of rows) map.set(row.user_id, { startedAt: row.started_at, updatedAt: row.updated_at });
+    return map;
+  }
+
+  // Get routes from specific users that started within a time window of a given timestamp
+  async getRoutesInTimeWindow(userIds: string[], centerTime: string, windowMs: number = 15 * 60 * 1000): Promise<Route[]> {
+    if (userIds.length === 0) return [];
+    const center = new Date(centerTime).getTime();
+    const minTime = new Date(center - windowMs).toISOString();
+    const maxTime = new Date(center + windowMs).toISOString();
+    const placeholders = userIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+    return await this.db
+      .select()
+      .from(routes)
+      .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} >= ${minTime} AND ${routes.startedAt} <= ${maxTime}`);
   }
 
   async getRoutesByUserId(userId: string): Promise<RouteWithTerritory[]> {
@@ -1034,7 +1395,7 @@ export class WorkerStorage {
   async subtractFromTerritory(
     territoryId: string,
     subtractionGeometry: any
-  ): Promise<{ updatedTerritory: Territory | null; stolenArea: number }> {
+  ): Promise<{ updatedTerritory: Territory | null; stolenArea: number; stolenGeometry?: any }> {
     const [territory] = await this.db
       .select()
       .from(territories)
@@ -1051,7 +1412,7 @@ export class WorkerStorage {
   async subtractFromTerritoryDirect(
     territory: Territory,
     subtractionGeometry: any
-  ): Promise<{ updatedTerritory: Territory | null; stolenArea: number }> {
+  ): Promise<{ updatedTerritory: Territory | null; stolenArea: number; stolenGeometry?: any }> {
     // Parse geometry from JSON string (SQLite stores as text)
     const parsedGeometry = safeParseGeometry(territory.geometry);
     if (!parsedGeometry) {
@@ -1090,7 +1451,7 @@ export class WorkerStorage {
     if (!difference) {
       // Entire territory was conquered, delete it
       await this.db.delete(territories).where(eq(territories.id, territory.id));
-      return { updatedTerritory: null, stolenArea };
+      return { updatedTerritory: null, stolenArea, stolenGeometry: intersection.geometry };
     }
     
     // Update the territory with the remaining geometry as JSON string
@@ -1104,7 +1465,7 @@ export class WorkerStorage {
       .where(eq(territories.id, territory.id))
       .returning();
     
-    return { updatedTerritory, stolenArea };
+    return { updatedTerritory, stolenArea, stolenGeometry: intersection.geometry };
   }
 
   async addOrMergeTerritory(
@@ -1576,10 +1937,16 @@ export class WorkerStorage {
   }
 
   async getUnprocessedStravaActivities(userId: string): Promise<StravaActivity[]> {
-    return await this.db
+    const rows = await this.db
       .select()
       .from(stravaActivities)
       .where(sql`${stravaActivities.userId} = ${userId} AND ${stravaActivities.processed} = 0`);
+    // Only runs become routes: walks, hikes etc. imported by older versions are closed here
+    const notRunning = rows.filter((a) => !isRunningActivityType(a.activityType));
+    for (const activity of notRunning) {
+      await this.db.update(stravaActivities).set({ processed: 1 as any, processedAt: new Date().toISOString() }).where(eq(stravaActivities.id, activity.id));
+    }
+    return rows.filter((a) => isRunningActivityType(a.activityType));
   }
 
   // Get activities that failed processing (route_id is NULL, regardless of processed flag)
@@ -1681,11 +2048,19 @@ export class WorkerStorage {
   }
 
   async getUnprocessedPolarActivities(userId: string): Promise<PolarActivity[]> {
-    return await this.db
+    const rows = await this.db
       .select()
       .from(polarActivities)
       .where(sql`${polarActivities.userId} = ${userId} AND ${polarActivities.processed} = 0 AND ${polarActivities.skipReason} IS NULL`)
       .orderBy(desc(polarActivities.startDate));
+    // Only runs become routes: other sports imported by older versions are closed here
+    const notRunning = rows.filter((a) => !isRunningActivityType(a.activityType));
+    for (const activity of notRunning) {
+      await this.db.update(polarActivities)
+        .set({ processed: 1 as any, processedAt: new Date().toISOString(), skipReason: NOT_RUNNING_SKIP_REASON })
+        .where(eq(polarActivities.id, activity.id));
+    }
+    return rows.filter((a) => isRunningActivityType(a.activityType));
   }
 
   // Get activities that failed processing (route_id is NULL, regardless of processed flag)
@@ -1791,6 +2166,8 @@ export class WorkerStorage {
   }
 
   async deleteRouteById(id: string): Promise<void> {
+    // Point times and queued steal pushes of the route (no FK cascade to rely on)
+    await this.deleteRanTogetherDataForRoute(id);
     await this.db.delete(routes).where(eq(routes.id, id));
   }
 
@@ -1870,6 +2247,10 @@ export class WorkerStorage {
   }
 
   async deleteAllRoutesByUserId(userId: string): Promise<void> {
+    await this.ensureSchemaUpgrades();
+    await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(routes).where(eq(routes.userId, userId));
   }
 
@@ -1968,6 +2349,8 @@ export class WorkerStorage {
 
   // Delete a specific route by ID (no cascade - handled manually)
   async deleteRouteByIdDirect(routeId: string): Promise<void> {
+    // Point times and queued steal pushes of the route (no FK cascade to rely on)
+    await this.deleteRanTogetherDataForRoute(routeId);
     await this.db.delete(routes).where(eq(routes.id, routeId));
   }
 
@@ -2671,8 +3054,10 @@ export class WorkerStorage {
     attackerId: string,
     defenderId: string,
     areaStolen: number,
-    routeId?: string
+    routeId?: string,
+    stolenGeometry?: any
   ): Promise<ConquestMetric> {
+    await this.ensureSchemaUpgrades();
     const [metric] = await this.db
       .insert(conquestMetrics)
       .values({
@@ -2680,6 +3065,7 @@ export class WorkerStorage {
         defenderId,
         areaStolen,
         routeId,
+        stolenGeometry: stolenGeometry ? JSON.stringify(stolenGeometry) : null,
       })
       .returning();
     
@@ -3946,8 +4332,9 @@ export class WorkerStorage {
     if (increments.treasures != null && increments.treasures > 0) {
       setParts.push(`treasures_collected = treasures_collected + ${increments.treasures}`);
     }
-    if (increments.areaStolen != null && increments.areaStolen > 0) {
-      setParts.push(`area_stolen = area_stolen + ${increments.areaStolen}`);
+    if (increments.areaStolen != null && Number.isFinite(increments.areaStolen) && increments.areaStolen !== 0) {
+      // Negative when a steal is undone (the victim had run with the attacker)
+      setParts.push(`area_stolen = MAX(0, area_stolen + ${increments.areaStolen})`);
     }
     if (increments.ranTogether != null && increments.ranTogether > 0) {
       setParts.push(`ran_together_count = ran_together_count + ${increments.ranTogether}`);
@@ -4175,14 +4562,17 @@ export class WorkerStorage {
   }
 
   /** Batch insert conquest metrics in a single query (saves N subrequests → 1) */
-  async recordConquestMetricsBatch(metrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string }>): Promise<void> {
+  async recordConquestMetricsBatch(metrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string; stolenGeometry?: any }>): Promise<void> {
     if (metrics.length === 0) return;
+    await this.ensureSchemaUpgrades();
     const values = metrics.map(m => {
       const id = crypto.randomUUID();
       const rid = m.routeId ? `'${m.routeId.replace(/'/g, "''")}'` : 'NULL';
-      return `('${id}', '${m.attackerId.replace(/'/g, "''")}', '${m.defenderId.replace(/'/g, "''")}', ${m.areaStolen}, ${rid}, datetime('now'))`;
+      // The stolen shape is kept so the steal can be undone if the victim turns out to have run with the attacker
+      const geom = m.stolenGeometry ? `'${JSON.stringify(m.stolenGeometry).replace(/'/g, "''")}'` : 'NULL';
+      return `('${id}', '${m.attackerId.replace(/'/g, "''")}', '${m.defenderId.replace(/'/g, "''")}', ${m.areaStolen}, ${rid}, ${geom}, datetime('now'))`;
     }).join(',');
-    await this.db.run(sql.raw(`INSERT INTO conquest_metrics (id, attacker_id, defender_id, area_stolen, route_id, created_at) VALUES ${values}`));
+    await this.db.run(sql.raw(`INSERT INTO conquest_metrics (id, attacker_id, defender_id, area_stolen, route_id, stolen_geometry, created_at) VALUES ${values}`));
   }
 
   /** Batch insert feed events in a single query (saves N subrequests → 1) */
@@ -4229,6 +4619,8 @@ export class WorkerStorage {
     const routeCount = await this.db.select({ count: sql<number>`count(*)` }).from(routes);
     const terrCount = await this.db.select({ count: sql<number>`count(*)` }).from(territories);
     await this.db.run(sql`DELETE FROM territories`);
+    try { await this.db.run(sql`DELETE FROM route_streams`); } catch (_) {}
+    try { await this.db.run(sql`DELETE FROM pending_steal_notifications`); } catch (_) {}
     await this.db.run(sql`DELETE FROM routes`);
     // Reset users' totalArea
     await this.db.run(sql`UPDATE users SET total_area = 0`);

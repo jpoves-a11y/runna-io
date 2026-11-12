@@ -102,18 +102,49 @@ También puedes usar `wrangler dev` (`npm run worker:dev`, con wrangler instalad
 npx wrangler deploy -c wrangler.worker.toml
 ```
 
-`wrangler.worker.toml` declara un único Cron Trigger (`*/5 * * * *`). Cada ejecución corre dentro del propio Worker las tareas que tocan (horario Europe/Madrid, ver `worker/src/cron.ts`):
+`wrangler.worker.toml` declara un único Cron Trigger (`* * * * *`, cada minuto). Cada ejecución corre dentro del propio Worker las tareas que tocan (horario Europe/Madrid, ver `worker/src/cron.ts`):
 
 | Tarea | Cuándo |
 |---|---|
 | season-tick | cada 5 minutos: reset inicial (una vez), empieza y termina las competiciones (cierre el lunes a las 6:00), cortes de la Eliminación, cofres de los días de descanso, caducidad de objetos y, una vez al día, borra los mensajes de chat de más de 90 días |
-| polar-auto-sync | cada 5 minutos |
+| steal-notifications | cada minuto (envía los avisos pendientes de "te han robado" y "tu carrera está lista"; ver más abajo) |
+| polar-auto-sync | cada 3 minutos |
 | inactivity-check | 10:00 y 19:00 |
 | suunto-auto-sync | en el minuto 30 de cada hora |
 
 **Upstash QStash ya no hace falta**: borra las programaciones antiguas. Los endpoints `/api/tasks/*` siguen aceptando `Authorization: Bearer <UPSTASH_CRON_SECRET>` (o una firma de QStash) para lanzarlos a mano.
 
 La cola `territory-processing` (y su DLQ `territory-dlq`) se crea una vez con `npx wrangler queues create ...`.
+
+### Correr juntos
+
+Dos amigos (o dos rivales en una competición) que corren juntos no se roban territorio, suba primero quien suba (`detectRanTogether` en `worker/src/territory.ts`):
+
+- Se comparan los recorridos punto a punto en el mismo momento (hora de cada punto si la app la envía, `pointTimes`; si no, interpolada a lo largo del recorrido). Da igual quién empezó o paró antes de grabar, o si uno siguió grabando la vuelta a casa.
+- **Juntos** (≥ 70 % de cada carrera al lado del otro): no se roban nada. **Parcial** (≥ 800 m juntos): solo se protege el área que encierran las dos carreras.
+- Si el primero en subir ya le robó al otro, al subir el segundo se deshace el robo: se le devuelve el área, se corrige la métrica, el feed y la competición del primero, y ambas rutas quedan marcadas como corridas juntas.
+- Los avisos de "te han robado" no salen al momento: esperan 3 minutos en `pending_steal_notifications` (el cron pasa cada minuto, así que salen entre 3 y 4 minutos después) y se descartan si el robo se deshace. Mientras la víctima está grabando una carrera en la app (`POST /api/runs/active`), esperan a que la suba (máximo 12 horas).
+- Quien corre también recibe su aviso: cuando un servicio conectado (Strava, Polar, Suunto, Garmin) importa una actividad sola, el aviso "Tu carrera está lista" espera los mismos 3 minutos en `activity_ready_notifications` y sale con el resultado ya asentado (área conquistada, a quién se ha robado, con quién se ha corrido). Si antes de eso la app ya ha enseñado el resultado (`POST /api/routes/:id/result-seen`), no se envía. Una vez por ruta.
+
+Prueba e2e: `scripts/e2e/ran-together-test.mjs`.
+
+### Qué se importa
+
+Solo carreras: **correr y trail running** al aire libre (`isRunningActivityType` en `worker/src/sports.ts`, `isRunningSport` para los FIT de Suunto). Las caminatas, el senderismo, la cinta, las carreras virtuales y el resto de deportes no se importan desde Strava, Polar, Garmin ni Suunto; Apple Health ya solo lee entrenamientos de carrera. Las actividades de otros deportes que quedaran pendientes de versiones anteriores se cierran sin crear ruta.
+
+### Pantalla de la actividad
+
+`GET /api/routes/:routeId/profile` devuelve lo que dibuja la app: perfil de altitud/distancia, gráfica de ritmo, parciales por km (ritmo y desnivel), subidas (desnivel, longitud, pendiente media y máxima, tiempo, VAM) y datos destacados (mejor km, 1.ª vs 2.ª mitad, tiempo en movimiento, pendiente máxima, desnivel por km). Se calcula en `worker/src/profile.ts` a partir del perfil guardado de cada ruta (`route_streams.profile`: distancia, hora y altitud de cada punto):
+
+- App de iOS y Apple Health: envían `pointTimes` y `altitudes` con la carrera.
+- Garmin y Suunto: se guardan al importar (`source_profiles`).
+- Strava (streams) y Polar (GPX): se piden la primera vez que se abre la actividad, también para actividades antiguas, y se guardan.
+
+Prueba e2e: `scripts/e2e/activity-profile-test.mjs`.
+
+### Compartir el recorrido en vídeo
+
+Desde el detalle de una actividad (Compartir → Vídeo del recorrido), el resumen al terminar una carrera y el aviso de actividad importada se abre un editor (`ios/Runna/Features/Run/RouteShare.swift`): formato (historia 9:16, post 4:5, cuadrado), 3D/2D, satélite/mapa, velocidad, color de la ruta, título y qué datos se ven (título, fecha, distancia, tiempo, ritmo, territorio, resumen final, marca Runna.io). La vista previa es exactamente lo que se graba. «Grabar vídeo» reproduce la animación entera a pantalla completa y la graba con ReplayKit (iOS pide permiso para grabar la pantalla de la app), recortada y escalada a 1080 px de ancho en MP4; después se puede ver, compartir o guardar en Fotos.
 
 ### Secretos y variables del Worker
 

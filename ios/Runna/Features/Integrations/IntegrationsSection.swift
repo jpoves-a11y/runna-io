@@ -339,12 +339,18 @@ struct IntegrationsSection: View {
     private func loadingRow(name: String, mark: IntegrationBrandMark.Brand) -> some View {
         HStack(spacing: 12) {
             IntegrationBrandMark(brand: mark, size: Self.markSize)
-                .saturation(0)
+                // Polar's red "O" must always stay red (brand guidelines): only faded
+                .saturation(mark == .polar ? 1 : 0)
                 .opacity(0.45)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                if mark == .polar {
+                    PolarWordmark()
+                        .opacity(0.45)
+                } else {
+                    Text(name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
                 Text("Comprobando conexión")
                     .font(.footnote)
                     .redacted(reason: .placeholder)
@@ -362,8 +368,13 @@ struct IntegrationsSection: View {
             HStack(spacing: 12) {
                 IntegrationBrandMark(brand: mark, size: Self.markSize)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(.body.weight(.semibold))
+                    if mark == .polar {
+                        // The official logo instead of the name
+                        PolarWordmark()
+                    } else {
+                        Text(name)
+                            .font(.body.weight(.semibold))
+                    }
                     statusLine(connected: connected, detail: detail)
                 }
                 Spacer(minLength: 8)
@@ -1120,6 +1131,21 @@ struct ImportedActivitiesView: View {
 /// Third-party service marks for the connected-services rows: the official Garmin Connect tile and
 /// Apple Health icon, and the brand's colour tile with a white glyph for Strava, Polar and Suunto
 /// (they don't publish an icon for third-party apps).
+/// The official Polar logo where the provider's name goes: about as tall as the name's capitals,
+/// with a little room above and below (Polar's clear space).
+struct PolarWordmark: View {
+    var height: CGFloat = 13
+
+    var body: some View {
+        Image("PolarLogo")
+            .resizable()
+            .scaledToFit()
+            .frame(height: height)
+            .padding(.vertical, 3)
+            .accessibilityLabel("Polar")
+    }
+}
+
 struct IntegrationBrandMark: View {
     enum Brand {
         case strava, polar, suunto, garmin, appleHealth
@@ -1130,6 +1156,9 @@ struct IntegrationBrandMark: View {
 
     static let stravaOrange = Color(hex: "#FC4C02")
     static let polarRed = Color(hex: "#D10027")
+    /// The logo is 6.05 times as wide as it is tall and its "O" is as tall as the logo: with that clear
+    /// space on both sides it takes 6.05 / 8.05 of the tile's width.
+    static let polarLogoWidthRatio: CGFloat = 6.05 / 8.05
     static let suuntoBlack = Color(hex: "#16181A")
     static let garminBlue = Color(hex: "#007CC3")
     static let healthPink = Color(hex: "#FF2D55")
@@ -1148,11 +1177,14 @@ struct IntegrationBrandMark: View {
                     .fill(Color.white)
                     .frame(width: size * 0.62, height: size * 0.62)
             case .polar:
-                shape.fill(Self.polarRed)
-                Text("P")
-                    .font(.system(size: size * 0.56, weight: .heavy))
-                    .italic()
-                    .foregroundStyle(Color.white)
+                // Official Polar logo (Polar brand book), never redrawn or cropped: black on a light tile,
+                // white on a dark one, with the clear space Polar asks for (the height of the "O") on every side
+                shape.fill(Color(uiColor: .systemBackground))
+                shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+                Image("PolarLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size * Self.polarLogoWidthRatio)
             case .suunto:
                 shape.fill(Self.suuntoBlack)
                 // Hairline so the dark tile keeps its edge on dark backgrounds

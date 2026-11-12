@@ -1,13 +1,15 @@
 import SwiftUI
 import MapKit
 
-/// An activity: map, stats and, for your own activities, rename and delete.
+/// An activity: map, stats, charts (altitude, pace, splits, climbs) and, for your own activities, rename and delete.
 struct RouteDetailView: View {
     let route: RunRoute
     /// Route colour (the owner's territory colour); defaults to yours.
     let color: String?
     /// Rename/delete are only offered on your own activities.
     let editable: Bool
+    /// The runner, for the flag of the replay and the video (nil: you).
+    let owner: ReplayRunner?
     let onChange: () -> Void
 
     @Environment(SessionStore.self) private var session
@@ -17,11 +19,14 @@ struct RouteDetailView: View {
     @State private var confirmDelete = false
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @State private var showsReplay = false
+    @State private var showsShareEditor = false
 
-    init(route: RunRoute, color: String? = nil, editable: Bool = true, onChange: @escaping () -> Void = {}) {
+    init(route: RunRoute, color: String? = nil, editable: Bool = true, owner: ReplayRunner? = nil, onChange: @escaping () -> Void = {}) {
         self.route = route
         self.color = color
         self.editable = editable
+        self.owner = owner
         self.onChange = onChange
         _name = State(initialValue: route.name)
     }
@@ -38,6 +43,10 @@ struct RouteDetailView: View {
                     titleBlock
                     validationSection
                     statsSection
+                    if route.locations.count >= 2 {
+                        // Altitude profile, pace, km splits, climbs and highlights
+                        ActivityProfileSection(routeId: route.id, accent: lineColor)
+                    }
                     conquestSection
                     companions
                     if editable {
@@ -53,11 +62,40 @@ struct RouteDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                ShareLink(item: shareText) {
-                    Image(systemName: "square.and.arrow.up")
+                if route.locations.count >= 2 {
+                    Menu {
+                        Button {
+                            showsShareEditor = true
+                        } label: {
+                            Label("Vídeo del recorrido", systemImage: "film")
+                        }
+                        ShareLink(item: shareText) {
+                            Label("Solo texto", systemImage: "text.alignleft")
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Compartir actividad")
+                } else {
+                    ShareLink(item: shareText) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Compartir actividad")
                 }
-                .accessibilityLabel("Compartir actividad")
             }
+        }
+        .fullScreenCover(isPresented: $showsShareEditor) {
+            RouteShareEditor(
+                coordinates: route.locations,
+                distance: route.distance,
+                duration: route.duration,
+                title: name,
+                date: route.startDate,
+                area: route.isRejected ? nil : route.globalAreaGained,
+                color: lineColor,
+                runner: owner,
+                activity: ReplayActivity(route: route)
+            )
         }
         .disabled(isWorking)
         .overlay {
@@ -89,6 +127,23 @@ struct RouteDetailView: View {
             RouteDetailMap(locations: route.locations, color: lineColor)
                 .frame(height: 320)
                 .overlay(alignment: .bottom) { HairlineDivider() }
+                .overlay(alignment: .bottomTrailing) {
+                    Button {
+                        showsReplay = true
+                    } label: {
+                        Label("Ver animación", systemImage: "play.fill")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 14)
+                            .frame(height: 36)
+                            .glassSurface(Capsule(), interactive: true)
+                    }
+                    .buttonStyle(.pressable)
+                    .padding(DS.Spacing.m)
+                }
+                .fullScreenCover(isPresented: $showsReplay) {
+                    RouteReplayFullScreen(coordinates: route.locations, color: lineColor, distance: route.distance, duration: route.duration, runner: owner, activity: ReplayActivity(route: route))
+                }
         } else {
             EmptyStateView(
                 systemImage: "location.slash",

@@ -5,6 +5,9 @@ import UIKit
 
 /// The logged-in account, readable outside SwiftUI views (runs saved on the device are tagged with it).
 enum RunOwner {
+    /// Posted by SessionStore when an account logs in or out (the tracker re-reads its recovery file).
+    static let didChangeNotification = Notification.Name("RunOwnerDidChange")
+
     /// Same keychain entry SessionStore writes when a session starts and deletes when it ends.
     static var currentUserId: String? {
         #if DEBUG
@@ -96,12 +99,14 @@ enum PendingRuns {
         let ownerId: String?
         let name: String
         let coordinates: [[Double]]
-        /// Seconds since the start for each coordinate (nil for runs saved by older versions)
-        let pointTimes: [Double]?
         let distance: Double
         let duration: Int
         let startedAt: Date
         let completedAt: Date
+        /// Seconds since startedAt of each coordinate (nil for runs saved by older versions).
+        let pointTimes: [Double]?
+        /// Altitude of each coordinate, nil where unknown (nil for runs saved by older versions).
+        let altitudes: [Double?]?
         /// Days on which the server refused the run (validation error).
         var attempts: Int
         var lastAttemptDay: String?
@@ -113,11 +118,12 @@ enum PendingRuns {
             ownerId = run.ownerId
             name = run.defaultName
             coordinates = run.coordinates.map { [$0.latitude, $0.longitude] }
-            pointTimes = run.pointTimes
             distance = run.distance
             duration = run.duration
             startedAt = run.startedAt
             completedAt = run.completedAt
+            pointTimes = run.pointTimes
+            altitudes = run.altitudes
             attempts = 0
             lastAttemptDay = nil
             lastError = nil
@@ -125,7 +131,7 @@ enum PendingRuns {
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, ownerId, name, coordinates, pointTimes, distance, duration, startedAt, completedAt
+            case id, ownerId, name, coordinates, distance, duration, startedAt, completedAt, pointTimes, altitudes
             case attempts, lastAttemptDay, lastError, rejected
         }
 
@@ -133,12 +139,13 @@ enum PendingRuns {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = try c.decode(String.self, forKey: .name)
             coordinates = try c.decode([[Double]].self, forKey: .coordinates)
-            pointTimes = try c.decodeIfPresent([Double].self, forKey: .pointTimes)
             distance = try c.decode(Double.self, forKey: .distance)
             duration = try c.decode(Int.self, forKey: .duration)
             startedAt = try c.decode(Date.self, forKey: .startedAt)
             completedAt = try c.decode(Date.self, forKey: .completedAt)
             ownerId = try c.decodeIfPresent(String.self, forKey: .ownerId)
+            pointTimes = try c.decodeIfPresent([Double].self, forKey: .pointTimes)
+            altitudes = try c.decodeIfPresent([Double?].self, forKey: .altitudes)
             attempts = try c.decodeIfPresent(Int.self, forKey: .attempts) ?? 0
             lastAttemptDay = try c.decodeIfPresent(String.self, forKey: .lastAttemptDay)
             lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
@@ -202,9 +209,17 @@ enum PendingRuns {
             "completedAt": APIDate.string(entry.completedAt),
             "clientRunId": entry.id,
         ]
-        // The server's anti-cheat checks the speed of each stretch with these
+        // The server's anti-cheat checks the speed of each stretch with these, and compares runs at the
+        // same moment to tell who ran together (tenths of a second)
         if let times = entry.pointTimes, times.count == entry.coordinates.count {
             body["pointTimes"] = times.map { ($0 * 10).rounded() / 10 }
+        }
+        // Altitude profile and climbs of the activity screen (decimetres are enough)
+        if let altitudes = entry.altitudes, altitudes.count == entry.coordinates.count {
+            body["altitudes"] = altitudes.map { altitude -> Any in
+                guard let altitude, altitude.isFinite else { return NSNull() }
+                return (altitude * 10).rounded() / 10
+            }
         }
         return body
     }
@@ -234,7 +249,20 @@ enum PendingRuns {
         return save(entries)
     }
 
-    /// Deletes every queued run and the unfinished run, and forgets the conquest inbox state (called on logout).
+    /// Logout: runs that couldn't be uploaded stay on the device, tagged with their account, and are
+    /// uploaded when it logs in again (another account never uploads them). Runs without an owner
+    /// (saved by older versions) can't be told apart, so they are deleted.
+    static func forgetUnowned() {
+        recentlyUploaded = [:]
+        let entries = all()
+        if entries.contains(where: { $0.ownerId == nil }) {
+            save(entries.filter { $0.ownerId != nil })
+        }
+        ConquestInbox.shared.reset()
+        RunPersistence.forgetUnowned()
+    }
+
+    /// Deletes every queued run and the unfinished run, and forgets the conquest inbox state (account deleted).
     static func forgetAll() {
         recentlyUploaded = [:]
         try? FileManager.default.removeItem(at: fileURL)
@@ -433,5 +461,30 @@ private final class BackgroundTaskToken {
         guard identifier != .invalid else { return }
         UIApplication.shared.endBackgroundTask(identifier)
         identifier = .invalid
+    }
+}
+
+/// Tells the server a run is being recorded, so "te han robado" pushes to this runner wait until it is
+/// uploaded: whoever took the territory may have been running with them. Best-effort (offline is fine:
+/// the pushes are then just sent after the usual delay); the upload of the run clears it on the server.
+@MainActor
+enum ActiveRunReporter {
+    /// Requests go one after another, so "discard the old run, start a new one" reaches the server in that order.
+    private static var chain: Task<Void, Never>?
+
+    static func started(at date: Date) {
+        enqueue { try? await APIClient.shared.send("POST", "/api/runs/active", body: ["startedAt": APIDate.string(date)]) }
+    }
+
+    static func discarded() {
+        enqueue { try? await APIClient.shared.send("DELETE", "/api/runs/active") }
+    }
+
+    private static func enqueue(_ request: @escaping @MainActor () async -> Void) {
+        let previous = chain
+        chain = Task { @MainActor in
+            await previous?.value
+            await request()
+        }
     }
 }

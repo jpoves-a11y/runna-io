@@ -101,6 +101,16 @@ struct MainTabView: View {
             }
         }
         .modifier(PendingPhotosModifier())
+        // Results of activities imported from a watch, shown on entering the app whatever the tab
+        .conquestInbox()
+        #if DEBUG
+        .fullScreenCover(item: Binding(
+            get: { router.weatherDemo.map { WeatherDemoKind(id: $0) } },
+            set: { _ in router.weatherDemo = nil }
+        )) { demo in
+            WeatherDemoView(kind: demo.id)
+        }
+        #endif
         .seasonResultsInbox()
         // My club (and its unread chat messages) on launch and whenever something changes
         .task(id: router.reloadSignal) { await clubModel.load() }

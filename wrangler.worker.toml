@@ -48,7 +48,7 @@ RESEND_FROM = "onboarding@resend.dev"
 # ===== Polar instant sync (webhook) =====
 # 1. curl -X POST -H "Authorization: Bearer $UPSTASH_CRON_SECRET" <worker>/api/admin/polar/webhook/register
 # 2. wrangler secret put POLAR_WEBHOOK_SECRET -c wrangler.worker.toml   # signatureSecretKey from step 1
-# The 5-minute cron poll keeps running as a fallback.
+# The 3-minute cron poll keeps running as a fallback.
 #
 # ===== Garmin (Garmin Connect Developer Program, Activity API push) =====
 # wrangler secret put GARMIN_CLIENT_ID -c wrangler.worker.toml       # consumer key
@@ -58,11 +58,13 @@ RESEND_FROM = "onboarding@resend.dev"
 # for Activity Details, Deregistrations and User Permissions Change. No cron: Garmin pushes every activity.
 #
 # ===== Scheduled tasks =====
-# A single Cloudflare Cron Trigger (every 5 minutes) runs every task in-process, without HTTP
+# A single Cloudflare Cron Trigger (every minute) runs every task in-process, without HTTP
 # (see worker/src/cron.ts, times in Europe/Madrid):
-#   - season-tick: every run (season reset at launch, start/end of club competitions, rest-day
-#     chests, item expiry; see worker/src/season.ts)
-#   - polar-auto-sync: every run (fallback poll; the Polar webhook imports at once)
+#   - season-tick: every 5 minutes (season reset at launch, start/end of club competitions,
+#     Eliminación cuts, rest-day chests, item expiry, chat clean-up; see worker/src/season.ts)
+#   - steal-notifications: every minute ("te han robado" and "tu carrera está lista" pushes, sent
+#     3 minutes after the run arrived, in case a friend who ran along stops their watch a bit later)
+#   - polar-auto-sync: every 3 minutes (fallback poll; the Polar webhook imports at once)
 #   - inactivity-check: 10:00 and 19:00
 #   - suunto-auto-sync: minute 30 of every hour (fallback poll; the Suunto webhook imports at once)
 # Optional var SEASON_ANCHOR_DATE (YYYY-MM-DD, a Friday): first competition day; default 2026-11-13.
@@ -76,7 +78,7 @@ RESEND_FROM = "onboarding@resend.dev"
 # Public pages served by the Worker: /privacy, /terms, /support, /invite/<token>, /open
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["* * * * *"]
 
 # ===== Cloudflare Queue for Async Territory Processing =====
 # The territory queue offloads CPU-heavy work (polygon intersections, stealing,

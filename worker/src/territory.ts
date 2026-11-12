@@ -149,50 +149,254 @@ export function checkRunPlausibility(run: {
   return { ok: true, speedKmh };
 }
 
-/**
- * Check if two activities started at roughly the same time.
- * Only checks START dates with a 15-minute tolerance.
- */
-export function activitiesOverlapInTime(
-  activity1Start: Date | string,
-  activity1End: Date | string,
-  activity2Start: Date | string,
-  activity2End: Date | string,
-  toleranceMs: number = 15 * 60 * 1000
-): boolean {
-  const a1Start = new Date(activity1Start).getTime();
-  const a2Start = new Date(activity2Start).getTime();
-  const startDiff = Math.abs(a1Start - a2Start);
-  return startDiff <= toleranceMs;
+// ─── Ran together ────────────────────────────────────────────────────────────
+
+/** A run as stored in the routes table (coordinates are [lat, lng]). */
+export interface RunTrack {
+  coordinates: Array<[number, number]> | string | null | undefined;
+  startedAt: string | Date | null | undefined;
+  completedAt: string | Date | null | undefined;
+  /** Seconds since startedAt of each point (same length as coordinates), when the source records them. */
+  pointTimes?: number[] | string | null;
 }
 
 /**
- * Check if two geometries overlap by at least a percentage.
+ * - together: they ran (almost) the whole run side by side: they never steal from each other.
+ * - partial: they shared a stretch: only the area both runs enclose is protected.
+ * - none: separate runs.
  */
-export function geometriesOverlapByPercentage(
-  geometry1: any,
-  geometry2: any,
-  minOverlapPercent: number = 0.90
-): boolean {
-  try {
-    const feature1 = geometry1.type === 'Feature' ? geometry1 : turf.feature(geometry1);
-    const feature2 = geometry2.type === 'Feature' ? geometry2 : turf.feature(geometry2);
+export type RanTogetherLevel = 'together' | 'partial' | 'none';
 
-    const intersection = turf.intersect(turf.featureCollection([feature1, feature2]));
-    if (!intersection) return false;
+export interface RanTogetherResult {
+  level: RanTogetherLevel;
+  /** Share of each run's distance covered side by side with the other (0..1). */
+  shareA: number;
+  shareB: number;
+  /** Meters run side by side (the smaller of the two measurements). */
+  sharedMeters: number;
+  /** Both runs had per-point times (otherwise the time of each point is interpolated along the track). */
+  timed: boolean;
+}
 
-    const area1 = turf.area(feature1);
-    const area2 = turf.area(feature2);
-    const intersectionArea = turf.area(intersection);
+export const RAN_TOGETHER = {
+  /** The runs must have been recorded at the same time for at least this long. */
+  minTimeOverlapMs: 5 * 60 * 1000,
+  /** A point of one run is "with" the other if it is this close to the other's track. */
+  matchDistanceM: 50,
+  /** ...at the same moment, give or take this much (real GPS times). */
+  timedToleranceMs: 3 * 60 * 1000,
+  /** ...or this much when a run has no per-point times (Strava/Garmin/Polar polylines): pauses make interpolation drift. */
+  interpolatedToleranceMs: 15 * 60 * 1000,
+  /** Both runs must have at least this share run side by side to be "together". */
+  togetherShare: 0.7,
+  /** Below "together", at least this many meters side by side make it "partial". */
+  partialMinMeters: 800,
+  /** Tracks are downsampled to this many points (CPU budget of the Worker). */
+  maxSamples: 300,
+} as const;
 
-    const smallerArea = Math.min(area1, area2);
-    const overlapPercent = smallerArea > 0 ? intersectionArea / smallerArea : 0;
+const NONE_RESULT: RanTogetherResult = { level: 'none', shareA: 0, shareB: 0, sharedMeters: 0, timed: false };
 
-    return overlapPercent >= minOverlapPercent;
-  } catch (err) {
-    console.error('[TERRITORY] Error calculating geometry overlap:', err);
-    return false;
+/** Route coordinates as stored (JSON string or array), invalid points dropped. */
+export function parseCoordinates(coords: RunTrack['coordinates']): Array<[number, number]> {
+  return parseTrackCoords(coords);
+}
+
+/** routes.ran_together_with (JSON array of user ids, or null) as a list. */
+export function parseUserIds(value: unknown): string[] {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { return []; }
   }
+  return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+}
+
+function toPolygonFeature(geometry: any): any {
+  if (geometry.type === 'Feature') return geometry;
+  return geometry.type === 'MultiPolygon' ? turf.multiPolygon(geometry.coordinates) : turf.polygon(geometry.coordinates);
+}
+
+/** Union of two (multi)polygon geometries, or null if turf fails. */
+export function unionGeometries(a: any, b: any): any | null {
+  try {
+    const union = turf.union(turf.featureCollection([toPolygonFeature(a), toPolygonFeature(b)]));
+    return union ? union.geometry : null;
+  } catch (err) {
+    console.error('[TERRITORY] Union failed:', err);
+    return null;
+  }
+}
+
+/** a minus b: null when nothing is left. Throws if turf fails (callers decide what to do). */
+export function differenceGeometries(a: any, b: any): any | null {
+  const difference = turf.difference(turf.featureCollection([toPolygonFeature(a), toPolygonFeature(b)]));
+  if (!difference || turf.area(difference) <= 0) return null;
+  return difference.geometry;
+}
+
+/** a ∩ b, or null when they don't touch (or turf fails). */
+export function intersectGeometries(a: any, b: any): any | null {
+  try {
+    const intersection = turf.intersect(turf.featureCollection([toPolygonFeature(a), toPolygonFeature(b)]));
+    if (!intersection || turf.area(intersection) <= 0) return null;
+    return intersection.geometry;
+  } catch (err) {
+    console.error('[TERRITORY] Intersection failed:', err);
+    return null;
+  }
+}
+
+function parseTrackCoords(coords: RunTrack['coordinates']): Array<[number, number]> {
+  let parsed: unknown = coords;
+  if (typeof coords === 'string') {
+    try { parsed = JSON.parse(coords); } catch { return []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((p): p is [number, number] =>
+    Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+}
+
+/**
+ * Per-point times sent by the client, or null if they are missing or don't fit the coordinates
+ * (wrong length, not numbers, going backwards).
+ */
+export function parsePointTimes(times: unknown, pointCount: number): number[] | null {
+  let parsed: unknown = times;
+  if (typeof times === 'string') {
+    try { parsed = JSON.parse(times); } catch { return null; }
+  }
+  if (!Array.isArray(parsed) || parsed.length !== pointCount || pointCount < 2) return null;
+  let previous = -Infinity;
+  for (const t of parsed) {
+    if (typeof t !== 'number' || !Number.isFinite(t) || t < -1) return null;
+    if (t < previous - 1) return null; // 1 s slack for clock jitter
+    previous = Math.max(previous, t);
+  }
+  return parsed as number[];
+}
+
+interface TimedPoint { x: number; y: number; t: number }
+
+function toTimedPoints(track: RunTrack, lat0: number, lng0: number): { points: TimedPoint[]; timed: boolean } | null {
+  const coords = parseTrackCoords(track.coordinates);
+  const start = track.startedAt ? new Date(track.startedAt).getTime() : NaN;
+  const end = track.completedAt ? new Date(track.completedAt).getTime() : NaN;
+  if (coords.length < 2 || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+
+  const kx = Math.cos((lat0 * Math.PI) / 180) * 111320;
+  const ky = 110574;
+  const xy = coords.map(([lat, lng]) => ({ x: (lng - lng0) * kx, y: (lat - lat0) * ky }));
+
+  const realTimes = parsePointTimes(track.pointTimes, coords.length);
+  let times: number[];
+  if (realTimes) {
+    times = realTimes.map((s) => start + s * 1000);
+  } else {
+    // Constant pace along the track between start and end
+    const cumulative = [0];
+    for (let i = 1; i < xy.length; i++) {
+      cumulative.push(cumulative[i - 1] + Math.hypot(xy[i].x - xy[i - 1].x, xy[i].y - xy[i - 1].y));
+    }
+    const total = cumulative[cumulative.length - 1];
+    if (total <= 0) return null;
+    times = cumulative.map((d) => start + (d / total) * (end - start));
+  }
+
+  let points: TimedPoint[] = xy.map((p, i) => ({ x: p.x, y: p.y, t: times[i] }));
+  if (points.length > RAN_TOGETHER.maxSamples) {
+    const step = (points.length - 1) / (RAN_TOGETHER.maxSamples - 1);
+    const sampled: TimedPoint[] = [];
+    for (let i = 0; i < RAN_TOGETHER.maxSamples; i++) sampled.push(points[Math.round(i * step)]);
+    points = sampled;
+  }
+  return { points, timed: !!realTimes };
+}
+
+function distanceToSegment(px: number, py: number, a: TimedPoint, b: TimedPoint): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  let u = lengthSq > 0 ? ((px - a.x) * dx + (py - a.y) * dy) / lengthSq : 0;
+  u = Math.max(0, Math.min(1, u));
+  return Math.hypot(px - (a.x + u * dx), py - (a.y + u * dy));
+}
+
+/** Meters of `p` (and its total length) that were run near `q` at about the same time. */
+function sharedAlong(p: TimedPoint[], q: TimedPoint[], toleranceMs: number): { shared: number; total: number } {
+  let shared = 0;
+  let total = 0;
+  for (let i = 0; i + 1 < p.length; i++) {
+    const a = p[i];
+    const b = p[i + 1];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length === 0) continue;
+    total += length;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const mt = (a.t + b.t) / 2;
+    const from = mt - toleranceMs;
+    const to = mt + toleranceMs;
+    // First segment of q that ends after `from` (q's times only go forward)
+    let lo = 0;
+    let hi = q.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (q[mid + 1] && q[mid + 1].t < from) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let j = lo; j + 1 < q.length && q[j].t <= to; j++) {
+      if (distanceToSegment(mx, my, q[j], q[j + 1]) <= RAN_TOGETHER.matchDistanceM) {
+        shared += length;
+        break;
+      }
+    }
+  }
+  return { shared, total };
+}
+
+/**
+ * Tells whether two runs were run together, by comparing the tracks point by point at the same
+ * moment, so it doesn't matter who started or stopped recording first, who kept recording on the
+ * way home, or whether the route is a loop or an out-and-back. Symmetric: detectRanTogether(a, b)
+ * and detectRanTogether(b, a) give the same level.
+ */
+export function detectRanTogether(a: RunTrack, b: RunTrack): RanTogetherResult {
+  const startA = a.startedAt ? new Date(a.startedAt).getTime() : NaN;
+  const endA = a.completedAt ? new Date(a.completedAt).getTime() : NaN;
+  const startB = b.startedAt ? new Date(b.startedAt).getTime() : NaN;
+  const endB = b.completedAt ? new Date(b.completedAt).getTime() : NaN;
+  if (![startA, endA, startB, endB].every(Number.isFinite)) return NONE_RESULT;
+  // Cheap check first: they must have been recording at the same time
+  if (Math.min(endA, endB) - Math.max(startA, startB) < RAN_TOGETHER.minTimeOverlapMs) return NONE_RESULT;
+
+  const coordsA = parseTrackCoords(a.coordinates);
+  if (coordsA.length < 2) return NONE_RESULT;
+  const [lat0, lng0] = coordsA[0];
+  const trackA = toTimedPoints(a, lat0, lng0);
+  const trackB = toTimedPoints(b, lat0, lng0);
+  if (!trackA || !trackB) return NONE_RESULT;
+
+  const timed = trackA.timed && trackB.timed;
+  const tolerance = timed ? RAN_TOGETHER.timedToleranceMs : RAN_TOGETHER.interpolatedToleranceMs;
+  const alongA = sharedAlong(trackA.points, trackB.points, tolerance);
+  const alongB = sharedAlong(trackB.points, trackA.points, tolerance);
+  if (alongA.total <= 0 || alongB.total <= 0) return NONE_RESULT;
+
+  const shareA = alongA.shared / alongA.total;
+  const shareB = alongB.shared / alongB.total;
+  const sharedMeters = Math.min(alongA.shared, alongB.shared);
+  let level: RanTogetherLevel = 'none';
+  if (Math.min(shareA, shareB) >= RAN_TOGETHER.togetherShare) level = 'together';
+  else if (sharedMeters >= RAN_TOGETHER.partialMinMeters) level = 'partial';
+  return { level, shareA, shareB, sharedMeters, timed };
+}
+
+/**
+ * Area protected between two runners who shared part of a run: what both runs enclose.
+ * Null when the polygons don't intersect.
+ */
+export function sharedRunArea(geometryA: any, geometryB: any): any | null {
+  return intersectGeometries(geometryA, geometryB);
 }
 
 /**
@@ -292,4 +496,51 @@ export function formatAreaNotification(sqMeters: number): string {
   const sign = sqMeters < 0 ? '-' : '';
   if (km2 >= 0.01) return `${sign}${km2.toFixed(2)} km²`;
   return `${sign}${Math.round(abs)} m²`;
+}
+
+// Simple co-run heuristic still used by the run pipeline (Expedición, "En equipo", competition steals)
+/**
+ * Check if two activities started at roughly the same time.
+ * Only checks START dates with a 15-minute tolerance.
+ */
+export function activitiesOverlapInTime(
+  activity1Start: Date | string,
+  activity1End: Date | string,
+  activity2Start: Date | string,
+  activity2End: Date | string,
+  toleranceMs: number = 15 * 60 * 1000
+): boolean {
+  const a1Start = new Date(activity1Start).getTime();
+  const a2Start = new Date(activity2Start).getTime();
+  const startDiff = Math.abs(a1Start - a2Start);
+  return startDiff <= toleranceMs;
+}
+
+/**
+ * Check if two geometries overlap by at least a percentage.
+ */
+export function geometriesOverlapByPercentage(
+  geometry1: any,
+  geometry2: any,
+  minOverlapPercent: number = 0.90
+): boolean {
+  try {
+    const feature1 = geometry1.type === 'Feature' ? geometry1 : turf.feature(geometry1);
+    const feature2 = geometry2.type === 'Feature' ? geometry2 : turf.feature(geometry2);
+
+    const intersection = turf.intersect(turf.featureCollection([feature1, feature2]));
+    if (!intersection) return false;
+
+    const area1 = turf.area(feature1);
+    const area2 = turf.area(feature2);
+    const intersectionArea = turf.area(intersection);
+
+    const smallerArea = Math.min(area1, area2);
+    const overlapPercent = smallerArea > 0 ? intersectionArea / smallerArea : 0;
+
+    return overlapPercent >= minOverlapPercent;
+  } catch (err) {
+    console.error('[TERRITORY] Error calculating geometry overlap:', err);
+    return false;
+  }
 }

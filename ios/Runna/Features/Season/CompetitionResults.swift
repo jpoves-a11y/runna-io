@@ -81,7 +81,7 @@ private struct SeasonResultsInboxModifier: ViewModifier {
     private var presented: CompetitionResultSummary? {
         guard session.state == .loggedIn, !tracker.isPresented else { return nil }
         guard onboardingDone || OnboardingView.isDisabledForTests else { return nil }
-        if router.selectedTab == .map && ConquestInbox.shared.current != nil { return nil }
+        if ConquestInbox.shared.current != nil { return nil }
         return inbox.current
     }
 

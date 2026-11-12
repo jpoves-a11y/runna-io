@@ -109,7 +109,8 @@ export async function notifyTerritoryLoss(
     const payload = {
       title: '🚨 ¡Te han robado territorio!',
       body: message,
-      tag: 'territory-loss',
+      // One thread per attacker: Notification Center keeps each one
+      tag: `territory-loss-${conquerorUserId}`,
       data: {
         url: '/',
         type: 'territory_loss',
@@ -460,4 +461,115 @@ export async function notifyComment(
   } catch (error) {
     console.error('Error sending comment notification:', error);
   }
+}
+
+// ===== "Tu carrera está lista": the runner's own push for an activity imported from a watch =====
+
+/**
+ * How long a new run is given to settle before anyone is told about it: a friend who ran with the
+ * user may stop their watch a little later, and then steals between the two are undone. After this
+ * long the victims get their "te han robado" push and the runner their "tu carrera está lista".
+ */
+export const RUN_SETTLE_DELAY_MS = 3 * 60 * 1000;
+
+/** Closed rows are kept this long, so an activity imported again doesn't notify again. */
+const ACTIVITY_READY_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+
+export type ActivityImportSource = 'strava' | 'polar' | 'suunto' | 'garmin';
+
+/**
+ * Queues the runner's push for an activity that a connected service imported on its own (webhook
+ * or poll). It is sent RUN_SETTLE_DELAY_MS later with the settled result, unless the user has
+ * already seen the result in the app by then.
+ */
+export async function queueActivityReadyPush(
+  storage: WorkerStorage,
+  userId: string,
+  routeId: string,
+  source: ActivityImportSource
+): Promise<void> {
+  try {
+    await storage.scheduleActivityReadyNotification(userId, routeId, source, RUN_SETTLE_DELAY_MS);
+  } catch (error) {
+    console.warn(`[ACTIVITY READY] Could not queue the push for route ${routeId}:`, error);
+  }
+}
+
+/** "1,2 km²" / "850 m²" list of what the push says about a run's result. */
+function activityReadyBody(route: { name?: string | null; distance?: number | null }, event: { newArea?: number | null; metadata?: string | null } | undefined): string {
+  const parts: string[] = [];
+  const name = (route.name || '').trim();
+  if (name) parts.push(name);
+  parts.push(`${((route.distance || 0) / 1000).toFixed(1)} km`);
+  let metadata: any = {};
+  try { metadata = event?.metadata ? JSON.parse(event.metadata) : {}; } catch (_) { metadata = {}; }
+  const newArea = Number(event?.newArea) || 0;
+  const victims: Array<{ userName?: string; stolenArea?: number }> = Array.isArray(metadata?.victims)
+    ? metadata.victims.filter((v: any) => (Number(v?.stolenArea) || 0) >= 1)
+    : [];
+  const coRunners: Array<{ name?: string }> = Array.isArray(metadata?.ranTogetherWith) ? metadata.ranTogetherWith : [];
+  let result = '';
+  if (newArea >= 1) {
+    result = `Has conquistado ${formatAreaNotification(newArea)}`;
+    if (victims.length === 1) {
+      result += ` y le has robado ${formatAreaNotification(Number(victims[0].stolenArea) || 0)} a ${victims[0].userName || 'un rival'}`;
+    } else if (victims.length > 1) {
+      result += ` y has robado a ${victims.length} rivales`;
+    }
+  } else if (victims.length > 0) {
+    result = victims.length === 1
+      ? `Le has robado ${formatAreaNotification(Number(victims[0].stolenArea) || 0)} a ${victims[0].userName || 'un rival'}`
+      : `Has robado a ${victims.length} rivales`;
+  } else if (coRunners.length > 0) {
+    result = `Has corrido con ${coRunners.map((u) => u?.name).filter(Boolean).slice(0, 2).join(' y ') || 'un amigo'}`;
+  }
+  const head = parts.join(' · ');
+  // A run the anti-cheat rejected conquers nothing
+  if (metadata?.validation?.status === 'rejected') return `${head} — Esta carrera no cuenta. Entra para ver por qué.`;
+  return result ? `${head} — ${result}. Entra para verla.` : `${head} — Entra para ver tu conquista.`;
+}
+
+/**
+ * Sends the queued "tu carrera está lista" pushes that are due. Each row is closed before its push
+ * goes out, so two cron runs can never send the same one.
+ */
+export async function sendDueActivityReadyNotifications(
+  storage: WorkerStorage,
+  env: any,
+  now: Date = new Date()
+): Promise<{ sent: number; skipped: number }> {
+  const due = await storage.getDueActivityReadyNotifications(now.toISOString(), 50);
+  let sent = 0;
+  let skipped = 0;
+  for (const item of due) {
+    try {
+      if (!(await storage.closeActivityReadyNotification(item.routeId))) { skipped++; continue; }
+      const route = await storage.getRouteById(item.routeId);
+      if (!route || route.userId !== item.userId) { skipped++; continue; }
+      const subscriptions = await storage.getPushSubscriptionsByUserId(item.userId);
+      if (subscriptions.length === 0) { skipped++; continue; }
+      const event = await storage.getFeedEventByRouteId(item.routeId);
+      await sendPushToUser(
+        subscriptions.map((sub) => ({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } })),
+        {
+          title: '🏃 Tu carrera está lista',
+          body: activityReadyBody(route, event),
+          tag: `activity-ready-${item.routeId}`,
+          // The app opens the result of data.routeId for these types (one per service since the first version)
+          data: { type: `${item.source}_auto_import`, routeId: item.routeId, url: '/?showPendingAnimation=true' },
+        },
+        env.VAPID_PUBLIC_KEY || '',
+        env.VAPID_PRIVATE_KEY || '',
+        env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+      );
+      sent++;
+    } catch (error) {
+      console.error(`[ACTIVITY READY] Push failed for route ${item.routeId}:`, error);
+    }
+  }
+  if (due.length === 0 && now.getUTCMinutes() === 7) {
+    // Housekeeping once an hour, on a run with nothing else to do
+    try { await storage.deleteOldActivityReadyNotifications(new Date(now.getTime() - ACTIVITY_READY_KEEP_MS).toISOString()); } catch (_) {}
+  }
+  return { sent, skipped };
 }

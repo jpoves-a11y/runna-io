@@ -32,8 +32,6 @@ final class RunTracker {
 
     private(set) var phase: Phase = .idle
     private(set) var coordinates: [CLLocationCoordinate2D] = []
-    /// Seconds since `startDate` of each point in `coordinates` (the server's anti-cheat checks the speed of each stretch).
-    private(set) var pointTimes: [Double] = []
     private(set) var distance: CLLocationDistance = 0
     private(set) var currentLocation: CLLocation?
     private(set) var gpsAccuracy: CLLocationAccuracy?
@@ -65,6 +63,12 @@ final class RunTracker {
 
     var isLocationDenied: Bool { authorizationStatus == .denied || authorizationStatus == .restricted }
 
+    /// Seconds since startDate of each point in `coordinates` (lets the server tell who ran together).
+    private var pointTimes: [TimeInterval] = []
+    /// False when the times can't be trusted to match the points (a run recovered from an older version).
+    private var pointTimesValid = true
+    /// Altitude of each point in `coordinates` (nil when the fix had none): altitude profile and climbs.
+    private var altitudes: [Double?] = []
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
     private var lastAcceptedAt: Date?
@@ -81,6 +85,7 @@ final class RunTracker {
     @ObservationIgnored private var treasureRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
     @ObservationIgnored private var forgetObserver: NSObjectProtocol?
+    @ObservationIgnored private var ownerObserver: NSObjectProtocol?
     /// Lock screen / Dynamic Island tracker of the run.
     private let liveActivity = RunLiveActivity()
 
@@ -115,6 +120,14 @@ final class RunTracker {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.hasRecoverableRun = false
+            }
+        }
+        // Logout keeps the unfinished run (tagged with its account): show it again only to that account
+        ownerObserver = NotificationCenter.default.addObserver(
+            forName: RunOwner.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshRecoverableRun()
             }
         }
     }
@@ -192,6 +205,8 @@ final class RunTracker {
         }
         coordinates = []
         pointTimes = []
+        pointTimesValid = true
+        altitudes = []
         distance = 0
         pausedTotal = 0
         pausedAt = nil
@@ -213,6 +228,7 @@ final class RunTracker {
         persist()
         if let startDate {
             liveActivity.start(startedAt: startDate, state: liveActivityState())
+            ActiveRunReporter.started(at: startDate)
         }
     }
 
@@ -251,9 +267,18 @@ final class RunTracker {
             guard pair.count >= 2 else { return nil }
             return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
         }
-        // Timestamps only if they match the points (files from older versions have none)
-        let savedTimes: [Double] = saved.pointTimes ?? []
-        pointTimes = savedTimes.count == coordinates.count ? savedTimes : []
+        if let savedTimes = saved.pointTimes, savedTimes.count == coordinates.count {
+            pointTimes = savedTimes
+            pointTimesValid = true
+        } else {
+            pointTimes = []
+            pointTimesValid = false
+        }
+        if let savedAltitudes = saved.altitudes, savedAltitudes.count == coordinates.count {
+            altitudes = savedAltitudes
+        } else {
+            altitudes = Array(repeating: nil, count: coordinates.count)
+        }
         distance = saved.distance
         startDate = saved.startDate
         pausedTotal = saved.pausedTotal
@@ -274,6 +299,7 @@ final class RunTracker {
         persist()
         if let startDate {
             liveActivity.start(startedAt: startDate, state: liveActivityState())
+            ActiveRunReporter.started(at: startDate)
         }
         isPresented = true
     }
@@ -281,6 +307,7 @@ final class RunTracker {
     func discardRecoveredRun() {
         RunPersistence.clear()
         hasRecoverableRun = false
+        ActiveRunReporter.discarded()
     }
 
     /// Number of GPS points recorded so far.
@@ -299,12 +326,13 @@ final class RunTracker {
             id: runId,
             ownerId: ownerId ?? RunOwner.currentUserId,
             coordinates: points,
-            pointTimes: pointTimes.count == points.count ? pointTimes : nil,
             distance: distance,
             duration: movingTime,
             startedAt: startDate ?? end,
             completedAt: end,
-            treasures: collectedTreasures
+            treasures: collectedTreasures,
+            pointTimes: pointTimesValid && pointTimes.count == points.count ? pointTimes : nil,
+            altitudes: altitudes.count == points.count ? altitudes : nil
         )
         liveActivity.end(finalState: liveActivityState(at: end, finished: true), discarded: false)
         let queued = PendingRuns.add(PendingRuns.Entry(run: run))
@@ -317,6 +345,7 @@ final class RunTracker {
     func cancel() {
         liveActivity.end(finalState: nil, discarded: true)
         reset(clearSavedRun: true)
+        ActiveRunReporter.discarded()
     }
 
     private func reset(clearSavedRun: Bool) {
@@ -330,6 +359,8 @@ final class RunTracker {
         phase = .idle
         coordinates = []
         pointTimes = []
+        pointTimesValid = true
+        altitudes = []
         distance = 0
         startDate = nil
         pausedAt = nil
@@ -396,13 +427,11 @@ final class RunTracker {
         }
 
         coordinates.append(location.coordinate)
-        if pointTimes.count == coordinates.count - 1 {
-            let seconds: Double = startDate.map { location.timestamp.timeIntervalSince($0) } ?? 0
-            pointTimes.append(max(pointTimes.last ?? 0, seconds))
-        } else {
-            // Out of step (e.g. a recovered run without timestamps): stop sending them for this run
-            pointTimes = []
+        if let startDate {
+            // Never backwards: the server drops out-of-order points
+            pointTimes.append(max(pointTimes.last ?? 0, location.timestamp.timeIntervalSince(startDate)))
         }
+        altitudes.append(location.verticalAccuracy > 0 && location.verticalAccuracy <= 50 ? location.altitude : nil)
         lastAcceptedAt = location.timestamp
         if coordinates.count % 10 == 0 {
             persist()
@@ -496,7 +525,8 @@ final class RunTracker {
             id: runId,
             ownerId: ownerId,
             collectedTreasureIds: Array(collectedTreasureIds),
-            pointTimes: pointTimes.count == coordinates.count ? pointTimes : nil
+            pointTimes: pointTimesValid && pointTimes.count == coordinates.count ? pointTimes : nil,
+            altitudes: altitudes.count == coordinates.count ? altitudes : nil
         ))
     }
 }
@@ -508,13 +538,15 @@ struct FinishedRun {
     /// Account that recorded the run.
     let ownerId: String?
     let coordinates: [CLLocationCoordinate2D]
-    /// Seconds since the start for each coordinate (nil when unknown)
-    let pointTimes: [Double]?
     let distance: CLLocationDistance
     let duration: Int
     let startedAt: Date
     let completedAt: Date
     let treasures: [Treasure]
+    /// Seconds since startedAt of each coordinate (nil when unknown).
+    let pointTimes: [Double]?
+    /// Altitude of each coordinate, nil where the fix had none (nil when unknown).
+    let altitudes: [Double?]?
 
     var defaultName: String { "Carrera del \(Format.day(startedAt))" }
 }
@@ -548,8 +580,10 @@ struct SavedRun: Codable {
     let id: String?
     let ownerId: String?
     let collectedTreasureIds: [String]?
-    /// Seconds since the start of each point (optional: older files don't have it)
+    /// Seconds since startDate of each coordinate (nil in files written by older versions).
     let pointTimes: [Double]?
+    /// Altitude of each coordinate (nil in files written by older versions).
+    let altitudes: [Double?]?
 }
 
 enum RunPersistence {
@@ -588,7 +622,14 @@ enum RunPersistence {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    /// Forgets the unfinished run (called on logout).
+    /// Forgets the unfinished run if it has no owner (written by an older version): after a logout,
+    /// another account must never get it. A run with an owner is kept for that account.
+    static func forgetUnowned() {
+        guard let saved = load(), saved.ownerId == nil else { return }
+        forgetAll()
+    }
+
+    /// Forgets the unfinished run (account deleted).
     static func forgetAll() {
         clear()
         NotificationCenter.default.post(name: didForgetNotification, object: nil)

@@ -150,6 +150,10 @@ jobs:
           shoot season/results 8-results
           shoot season/results/awards 8b-results-awards
           shoot season/results/rewards 8c-results-rewards
+          # The replay's weather on its own (drawn map; no Mapbox or WeatherKit in CI)
+          shoot weather/rain 9-weather-rain
+          shoot weather/snow 10-weather-snow
+          shoot weather/fog 11-weather-fog
           if ! xcrun simctl spawn "$DEVICE" launchctl list | grep -q "$BUNDLE_ID"; then
             echo "App crashed while showing the screens"
             exit 1
