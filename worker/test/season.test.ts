@@ -12,8 +12,10 @@ import {
   chestsPerDay,
   seededRandom,
   randomPointAround,
+  lateEntryOpen,
 } from '../src/season';
-import { ITEMS, CHALLENGES, CHALLENGES_PER_REST, DUEL_PER_RUNNER_CAP_M2, TARGET_AREA_PER_PARTICIPANT_M2, pickRewardItem, pickRarity } from '../../shared/game';
+import { cycleAt } from '../src/cycles';
+import { ITEMS, CHALLENGES, CHALLENGES_PER_REST, DUEL_PER_RUNNER_CAP_M2, TARGET_AREA_PER_PARTICIPANT_M2, MODE_INFO, pickRewardItem, pickRarity } from '../../shared/game';
 import { haversineMeters } from '../src/antiCheat';
 
 test('teams are balanced by strength (snake draft) and have equal sizes', () => {
@@ -161,5 +163,23 @@ test('chest spots stay between the min and max distance from the city centre', (
     const p = randomPointAround(41.65, -0.88, 300, 3000, random);
     const d = haversineMeters([41.65, -0.88], [p.lat, p.lng]);
     assert.ok(d >= 290 && d <= 3010, `${d}`);
+  }
+});
+
+test('late entry: team against team never, individual and cooperative modes always', () => {
+  const competition = (mode: string, config: any = {}) => ({
+    id: 'c', cycleNumber: 0, clubId: 'k', mode, status: 'active' as const, config, opponentClubId: null, matchId: null,
+    score: 0, result: null, createdAt: '', finishedAt: null,
+  });
+  const info = cycleAt(Date.parse('2026-11-14T10:00:00Z'));
+  const day1 = Date.parse('2026-11-13T10:00:00Z');
+  const day9 = Date.parse('2026-11-21T10:00:00Z');
+  for (const mode of ['teams', 'duel']) {
+    assert.equal(MODE_INFO[mode as keyof typeof MODE_INFO].lateEntry, 'none');
+    assert.equal(lateEntryOpen(competition(mode), info, day1), false, mode);
+  }
+  for (const mode of ['ffa', 'target']) {
+    assert.equal(lateEntryOpen(competition(mode), info, day1), true, mode);
+    assert.equal(lateEntryOpen(competition(mode), info, day9), true, mode);
   }
 });

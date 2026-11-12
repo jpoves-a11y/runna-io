@@ -1815,6 +1815,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: 'Coordenadas no válidas' }, 400);
       }
 
+      // A run can't start in the future (a wrong clock, or a run dated into another competition)
+      const startsAt = Date.parse(String(routeData.startedAt ?? ''));
+      if (Number.isFinite(startsAt) && startsAt > Date.now() + 15 * 60 * 1000) {
+        return c.json({ error: 'La fecha de la carrera está en el futuro. Revisa la hora de tu móvil.' }, 400);
+      }
+
       // Runs from before the new season belong to the old game (they were reset)
       if (isBeforeSeason(routeData.startedAt)) {
         return c.json({ error: 'before_season', message: 'Esta carrera es anterior a la nueva temporada de Runna, así que no cuenta.' }, 409);
@@ -1979,6 +1985,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Suunto: keep the workout as skipped so the webhook / hourly poll doesn't import it again
       await storage.markSuuntoActivityDeletedByRouteId(routeId);
       await storage.markGarminActivityDeletedByRouteId(routeId);
+
+      // Its record in a competition (windows of Eliminación, awards) goes too
+      try { await new GameStorage(db).removeCompetitionRunsOfRoute(routeId); } catch (e) { console.error('[DELETE ROUTE] competition runs:', e); }
 
       // Delete the route itself (no cascade on territories now)
       await storage.deleteRouteById(routeId);
@@ -2924,6 +2933,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
         validation: meta.validation ?? null,
         globalArea: meta.globalArea ?? null,
         competition: meta.competition ?? null,
+        // This run brought an inactive member into their club's competition / why it didn't count there
+        joinedCompetition: meta.joinedCompetition === true,
+        competitionNote: meta.competitionNote ?? null,
         challengesCompleted: meta.challengesCompleted ?? [],
         streak: meta.streak ?? null,
         territoryError: meta.territoryError === true,

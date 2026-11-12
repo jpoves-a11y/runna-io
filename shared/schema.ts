@@ -611,8 +611,24 @@ export const competitionParticipants = sqliteTable("competition_participants", {
   distance: real("distance").notNull().default(0),
   finalRank: integer("final_rank"),
   joinedAt: text("joined_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  areaLost: real("area_lost").notNull().default(0), // stolen from this participant by others
+  resultSeenAt: text("result_seen_at"), // end-of-competition summary seen
 }, (table) => ({
   pk: primaryKey({ columns: [table.competitionId, table.userId] }),
+}));
+
+// Runs that counted in a competition (windows of Eliminación, awards, summaries)
+export const competitionRuns = sqliteTable("competition_runs", {
+  competitionId: text("competition_id").notNull(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
+  routeId: text("route_id").notNull(),
+  startedAt: text("started_at").notNull(),
+  areaGained: real("area_gained").notNull().default(0), // new + stolen competition area of the run
+  areaStolen: real("area_stolen").notNull().default(0),
+  distance: real("distance").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.competitionId, table.routeId] }),
 }));
 
 export const clubMatches = sqliteTable("club_matches", {

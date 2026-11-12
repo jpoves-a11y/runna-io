@@ -101,7 +101,7 @@ final class AppRouter {
         case "club_invite", "club_request", "club_request_accepted", "club_member_joined":
             clubSection = .club
             selectedTab = .club
-        case "season_competition_started", "season_competition_finished", "rally", "challenge_completed":
+        case "season_competition_started", "season_competition_finished", "season_inactive", "rally", "challenge_completed":
             clubSection = .club
             selectedTab = .club
         case "reaction", "comment", "feed_comment", "feed_reply", "feed_mention", "friend_activity",

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cycleAt, cycleBounds, wallClock, modeForCycle, localDate, inLateJoinWindow, restWindow, monthPeriod } from '../src/cycles';
+import { cycleAt, cycleBounds, wallClock, modeForCycle, localDate, inLateJoinWindow, restWindow, monthPeriod, competitionCycleForRun, arrivedAfterClose, isClosing } from '../src/cycles';
 import { SEASON_ANCHOR_DATE, MODE_ROTATION } from '../../shared/game';
 
 const at = (iso: string) => Date.parse(iso);
@@ -75,4 +75,38 @@ test('late joins are allowed during the first 48 hours of a competition only', (
 test('month periods use Madrid time', () => {
   assert.equal(monthPeriod(at('2026-11-30T23:30:00Z')), '2026-12'); // already December 1st in Madrid
   assert.equal(monthPeriod(at('2026-11-30T22:30:00Z')), '2026-11');
+});
+
+test('the competition closes on Monday at 06:00 Madrid: late runs that started before the end still count', () => {
+  const bounds = cycleBounds(0);
+  // Ends on Monday 00:00 Madrid (23:00 UTC on Sunday), closes 6 hours later
+  assert.equal(new Date(bounds.competitionEnd).toISOString(), '2026-11-22T23:00:00.000Z');
+  assert.equal(new Date(bounds.closeAt).toISOString(), '2026-11-23T05:00:00.000Z');
+  assert.equal(cycleAt(at('2026-11-12T23:00:00Z')).competitionClosesAt, '2026-11-23T05:00:00.000Z');
+  const sundayNight = '2026-11-22T22:30:00Z'; // Sunday 23:30 Madrid
+  // Synced at 03:00 Madrid: counts for cycle 0
+  assert.equal(competitionCycleForRun(sundayNight, at('2026-11-23T02:00:00Z'))?.number, 0);
+  assert.equal(arrivedAfterClose(sundayNight, at('2026-11-23T02:00:00Z')), false);
+  // Synced at 07:00 Madrid: too late, global only
+  assert.equal(competitionCycleForRun(sundayNight, at('2026-11-23T06:00:00Z')), null);
+  assert.equal(arrivedAfterClose(sundayNight, at('2026-11-23T06:00:00Z')), true);
+  // A run on Monday at 01:00 Madrid started after the end: never counts for the competition
+  assert.equal(competitionCycleForRun('2026-11-23T00:00:00Z', at('2026-11-23T00:30:00Z')), null);
+  assert.equal(arrivedAfterClose('2026-11-23T00:00:00Z', at('2026-11-23T07:00:00Z')), false);
+  // Preseason runs never count
+  assert.equal(competitionCycleForRun('2026-11-10T10:00:00Z', at('2026-11-10T11:00:00Z')), null);
+  // "Closing" only between the end and the close
+  assert.equal(isClosing(cycleAt(at('2026-11-23T01:00:00Z')), at('2026-11-23T01:00:00Z')), true);
+  assert.equal(isClosing(cycleAt(at('2026-11-23T05:00:00Z')), at('2026-11-23T05:00:00Z')), false);
+  assert.equal(isClosing(cycleAt(at('2026-11-21T12:00:00Z')), at('2026-11-21T12:00:00Z')), false);
+});
+
+test('the close stays at 06:00 local on the Monday after a daylight saving change', () => {
+  // Cycle 10 ends on Sunday 4 April 2027 local, after the change of 28 March (UTC+2)
+  for (let n = 0; n < 60; n++) {
+    const bounds = cycleBounds(n);
+    const clock = wallClock(bounds.closeAt);
+    assert.equal(clock.hour, 6, `cycle ${n}`);
+    assert.equal(clock.minute, 0);
+  }
 });

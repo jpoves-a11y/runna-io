@@ -19,6 +19,8 @@ struct ConquestCard: View {
                 conqueredHero
                 if let competition = result.competition {
                     competitionCard(competition)
+                } else if let note = competitionNoteText {
+                    competitionNote(note)
                 }
                 if !result.challengesCompleted.isEmpty {
                     challengesCard
@@ -70,7 +72,7 @@ struct ConquestCard: View {
     private func competitionCard(_ competition: ConquestResult.CompetitionPart) -> some View {
         let parts = Format.areaParts(competition.newArea)
         return VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            Text("Competición de tu club")
+            Text(result.joinedCompetition ? "¡Ya compites! Competición de tu club" : "Competición de tu club")
                 .statLabelStyle()
             HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.l) {
                 StatValue(value: "+\(parts.value)", unit: parts.unit, font: Font.stat(30, weight: .semibold))
@@ -85,6 +87,30 @@ struct ConquestCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
         .accessibilityElement(children: .combine)
+    }
+
+    /// Why this run didn't count for my club's competition (it still counts for the global map).
+    private var competitionNoteText: String? {
+        switch result.competitionNote {
+        case "after_close": return "Llegó después del cierre de la competición (el lunes a las 6:00): solo cuenta para el mapa global."
+        case "closed_entry": return "La competición de tu club es por equipos y ya había empezado: entrarás en la próxima. Esta carrera cuenta para el mapa global."
+        case "next_cycle": return "Entraste en el club después de las primeras 48 horas: compites desde la próxima competición."
+        default: return nil
+        }
+    }
+
+    private func competitionNote(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: DS.Spacing.m) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .card()
     }
 
     private var challengesCard: some View {

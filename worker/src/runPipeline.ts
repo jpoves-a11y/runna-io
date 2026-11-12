@@ -19,8 +19,8 @@ import {
 } from './gameStorage';
 import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
-import { cycleAt, cycleBounds, isRestLike, localDate, localMidnight, addDays, monthPeriod, type CycleInfo } from './cycles';
-import { applyRunToChallenges, collectChestsAlongRun } from './season';
+import { cycleAt, cycleBounds, isRestLike, localDate, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
+import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, type CompetitionEntry } from './season';
 import { routeToEnclosedPolygon, activitiesOverlapInTime, geometriesOverlapByPercentage, type ConquestVictimInfo } from './territory';
 import { ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, ITEMS } from '../../shared/game';
 
@@ -46,6 +46,13 @@ export interface RunPipelineResult {
   chests: Array<{ treasureId: string; treasureName: string; powerType: string; rarity: string; zone: string | null }>;
   challengesCompleted: Array<{ type: string; rewardItem: string }>;
   ranTogetherWith: string[];
+  /** This run made an inactive member enter their club's running competition */
+  joinedCompetition?: boolean;
+  /**
+   * Why a run of a club member didn't count for the competition: it arrived after the close
+   * (Monday 06:00), the mode doesn't let anyone in any more, or they joined the club too late.
+   */
+  competitionNote?: 'after_close' | 'closed_entry' | 'next_cycle' | null;
 }
 
 function parseCoordinates(value: unknown): Array<[number, number]> {
@@ -264,8 +271,21 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
   if (review.length > 0) analysis = withReasons(analysis, review);
 
   // ── 4. Competition mode ──
+  // A run counts for the competition it STARTED in, until that competition closes (Monday 06:00:
+  // the end plus COMPETITION_GRACE_HOURS, so watches that sync late still count)
   const info = cycleAt(now);
-  const context = await competitionContextFor(game, userId, route.startedAt, info, now);
+  const runCycle = competitionCycleForRun(route.startedAt, now);
+  let entry: CompetitionEntry = 'none';
+  if (runCycle) entry = await ensureParticipantOnRun(game, userId, runCycle, Date.parse(route.startedAt));
+  const context = runCycle ? await competitionContextFor(game, userId, route.startedAt, runCycle, now) : null;
+  if (context && entry === 'joined') result.joinedCompetition = true;
+  if (!context) {
+    if (arrivedAfterClose(route.startedAt, now)) {
+      if (await game.getMembership(userId)) result.competitionNote = 'after_close';
+    } else if (entry === 'closed_entry' || entry === 'next_cycle') {
+      result.competitionNote = entry;
+    }
+  }
   if (context) {
     let conquest: Awaited<ReturnType<typeof processTerritoryConquest>> | null = null;
     if (runGeometry) {
@@ -283,6 +303,19 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       addBonus: conquest?.timeBombPenalty ? -conquest.timeBombPenalty : 0,
     });
     await game.syncParticipantAreas(context.competition.id);
+    // Area other participants lost to this run, and the run itself (windows, awards, summaries)
+    for (const victim of conquest?.victims ?? []) {
+      if (victim.stolenArea > 0) await game.updateParticipant(context.competition.id, victim.userId, { addAreaLost: victim.stolenArea });
+    }
+    await game.recordCompetitionRun({
+      competitionId: context.competition.id,
+      userId,
+      routeId,
+      startedAt: route.startedAt,
+      areaGained: conquest?.newAreaConquered ?? 0,
+      areaStolen: conquest?.areaStolen ?? 0,
+      distance: analysis.stats.distanceM,
+    });
     if (conquest) {
       result.competition = {
         competitionId: context.competition.id,
@@ -317,6 +350,8 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
 
   // ── 6. Result, feed, notifications ──
   await finish({
+    joinedCompetition: result.joinedCompetition ?? false,
+    competitionNote: result.competitionNote ?? null,
     globalArea: { gained: globalNewArea, bonus, total: globalAfter },
     competition: result.competition
       ? { competitionId: result.competition.competitionId, mode: result.competition.mode, newArea: result.competition.newArea, areaStolen: result.competition.areaStolen, totalArea: result.competition.totalArea }
@@ -416,14 +451,16 @@ export async function rebuildGlobalForUser(storage: WorkerStorage, userId: strin
  */
 export async function rebuildCompetitionForUser(storage: WorkerStorage, userId: string, now = Date.now()): Promise<number> {
   const game = new GameStorage(storage.database);
-  const info = cycleAt(now);
-  const participation = info.phase === 'competition' ? await game.getActiveParticipation(userId) : null;
+  // Rebuilt while the competition is not scored yet: during its 10 days and until its close (Monday
+  // 06:00), or later if the cron is late. A run deleted on Monday at 03:00 must not wipe the area
+  // that is about to be scored.
+  const participation = await game.getActiveParticipation(userId);
   await storage.deleteTerritoriesByUserId(userId);
-  if (!participation || participation.competition.cycleNumber !== info.number) {
+  if (!participation) {
     await storage.updateUserTotalArea(userId, 0);
     return 0;
   }
-  const bounds = cycleBounds(info.number);
+  const bounds = cycleBounds(participation.competition.cycleNumber);
   const from = new Date(Math.max(bounds.competitionStart, Date.parse(participation.participant.joinedAt) - 5 * 60 * 1000)).toISOString();
   const to = new Date(bounds.competitionEnd).toISOString();
   let geometry: any = null;

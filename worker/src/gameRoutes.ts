@@ -14,16 +14,18 @@ import {
   type InventoryRow,
   type PublicUserLite,
 } from './gameStorage';
-import { cycleAt, cycleBounds, isRestLike, monthPeriod, type CycleInfo } from './cycles';
+import { cycleAt, cycleBounds, isRestLike, isClosing, monthPeriod, type CycleInfo } from './cycles';
 import {
   seasonTick,
   joinRunningCompetition,
+  lateEntryOpen,
   ensureChallenges,
   duelScore,
   participantScore,
   targetArea,
   notifyUsers,
   SEASON_RESET_KEY,
+  type CompetitionEntry,
 } from './season';
 import { competitionContextFor, rebuildGlobalForUser, rebuildCompetitionForUser } from './runPipeline';
 import { parseGeometry } from './globalTerritory';
@@ -34,6 +36,7 @@ import {
   CHALLENGES,
   INVENTORY_CAP,
   HEAD_START_BONUS_M2,
+  LATE_JOIN_HOURS,
   CLUB_MAX_MEMBERS,
   CLUB_NAME_MIN,
   CLUB_NAME_MAX,
@@ -84,13 +87,16 @@ function handler(fn: (c: Ctx) => Promise<Response>) {
 
 // ─── Serialization ───────────────────────────────────────────────────────────
 
-function cycleJson(info: CycleInfo) {
-  const next = info.phase === 'competition' ? cycleBounds(info.number + 1) : cycleBounds(info.number + 1);
+function cycleJson(info: CycleInfo, now = Date.now()) {
+  const next = cycleBounds(info.number + 1);
   return {
     number: info.number,
     phase: info.phase,
     competitionStartsAt: info.competitionStartsAt,
     competitionEndsAt: info.competitionEndsAt,
+    // Scored at this time (Monday 06:00): runs that started before the end still count until then
+    competitionClosesAt: info.competitionClosesAt,
+    closing: isClosing(info, now),
     restEndsAt: info.restEndsAt,
     mode: info.mode,
     modeInfo: MODE_INFO[info.mode],
@@ -185,19 +191,20 @@ function randomToken(): string {
 
 // ─── Club helpers ────────────────────────────────────────────────────────────
 
-/** Whether `userId` is taking part in a running competition (leaving/kicking is blocked then). */
-async function inRunningCompetition(game: GameStorage, userId: string, now = Date.now()): Promise<boolean> {
-  const info = cycleAt(now);
-  if (info.phase !== 'competition') return false;
-  const participation = await game.getActiveParticipation(userId);
-  return !!participation && participation.competition.cycleNumber === info.number;
+/**
+ * Whether `userId` takes part in a competition that is not scored yet (leaving/kicking is blocked
+ * then): during its 10 days and until its close on Monday 06:00.
+ */
+async function inRunningCompetition(game: GameStorage, userId: string): Promise<boolean> {
+  return !!(await game.getActiveParticipation(userId));
 }
 
-async function joinClub(storage: WorkerStorage, game: GameStorage, env: any, club: ClubRow, userId: string): Promise<{ ok: true; joinedCompetition: boolean } | { ok: false; status: 409; error: string }> {
+async function joinClub(storage: WorkerStorage, game: GameStorage, env: any, club: ClubRow, userId: string): Promise<{ ok: true; joinedCompetition: boolean; competitionEntry: CompetitionEntry } | { ok: false; status: 409; error: string }> {
   if (await game.getMembership(userId)) return { ok: false, status: 409, error: 'Ya estás en un club. Sal de él antes de unirte a otro.' };
   if (club.memberCount >= CLUB_MAX_MEMBERS) return { ok: false, status: 409, error: `El club está completo (${CLUB_MAX_MEMBERS} miembros).` };
   if (!(await game.addMember(club.id, userId, 'member'))) return { ok: false, status: 409, error: 'Ya estás en un club.' };
-  const joinedCompetition = await joinRunningCompetition(game, club.id, userId);
+  const competitionEntry = await joinRunningCompetition(game, club.id, userId);
+  const joinedCompetition = competitionEntry === 'joined' || competitionEntry === 'participant';
   const admins = (await game.getClubMembers(club.id)).filter((m) => m.role !== 'member' && m.userId !== userId).map((m) => m.userId);
   const user = (await game.getUserLite([userId])).get(userId);
   await notifyUsers(storage, env, admins, {
@@ -206,7 +213,7 @@ async function joinClub(storage: WorkerStorage, game: GameStorage, env: any, clu
     tag: `club-join-${club.id}`,
     data: { type: 'club_member_joined', clubId: club.id },
   });
-  return { ok: true, joinedCompetition };
+  return { ok: true, joinedCompetition, competitionEntry };
 }
 
 async function clubHistory(game: GameStorage, clubId: string, limit = 20) {
@@ -347,14 +354,31 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     let competition: Record<string, unknown> | null = null;
     const participation = await game.getActiveParticipation(userId);
     if (participation) competition = await competitionView(game, participation.competition, userId);
+    // A member who doesn't take part (inactive, or joined too late): their club's competition, to
+    // follow it, and whether/how they can still enter
+    let clubCompetition: Record<string, unknown> | null = null;
+    let competitionEntry: string | null = participation ? 'participant' : null;
+    if (!participation && membership) {
+      const running = (await game.getCompetitionsOfCycle(info.number)).find((comp) => comp.clubId === membership.clubId && comp.status === 'active')
+        ?? null;
+      if (running && info.phase === 'competition') {
+        clubCompetition = await competitionView(game, running, userId);
+        const lateJoinLimit = Date.parse(info.competitionStartsAt) + LATE_JOIN_HOURS * 60 * 60 * 1000;
+        competitionEntry = Date.parse(membership.joinedAt) > lateJoinLimit
+          ? 'next_cycle'
+          : lateEntryOpen(running, info, now) ? 'on_first_run' : 'closed_entry';
+      }
+    }
     const last = (await game.getParticipationHistory(userId, 1))[0];
     const inventory = await game.listInventory(userId, now);
     return c.json({
       serverTime: new Date(now).toISOString(),
-      cycle: cycleJson(info),
+      cycle: cycleJson(info, now),
       club: club ? clubJson(club, { withCode: true }) : null,
       myRole: membership?.role ?? null,
       competition,
+      clubCompetition,
+      competitionEntry,
       lastResult: last ? await competitionView(game, last.competition, userId) : null,
       challenges: membership ? await challengesJson(game, userId, info) : [],
       inventory: {
@@ -385,9 +409,19 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     let fortifications: any[] = [];
     let competitionId: string | null = null;
     let mode: string | null = null;
-    if (participation && info.phase === 'competition' && participation.competition.cycleNumber === info.number) {
-      competitionId = participation.competition.id;
-      mode = participation.competition.mode;
+    // The map of my competition while it is not scored (its 10 days and the close on Monday 06:00);
+    // a member who doesn't take part follows their club's
+    let shown: CompetitionRow | null = participation && participation.competition.cycleNumber === info.number ? participation.competition : null;
+    if (!shown && info.phase === 'competition') {
+      const membership = await game.getMembership(userId);
+      if (membership) {
+        const running = await game.getClubCompetition(membership.clubId, info.number);
+        if (running && running.status === 'active') shown = running;
+      }
+    }
+    if (shown && (info.phase === 'competition' || isClosing(info, now))) {
+      competitionId = shown.id;
+      mode = shown.mode;
       const participants = await game.getParticipants(competitionId);
       const teamOf = new Map(participants.map((p) => [p.userId, p.team]));
       const ids = participants.map((p) => p.userId);
@@ -399,7 +433,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
           geometry: typeof t.geometry === 'string' ? JSON.parse(t.geometry) : t.geometry,
         }));
       try {
-        const own = await storage.getFortificationsByUserId(userId);
+        const own = participation ? await storage.getFortificationsByUserId(userId) : [];
         fortifications = own.map((f) => ({ id: f.id, geometry: JSON.parse(f.geometry), area: f.area }));
       } catch (_) { /* no fortifications table yet */ }
     }
@@ -422,7 +456,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
           lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: Number(t.hidden) === 1, expiresAt: t.expires_at,
         }));
     }
-    return c.json({ cycle: cycleJson(info), competitionId, mode, territories, fortifications, chests });
+    return c.json({ cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, chests, participating: !!participation });
   }));
 
   // ── Inventory ──
@@ -779,8 +813,9 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       city: me?.city ?? null, countryCode: me?.country_code ?? null, countryName: me?.country_name ?? null,
       centerLat: round(me?.home_lat), centerLng: round(me?.home_lng), ownerId: userId,
     });
-    const joinedCompetition = await joinRunningCompetition(game, club.id, userId);
-    return c.json({ club: clubJson(club, { withCode: true }), role: 'owner', joinedCompetition }, 201);
+    const competitionEntry = await joinRunningCompetition(game, club.id, userId);
+    const joinedCompetition = competitionEntry === 'joined' || competitionEntry === 'participant';
+    return c.json({ club: clubJson(club, { withCode: true }), role: 'owner', joinedCompetition, competitionEntry }, 201);
   }));
 
   app.get('/api/clubs/mine', requireAuth, handler(async (c) => {
@@ -918,7 +953,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     }
     const joined = await joinClub(storage, game, c.env, club, userId);
     if (!joined.ok) return fail(c, joined.status, joined.error);
-    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
   }));
 
   app.post('/api/clubs/join-code', requireAuth, handler(async (c) => {
@@ -930,7 +965,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (!club) return fail(c, 404, 'No hay ningún club con ese código.');
     const joined = await joinClub(storage, game, c.env, club, c.get('authUserId'));
     if (!joined.ok) return fail(c, joined.status, joined.error);
-    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
   }));
 
   app.post('/api/clubs/:id/requests/:requestId/:action', requireAuth, handler(async (c) => {
@@ -958,7 +993,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       tag: `club-accepted-${club.id}`,
       data: { type: 'club_request_accepted', clubId: club.id },
     });
-    return c.json({ success: true, joinedCompetition: joined.joinedCompetition });
+    return c.json({ success: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry });
   }));
 
   /** Invite a user (body.userId) or create an invite link (no userId). Any member can invite. */
@@ -1005,7 +1040,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const joined = await joinClub(storage, game, c.env, club, userId);
     if (!joined.ok) return fail(c, joined.status, joined.error);
     await game.setClubRequestStatus(invite.id, 'accepted');
-    return c.json({ success: true, joinedCompetition: joined.joinedCompetition, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return c.json({ success: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
   }));
 
   app.get('/api/clubs/invite-links/:token', requireAuth, handler(async (c) => {
@@ -1025,7 +1060,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (!club) return fail(c, 404, 'El club ya no existe.');
     const joined = await joinClub(storage, game, c.env, club, c.get('authUserId'));
     if (!joined.ok) return fail(c, joined.status, joined.error);
-    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
   }));
 
   app.post('/api/clubs/:id/leave', requireAuth, handler(async (c) => {
@@ -1170,6 +1205,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (input.action === 'revert') {
       const analysis = withReasons({ status: 'accepted', reasons, message: null, segments: [], stats: {} as any }, ['reviewed_reverted']);
       await game.setRouteValidation(routeId, 'rejected', analysis.reasons, 0);
+      await game.removeCompetitionRunsOfRoute(routeId);
       const global = await rebuildGlobalForUser(storage, route.userId);
       const competition = await rebuildCompetitionForUser(storage, route.userId);
       return c.json({ success: true, status: 'rejected', globalArea: global.area, competitionArea: competition });

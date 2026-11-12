@@ -439,8 +439,10 @@ struct ClubJoinResponse: Decodable {
     let joined: Bool
     let requested: Bool
     let joinedCompetition: Bool
+    /// "joined", "participant", "on_first_run", "closed_entry", "next_cycle" or "none"
+    let competitionEntry: String?
 
-    enum CodingKeys: String, CodingKey { case club, joined, requested, joinedCompetition }
+    enum CodingKeys: String, CodingKey { case club, joined, requested, joinedCompetition, competitionEntry }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -448,6 +450,7 @@ struct ClubJoinResponse: Decodable {
         joined = c.bool(.joined) ?? (club != nil)
         requested = c.bool(.requested) ?? false
         joinedCompetition = c.bool(.joinedCompetition) ?? false
+        competitionEntry = c.string(.competitionEntry)
     }
 }
 
@@ -499,6 +502,10 @@ struct SeasonCycle: Decodable, Hashable {
     let phase: String
     let competitionStartsAt: String
     let competitionEndsAt: String
+    /// Scored at this time (Monday 06:00): runs that started before the end still count until then.
+    let competitionClosesAt: String?
+    /// Between the end (Sunday 23:59) and the close: the last runs are still arriving.
+    let closing: Bool
     let restEndsAt: String
     let mode: String
     let modeInfo: ModeInfo?
@@ -506,7 +513,7 @@ struct SeasonCycle: Decodable, Hashable {
     let nextMode: ModeInfo?
 
     enum CodingKeys: String, CodingKey {
-        case number, phase, competitionStartsAt, competitionEndsAt, restEndsAt, mode, modeInfo, nextCompetitionStartsAt, nextMode
+        case number, phase, competitionStartsAt, competitionEndsAt, competitionClosesAt, closing, restEndsAt, mode, modeInfo, nextCompetitionStartsAt, nextMode
     }
 
     init(from decoder: Decoder) throws {
@@ -515,6 +522,8 @@ struct SeasonCycle: Decodable, Hashable {
         phase = c.string(.phase) ?? "rest"
         competitionStartsAt = c.string(.competitionStartsAt) ?? ""
         competitionEndsAt = c.string(.competitionEndsAt) ?? ""
+        competitionClosesAt = c.string(.competitionClosesAt)
+        closing = c.bool(.closing) ?? false
         restEndsAt = c.string(.restEndsAt) ?? ""
         mode = c.string(.mode) ?? "ffa"
         modeInfo = try? c.decodeIfPresent(ModeInfo.self, forKey: .modeInfo)
@@ -793,11 +802,16 @@ struct SeasonCurrent: Decodable {
     let club: ClubSummary?
     let myRole: String?
     let competition: ClubCompetition?
+    /// My club's competition when I don't take part in it (inactive, or joined too late), to follow it.
+    let clubCompetition: ClubCompetition?
+    /// "participant", "on_first_run" (enter with my first run), "closed_entry" (team against team, or
+    /// after the first cut: next time), "next_cycle" (joined the club after the first 48 h)
+    let competitionEntry: String?
     let lastResult: ClubCompetition?
     let challenges: [SeasonChallenge]
     let inventory: InventorySummary?
 
-    enum CodingKeys: String, CodingKey { case cycle, club, myRole, competition, lastResult, challenges, inventory }
+    enum CodingKeys: String, CodingKey { case cycle, club, myRole, competition, clubCompetition, competitionEntry, lastResult, challenges, inventory }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -805,6 +819,8 @@ struct SeasonCurrent: Decodable {
         club = try? c.decodeIfPresent(ClubSummary.self, forKey: .club)
         myRole = c.string(.myRole)
         competition = try? c.decodeIfPresent(ClubCompetition.self, forKey: .competition)
+        clubCompetition = try? c.decodeIfPresent(ClubCompetition.self, forKey: .clubCompetition)
+        competitionEntry = c.string(.competitionEntry)
         lastResult = try? c.decodeIfPresent(ClubCompetition.self, forKey: .lastResult)
         challenges = (try? c.decodeIfPresent([SeasonChallenge].self, forKey: .challenges)) ?? []
         inventory = try? c.decodeIfPresent(InventorySummary.self, forKey: .inventory)

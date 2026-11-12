@@ -198,11 +198,12 @@ struct ClubHomeView: View {
                         if userId != session.userId { profileUserId = userId }
                     }
                 } else if cycle.isCompetition {
-                    Text("Tu club no compite en esta ronda: entrasteis después de las primeras 48 horas. La próxima competición empieza \(Format.relative(APIDate.parse(cycle.restEndsAt))).")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .card()
+                    entryNotice(cycle)
+                    if let clubCompetition = season.clubCompetition {
+                        CompetitionCard(competition: clubCompetition, userId: session.userId, maxRows: 10) { userId in
+                            if userId != session.userId { profileUserId = userId }
+                        }
+                    }
                 }
                 if cycle.isRest {
                     restInfo(cycle)
@@ -215,6 +216,40 @@ struct ClubHomeView: View {
                 }
             }
         }
+    }
+
+    /// Why I don't take part in my club's competition, and whether I can still enter.
+    private func entryNotice(_ cycle: SeasonCycle) -> some View {
+        let next = Format.relative(APIDate.parse(cycle.restEndsAt))
+        let (symbol, title, text): (String, String, String) = {
+            switch season.competitionEntry {
+            case "on_first_run":
+                return ("figure.run", "No participas todavía", "No corriste en los 14 días antes de empezar. Sal a correr: con tu primera carrera entras en la competición.")
+            case "closed_entry":
+                return ("lock", "Esta competición ya está cerrada", "Los equipos se cierran al empezar y no corriste en los 14 días anteriores. Vuelve a correr y entrarás en la próxima competición (\(next)).")
+            case "next_cycle":
+                return ("calendar", "Compites desde la próxima", "Entraste en el club después de las primeras 48 horas. La próxima competición empieza \(next).")
+            default:
+                return ("calendar", "Tu club no compite en esta ronda", "La próxima competición empieza \(next).")
+            }
+        }()
+        return HStack(alignment: .top, spacing: DS.Spacing.m) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(Font.cardTitle)
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .card()
     }
 
     private func restInfo(_ cycle: SeasonCycle) -> some View {
@@ -619,9 +654,19 @@ struct ClubDiscoverView: View {
 }
 
 func joinMessage(_ response: ClubJoinResponse) -> String {
-    if response.requested { return "Solicitud enviada. Te avisaremos cuando un administrador la acepte." }
-    if response.joinedCompetition { return "¡Ya estás en el club! Entras en la competición que está en marcha." }
-    return "¡Ya estás en el club! Competirás con ellos desde la próxima competición."
+    if response.requested { return "Solicitud enviada. Te avisaremos cuando la acepten." }
+    return "¡Ya estás en el club! " + competitionEntryMessage(response.competitionEntry, joined: response.joinedCompetition)
+}
+
+/// What joining a club means for its running competition.
+func competitionEntryMessage(_ entry: String?, joined: Bool) -> String {
+    switch entry {
+    case "joined", "participant": return "Entras en la competición que está en marcha."
+    case "on_first_run": return "Con tu primera carrera entras en la competición que está en marcha."
+    case "closed_entry": return "Esta competición es por equipos y ya ha empezado: competirás desde la próxima."
+    case "next_cycle", "none": return "Competirás con ellos desde la próxima competición."
+    default: return joined ? "Entras en la competición que está en marcha." : "Competirás con ellos desde la próxima competición."
+    }
 }
 
 struct ClubRow: View {
@@ -895,9 +940,7 @@ struct ClubFormView: View {
                 } else {
                     let response = try await model.create(name: trimmedName, slogan: trimmedSlogan, crest: crest, visibility: visibility)
                     Haptics.success()
-                    resultMessage = response.joinedCompetition
-                        ? "Club creado. Ya compites con él en la competición en marcha: invita a tus amigos."
-                        : "Club creado. Invita a tus amigos: competiréis juntos desde la próxima competición."
+                    resultMessage = "Club creado. " + competitionEntryMessage(response.competitionEntry, joined: response.joinedCompetition) + " Invita a tus amigos."
                 }
             } catch {
                 errorMessage = error.localizedDescription

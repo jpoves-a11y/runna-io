@@ -21,6 +21,9 @@ final class SeasonStore {
 
     var cycle: SeasonCycle? { current?.cycle }
     var competition: ClubCompetition? { current?.competition }
+    /// My club's competition when I don't take part in it, and how I can still enter.
+    var clubCompetition: ClubCompetition? { current?.clubCompetition }
+    var competitionEntry: String? { current?.competitionEntry }
     var club: ClubSummary? { current?.club }
     var challenges: [SeasonChallenge] { current?.challenges ?? [] }
     var availableItemCount: Int { current?.inventory?.available ?? 0 }
@@ -80,7 +83,9 @@ final class SeasonStore {
 
     /// "Termina en 3 días" / "Empieza en 5 h" for the current phase.
     var phaseCountdown: String? {
-        guard let cycle, let end = cycle.phaseEndsAt else { return nil }
+        guard let cycle else { return nil }
+        if cycle.closing { return "Cierre a las 6:00 · últimas carreras" }
+        guard let end = cycle.phaseEndsAt else { return nil }
         let seconds = end.timeIntervalSinceNow
         guard seconds > 0 else { return nil }
         let text = Self.remaining(seconds)

@@ -191,6 +191,7 @@ check('modes: ffa for 3-member clubs, "target" for a club of one', modeOf[club1.
 await admin('/api/admin/season/runs-from', { at: new Date(Date.now() - 4 * DAY).toISOString() });
 const season0 = (await call('GET', '/api/season/current', { token: ana.token })).data;
 await db.execute({ sql: 'UPDATE competition_participants SET joined_at = ?', args: [season0.cycle.competitionStartsAt] });
+await db.execute({ sql: 'UPDATE club_members SET joined_at = ?', args: [season0.cycle.competitionStartsAt] });
 const t0 = Math.max(Date.parse(season0.cycle.competitionStartsAt) + 3600_000, Date.now() - 30 * 3600_000);
 
 const old = await run(ana, 'Antes de la temporada', loop(C[0], C[1], 300), Date.now() - 6 * DAY);
@@ -229,6 +230,28 @@ check('rejected runs are not in the feed; accepted ones are', ![car, walk, dup].
 const car2 = await run(cris, 'Otra vez en coche', loop(C[0] - 0.02, C[1], 900), t0 + 12 * 3600_000, { speedKmh: 45 });
 const car2Meta = JSON.parse((await one('select metadata from feed_events where route_id = ?', [car2.route.id]))?.metadata || '{}');
 check('a run that does not count sets no records', car2.result.validation?.status === 'rejected' && !car2Meta.records, car2Meta.records);
+
+// Entering the competition by running
+check('runs dated in the future are refused', (await call('POST', '/api/routes', { token: gala.token, body: {
+  name: 'Mañana', coordinates: loop(C[0], C[1], 300), distance: 1900, duration: 620,
+  startedAt: new Date(Date.now() + 2 * DAY).toISOString(), completedAt: new Date(Date.now() + 2 * DAY + 620_000).toISOString(),
+} })).status === 400);
+// The season is younger than 14 days (just reset): every member took part from the start
+const club3Comp = await one('select id, mode from club_competitions where cycle_number = 0 and club_id = ?', [club3.id]);
+check('a young season: members without runs take part too', !!(await one('select 1 as ok from competition_participants where competition_id = ? and user_id = ?', [club3Comp.id, gala.id])));
+// Gala as an inactive member left out at the start: in a team-against-team mode she can't enter...
+await db.execute({ sql: 'delete from competition_participants where competition_id = ? and user_id = ?', args: [club3Comp.id, gala.id] });
+await db.execute({ sql: "update club_competitions set mode = 'teams' where id = ?", args: [club3Comp.id] });
+const closedEntry = await run(gala, 'Gala vuelve', loop(C[0] + 0.05, C[1], 300), t0 + 8 * 3600_000);
+check('team against team: a returning member does not enter', closedEntry.result.competition === null && closedEntry.result.competitionNote === 'closed_entry'
+  && !(await one('select 1 as ok from competition_participants where competition_id = ? and user_id = ?', [club3Comp.id, gala.id])), closedEntry.result);
+// ... in an individual or cooperative mode, her first run brings her in, and it counts
+await db.execute({ sql: 'update club_competitions set mode = ? where id = ?', args: [club3Comp.mode, club3Comp.id] });
+const entered = await run(gala, 'Gala entra', loop(C[0] + 0.06, C[1], 300), t0 + 8.5 * 3600_000);
+const galaPart = await one('select joined_at, runs from competition_participants where competition_id = ? and user_id = ?', [club3Comp.id, gala.id]);
+check('individual or cooperative: the first run brings an inactive member in, and counts', entered.result.joinedCompetition === true && entered.result.competition?.newArea > 0 && Number(galaPart?.runs) === 1, { result: entered.result, galaPart });
+const galaRuns = await all('select route_id from competition_runs where competition_id = ? and user_id = ?', [club3Comp.id, gala.id]);
+check('runs that count are recorded per competition', galaRuns.length === 1 && galaRuns[0].route_id === entered.route.id, galaRuns);
 
 // Powers
 async function grant(user, itemId, status = 'available') {
@@ -306,9 +329,15 @@ check('standings include bonus and stolen area', current.competition.standings.l
 // A "next run" power activated at the end of the competition must not carry over
 const lastMinute = await grant(cris, 'magnet');
 await call('POST', `/api/inventory/${lastMinute}/activate`, { token: cris.token, body: {} });
+check('the close is 6 hours after the end (Monday 06:00)', Date.parse(season0.cycle.competitionClosesAt) - Date.parse(season0.cycle.competitionEndsAt) === 6 * 3600_000, season0.cycle);
+// Monday 00:10: the competition is over but not scored yet (late runs still arriving)
 const endTime = Date.parse(season0.cycle.competitionEndsAt) + 10 * 60_000;
-const finish = await admin('/api/admin/season/tick', { time: new Date(endTime).toISOString() });
-check('end tick finishes cycle 0', finish.data.finished_0 === 3 && finish.data.phase === 'rest', finish.data);
+const closingTick = await admin('/api/admin/season/tick', { time: new Date(endTime).toISOString() });
+check('at the end it is not scored yet: the close waits until 06:00', closingTick.data.finished_0 === undefined && closingTick.data.phase === 'rest', closingTick.data);
+check('nobody leaves while the last runs arrive', (await call('POST', `/api/clubs/${club1.id}/leave`, { token: ben.token, body: {} })).status === 409);
+const closeTime = Date.parse(season0.cycle.competitionClosesAt) + 10 * 60_000;
+const finish = await admin('/api/admin/season/tick', { time: new Date(closeTime).toISOString() });
+check('the close tick finishes cycle 0', finish.data.finished_0 === 3 && finish.data.phase === 'rest', finish.data);
 const results = await all('select club_id, mode, status, result from club_competitions where cycle_number = 0');
 const r1 = JSON.parse(results.find((r) => r.club_id === club1.id).result);
 check('ffa result: ranking, winner, rewards', r1.standings.length === 3 && !!r1.winnerUserId && Object.keys(r1.rewards).length >= 2, { winner: r1.winnerUserId, rewards: r1.rewards });
@@ -331,10 +360,21 @@ check('leaving is allowed in the rest days', leaveNow.status === 200, leaveNow);
 
 // ───────────── Cycle 1: club duels ─────────────
 
-// gala's club gets 2 more members with recent runs (needs 3 active runners for a duel)
+// gala's club gets another member, without runs (a duel needs 3 active runners)
 await call('POST', `/api/clubs/${club3.id}/join`, { token: hugo.token, body: {} });
+// From now on the season is older than 14 days: inactivity applies. Iris joins club 1 without runs.
+await admin('/api/admin/season/runs-from', { at: new Date(Date.now() - 40 * DAY).toISOString() });
+const iris = await register('iris', 'Iris', '#66C2A5');
+check('a new member joins in the rest days', (await call('POST', `/api/clubs/${club1.id}/join`, { token: iris.token, body: {} })).data.joined === true);
 const c1Start = Date.parse(season0.cycle.restEndsAt) + 10 * 60_000;
 const duelTick = await admin('/api/admin/season/tick', { time: new Date(c1Start).toISOString() });
+const playersOfCycle1 = async (clubId) => (await all(`select p.user_id from competition_participants p join club_competitions c on c.id = p.competition_id
+  where c.cycle_number = 1 and c.club_id = ?`, [clubId])).map((r) => r.user_id);
+const duelLineup = await playersOfCycle1(club1.id);
+check('inactive members are left out: the duel line-up has the 3 who ran, not Iris', duelLineup.length === 3 && !duelLineup.includes(iris.id), duelLineup);
+const club3Players = await playersOfCycle1(club3.id);
+check('inactive members are left out of "Objetivo común" too (Hugo); Gala ran', club3Players.includes(gala.id) && !club3Players.includes(hugo.id), club3Players);
+check('the start reports the members left out', duelTick.data.started?.inactive === 2, duelTick.data.started);
 const duels = await all('select * from club_matches where cycle_number = 1');
 check('cycle 1 is a duel cycle: two similar clubs are paired', duelTick.data.started?.duels === 1 && duels.length === 1 && [duels[0].club_a, duels[0].club_b].sort().join() === [club1.id, club2.id].sort().join(), { tick: duelTick.data, duels });
 const bye = await one('select mode from club_competitions where cycle_number = 1 and club_id = ?', [club3.id]);
@@ -346,7 +386,7 @@ for (const [uid, area] of [[ana.id, 1_000_000], [ben.id, 800_000], [cris.id, 300
 for (const [uid, area] of [[dani.id, 4_000_000], [eva.id, 100_000], [fede.id, 0]]) await db.execute({ sql: 'update competition_participants set area = ?, runs = 1 where competition_id = ? and user_id = ?', args: [area, comp2.id, uid] });
 // Make the stored map areas match (finishing syncs participants from users.total_area)
 for (const [uid, area] of [[ana.id, 1_000_000], [ben.id, 800_000], [cris.id, 300_000], [dani.id, 4_000_000], [eva.id, 100_000], [fede.id, 0]]) await db.execute({ sql: 'update users set total_area = ? where id = ?', args: [area, uid] });
-const c1End = Date.parse(season0.cycle.restEndsAt) + 10 * DAY + 10 * 60_000;
+const c1End = Date.parse(season0.cycle.restEndsAt) + 10 * DAY + 6 * 3600_000 + 10 * 60_000; // close of cycle 1
 await admin('/api/admin/season/tick', { time: new Date(c1End).toISOString() });
 const match = await one('select * from club_matches where cycle_number = 1');
 check('duel scored with N best runners and a cap per runner', Math.round(Number(match.score_a) + Number(match.score_b)) === 2_100_000 + 3_100_000, match);
@@ -376,7 +416,8 @@ const challenges = (await call('GET', '/api/challenges', { token: ana.token })).
 check('3 challenges per rest phase', challenges.length === 3, challenges.map((c) => c.type));
 // A 10.5 km run at 5:20/km yesterday at 07:30 Madrid, passing by a chest
 const chest = visible[0];
-const yesterday = madrid.format(new Date(Date.now() - DAY));
+// 3 days ago, so it never overlaps the competition runs of the last 30 hours (that would make it a duplicate)
+const yesterday = madrid.format(new Date(Date.now() - 3 * DAY));
 const morning = Date.parse(`${yesterday}T06:30:00Z`);
 const big = loop(chest.lat, chest.lng + 0.022, 1670, 400); // radius 1.67 km: passes ~0 m from the chest
 const before = (await call('GET', '/api/inventory', { token: ana.token })).data.items.length;

@@ -5,6 +5,7 @@ import {
   SEASON_ANCHOR_DATE,
   CYCLE_DAYS,
   COMPETITION_DAYS,
+  COMPETITION_GRACE_HOURS,
   LATE_JOIN_HOURS,
   MODE_ROTATION,
   type CompetitionMode,
@@ -19,6 +20,8 @@ export interface CycleInfo {
   /** ISO instants */
   competitionStartsAt: string;
   competitionEndsAt: string;
+  /** When the competition is scored: its end plus COMPETITION_GRACE_HOURS (late imports still count) */
+  competitionClosesAt: string;
   restEndsAt: string;
   /** Mode of this cycle's competition (fallbacks per club are decided by the engine) */
   mode: CompetitionMode;
@@ -112,11 +115,13 @@ export function modeForCycle(number: number): CompetitionMode {
 }
 
 /** Bounds of cycle `number` (ms since epoch). */
-export function cycleBounds(number: number, anchor = anchorDate): { competitionStart: number; competitionEnd: number; restEnd: number } {
+export function cycleBounds(number: number, anchor = anchorDate): { competitionStart: number; competitionEnd: number; closeAt: number; restEnd: number } {
   const start = addDays(anchor, number * CYCLE_DAYS);
+  const competitionEnd = localMidnight(addDays(start, COMPETITION_DAYS));
   return {
     competitionStart: localMidnight(start),
-    competitionEnd: localMidnight(addDays(start, COMPETITION_DAYS)),
+    competitionEnd,
+    closeAt: competitionEnd + COMPETITION_GRACE_HOURS * 60 * 60 * 1000,
     restEnd: localMidnight(addDays(start, CYCLE_DAYS)),
   };
 }
@@ -128,6 +133,7 @@ export function cycleInfo(number: number, phase: CyclePhase, anchor = anchorDate
     phase,
     competitionStartsAt: new Date(bounds.competitionStart).toISOString(),
     competitionEndsAt: new Date(bounds.competitionEnd).toISOString(),
+    competitionClosesAt: new Date(bounds.closeAt).toISOString(),
     restEndsAt: new Date(bounds.restEnd).toISOString(),
     mode: modeForCycle(number),
   };
@@ -157,6 +163,36 @@ export function isRestLike(phase: CyclePhase): boolean {
 export function restWindow(info: CycleInfo): { start: number; end: number } {
   if (info.phase === 'preseason') return { start: 0, end: Date.parse(info.restEndsAt) };
   return { start: Date.parse(info.competitionEndsAt), end: Date.parse(info.restEndsAt) };
+}
+
+/**
+ * The cycle whose competition a run counts for: the run must START during a competition, and that
+ * competition must not be scored yet (`now` before its close, the end plus the grace hours).
+ * null when the run started outside a competition or arrived after the close.
+ */
+export function competitionCycleForRun(runStartedAt: string | number, now: number, anchor = anchorDate): CycleInfo | null {
+  const start = typeof runStartedAt === 'number' ? runStartedAt : Date.parse(runStartedAt);
+  // A run dated in the future (wrong clock) never counts for a competition
+  if (!Number.isFinite(start) || start > now + 15 * 60 * 1000) return null;
+  const info = cycleAt(start, anchor);
+  if (info.phase !== 'competition') return null;
+  const bounds = cycleBounds(info.number, anchor);
+  if (start < bounds.competitionStart || start >= bounds.competitionEnd || now >= bounds.closeAt) return null;
+  return info;
+}
+
+/** The run started during a competition that was already scored when it arrived. */
+export function arrivedAfterClose(runStartedAt: string | number, now: number, anchor = anchorDate): boolean {
+  const start = typeof runStartedAt === 'number' ? runStartedAt : Date.parse(runStartedAt);
+  if (!Number.isFinite(start)) return false;
+  const info = cycleAt(start, anchor);
+  return info.phase === 'competition' && now >= cycleBounds(info.number, anchor).closeAt;
+}
+
+/** Between the end of a competition (Sunday 23:59) and its close (Monday 06:00): last runs arriving. */
+export function isClosing(info: CycleInfo, now: number): boolean {
+  if (info.phase !== 'rest') return false;
+  return now >= Date.parse(info.competitionEndsAt) && now < Date.parse(info.competitionClosesAt);
 }
 
 /** True during the first LATE_JOIN_HOURS of a competition. */

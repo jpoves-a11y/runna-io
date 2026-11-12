@@ -37,6 +37,7 @@ struct SeasonPhaseChip: View {
         if cycle.isCompetition {
             return cycle.modeInfo?.name ?? "Competición"
         }
+        if cycle.closing { return "Fin de la competición" }
         return cycle.phase == "preseason" ? "Pretemporada" : "Descanso"
     }
 }

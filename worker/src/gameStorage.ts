@@ -199,6 +199,21 @@ export async function applyGameSchema(db: Database): Promise<void> {
     PRIMARY KEY (competition_id, user_id)
   )`);
   await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_participants_user ON competition_participants(user_id)`);
+  await tryRun(db, sql`ALTER TABLE competition_participants ADD COLUMN area_lost REAL NOT NULL DEFAULT 0`);
+  await tryRun(db, sql`ALTER TABLE competition_participants ADD COLUMN result_seen_at TEXT`);
+  // One row per run that counted in a competition: windows of Eliminación, awards, summaries
+  await db.run(sql`CREATE TABLE IF NOT EXISTS competition_runs (
+    competition_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    route_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    area_gained REAL NOT NULL DEFAULT 0,
+    area_stolen REAL NOT NULL DEFAULT 0,
+    distance REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (competition_id, route_id)
+  )`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_runs_user ON competition_runs(competition_id, user_id, started_at)`);
   await db.run(sql`CREATE TABLE IF NOT EXISTS club_matches (
     id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     cycle_number INTEGER NOT NULL,
@@ -305,6 +320,10 @@ export interface ParticipantRow {
   distance: number;
   finalRank: number | null;
   joinedAt: string;
+  /** Competition area other participants stole from this one */
+  areaLost: number;
+  /** When the participant saw the end-of-competition summary */
+  resultSeenAt: string | null;
 }
 
 export interface InventoryRow {
@@ -394,6 +413,8 @@ function toParticipant(row: Row): ParticipantRow {
     distance: Number(row.distance ?? 0),
     finalRank: row.final_rank === null || row.final_rank === undefined ? null : Number(row.final_rank),
     joinedAt: row.joined_at,
+    areaLost: Number(row.area_lost ?? 0),
+    resultSeenAt: row.result_seen_at ?? null,
   };
 }
 
@@ -1007,9 +1028,32 @@ export class GameStorage {
     await this.db.run(sql`UPDATE club_competitions SET ${sql.join(sets, sql`, `)} WHERE id = ${id}`);
   }
 
-  async addParticipant(competitionId: string, userId: string, team: number | null = null): Promise<void> {
+  async addParticipant(competitionId: string, userId: string, team: number | null = null, joinedAt: string = nowIso()): Promise<void> {
     await this.db.run(sql`INSERT OR IGNORE INTO competition_participants (competition_id, user_id, team, joined_at)
-      VALUES (${competitionId}, ${userId}, ${team}, ${nowIso()})`);
+      VALUES (${competitionId}, ${userId}, ${team}, ${joinedAt})`);
+  }
+
+  /** Records a run that counted in a competition (idempotent per route). */
+  async recordCompetitionRun(data: { competitionId: string; userId: string; routeId: string; startedAt: string; areaGained: number; areaStolen: number; distance: number }): Promise<void> {
+    await this.db.run(sql`INSERT INTO competition_runs (competition_id, user_id, route_id, started_at, area_gained, area_stolen, distance)
+      VALUES (${data.competitionId}, ${data.userId}, ${data.routeId}, ${data.startedAt}, ${data.areaGained}, ${data.areaStolen}, ${data.distance})
+      ON CONFLICT(competition_id, route_id) DO UPDATE SET area_gained = excluded.area_gained, area_stolen = excluded.area_stolen,
+        distance = excluded.distance, started_at = excluded.started_at`);
+  }
+
+  /** Runs that counted in a competition, optionally only those that started in [fromIso, toIso). */
+  async getCompetitionRuns(competitionId: string, fromIso?: string, toIso?: string): Promise<Array<{ userId: string; routeId: string; startedAt: string; areaGained: number; areaStolen: number; distance: number }>> {
+    const rows = fromIso && toIso
+      ? await this.db.all<Row>(sql`SELECT * FROM competition_runs WHERE competition_id = ${competitionId} AND started_at >= ${fromIso} AND started_at < ${toIso}`)
+      : await this.db.all<Row>(sql`SELECT * FROM competition_runs WHERE competition_id = ${competitionId}`);
+    return rows.map((r) => ({
+      userId: r.user_id, routeId: r.route_id, startedAt: r.started_at,
+      areaGained: Number(r.area_gained ?? 0), areaStolen: Number(r.area_stolen ?? 0), distance: Number(r.distance ?? 0),
+    }));
+  }
+
+  async removeCompetitionRunsOfRoute(routeId: string): Promise<void> {
+    await this.db.run(sql`DELETE FROM competition_runs WHERE route_id = ${routeId}`);
   }
 
   async removeParticipant(competitionId: string, userId: string): Promise<void> {
@@ -1043,8 +1087,10 @@ export class GameStorage {
     return rows.map((row) => ({ participant: toParticipant(row), competition: toCompetition({ ...row, id: row.c_id }) }));
   }
 
-  async updateParticipant(competitionId: string, userId: string, data: Partial<{ team: number | null; area: number; addBonus: number; addAreaStolen: number; addRuns: number; addDistance: number; finalRank: number }>): Promise<void> {
+  async updateParticipant(competitionId: string, userId: string, data: Partial<{ team: number | null; area: number; addBonus: number; addAreaStolen: number; addAreaLost: number; addRuns: number; addDistance: number; finalRank: number; resultSeenAt: string }>): Promise<void> {
     const sets: ReturnType<typeof sql>[] = [];
+    if (data.addAreaLost) sets.push(sql`area_lost = area_lost + ${data.addAreaLost}`);
+    if (data.resultSeenAt !== undefined) sets.push(sql`result_seen_at = ${data.resultSeenAt}`);
     if (data.team !== undefined) sets.push(sql`team = ${data.team}`);
     if (data.area !== undefined) sets.push(sql`area = ${data.area}`);
     if (data.addBonus) sets.push(sql`bonus = bonus + ${data.addBonus}`);

@@ -8,6 +8,7 @@ import {
   ACTIVE_WINDOW_DAYS,
   MIN_ACTIVE_FOR_DUEL,
   ELO_K,
+  LATE_JOIN_HOURS,
   CHALLENGES,
   CHALLENGES_PER_REST,
   ITEMS,
@@ -19,7 +20,7 @@ import {
   type ChallengeType,
 } from '../../shared/game';
 import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
-import { GameStorage, setRunsCountFrom, type CompetitionRow, type ParticipantRow } from './gameStorage';
+import { GameStorage, setRunsCountFrom, runsCountFromMs, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
 import type { WorkerStorage } from './storage';
 
@@ -256,43 +257,84 @@ interface ClubSnapshot {
   name: string;
   rating: number;
   members: string[];
+  /** Ran in the last ACTIVE_WINDOW_DAYS: matchmaking of duels and their N */
   active: Set<string>;
+  /** Take part in the competition: the active members (everyone while the season is young) */
+  players: Set<string>;
+}
+
+/**
+ * The season (the reset that started it) is younger than the activity window: nobody can have 14
+ * days of runs yet, so inactivity doesn't apply and every member takes part.
+ */
+export function isYoungSeason(now: number): boolean {
+  return runsCountFromMs() > now - ACTIVE_WINDOW_MS;
+}
+
+/** Who of `members` takes part in a competition starting at `now`. */
+async function playersOf(game: GameStorage, members: string[], now: number): Promise<{ active: Set<string>; players: Set<string> }> {
+  const active = await game.activeUserIds(members, new Date(now - ACTIVE_WINDOW_MS).toISOString());
+  return { active, players: isYoungSeason(now) ? new Set(members) : active };
 }
 
 async function snapshotClubs(game: GameStorage, now: number): Promise<ClubSnapshot[]> {
   const clubs = await game.getAllClubs();
   const result: ClubSnapshot[] = [];
-  const since = new Date(now - ACTIVE_WINDOW_MS).toISOString();
   for (const club of clubs) {
     const members = await game.getClubMemberIds(club.id);
     if (members.length === 0) continue;
-    result.push({ id: club.id, name: club.name, rating: club.rating, members, active: await game.activeUserIds(members, since) });
+    result.push({ id: club.id, name: club.name, rating: club.rating, members, ...(await playersOf(game, members, now)) });
   }
   return result;
 }
 
-/** Creates the competition of one club (not a duel) with its participants and config. */
+/**
+ * Creates the competition of one club (not a duel). Only ACTIVE members (who ran in the last
+ * ACTIVE_WINDOW_DAYS) take part; the mode and the target are decided with them. The others are told
+ * by notifyInactive and, in modes that allow it, enter with their first run (ensureParticipantOnRun).
+ */
 async function createInternalCompetition(game: GameStorage, info: CycleInfo, club: ClubSnapshot, cycleMode: CompetitionMode, now: number): Promise<CompetitionRow | null> {
-  const mode = modeForClub(cycleMode === 'duel' ? 'duel' : cycleMode, club.members.length, false);
+  const players = club.members.filter((id) => club.players.has(id));
+  const mode = modeForClub(cycleMode === 'duel' ? 'duel' : cycleMode, players.length, false);
   const config: Record<string, unknown> = { cycleMode };
-  if (mode === 'target') config.target = targetArea(club.members.length);
+  if (mode === 'target') config.target = targetArea(players.length);
   let teams: Map<string, 0 | 1> | null = null;
   if (mode === 'teams') {
-    const strength = await game.globalGainByUsers(club.members, new Date(now - 28 * 24 * 3600 * 1000).toISOString(), new Date(now).toISOString());
-    teams = assignTeams(club.members.map((userId) => ({ userId, strength: strength.get(userId) ?? 0 })));
+    const strength = await game.globalGainByUsers(players, new Date(now - 28 * 24 * 3600 * 1000).toISOString(), new Date(now).toISOString());
+    teams = assignTeams(players.map((userId) => ({ userId, strength: strength.get(userId) ?? 0 })));
     config.teamNames = ['Equipo Sol', 'Equipo Luna'];
   }
   const competition = await game.createCompetition({ cycleNumber: info.number, clubId: club.id, mode, config });
   if (!competition) return null;
-  for (const userId of club.members) await game.addParticipant(competition.id, userId, teams ? teams.get(userId) ?? 0 : null);
+  for (const userId of players) await game.addParticipant(competition.id, userId, teams ? teams.get(userId) ?? 0 : null);
   return competition;
+}
+
+/** Push to the members left out for inactivity: whether (and how) they can still enter. */
+async function notifyInactive(storage: WorkerStorage, env: any, club: ClubSnapshot, mode: CompetitionMode, info: CycleInfo): Promise<number> {
+  const inactive = club.members.filter((id) => !club.players.has(id));
+  if (inactive.length === 0) return 0;
+  const modeInfo = MODE_INFO[mode];
+  const entry = modeInfo?.lateEntry ?? 'open';
+  const body = entry === 'none'
+    ? `Esta ronda es ${modeInfo.name} y los equipos ya están cerrados. Vuelve a correr y entrarás en la próxima competición.`
+    : entry === 'until_first_cut'
+      ? `Si corres en las primeras 48 horas, entras en la ${modeInfo.name}. Después ya no se puede entrar.`
+      : 'Con tu primera carrera entras automáticamente.';
+  await notifyUsers(storage, env, inactive, {
+    title: `😴 No participas en la competición de ${club.name}`,
+    body: `No has corrido en los últimos ${ACTIVE_WINDOW_DAYS} días. ${body}`,
+    tag: `season-inactive-${info.number}`,
+    data: { type: 'season_inactive', cycle: info.number, clubId: club.id },
+  });
+  return inactive.length;
 }
 
 /**
  * Starts cycle `info.number`: wipes the competition map, pairs clubs for duels (when the cycle's
  * mode is "duel") and creates one competition per club with all its members as participants.
  */
-export async function startCycle(storage: WorkerStorage, game: GameStorage, env: any, info: CycleInfo, now = Date.now()): Promise<{ competitions: number; duels: number }> {
+export async function startCycle(storage: WorkerStorage, game: GameStorage, env: any, info: CycleInfo, now = Date.now()): Promise<{ competitions: number; duels: number; inactive: number }> {
   // A retried start (after a failure) must not wipe what was conquered since the first attempt
   const cycleRow = await game.getCycle(info.number);
   if (!cycleRow || cycleRow.status !== 'competition') {
@@ -325,7 +367,7 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
         });
         if (competition) {
           competitions++;
-          for (const userId of self.members) await game.addParticipant(competition.id, userId, null);
+          for (const userId of self.members) if (self.players.has(userId)) await game.addParticipant(competition.id, userId, null);
         }
         handled.add(self.id);
       }
@@ -338,15 +380,25 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
     if (await createInternalCompetition(game, info, club, info.mode, now)) competitions++;
   }
 
-  const modeInfo = MODE_INFO[info.mode];
-  await notifyUsers(storage, env, clubs.flatMap((c) => c.members), {
-    title: `${modeInfo.emoji} ¡Empieza la competición!`,
-    body: `Modo de esta ronda: ${modeInfo.name}. El mapa de competición empieza de cero. Tienes 10 días.`,
-    tag: `season-start-${info.number}`,
-    data: { type: 'season_competition_started', cycle: info.number },
-  });
-  console.log(`[SEASON] Cycle ${info.number} started: ${competitions} competitions, ${duels} duels`);
-  return { competitions, duels };
+  // Tell each club's members: the participants that it starts (with their club's actual mode), the
+  // inactive ones that they don't take part and whether they can still enter
+  let inactive = 0;
+  for (const club of clubs) {
+    const competition = await game.getClubCompetition(club.id, info.number);
+    if (!competition) continue;
+    const mode = competition.mode as CompetitionMode;
+    const modeInfo = MODE_INFO[mode] ?? MODE_INFO[info.mode];
+    const players = club.members.filter((id) => club.players.has(id));
+    await notifyUsers(storage, env, players, {
+      title: `${modeInfo.emoji} ¡Empieza la competición!`,
+      body: `Modo de esta ronda: ${modeInfo.name}. El mapa de competición empieza de cero. Tienes 10 días.`,
+      tag: `season-start-${info.number}`,
+      data: { type: 'season_competition_started', cycle: info.number },
+    });
+    inactive += await notifyInactive(storage, env, club, mode, info);
+  }
+  console.log(`[SEASON] Cycle ${info.number} started: ${competitions} competitions, ${duels} duels, ${inactive} inactive members left out`);
+  return { competitions, duels, inactive };
 }
 
 /**
@@ -360,25 +412,39 @@ export async function lateJoinCompetitions(game: GameStorage, info: CycleInfo, n
   for (const club of clubs) {
     const existing = await game.getClubCompetition(club.id, info.number);
     if (!existing) {
-      if (await createInternalCompetition(game, info, club, info.mode === 'duel' ? 'target' : info.mode, now)) created++;
+      if (await createInternalCompetition(game, info, club, lateClubCycleMode(info.mode), now)) created++;
     }
   }
   return created;
 }
 
-/** Adds a member who just joined a club to its running competition, during the late-join window. */
-export async function joinRunningCompetition(game: GameStorage, clubId: string, userId: string, now = Date.now()): Promise<boolean> {
-  const info = cycleAt(now);
-  if (!inLateJoinWindow(info, now)) return false;
-  let competition = await game.getClubCompetition(clubId, info.number);
-  if (!competition) {
-    const club = await game.getClub(clubId);
-    if (!club) return false;
-    const members = await game.getClubMemberIds(clubId);
-    competition = await createInternalCompetition(game, info, { id: club.id, name: club.name, rating: club.rating, members, active: new Set() }, info.mode === 'duel' ? 'target' : info.mode, now);
-    return !!competition;
+/** A club born during the first 48 h of a club-against-club cycle can't be paired any more: "Objetivo común". */
+export function lateClubCycleMode(mode: CompetitionMode): CompetitionMode {
+  return mode === 'duel' ? 'target' : mode;
+}
+
+/** What happened to a member's entry into their club's running competition. */
+export type CompetitionEntry =
+  | 'participant' // already taking part
+  | 'joined' // entered now
+  | 'on_first_run' // can enter, with their first run (inactive)
+  | 'closed_entry' // the mode doesn't let anyone in any more (team against team, or after the first cut)
+  | 'next_cycle' // joined the club after the first 48 h: competes from the next competition
+  | 'none'; // no running competition for their club
+
+/** Whether a competition still lets someone in at `time` (see MODE_INFO.lateEntry). */
+export function lateEntryOpen(competition: CompetitionRow, info: CycleInfo, time: number): boolean {
+  const entry = MODE_INFO[competition.mode as CompetitionMode]?.lateEntry ?? 'open';
+  if (entry === 'none') return false;
+  if (entry === 'until_first_cut') {
+    const firstCut = Date.parse(info.competitionStartsAt) + LATE_JOIN_HOURS * 60 * 60 * 1000;
+    return time < firstCut && !(Array.isArray(competition.config?.cuts) && competition.config.cuts.length > 0);
   }
-  if (competition.status !== 'active') return false;
+  return true;
+}
+
+/** Adds a participant, keeping the mode's rules: team balance, target of "Objetivo común". */
+async function addLateParticipant(game: GameStorage, competition: CompetitionRow, userId: string, joinedAt: string): Promise<void> {
   let team: number | null = null;
   if (competition.mode === 'teams') {
     const participants = await game.getParticipants(competition.id);
@@ -386,12 +452,59 @@ export async function joinRunningCompetition(game: GameStorage, clubId: string, 
     for (const p of participants) if (p.team === 0 || p.team === 1) sizes[p.team]++;
     team = sizes[0] <= sizes[1] ? 0 : 1;
   }
-  await game.addParticipant(competition.id, userId, team);
+  await game.addParticipant(competition.id, userId, team, joinedAt);
   if (competition.mode === 'target') {
     const count = (await game.getParticipants(competition.id)).length;
     await game.updateCompetition(competition.id, { config: { ...competition.config, target: targetArea(count) } });
   }
-  return true;
+}
+
+/**
+ * A member who just joined a club (or created one) during the first 48 h of a competition. Active
+ * members enter at once when the mode allows it; inactive ones enter with their first run.
+ */
+export async function joinRunningCompetition(game: GameStorage, clubId: string, userId: string, now = Date.now()): Promise<CompetitionEntry> {
+  const info = cycleAt(now);
+  if (info.phase !== 'competition') return 'none';
+  if (!inLateJoinWindow(info, now)) return 'next_cycle';
+  const active = (await playersOf(game, [userId], now)).players.has(userId);
+  let competition = await game.getClubCompetition(clubId, info.number);
+  if (!competition) {
+    const club = await game.getClub(clubId);
+    if (!club) return 'none';
+    const members = await game.getClubMemberIds(clubId);
+    competition = await createInternalCompetition(game, info, { id: club.id, name: club.name, rating: club.rating, members, ...(await playersOf(game, members, now)) }, lateClubCycleMode(info.mode), now);
+    if (!competition) return 'none';
+    return active ? 'joined' : 'on_first_run';
+  }
+  if (competition.status !== 'active') return 'none';
+  if ((await game.getParticipants(competition.id)).some((p) => p.userId === userId)) return 'participant';
+  if (!lateEntryOpen(competition, info, now)) return 'closed_entry';
+  if (!active) return 'on_first_run';
+  await addLateParticipant(game, competition, userId, new Date(now).toISOString());
+  return 'joined';
+}
+
+/**
+ * Called for every run that started during a competition (before its close): an inactive member who
+ * runs enters their club's competition with this run, when the mode allows it (individual and
+ * cooperative modes; Eliminación only before its first cut; never in team-against-team modes).
+ * The participation starts at the run's start, so this run counts.
+ */
+export async function ensureParticipantOnRun(game: GameStorage, userId: string, info: CycleInfo, runStartedAt: number): Promise<CompetitionEntry> {
+  const membership = await game.getMembership(userId);
+  if (!membership) return 'none';
+  const competition = await game.getClubCompetition(membership.clubId, info.number);
+  if (!competition || competition.status !== 'active') return 'none';
+  if ((await game.getParticipants(competition.id)).some((p) => p.userId === userId)) return 'participant';
+  // Joined the club after the first 48 h: from the next competition (no club hopping mid-competition)
+  const lateJoinLimit = Date.parse(info.competitionStartsAt) + LATE_JOIN_HOURS * 60 * 60 * 1000;
+  const joinedClub = Date.parse(membership.joinedAt);
+  if (Number.isFinite(joinedClub) && joinedClub > lateJoinLimit) return 'next_cycle';
+  if (!lateEntryOpen(competition, info, runStartedAt)) return 'closed_entry';
+  const from = Math.max(runStartedAt, Number.isFinite(joinedClub) ? joinedClub : runStartedAt);
+  await addLateParticipant(game, competition, userId, new Date(from).toISOString());
+  return 'joined';
 }
 
 // ─── Finishing a competition ─────────────────────────────────────────────────
@@ -779,8 +892,10 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
   report.cycle = info.number;
   report.phase = info.phase;
 
-  // 1. Finish what is over (older cycles, or this one once its competition days are past)
-  const finishBefore = info.phase === 'competition' ? info.number : info.number + 1;
+  // 1. Finish what is over: older cycles, or this one once its close is past (the end on Sunday
+  //    23:59 plus COMPETITION_GRACE_HOURS, so runs that arrive late still count)
+  const closed = info.phase === 'rest' && now >= cycleBounds(info.number).closeAt;
+  const finishBefore = info.phase === 'competition' ? info.number : closed ? info.number + 1 : info.number;
   for (const number of await game.getUnfinishedCompetitionCycles(finishBefore)) {
     const lockKey = `season_finish_${number}`;
     if (!(await game.claimSetting(lockKey, String(now)))) continue;
@@ -795,7 +910,7 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
     }
   }
   // A cycle that ended with no competitions still needs its map wiped
-  if (info.phase !== 'competition' && info.number >= 0) {
+  if (info.phase !== 'competition' && info.number >= 0 && closed) {
     const row = await game.getCycle(info.number);
     if (row && row.status === 'competition') {
       await game.resetCompetitionMap();

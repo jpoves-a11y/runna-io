@@ -383,12 +383,17 @@ struct ConquestResult: Decodable {
     let globalBonus: Double
     let globalTotal: Double?
     let competition: CompetitionPart?
+    /// This run brought me (an inactive member) into my club's running competition.
+    let joinedCompetition: Bool
+    /// Why it didn't count for my club's competition: "after_close" (arrived after Monday 06:00),
+    /// "closed_entry" (team against team: next time), "next_cycle" (joined the club too late)
+    let competitionNote: String?
     let challengesCompleted: [CompletedChallenge]
     let streak: Int?
 
     enum CodingKeys: String, CodingKey {
         case ready, newAreaConquered, areaStolen, victims, treasuresCollected
-        case validation, globalArea, competition, challengesCompleted, streak
+        case validation, globalArea, competition, joinedCompetition, competitionNote, challengesCompleted, streak
     }
 
     init(from decoder: Decoder) throws {
@@ -404,6 +409,8 @@ struct ConquestResult: Decodable {
         globalBonus = global?.bonus ?? 0
         globalTotal = global?.total
         competition = try? c.decodeIfPresent(CompetitionPart.self, forKey: .competition)
+        joinedCompetition = c.bool(.joinedCompetition) ?? false
+        competitionNote = c.string(.competitionNote)
         challengesCompleted = (try? c.decodeIfPresent([CompletedChallenge].self, forKey: .challengesCompleted)) ?? []
         streak = c.int(.streak)
     }

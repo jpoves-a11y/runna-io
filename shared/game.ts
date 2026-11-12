@@ -5,7 +5,8 @@
 //
 // COMPETITION MODE (only for club members): 14-day cycles aligned to the week, Europe/Madrid time:
 //   - Competition: Friday 00:00 -> Sunday of the following week 23:59 (10 days). The competition map
-//     starts empty and is wiped when it ends.
+//     starts empty. It is scored on Monday at 06:00 (runs that started before the end and arrive late
+//     still count) and then wiped. Members who didn't run in the previous 14 days don't take part.
 //   - Rest: Monday -> Thursday (4 days). Chests spawn around the clubs' cities and every member gets
 //     challenges. Both give items (powers, global boosts, cosmetics).
 
@@ -29,6 +30,13 @@ export const REST_DAYS = CYCLE_DAYS - COMPETITION_DAYS;
 export const SEASON_ANCHOR_DATE = '2026-11-13';
 /** Members can still join a running competition during its first hours. */
 export const LATE_JOIN_HOURS = 48;
+/**
+ * The competition ends on Sunday 23:59, but it is scored this many hours later: runs that started
+ * before the end and arrive late (a watch synced on Monday morning) still count.
+ */
+export const COMPETITION_GRACE_HOURS = 6;
+/** Members who didn't run in this many days before a competition don't take part in it. */
+export const INACTIVE_DAYS = 14;
 
 // ─── Competition modes ───────────────────────────────────────────────────────
 
@@ -37,30 +45,43 @@ export type CompetitionMode = 'ffa' | 'teams' | 'target' | 'duel';
 /** Mode of cycle n is MODE_ROTATION[n % length]; a club that can't play it gets the fallback. */
 export const MODE_ROTATION: CompetitionMode[] = ['ffa', 'duel', 'teams', 'target'];
 
-export const MODE_INFO: Record<CompetitionMode, { name: string; emoji: string; description: string; minParticipants: number }> = {
+/**
+ * Who can still enter a running competition (inactive members who start running, or members who
+ * joined the club during its first 48 h):
+ *   - none: team against team (Equipos, Duelo, Derbi): the line-ups are fixed when it starts.
+ *   - until_first_cut: Eliminación, only before the first cut (the cut plan must add up).
+ *   - open: individual and cooperative modes, any time.
+ */
+export type LateEntry = 'none' | 'until_first_cut' | 'open';
+
+export const MODE_INFO: Record<CompetitionMode, { name: string; emoji: string; description: string; minParticipants: number; lateEntry: LateEntry }> = {
   ffa: {
     name: 'Todos contra todos',
     emoji: '⚔️',
     description: 'Cada miembro del club conquista para sí mismo y puede robar territorio a cualquier compañero. Gana quien tenga más km² al final.',
     minParticipants: 2,
+    lateEntry: 'open',
   },
   teams: {
     name: 'Por equipos',
     emoji: '🛡️',
     description: 'El club se divide en dos equipos equilibrados. Solo se roba al equipo rival. Gana el equipo con más km² sumados.',
     minParticipants: 4,
+    lateEntry: 'none',
   },
   target: {
     name: 'Objetivo común',
     emoji: '🎯',
     description: 'Todo el club suma para llegar a un objetivo de km² proporcional a sus participantes. Nadie roba a nadie.',
     minParticipants: 1,
+    lateEntry: 'open',
   },
   duel: {
     name: 'Duelo de clubes',
     emoji: '🤝',
     description: 'Tu club se enfrenta a otro club de nivel parecido. Cuentan los km² conquistados por vuestros mejores corredores, con el mismo número de corredores por club y un tope por persona.',
     minParticipants: 3,
+    lateEntry: 'none',
   },
 };
 
