@@ -146,6 +146,10 @@ Nunca subas credenciales al repositorio: `.env*` y `.dev.vars` están en `.gitig
 - **Endpoints de administración:**
   - `POST /api/admin/season/tick` con `{"time":"<ISO>"}` ejecuta el motor de temporada como si fuera esa hora (pruebas).
   - `POST /api/admin/season/runs-from` con `{"at":"<ISO>"}` mueve la fecha desde la que cuentan las carreras.
+  - Los endpoints de la competición de amigos antigua ya no actúan:
+    - `/api/treasures/active` no lista nada.
+    - `/api/tasks/spawn-treasure` y `/api/tasks/weekly-summary` responden `skipped`.
+    - `/api/admin/competition`, `/api/admin/reset-for-competition`, `/api/admin/spawn-treasure` y `/api/admin/retrofix-route` responden 410 e indican el endpoint nuevo.
 - **Prueba de punta a punta del juego completo** (clubes, competición, duelos, Elo, descanso, cofres, retos, revisiones):
 
   ```bash
@@ -213,7 +217,11 @@ En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms
     - Más de 10 km² de área nueva en una carrera o más de 20 km² en un día.
   - La app manda los tiempos de cada punto (`pointTimes`) y las importaciones solo el recorrido, así que las comprobaciones por tramo solo se hacen cuando hay tiempos.
   - Los administradores revisan con `GET /api/admin/runs/flagged` y `POST /api/admin/runs/<id>/review` (`{"action":"approve"}` o `{"action":"revert"}`); revertir reconstruye el mapa global y el de competición del corredor.
-- Privacidad del modo global: los rankings solo devuelven el área total, nunca geometrías. El mapa global solo superpone el territorio de amigos y compañeros de club. La ubicación de casa (`home_lat`/`home_lng`, redondeada a ~1 km) nunca sale de la API.
+- Privacidad del modo global:
+  - Los rankings solo devuelven el área total, nunca geometrías.
+  - El mapa global solo superpone el territorio de amigos y compañeros de club.
+  - Los recorridos GPS (`GET /api/routes/<userId>`) solo los ven el propio corredor, sus amigos y sus compañeros de club; al resto se le responde 403 `private_runs`.
+  - La ubicación de casa (`home_lat`/`home_lng`, redondeada a ~1 km) nunca sale de la API.
 - Los endpoints `/api/admin/*` y `/api/tasks/*` exigen el secreto de administración (o la ejecución interna del cron).
 - Denuncias y bloqueos (requisito 1.2 de Apple): los usuarios bloqueados se filtran del feed, comentarios, búsquedas, solicitudes e invitaciones en ambos sentidos. Cada denuncia se guarda y se avisa por email.
 - Los tokens de push que Apple da por muertos (410, `BadDeviceToken`) se borran automáticamente.
