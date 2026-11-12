@@ -20,3 +20,10 @@ CREATE TABLE IF NOT EXISTS competition_runs (
   PRIMARY KEY (competition_id, route_id)
 );
 CREATE INDEX IF NOT EXISTS idx_competition_runs_user ON competition_runs(competition_id, user_id, started_at);
+
+-- Clubs: entry type (open | approval | invite_only), who can invite (all | officers), description.
+-- Older private clubs become invite-only; "visibility" keeps following the entry type for older apps.
+ALTER TABLE clubs ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'open';
+UPDATE clubs SET entry_mode = 'invite_only' WHERE visibility = 'private';
+ALTER TABLE clubs ADD COLUMN invite_permission TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE clubs ADD COLUMN description TEXT;

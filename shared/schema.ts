@@ -533,9 +533,12 @@ export const clubs = sqliteTable("clubs", {
   name: text("name").notNull(),
   nameKey: text("name_key").notNull().unique(), // lowercased name, unique
   slogan: text("slogan"),
+  description: text("description"), // up to 500 characters
   crest: text("crest").notNull(), // JSON Crest
   color: text("color").notNull(),
-  visibility: text("visibility").notNull().default('public'), // public | private
+  visibility: text("visibility").notNull().default('public'), // public | private (older apps; follows entry_mode)
+  entryMode: text("entry_mode").notNull().default('open'), // open | approval | invite_only
+  invitePermission: text("invite_permission").notNull().default('all'), // all | officers
   joinCode: text("join_code").notNull().unique(),
   city: text("city"),
   countryCode: text("country_code"),

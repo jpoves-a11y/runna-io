@@ -268,20 +268,30 @@ struct ChallengesCard: View {
 // MARK: - Chests
 
 /// A chest on the competition map (rest days): rarity-coloured box.
+/// A chest on the map: the illustrated chest of its rarity. Hidden chests (seen thanks to the Faro)
+/// are drawn faded with an eye badge.
 struct ChestMarker: View {
     let chest: Chest
 
     var body: some View {
-        let color: Color = Rarity.color(chest.rarity)
-        Image(systemName: chest.hidden ? "eye.fill" : "shippingbox.fill")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(color)
-            .frame(width: 32, height: 32)
-            .background(Color(uiColor: .systemBackground), in: Circle())
-            .overlay(Circle().strokeBorder(color, lineWidth: 2))
-            .shadow(color: Color.black.opacity(0.18), radius: 2, x: 0, y: 1)
-            .contentShape(Circle())
-            .accessibilityLabel("Cofre \(Rarity.label(chest.rarity))")
+        Image(Rarity.chestImage(chest.rarity))
+            .resizable()
+            .scaledToFit()
+            .frame(width: 38, height: 38)
+            .opacity(chest.hidden ? 0.6 : 1)
+            .shadow(color: Color.black.opacity(0.28), radius: 3, x: 0, y: 2)
+            .overlay(alignment: .topTrailing) {
+                if chest.hidden {
+                    Image(systemName: "eye.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 17, height: 17)
+                        .background(Color.black.opacity(0.65), in: Circle())
+                        .offset(x: 4, y: -4)
+                }
+            }
+            .contentShape(Rectangle())
+            .accessibilityLabel(chest.hidden ? "Cofre oculto \(Rarity.label(chest.rarity))" : "Cofre \(Rarity.label(chest.rarity))")
     }
 }
 
@@ -292,14 +302,19 @@ struct ChestDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
             HStack(spacing: DS.Spacing.m) {
-                Image(systemName: PowerSymbol.name(chest.itemId))
-                    .font(.title2)
-                    .foregroundStyle(Rarity.color(chest.rarity))
-                    .frame(width: 36)
-                VStack(alignment: .leading, spacing: 2) {
+                Image(Rarity.chestImage(chest.rarity))
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 64, height: 64)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
                     Text(chest.item?.name ?? chest.name)
                         .font(.title3.weight(.semibold))
-                    RarityPill(rarity: chest.rarity)
+                    HStack(spacing: 6) {
+                        Image(systemName: PowerSymbol.name(chest.itemId))
+                            .foregroundStyle(Rarity.color(chest.rarity))
+                        RarityPill(rarity: chest.rarity)
+                    }
                 }
             }
             if let description = chest.item?.description, !description.isEmpty {

@@ -10,6 +10,7 @@ import {
   type ItemScope,
 } from '../../shared/game';
 import { cycleAt } from './cycles';
+import { parseEntryMode, entryModeFromVisibility, visibilityOf, type EntryMode, type InvitePermission } from './clubRules';
 
 type Row = Record<string, any>;
 
@@ -30,11 +31,14 @@ function nowIso(): string {
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
-async function tryRun(db: Database, statement: ReturnType<typeof sql>): Promise<void> {
+/** Runs a schema statement that may already be applied. True when it ran (e.g. the column is new). */
+async function tryRun(db: Database, statement: ReturnType<typeof sql>): Promise<boolean> {
   try {
     await db.run(statement);
+    return true;
   } catch {
     /* column/table already exists, or table not created yet */
+    return false;
   }
 }
 
@@ -138,6 +142,12 @@ export async function applyGameSchema(db: Database): Promise<void> {
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
   await db.run(sql`CREATE INDEX IF NOT EXISTS idx_clubs_city ON clubs(country_code, city)`);
+  // Entry type, invite permission and description (clubRules.ts). Older clubs: private = invite only.
+  if (await tryRun(db, sql`ALTER TABLE clubs ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'open'`)) {
+    await tryRun(db, sql`UPDATE clubs SET entry_mode = 'invite_only' WHERE visibility = 'private'`);
+  }
+  await tryRun(db, sql`ALTER TABLE clubs ADD COLUMN invite_permission TEXT NOT NULL DEFAULT 'all'`);
+  await tryRun(db, sql`ALTER TABLE clubs ADD COLUMN description TEXT`);
   await db.run(sql`CREATE TABLE IF NOT EXISTS club_members (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     club_id TEXT NOT NULL REFERENCES clubs(id) ON DELETE CASCADE,
@@ -271,9 +281,12 @@ export interface ClubRow {
   id: string;
   name: string;
   slogan: string | null;
+  description: string | null;
   crest: Crest;
   color: string;
   visibility: 'public' | 'private';
+  entryMode: EntryMode;
+  invitePermission: InvitePermission;
   joinCode: string;
   city: string | null;
   countryCode: string | null;
@@ -367,9 +380,12 @@ function toClub(row: Row): ClubRow {
     id: row.id,
     name: row.name,
     slogan: row.slogan ?? null,
+    description: row.description ?? null,
     crest: parseJson(row.crest, {}),
     color: row.color,
     visibility: row.visibility === 'private' ? 'private' : 'public',
+    entryMode: parseEntryMode(row.entry_mode) ?? entryModeFromVisibility(row.visibility),
+    invitePermission: row.invite_permission === 'officers' ? 'officers' : 'all',
     joinCode: row.join_code,
     city: row.city ?? null,
     countryCode: row.country_code ?? null,
@@ -761,14 +777,14 @@ export class GameStorage {
 
   // ─── Clubs ────────────────────────────────────────────────────────────────
 
-  async createClub(data: { name: string; slogan: string | null; crest: Crest; color: string; visibility: string; joinCode: string; city: string | null; countryCode: string | null; countryName: string | null; centerLat: number | null; centerLng: number | null; ownerId: string }): Promise<ClubRow> {
+  async createClub(data: { name: string; slogan: string | null; description: string | null; crest: Crest; color: string; entryMode: EntryMode; invitePermission: InvitePermission; joinCode: string; city: string | null; countryCode: string | null; countryName: string | null; centerLat: number | null; centerLng: number | null; ownerId: string }): Promise<ClubRow> {
     const id = newId();
     const now = nowIso();
     await this.db.batch([
-      this.db.run(sql`INSERT INTO clubs (id, name, name_key, slogan, crest, color, visibility, join_code, city, country_code, country_name,
+      this.db.run(sql`INSERT INTO clubs (id, name, name_key, slogan, description, crest, color, visibility, entry_mode, invite_permission, join_code, city, country_code, country_name,
           center_lat, center_lng, owner_id, member_count, created_at, updated_at)
-        VALUES (${id}, ${data.name}, ${data.name.toLowerCase()}, ${data.slogan}, ${JSON.stringify(data.crest)}, ${data.color}, ${data.visibility},
-          ${data.joinCode}, ${data.city}, ${data.countryCode}, ${data.countryName}, ${data.centerLat}, ${data.centerLng}, ${data.ownerId}, 1, ${now}, ${now})`),
+        VALUES (${id}, ${data.name}, ${data.name.toLowerCase()}, ${data.slogan}, ${data.description}, ${JSON.stringify(data.crest)}, ${data.color}, ${visibilityOf(data.entryMode)},
+          ${data.entryMode}, ${data.invitePermission}, ${data.joinCode}, ${data.city}, ${data.countryCode}, ${data.countryName}, ${data.centerLat}, ${data.centerLng}, ${data.ownerId}, 1, ${now}, ${now})`),
       this.db.run(sql`INSERT INTO club_members (user_id, club_id, role, joined_at) VALUES (${data.ownerId}, ${id}, 'owner', ${now})`),
     ] as any);
     return (await this.getClub(id))!;
@@ -802,13 +818,16 @@ export class GameStorage {
     return rows.some((r) => r.id !== exceptClubId);
   }
 
-  async updateClub(clubId: string, data: Partial<{ name: string; slogan: string | null; crest: Crest; color: string; visibility: string; city: string | null; countryCode: string | null; countryName: string | null; centerLat: number | null; centerLng: number | null; joinCode: string; ownerId: string }>): Promise<void> {
+  async updateClub(clubId: string, data: Partial<{ name: string; slogan: string | null; description: string | null; crest: Crest; color: string; entryMode: EntryMode; invitePermission: InvitePermission; city: string | null; countryCode: string | null; countryName: string | null; centerLat: number | null; centerLng: number | null; joinCode: string; ownerId: string }>): Promise<void> {
     const sets: ReturnType<typeof sql>[] = [sql`updated_at = ${nowIso()}`];
+    if (data.description !== undefined) sets.push(sql`description = ${data.description}`);
+    // The visibility of older app versions follows the entry type
+    if (data.entryMode !== undefined) { sets.push(sql`entry_mode = ${data.entryMode}`); sets.push(sql`visibility = ${visibilityOf(data.entryMode)}`); }
+    if (data.invitePermission !== undefined) sets.push(sql`invite_permission = ${data.invitePermission}`);
     if (data.name !== undefined) { sets.push(sql`name = ${data.name}`); sets.push(sql`name_key = ${data.name.toLowerCase()}`); }
     if (data.slogan !== undefined) sets.push(sql`slogan = ${data.slogan}`);
     if (data.crest !== undefined) sets.push(sql`crest = ${JSON.stringify(data.crest)}`);
     if (data.color !== undefined) sets.push(sql`color = ${data.color}`);
-    if (data.visibility !== undefined) sets.push(sql`visibility = ${data.visibility}`);
     if (data.city !== undefined) sets.push(sql`city = ${data.city}`);
     if (data.countryCode !== undefined) sets.push(sql`country_code = ${data.countryCode}`);
     if (data.countryName !== undefined) sets.push(sql`country_name = ${data.countryName}`);
@@ -830,8 +849,9 @@ export class GameStorage {
 
   async searchClubs(options: { query: string; countryCode?: string | null; city?: string | null; limit: number }): Promise<ClubRow[]> {
     const q = `%${options.query.toLowerCase().replace(/[%_]/g, '')}%`;
-    const rows = await this.db.all<Row>(sql`SELECT * FROM clubs WHERE visibility = 'public'
-      AND (name_key LIKE ${q} OR lower(COALESCE(city, '')) LIKE ${q} OR lower(COALESCE(slogan, '')) LIKE ${q})
+    // Listed: open and approval clubs (invite-only ones are never shown)
+    const rows = await this.db.all<Row>(sql`SELECT * FROM clubs WHERE COALESCE(entry_mode, CASE WHEN visibility = 'private' THEN 'invite_only' ELSE 'open' END) != 'invite_only'
+      AND (name_key LIKE ${q} OR lower(COALESCE(city, '')) LIKE ${q} OR lower(COALESCE(slogan, '')) LIKE ${q} OR lower(COALESCE(description, '')) LIKE ${q})
       ORDER BY member_count DESC, league_points DESC LIMIT 200`);
     return rows.map(toClub);
   }

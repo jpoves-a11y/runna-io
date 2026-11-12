@@ -155,27 +155,53 @@ check('join with the code', (await call('POST', '/api/clubs/join-code', { token:
 const twice = await call('POST', '/api/clubs/join-code', { token: cris.token, body: { code: club1.joinCode } });
 check('one club at a time', twice.status === 409, twice);
 
-const club2 = (await call('POST', '/api/clubs', { token: dani.token, body: { name: 'Ebro Night Crew', crest: { ...crest, pattern: 'chevron' }, visibility: 'private' } })).data.club;
+const club2 = (await call('POST', '/api/clubs', { token: dani.token, body: {
+  name: 'Ebro Night Crew', crest: { ...crest, pattern: 'chevron' }, entryMode: 'approval',
+  description: 'Corremos de noche por la ribera.\nQuedadas los martes.',
+} })).data.club;
+check('a club with approval: entry type and description are stored, listed in the search', club2?.entryMode === 'approval' && club2.description.includes('martes') && club2.visibility === 'public', club2);
 const evaRequest = await call('POST', `/api/clubs/${club2.id}/join`, { token: eva.token, body: {} });
-check('private clubs: joining sends a request', evaRequest.data.requested === true, evaRequest);
+check('approval clubs: joining sends a request', evaRequest.data.requested === true && evaRequest.data.joined === false, evaRequest);
 const daniView = await call('GET', '/api/clubs/mine', { token: dani.token });
-check('the admin sees the request', daniView.data.pendingRequests?.length === 1, daniView.data);
+check('the leader sees the request', daniView.data.pendingRequests?.length === 1 && daniView.data.canInvite === true, daniView.data);
 const notAdmin = await call('POST', `/api/clubs/${club2.id}/requests/${evaRequest.data.requestId}/accept`, { token: eva.token, body: {} });
-check('only admins accept requests', notAdmin.status === 403, notAdmin);
+check('only the leader and officers accept requests', notAdmin.status === 403, notAdmin);
 const accepted = await call('POST', `/api/clubs/${club2.id}/requests/${evaRequest.data.requestId}/accept`, { token: dani.token, body: {} });
 check('request accepted', accepted.status === 200, accepted);
+// The code of an approval club asks for approval too
+const codeRequest = await call('POST', '/api/clubs/join-code', { token: hugo.token, body: { code: daniView.data.club.joinCode } });
+check('approval clubs: the code sends a request too', codeRequest.data.requested === true, codeRequest);
+check('request rejected', (await call('POST', `/api/clubs/${club2.id}/requests/${codeRequest.data.requestId}/reject`, { token: dani.token, body: {} })).status === 200);
+// An ordinary member's invite in an approval club becomes a request; the leader approves it
 const invite = await call('POST', `/api/clubs/${club2.id}/invites`, { token: eva.token, body: { userId: fede.id } });
-check('members can invite', invite.data.invited === true, invite);
+check('members can invite (the leader allows it)', invite.data.invited === true, invite);
 const fedeView = await call('GET', '/api/clubs/mine', { token: fede.token });
 check('the invite reaches the user', fedeView.data.invites?.length === 1, fedeView.data);
-check('invite accepted', (await call('POST', `/api/clubs/invites/${fedeView.data.invites[0].id}/accept`, { token: fede.token, body: {} })).status === 200);
+const fedeAccept = await call('POST', `/api/clubs/invites/${fedeView.data.invites[0].id}/accept`, { token: fede.token, body: {} });
+check("a member's invite to an approval club needs approval", fedeAccept.status === 200 && fedeAccept.data.requested === true && fedeAccept.data.joined === false, fedeAccept.data);
+const fedeRequest = (await call('GET', '/api/clubs/mine', { token: dani.token })).data.pendingRequests.find((r) => r.user.id === fede.id);
+check("the leader approves the member's invite", (await call('POST', `/api/clubs/${club2.id}/requests/${fedeRequest?.id}/accept`, { token: dani.token, body: {} })).status === 200
+  && (await one('select club_id from club_members where user_id = ?', [fede.id]))?.club_id === club2.id);
+// Only the leader decides who invites; then ordinary members can't invite nor see the code
+check('only the leader changes the invite permission', (await call('PATCH', `/api/clubs/${club2.id}`, { token: eva.token, body: { invitePermission: 'officers' } })).status === 403);
+check('the leader limits invites to officers', (await call('PATCH', `/api/clubs/${club2.id}`, { token: dani.token, body: { invitePermission: 'officers' } })).data.club?.invitePermission === 'officers');
+check('then a member cannot invite', (await call('POST', `/api/clubs/${club2.id}/invites`, { token: eva.token, body: {} })).status === 403);
+const evaClubView = await call('GET', '/api/clubs/mine', { token: eva.token });
+check('nor see the code', evaClubView.data.canInvite === false && !evaClubView.data.club.joinCode, evaClubView.data.club);
 const link = await call('POST', `/api/clubs/${club2.id}/invites`, { token: dani.token, body: {} });
-check('invite link', /\/club-invite\/[A-Za-z0-9_-]+$/.test(link.data.url), link.data);
+check('invite link from the leader', /\/club-invite\/[A-Za-z0-9_-]+$/.test(link.data.url), link.data);
+const linkPreview = await call('GET', `/api/clubs/invite-links/${link.data.token}`, { token: hugo.token });
+check("the leader's link lets you in without approval", linkPreview.data.valid === true && linkPreview.data.requiresApproval === false, linkPreview.data);
 const club3 = (await call('POST', '/api/clubs', { token: gala.token, body: { name: 'Solo Gala', crest } })).data.club;
+// Invite only: hidden from the search and from outsiders
+check('the leader makes the club invite-only', (await call('PATCH', `/api/clubs/${club2.id}`, { token: dani.token, body: { entryMode: 'invite_only' } })).data.club?.visibility === 'private');
 const privateDetail = await call('GET', `/api/clubs/${club2.id}`, { token: hugo.token });
-check('private club members are hidden from outsiders', privateDetail.data.members.length === 0 && !privateDetail.data.club.joinCode, privateDetail.data);
+check('invite-only club members are hidden from outsiders', privateDetail.data.members.length === 0 && !privateDetail.data.club.joinCode, privateDetail.data);
+check('an invite-only club cannot be joined from its card', (await call('POST', `/api/clubs/${club2.id}/join`, { token: hugo.token, body: {} })).status === 403);
 const search = await call('GET', '/api/clubs/search?q=zarag', { token: hugo.token });
-check('search by name or city finds public clubs only', search.data.clubs.some((c) => c.id === club1.id) && search.data.clubs.every((c) => c.visibility === 'public' && c.id !== club2.id), search.data.clubs.map((c) => c.name));
+check('search by name or city finds listed clubs only', search.data.clubs.some((c) => c.id === club1.id) && search.data.clubs.every((c) => c.entryMode !== 'invite_only' && c.id !== club2.id), search.data.clubs.map((c) => c.name));
+const searchByText = await call('GET', '/api/clubs/search?q=solo%20gala', { token: hugo.token });
+check('search finds open clubs', searchByText.data.clubs.some((c) => c.id === club3.id), searchByText.data.clubs.map((c) => c.name));
 
 // ───────────── The competition starts ─────────────
 

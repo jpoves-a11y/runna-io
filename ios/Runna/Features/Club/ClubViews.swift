@@ -124,10 +124,12 @@ struct ClubHomeView: View {
         ToolbarItem(placement: .primaryAction) {
             if model.isMember {
                 Menu {
-                    Button {
-                        showInvite = true
-                    } label: {
-                        Label("Invitar", systemImage: "person.badge.plus")
+                    if model.canInvite {
+                        Button {
+                            showInvite = true
+                        } label: {
+                            Label("Invitar", systemImage: "person.badge.plus")
+                        }
                     }
                     Button {
                         showInventory = true
@@ -307,7 +309,7 @@ struct ClubHomeView: View {
 
     private func membersSection(_ detail: ClubDetailResponse) -> some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            SectionHeader(title: "Miembros (\(detail.members.count))", actionTitle: "Invitar", action: { showInvite = true })
+            SectionHeader(title: "Miembros (\(detail.members.count))", actionTitle: detail.canInvite ? "Invitar" : nil, action: { showInvite = true })
             VStack(spacing: 0) {
                 ForEach(Array(detail.members.enumerated()), id: \.element.id) { index, member in
                     if index > 0 { HairlineDivider() }
@@ -342,11 +344,11 @@ struct ClubHomeView: View {
                 Menu {
                     if detail.isOwner {
                         if member.role == "admin" {
-                            Button("Quitar admin") { run { try await model.setRole("member", for: member) } }
+                            Button("Quitar de oficial") { run { try await model.setRole("member", for: member) } }
                         } else {
-                            Button("Hacer admin") { run { try await model.setRole("admin", for: member) } }
+                            Button("Nombrar oficial") { run { try await model.setRole("admin", for: member) } }
                         }
-                        Button("Pasarle la propiedad") { run { try await model.transferOwnership(to: member) } }
+                        Button("Pasarle el liderazgo") { run { try await model.transferOwnership(to: member) } }
                     }
                     Button("Expulsar", role: .destructive) { run { try await model.remove(member) } }
                 } label: {
@@ -414,13 +416,19 @@ struct ClubHeaderCard: View {
                             .lineLimit(2)
                     }
                     HStack(spacing: 6) {
-                        Image(systemName: club.isPrivate ? "lock" : "globe")
-                        Text([club.isPrivate ? "Privado" : "Público", club.city].compactMap { $0 }.joined(separator: " · "))
+                        Image(systemName: club.entrySymbol)
+                        Text([club.entryLabel, club.city].compactMap { $0 }.joined(separator: " · "))
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
+            }
+            if let description = club.description, !description.isEmpty {
+                Text(description)
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HairlineDivider()
             HStack(spacing: 0) {
@@ -572,16 +580,16 @@ struct ClubDiscoverView: View {
                         .disabled(code.trimmingCharacters(in: .whitespaces).count < 4)
                 }
             } header: {
-                Text("Club privado")
+                Text("Unirse con un código")
             } footer: {
-                Text("Pide el código a alguien del club, o abre su enlace de invitación.")
+                Text("Pide el código a alguien del club, o abre su enlace de invitación. En los clubes con aprobación, el código envía una solicitud.")
             }
             Section {
                 if isSearching && results.isEmpty {
                     ProgressView()
                 }
                 if !isSearching && results.isEmpty {
-                    Text(query.isEmpty ? "No hay clubes públicos todavía. ¡Crea el primero!" : "Ningún club público coincide con la búsqueda.")
+                    Text(query.isEmpty ? "No hay clubes abiertos todavía. ¡Crea el primero!" : "Ningún club coincide con la búsqueda.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -594,7 +602,7 @@ struct ClubDiscoverView: View {
                     .buttonStyle(.plain)
                 }
             } header: {
-                Text(query.isEmpty ? "Clubes públicos cerca de ti" : "Resultados")
+                Text(query.isEmpty ? "Clubes cerca de ti" : "Resultados")
             }
         }
         .listStyle(.insetGrouped)
@@ -645,7 +653,9 @@ struct ClubDiscoverView: View {
     private func respond(_ invite: ClubInvite, accept: Bool) {
         Task {
             do {
-                try await model.respond(toInvite: invite, accept: accept)
+                if let response = try await model.respond(toInvite: invite, accept: accept) {
+                    message = joinMessage(response)
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -684,6 +694,12 @@ struct ClubRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let description = club.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 4)
             if club.requestPending {
@@ -701,6 +717,7 @@ struct ClubRow: View {
 
     private var details: String {
         var parts: [String] = ["\(club.memberCount) miembros"]
+        if club.requiresApproval { parts.append(club.entryLabel) }
         if let city = club.city { parts.append(city) }
         if let km = club.distanceKm, km >= 1 { parts.append("a \(Int(km.rounded())) km") }
         if club.leaguePoints > 0 { parts.append("\(club.leaguePoints) pts") }
@@ -795,19 +812,31 @@ struct ClubDetailSheet: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } else if detail.requestPending {
-            Text("Solicitud enviada. Esperando a un administrador.")
+            Text("Solicitud enviada. Esperando a que la acepte el líder o un oficial.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } else if club.memberCount >= club.maxMembers {
             Text("El club está completo.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        } else if club.isPrivate {
+            Text("Este club es solo por invitación: pide un enlace o el código a alguien del club.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         } else {
-            Button(club.isPrivate ? "Pedir unirme" : "Unirme al club") {
-                join()
+            VStack(spacing: DS.Spacing.s) {
+                Button(club.requiresApproval ? "Pedir unirme" : "Unirme al club") {
+                    join()
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(isJoining)
+                if club.requiresApproval {
+                    Text("El líder o un oficial aprobará tu solicitud.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled(isJoining)
         }
     }
 
@@ -851,7 +880,9 @@ struct ClubFormView: View {
     @State private var model = ClubModel.shared
     @State private var name = ""
     @State private var slogan = ""
-    @State private var visibility = "public"
+    @State private var descriptionText = ""
+    @State private var entryMode = "open"
+    @State private var invitePermission = "all"
     @State private var crest = Crest()
     @State private var unlocked: Set<String> = []
     @State private var isSaving = false
@@ -871,16 +902,36 @@ struct ClubFormView: View {
                     TextField("Nombre del club", text: $name)
                     TextField("Eslogan (opcional)", text: $slogan, axis: .vertical)
                         .lineLimit(1...3)
-                    Picker("Tipo", selection: $visibility) {
-                        Text("Público").tag("public")
-                        Text("Privado").tag("private")
-                    }
                 } header: {
                     Text("Club")
+                }
+                Section {
+                    TextField("Quiénes sois, cuándo quedáis, qué buscáis…", text: $descriptionText, axis: .vertical)
+                        .lineLimit(3...8)
+                        .onChange(of: descriptionText) { _, value in
+                            if value.count > 500 { descriptionText = String(value.prefix(500)) }
+                        }
+                } header: {
+                    Text("Descripción")
                 } footer: {
-                    Text(visibility == "public"
-                         ? "Cualquiera puede encontrarlo en el buscador y unirse."
-                         : "Solo se entra con invitación, con el código o si un administrador acepta la solicitud.")
+                    Text("\(descriptionText.count)/500 · Se ve en el buscador y en la ficha del club.")
+                }
+                Section {
+                    Picker("Entrada", selection: $entryMode) {
+                        ForEach(ClubEntry.modes, id: \.self) { mode in
+                            Label(ClubEntry.label(mode), systemImage: ClubEntry.symbol(mode)).tag(mode)
+                        }
+                    }
+                    if canChooseInvites {
+                        Picker("Quién puede invitar", selection: $invitePermission) {
+                            Text("Todos los miembros").tag("all")
+                            Text("Líder y oficiales").tag("officers")
+                        }
+                    }
+                } header: {
+                    Text("Quién entra")
+                } footer: {
+                    Text(entryFooter)
                 }
                 CrestEditor(crest: $crest, unlocked: unlocked)
             }
@@ -911,13 +962,28 @@ struct ClubFormView: View {
         }
     }
 
+    /// Only the leader decides who can invite (when creating, I am the leader).
+    private var canChooseInvites: Bool { !isEditing || model.isOwner }
+
+    private var entryFooter: String {
+        var text = ClubEntry.explanation(entryMode)
+        if canChooseInvites {
+            text += invitePermission == "officers"
+                ? " Solo el líder y los oficiales pueden invitar y ver el código."
+                : (entryMode == "approval" ? " Las invitaciones de los miembros también necesitan aprobación." : " Cualquier miembro puede invitar.")
+        }
+        return text
+    }
+
     private func setUp() {
         guard !didSetUp else { return }
         didSetUp = true
         if case .edit(let club, let pieces) = mode {
             name = club.name
             slogan = club.slogan ?? ""
-            visibility = club.visibility
+            descriptionText = club.description ?? ""
+            entryMode = club.entryMode
+            invitePermission = club.invitePermission
             crest = club.crest
             unlocked = pieces
         } else {
@@ -930,15 +996,22 @@ struct ClubFormView: View {
         isSaving = true
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedSlogan = slogan.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDescription = descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             defer { isSaving = false }
             do {
                 if isEditing {
-                    try await model.update(name: trimmedName, slogan: trimmedSlogan, crest: crest, visibility: visibility)
+                    try await model.update(
+                        name: trimmedName, slogan: trimmedSlogan, description: trimmedDescription, crest: crest,
+                        entryMode: entryMode, invitePermission: canChooseInvites ? invitePermission : nil
+                    )
                     Haptics.success()
                     dismiss()
                 } else {
-                    let response = try await model.create(name: trimmedName, slogan: trimmedSlogan, crest: crest, visibility: visibility)
+                    let response = try await model.create(
+                        name: trimmedName, slogan: trimmedSlogan, description: trimmedDescription, crest: crest,
+                        entryMode: entryMode, invitePermission: invitePermission
+                    )
                     Haptics.success()
                     resultMessage = "Club creado. " + competitionEntryMessage(response.competitionEntry, joined: response.joinedCompetition) + " Invita a tus amigos."
                 }
@@ -989,7 +1062,7 @@ struct ClubInviteSheet: View {
                         }
                     }
                 } footer: {
-                    Text("El enlace caduca en 14 días. El código vale hasta que un administrador lo cambie.")
+                    Text(inviteFooter)
                 }
                 Section {
                     if friends.friends.isEmpty {
@@ -1038,6 +1111,14 @@ struct ClubInviteSheet: View {
         }
     }
 
+    private var inviteFooter: String {
+        var text = "El enlace caduca en 14 días. El código vale hasta que el líder o un oficial lo cambie."
+        if model.club?.requiresApproval == true && !model.isAdmin {
+            text += " En este club, quien entre con tu invitación necesita la aprobación del líder o de un oficial."
+        }
+        return text
+    }
+
     private func invite(_ userId: String) {
         Task {
             do {
@@ -1057,6 +1138,7 @@ struct ClubJoinConfirmationSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model = ClubModel.shared
     @State private var club: ClubSummary?
+    @State private var requiresApproval = false
     @State private var errorMessage: String?
     @State private var message: String?
     @State private var isJoining = false
@@ -1082,9 +1164,14 @@ struct ClubJoinConfirmationSheet: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                Button("Unirme al club") { join() }
+                Button(requiresApproval ? "Pedir unirme" : "Unirme al club") { join() }
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(isJoining || model.isMember)
+                if requiresApproval {
+                    Text("El líder o un oficial aprobará tu solicitud.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             } else if let errorMessage {
                 EmptyStateView(systemImage: "link", title: "Invitación no válida", message: errorMessage)
             } else {
@@ -1097,7 +1184,13 @@ struct ClubJoinConfirmationSheet: View {
         .presentationDetents([.medium, .large])
         .task {
             do {
-                club = try await model.preview(inviteToken: token)
+                let preview = try await model.preview(inviteToken: token)
+                if preview.valid {
+                    club = preview.club
+                    requiresApproval = preview.requiresApproval
+                } else {
+                    errorMessage = "Esta invitación ya no es válida: pide otra a un oficial del club."
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }

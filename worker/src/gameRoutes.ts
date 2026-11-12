@@ -29,6 +29,7 @@ import {
 } from './season';
 import { competitionContextFor, rebuildGlobalForUser, rebuildCompetitionForUser } from './runPipeline';
 import { parseGeometry } from './globalTerritory';
+import { canInvite, isOfficer, joinDecision, parseEntryMode, entryModeFromVisibility, CLUB_DESCRIPTION_MAX, type JoinVia } from './clubRules';
 import { withReasons, haversineMeters } from './antiCheat';
 import {
   ITEMS,
@@ -105,14 +106,19 @@ function cycleJson(info: CycleInfo, now = Date.now()) {
   };
 }
 
-function clubJson(club: ClubRow, options: { withCode?: boolean } = {}) {
+/** A club as the app sees it. The join code only for members who can invite (`role`). */
+function clubJson(club: ClubRow, options: { role?: ClubRole | null } = {}) {
+  const withCode = canInvite(options.role ?? null, club.invitePermission);
   return {
     id: club.id,
     name: club.name,
     slogan: club.slogan,
+    description: club.description,
     crest: { ...DEFAULT_CREST, ...club.crest },
     color: club.color,
     visibility: club.visibility,
+    entryMode: club.entryMode,
+    invitePermission: club.invitePermission,
     city: club.city,
     countryCode: club.countryCode,
     countryName: club.countryName,
@@ -121,7 +127,7 @@ function clubJson(club: ClubRow, options: { withCode?: boolean } = {}) {
     memberCount: club.memberCount,
     maxMembers: CLUB_MAX_MEMBERS,
     createdAt: club.createdAt,
-    ...(options.withCode ? { joinCode: club.joinCode } : {}),
+    ...(withCode ? { joinCode: club.joinCode } : {}),
   };
 }
 
@@ -149,6 +155,13 @@ function rarityJson(rarity: string) {
 // ─── Validation ──────────────────────────────────────────────────────────────
 
 const HEX = /^#[0-9A-Fa-f]{6}$/;
+
+/** Club description: trimmed, line breaks kept (at most two in a row), control characters removed. */
+function cleanDescription(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  return text.length > 0 ? text : null;
+}
 
 function cleanName(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
@@ -214,6 +227,44 @@ async function joinClub(storage: WorkerStorage, game: GameStorage, env: any, clu
     data: { type: 'club_member_joined', clubId: club.id },
   });
   return { ok: true, joinedCompetition, competitionEntry };
+}
+
+/** Sends a join request to the club's leader and officers. */
+async function requestToJoin(storage: WorkerStorage, game: GameStorage, env: any, club: ClubRow, userId: string): Promise<string> {
+  const requestId = await game.createClubRequest(club.id, userId, 'request', null);
+  const officers = (await game.getClubMembers(club.id)).filter((m) => isOfficer(m.role)).map((m) => m.userId);
+  const user = (await game.getUserLite([userId])).get(userId);
+  await notifyUsers(storage, env, officers, {
+    title: `🛡️ Solicitud para ${club.name}`,
+    body: `${user?.name ?? 'Alguien'} quiere unirse al club.`,
+    tag: `club-request-${club.id}`,
+    data: { type: 'club_request', clubId: club.id },
+  });
+  return requestId;
+}
+
+/**
+ * Someone tries to enter `club` (from its search card, with its code or with an invite): joins at
+ * once, sends a request for approval, or is refused, following clubRules.joinDecision.
+ */
+async function enterClub(c: Ctx, storage: WorkerStorage, game: GameStorage, club: ClubRow, userId: string, via: JoinVia, inviterId: string | null = null) {
+  if (await game.getMembership(userId)) return fail(c, 409, 'Ya estás en un club. Sal de él antes de unirte a otro.');
+  let inviterRole: ClubRole | null = null;
+  if (inviterId) {
+    const inviter = await game.getMembership(inviterId);
+    inviterRole = inviter && inviter.clubId === club.id ? inviter.role : null;
+  }
+  const decision = joinDecision(club.entryMode, via, club.invitePermission, inviterRole);
+  if (decision === 'forbidden') {
+    return fail(c, 403, via === 'search' ? 'Este club es solo por invitación.' : 'Esta invitación ya no es válida: pide otra a un oficial del club.');
+  }
+  if (decision === 'request') {
+    const requestId = await requestToJoin(storage, game, c.env, club, userId);
+    return c.json({ joined: false, requested: true, requestId, club: clubJson(club) });
+  }
+  const joined = await joinClub(storage, game, c.env, club, userId);
+  if (!joined.ok) return fail(c, joined.status, joined.error);
+  return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { role: 'member' }) });
 }
 
 async function clubHistory(game: GameStorage, clubId: string, limit = 20) {
@@ -374,7 +425,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     return c.json({
       serverTime: new Date(now).toISOString(),
       cycle: cycleJson(info, now),
-      club: club ? clubJson(club, { withCode: true }) : null,
+      club: club ? clubJson(club, { role: membership?.role }) : null,
       myRole: membership?.role ?? null,
       competition,
       clubCompetition,
@@ -803,19 +854,22 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const crestResult = validateCrest(input.crest, await game.ownedCosmetics(userId));
     if ('error' in crestResult) return fail(c, 400, crestResult.error);
     const color = HEX.test(String(input.color ?? '')) ? String(input.color).toUpperCase() : crestResult.crest.primary;
-    const visibility = input.visibility === 'private' ? 'private' : 'public';
+    const entryMode = parseEntryMode(input.entryMode) ?? entryModeFromVisibility(input.visibility);
+    const invitePermission = input.invitePermission === 'officers' ? 'officers' : 'all';
+    const description = cleanDescription(input.description);
+    if (description && [...description].length > CLUB_DESCRIPTION_MAX) return fail(c, 400, `La descripción no puede tener más de ${CLUB_DESCRIPTION_MAX} caracteres.`);
     const me = await game.getUserGameRow(userId);
     const round = (v: unknown) => (Number.isFinite(Number(v)) && v !== null ? Math.round(Number(v) * 100) / 100 : null);
     let joinCode = randomCode();
     for (let i = 0; i < 5 && await game.getClubByCode(joinCode); i++) joinCode = randomCode();
     const club = await game.createClub({
-      name, slogan, crest: crestResult.crest, color, visibility, joinCode,
+      name, slogan, description, crest: crestResult.crest, color, entryMode, invitePermission, joinCode,
       city: me?.city ?? null, countryCode: me?.country_code ?? null, countryName: me?.country_name ?? null,
       centerLat: round(me?.home_lat), centerLng: round(me?.home_lng), ownerId: userId,
     });
     const competitionEntry = await joinRunningCompetition(game, club.id, userId);
     const joinedCompetition = competitionEntry === 'joined' || competitionEntry === 'participant';
-    return c.json({ club: clubJson(club, { withCode: true }), role: 'owner', joinedCompetition, competitionEntry }, 201);
+    return c.json({ club: clubJson(club, { role: 'owner' }), role: 'owner', joinedCompetition, competitionEntry }, 201);
   }));
 
   app.get('/api/clubs/mine', requireAuth, handler(async (c) => {
@@ -850,13 +904,15 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const history = await clubHistory(game, clubId, 20);
     const info = cycleAt(Date.now());
     const competition = isMember ? await game.getClubCompetition(clubId, info.number) : null;
-    const pendingRequests = role === 'owner' || role === 'admin' ? await game.getPendingRequestsForClub(clubId) : [];
+    const pendingRequests = isOfficer(role) ? await game.getPendingRequestsForClub(clubId) : [];
     const unlocked = isMember ? [...await game.clubUnlockedCosmetics(clubId)] : [];
     return {
-      club: clubJson(club, { withCode: isMember }),
+      club: clubJson(club, { role }),
       role,
       isMember,
-      members: isMember || club.visibility === 'public'
+      // Whether I can invite (personal invites, links, code) and approve requests
+      canInvite: canInvite(role, club.invitePermission),
+      members: isMember || club.entryMode !== 'invite_only'
         ? (await game.getClubMembers(clubId)).map((m) => ({ user: m.user, role: m.role, joinedAt: m.joinedAt, globalArea: m.globalArea }))
         : [],
       competition: competition && competition.status === 'active' ? { id: competition.id, mode: competition.mode, modeInfo: MODE_INFO[competition.mode as CompetitionMode] ?? null } : null,
@@ -893,7 +949,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const { game } = stores(c);
     const userId = c.get('authUserId');
     const clubId = c.req.param('id');
-    if (!(await requireClubRole(game, clubId, userId, ['owner', 'admin']))) return fail(c, 403, 'Solo los administradores pueden editar el club.');
+    const role = await requireClubRole(game, clubId, userId, ['owner', 'admin']);
+    if (!role) return fail(c, 403, 'Solo el líder y los oficiales pueden editar el club.');
     const input = await body(c);
     const update: Record<string, any> = {};
     if (input.name !== undefined) {
@@ -917,43 +974,43 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       if (!HEX.test(String(input.color))) return fail(c, 400, 'Color no válido.');
       update.color = String(input.color).toUpperCase();
     }
-    if (input.visibility !== undefined) update.visibility = input.visibility === 'private' ? 'private' : 'public';
+    if (input.description !== undefined) {
+      const description = cleanDescription(input.description);
+      if (description && [...description].length > CLUB_DESCRIPTION_MAX) return fail(c, 400, `La descripción no puede tener más de ${CLUB_DESCRIPTION_MAX} caracteres.`);
+      update.description = description;
+    }
+    if (input.entryMode !== undefined) {
+      const entryMode = parseEntryMode(input.entryMode);
+      if (!entryMode) return fail(c, 400, 'Tipo de entrada no válido.');
+      update.entryMode = entryMode;
+    } else if (input.visibility !== undefined) {
+      update.entryMode = entryModeFromVisibility(input.visibility); // older app versions
+    }
+    if (input.invitePermission !== undefined) {
+      // Only the leader decides who can invite
+      if (role !== 'owner') return fail(c, 403, 'Solo el líder puede decidir quién invita.');
+      update.invitePermission = input.invitePermission === 'officers' ? 'officers' : 'all';
+    }
     await game.updateClub(clubId, update);
-    return c.json({ club: clubJson((await game.getClub(clubId))!, { withCode: true }) });
+    return c.json({ club: clubJson((await game.getClub(clubId))!, { role }) });
   }));
 
   app.post('/api/clubs/:id/code', requireAuth, handler(async (c) => {
     const { game } = stores(c);
     const clubId = c.req.param('id');
-    if (!(await requireClubRole(game, clubId, c.get('authUserId'), ['owner', 'admin']))) return fail(c, 403, 'Solo los administradores pueden cambiar el código.');
+    if (!(await requireClubRole(game, clubId, c.get('authUserId'), ['owner', 'admin']))) return fail(c, 403, 'Solo el líder y los oficiales pueden cambiar el código.');
     let joinCode = randomCode();
     for (let i = 0; i < 5 && await game.getClubByCode(joinCode); i++) joinCode = randomCode();
     await game.updateClub(clubId, { joinCode });
     return c.json({ joinCode });
   }));
 
+  /** Join from the club's card (search, detail): open clubs at once, "approval" clubs by request. */
   app.post('/api/clubs/:id/join', requireAuth, handler(async (c) => {
     const { storage, game } = stores(c);
-    const userId = c.get('authUserId');
     const club = await game.getClub(c.req.param('id'));
     if (!club) return fail(c, 404, 'Club no encontrado.');
-    if (await game.getMembership(userId)) return fail(c, 409, 'Ya estás en un club. Sal de él antes de unirte a otro.');
-    if (club.visibility === 'private') {
-      // Private clubs: the admins decide
-      const requestId = await game.createClubRequest(club.id, userId, 'request', null);
-      const admins = (await game.getClubMembers(club.id)).filter((m) => m.role !== 'member').map((m) => m.userId);
-      const user = (await game.getUserLite([userId])).get(userId);
-      await notifyUsers(storage, c.env, admins, {
-        title: `🛡️ Solicitud para ${club.name}`,
-        body: `${user?.name ?? 'Alguien'} quiere unirse al club.`,
-        tag: `club-request-${club.id}`,
-        data: { type: 'club_request', clubId: club.id },
-      });
-      return c.json({ requested: true, requestId });
-    }
-    const joined = await joinClub(storage, game, c.env, club, userId);
-    if (!joined.ok) return fail(c, joined.status, joined.error);
-    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return enterClub(c, storage, game, club, c.get('authUserId'), 'search');
   }));
 
   app.post('/api/clubs/join-code', requireAuth, handler(async (c) => {
@@ -963,9 +1020,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (!/^[A-Z0-9]{4,10}$/.test(code)) return fail(c, 400, 'Código no válido.');
     const club = await game.getClubByCode(code);
     if (!club) return fail(c, 404, 'No hay ningún club con ese código.');
-    const joined = await joinClub(storage, game, c.env, club, c.get('authUserId'));
-    if (!joined.ok) return fail(c, joined.status, joined.error);
-    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return enterClub(c, storage, game, club, c.get('authUserId'), 'code');
   }));
 
   app.post('/api/clubs/:id/requests/:requestId/:action', requireAuth, handler(async (c) => {
@@ -973,7 +1028,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const clubId = c.req.param('id');
     const action = c.req.param('action');
     if (action !== 'accept' && action !== 'reject') return fail(c, 404, 'Acción no válida.');
-    if (!(await requireClubRole(game, clubId, c.get('authUserId'), ['owner', 'admin']))) return fail(c, 403, 'Solo los administradores pueden gestionar solicitudes.');
+    if (!(await requireClubRole(game, clubId, c.get('authUserId'), ['owner', 'admin']))) return fail(c, 403, 'Solo el líder y los oficiales pueden gestionar solicitudes.');
     const request = await game.getClubRequest(c.req.param('requestId'));
     if (!request || request.club_id !== clubId || request.kind !== 'request' || request.status !== 'pending') return fail(c, 404, 'Solicitud no encontrada.');
     if (action === 'reject') {
@@ -1001,8 +1056,10 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const { storage, game } = stores(c);
     const userId = c.get('authUserId');
     const clubId = c.req.param('id');
-    if (!(await requireClubRole(game, clubId, userId, ['owner', 'admin', 'member']))) return fail(c, 403, 'Solo los miembros pueden invitar.');
+    const role = await requireClubRole(game, clubId, userId, ['owner', 'admin', 'member']);
+    if (!role) return fail(c, 403, 'Solo los miembros pueden invitar.');
     const club = (await game.getClub(clubId))!;
+    if (!canInvite(role, club.invitePermission)) return fail(c, 403, 'En este club solo el líder y los oficiales pueden invitar.');
     const input = await body(c);
     if (typeof input.userId === 'string' && input.userId) {
       const target = (await game.getUserLite([input.userId])).get(input.userId);
@@ -1037,10 +1094,9 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     }
     const club = await game.getClub(invite.club_id);
     if (!club) return fail(c, 404, 'El club ya no existe.');
-    const joined = await joinClub(storage, game, c.env, club, userId);
-    if (!joined.ok) return fail(c, joined.status, joined.error);
-    await game.setClubRequestStatus(invite.id, 'accepted');
-    return c.json({ success: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    const response = await enterClub(c, storage, game, club, userId, 'invite', invite.invited_by ?? null);
+    if (response.status < 300) await game.setClubRequestStatus(invite.id, 'accepted');
+    return response;
   }));
 
   app.get('/api/clubs/invite-links/:token', requireAuth, handler(async (c) => {
@@ -1049,7 +1105,9 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (!link || Date.parse(link.expiresAt) < Date.now()) return fail(c, 404, 'La invitación ha caducado o no existe.');
     const club = await game.getClub(link.clubId);
     if (!club) return fail(c, 404, 'El club ya no existe.');
-    return c.json({ club: clubJson(club) });
+    const inviter = await game.getMembership(link.createdBy);
+    const decision = joinDecision(club.entryMode, 'invite', club.invitePermission, inviter && inviter.clubId === club.id ? inviter.role : null);
+    return c.json({ club: clubJson(club), requiresApproval: decision === 'request', valid: decision !== 'forbidden' });
   }));
 
   app.post('/api/clubs/invite-links/:token/accept', requireAuth, handler(async (c) => {
@@ -1058,9 +1116,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (!link || Date.parse(link.expiresAt) < Date.now()) return fail(c, 404, 'La invitación ha caducado o no existe.');
     const club = await game.getClub(link.clubId);
     if (!club) return fail(c, 404, 'El club ya no existe.');
-    const joined = await joinClub(storage, game, c.env, club, c.get('authUserId'));
-    if (!joined.ok) return fail(c, joined.status, joined.error);
-    return c.json({ joined: true, joinedCompetition: joined.joinedCompetition, competitionEntry: joined.competitionEntry, club: clubJson((await game.getClub(club.id))!, { withCode: true }) });
+    return enterClub(c, storage, game, club, c.get('authUserId'), 'invite', link.createdBy);
   }));
 
   app.post('/api/clubs/:id/leave', requireAuth, handler(async (c) => {
@@ -1074,7 +1130,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     }
     const members = await game.getClubMembers(clubId);
     if (membership.role === 'owner') {
-      if (members.length > 1) return fail(c, 409, 'Eres el dueño: pasa la propiedad del club a otro miembro antes de salir, o bórralo.');
+      if (members.length > 1) return fail(c, 409, 'Eres el líder: pasa el liderazgo a otro miembro antes de salir, o borra el club.');
       await game.deleteClub(clubId);
       return c.json({ left: true, clubDeleted: true });
     }
@@ -1088,11 +1144,11 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const clubId = c.req.param('id');
     const targetId = c.req.param('userId');
     const role = await requireClubRole(game, clubId, userId, ['owner', 'admin']);
-    if (!role) return fail(c, 403, 'Solo los administradores pueden expulsar.');
+    if (!role) return fail(c, 403, 'Solo el líder y los oficiales pueden expulsar.');
     const target = await game.getMembership(targetId);
     if (!target || target.clubId !== clubId) return fail(c, 404, 'Ese usuario no está en el club.');
-    if (target.role === 'owner') return fail(c, 403, 'No se puede expulsar al dueño del club.');
-    if (target.role === 'admin' && role !== 'owner') return fail(c, 403, 'Solo el dueño puede expulsar a un administrador.');
+    if (target.role === 'owner') return fail(c, 403, 'No se puede expulsar al líder del club.');
+    if (target.role === 'admin' && role !== 'owner') return fail(c, 403, 'Solo el líder puede expulsar a un oficial.');
     if (await inRunningCompetition(game, targetId)) return fail(c, 409, 'No se puede expulsar a alguien mientras compite. Podrás hacerlo cuando acabe la competición.');
     await game.removeMember(clubId, targetId);
     return c.json({ removed: true });
@@ -1102,7 +1158,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const { game } = stores(c);
     const clubId = c.req.param('id');
     const targetId = c.req.param('userId');
-    if (!(await requireClubRole(game, clubId, c.get('authUserId'), ['owner']))) return fail(c, 403, 'Solo el dueño puede cambiar roles.');
+    if (!(await requireClubRole(game, clubId, c.get('authUserId'), ['owner']))) return fail(c, 403, 'Solo el líder puede nombrar oficiales.');
     const input = await body(c);
     const role = input.role === 'admin' ? 'admin' : input.role === 'member' ? 'member' : null;
     if (!role) return fail(c, 400, 'Rol no válido.');
@@ -1116,7 +1172,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const { game } = stores(c);
     const userId = c.get('authUserId');
     const clubId = c.req.param('id');
-    if (!(await requireClubRole(game, clubId, userId, ['owner']))) return fail(c, 403, 'Solo el dueño puede pasar la propiedad.');
+    if (!(await requireClubRole(game, clubId, userId, ['owner']))) return fail(c, 403, 'Solo el líder puede pasar el liderazgo.');
     const input = await body(c);
     const targetId = String(input.userId ?? '');
     const target = await game.getMembership(targetId);
@@ -1131,7 +1187,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const { game } = stores(c);
     const userId = c.get('authUserId');
     const clubId = c.req.param('id');
-    if (!(await requireClubRole(game, clubId, userId, ['owner']))) return fail(c, 403, 'Solo el dueño puede borrar el club.');
+    if (!(await requireClubRole(game, clubId, userId, ['owner']))) return fail(c, 403, 'Solo el líder puede borrar el club.');
     const info = cycleAt(Date.now());
     const competition = await game.getClubCompetition(clubId, info.number);
     if (info.phase === 'competition' && competition && competition.status === 'active') {

@@ -23,6 +23,8 @@ final class ClubModel {
     var isMember: Bool { detail?.club != nil }
     var isAdmin: Bool { detail?.isAdmin ?? false }
     var isOwner: Bool { detail?.isOwner ?? false }
+    /// I can invite (personal invites, links) and see the code.
+    var canInvite: Bool { detail?.canInvite ?? false }
     var invites: [ClubInvite] { detail?.invites ?? [] }
     var myRequests: [ClubOwnRequest] { detail?.myRequests ?? [] }
     var pendingCount: Int { (detail?.pendingRequests.count ?? 0) + (isMember ? 0 : invites.count) }
@@ -72,20 +74,22 @@ final class ClubModel {
         return response.clubs
     }
 
-    func create(name: String, slogan: String, crest: Crest, visibility: String) async throws -> ClubJoinResponse {
+    func create(name: String, slogan: String, description: String, crest: Crest, entryMode: String, invitePermission: String) async throws -> ClubJoinResponse {
         let body: [String: Any] = [
             "name": name,
             "slogan": slogan,
+            "description": description,
             "crest": crest.json,
             "color": crest.primary,
-            "visibility": visibility,
+            "entryMode": entryMode,
+            "invitePermission": invitePermission,
         ]
         let response: ClubJoinResponse = try await APIClient.shared.request("POST", "/api/clubs", body: body)
         await refreshAll()
         return response
     }
 
-    /// Public club: joins at once. Private club: sends a request to its admins.
+    /// Open club: joins at once. Club with approval: sends a request to its leader and officers.
     func join(_ clubId: String) async throws -> ClubJoinResponse {
         let response: ClubJoinResponse = try await APIClient.shared.request("POST", "/api/clubs/\(clubId)/join", body: [:])
         await refreshAll()
@@ -98,9 +102,8 @@ final class ClubModel {
         return response
     }
 
-    func preview(inviteToken token: String) async throws -> ClubSummary {
-        let response: ClubPreviewResponse = try await APIClient.shared.request("GET", "/api/clubs/invite-links/\(token)")
-        return response.club
+    func preview(inviteToken token: String) async throws -> ClubPreviewResponse {
+        try await APIClient.shared.request("GET", "/api/clubs/invite-links/\(token)")
     }
 
     func accept(inviteToken token: String) async throws -> ClubJoinResponse {
@@ -109,9 +112,17 @@ final class ClubModel {
         return response
     }
 
-    func respond(toInvite invite: ClubInvite, accept: Bool) async throws {
-        try await APIClient.shared.send("POST", "/api/clubs/invites/\(invite.id)/\(accept ? "accept" : "decline")", body: [:])
+    /// Accepting can send a request instead (an ordinary member's invite to a club with approval).
+    @discardableResult
+    func respond(toInvite invite: ClubInvite, accept: Bool) async throws -> ClubJoinResponse? {
+        guard accept else {
+            try await APIClient.shared.send("POST", "/api/clubs/invites/\(invite.id)/decline", body: [:])
+            await refreshAll()
+            return nil
+        }
+        let response: ClubJoinResponse = try await APIClient.shared.request("POST", "/api/clubs/invites/\(invite.id)/accept", body: [:])
         await refreshAll()
+        return response
     }
 
     // MARK: - Managing
@@ -132,16 +143,18 @@ final class ClubModel {
         return try await APIClient.shared.request("POST", "/api/clubs/\(clubId)/invites", body: [:])
     }
 
-    func update(name: String?, slogan: String?, crest: Crest?, visibility: String?) async throws {
+    func update(name: String?, slogan: String?, description: String?, crest: Crest?, entryMode: String?, invitePermission: String?) async throws {
         guard let clubId = club?.id else { return }
         var body: [String: Any] = [:]
         if let name { body["name"] = name }
         if let slogan { body["slogan"] = slogan }
+        if let description { body["description"] = description }
         if let crest {
             body["crest"] = crest.json
             body["color"] = crest.primary
         }
-        if let visibility { body["visibility"] = visibility }
+        if let entryMode { body["entryMode"] = entryMode }
+        if let invitePermission { body["invitePermission"] = invitePermission }
         try await APIClient.shared.send("PATCH", "/api/clubs/\(clubId)", body: body)
         await refreshAll()
     }

@@ -137,9 +137,14 @@ struct ClubSummary: Decodable, Identifiable, Hashable {
     let id: String
     var name: String
     var slogan: String?
+    var description: String?
     var crest: Crest
     var color: String
     var visibility: String
+    /// "open" (anyone joins), "approval" (leader/officers approve) or "invite_only" (not listed)
+    var entryMode: String
+    /// "all" (any member invites) or "officers" (only the leader and officers)
+    var invitePermission: String
     var city: String?
     var countryCode: String?
     var countryName: String?
@@ -153,7 +158,7 @@ struct ClubSummary: Decodable, Identifiable, Hashable {
     var full: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, name, slogan, crest, color, visibility, city, countryCode, countryName, rating, leaguePoints
+        case id, name, slogan, description, crest, color, visibility, entryMode, invitePermission, city, countryCode, countryName, rating, leaguePoints
         case memberCount, maxMembers, joinCode, distanceKm, requestPending, full
     }
 
@@ -162,9 +167,12 @@ struct ClubSummary: Decodable, Identifiable, Hashable {
         id = try c.decode(String.self, forKey: .id)
         name = c.string(.name) ?? "Club"
         slogan = c.string(.slogan)
+        description = c.string(.description)
         crest = (try? c.decodeIfPresent(Crest.self, forKey: .crest)) ?? Crest()
         color = c.string(.color) ?? "#16A34A"
         visibility = c.string(.visibility) ?? "public"
+        entryMode = c.string(.entryMode) ?? (visibility == "private" ? "invite_only" : "open")
+        invitePermission = c.string(.invitePermission) ?? "all"
         city = c.string(.city)
         countryCode = c.string(.countryCode)
         countryName = c.string(.countryName)
@@ -178,7 +186,41 @@ struct ClubSummary: Decodable, Identifiable, Hashable {
         full = c.bool(.full) ?? false
     }
 
-    var isPrivate: Bool { visibility == "private" }
+    var isPrivate: Bool { entryMode == "invite_only" }
+    /// Joining from its card sends a request the leader or an officer approves.
+    var requiresApproval: Bool { entryMode == "approval" }
+
+    var entryLabel: String { ClubEntry.label(entryMode) }
+    var entrySymbol: String { ClubEntry.symbol(entryMode) }
+}
+
+/// The three ways into a club.
+enum ClubEntry {
+    static let modes = ["open", "approval", "invite_only"]
+
+    static func label(_ mode: String) -> String {
+        switch mode {
+        case "approval": return "Con aprobación"
+        case "invite_only": return "Solo invitación"
+        default: return "Abierto"
+        }
+    }
+
+    static func symbol(_ mode: String) -> String {
+        switch mode {
+        case "approval": return "person.badge.clock"
+        case "invite_only": return "lock"
+        default: return "globe"
+        }
+    }
+
+    static func explanation(_ mode: String) -> String {
+        switch mode {
+        case "approval": return "Aparece en el buscador. Quien quiera entrar envía una solicitud y la aprueba el líder o un oficial."
+        case "invite_only": return "No aparece en el buscador. Solo se entra con el código, un enlace o una invitación."
+        default: return "Aparece en el buscador y cualquiera puede unirse al momento."
+        }
+    }
 }
 
 struct ClubMember: Decodable, Identifiable, Hashable {
@@ -200,8 +242,8 @@ struct ClubMember: Decodable, Identifiable, Hashable {
 
     var roleLabel: String? {
         switch role {
-        case "owner": return "Dueño"
-        case "admin": return "Admin"
+        case "owner": return "Líder"
+        case "admin": return "Oficial"
         default: return nil
         }
     }
@@ -394,9 +436,11 @@ struct ClubDetailResponse: Decodable {
     /// Only in /api/clubs/mine
     let invites: [ClubInvite]
     let myRequests: [ClubOwnRequest]
+    /// I can invite (personal invites, links) and see the code.
+    let canInvite: Bool
 
     enum CodingKeys: String, CodingKey {
-        case club, role, isMember, members, competition, pendingRequests, history, trophies, unlockedCrestPieces
+        case club, role, isMember, canInvite, members, competition, pendingRequests, history, trophies, unlockedCrestPieces
         case requestPending, invites, myRequests
     }
 
@@ -407,6 +451,7 @@ struct ClubDetailResponse: Decodable {
         club = decodedClub
         role = decodedRole
         isMember = c.bool(.isMember) ?? (decodedClub != nil && decodedRole != nil)
+        canInvite = c.bool(.canInvite) ?? (decodedClub?.joinCode != nil)
         members = (try? c.decodeIfPresent([ClubMember].self, forKey: .members)) ?? []
         competition = try? c.decodeIfPresent(RunningCompetition.self, forKey: .competition)
         pendingRequests = (try? c.decodeIfPresent([ClubJoinRequest].self, forKey: .pendingRequests)) ?? []
@@ -469,6 +514,19 @@ struct ClubInviteLinkResponse: Decodable {
 
 struct ClubPreviewResponse: Decodable {
     let club: ClubSummary
+    /// Entering with this link sends a request the leader or an officer approves.
+    let requiresApproval: Bool
+    /// The link is still valid (the member who made it can still invite).
+    let valid: Bool
+
+    enum CodingKeys: String, CodingKey { case club, requiresApproval, valid }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        club = try c.decode(ClubSummary.self, forKey: .club)
+        requiresApproval = c.bool(.requiresApproval) ?? false
+        valid = c.bool(.valid) ?? true
+    }
 }
 
 // MARK: - Season
