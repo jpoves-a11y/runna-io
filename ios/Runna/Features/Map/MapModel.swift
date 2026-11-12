@@ -73,6 +73,8 @@ final class MapModel {
     private(set) var chests: [Chest] = []
     /// Banderas: the flags of my competition and who holds them.
     private(set) var flags: [CompetitionFlag] = []
+    /// Brújula (while active): the nearest spots I haven't explored yet.
+    private(set) var compassSpots: [CompassResponse.Spot] = []
     private(set) var fortifications: [FortificationShape] = []
     private(set) var castles: [CastleZone] = []
     private(set) var routeLines: [RouteLine] = []
@@ -95,6 +97,7 @@ final class MapModel {
 
     var visibleFortifications: [FortificationShape] { mode == .competition ? fortifications : [] }
     var visibleFlags: [CompetitionFlag] { mode == .competition ? flags : [] }
+    var visibleCompassSpots: [CompassResponse.Spot] { mode == .global ? compassSpots : [] }
     var visibleCastles: [CastleZone] { mode == .competition ? castles : [] }
     var visibleRouteLines: [RouteLine] { routeLines }
 
@@ -151,6 +154,7 @@ final class MapModel {
         competitionShapes = []
         chests = []
         flags = []
+        compassSpots = []
         fortifications = []
         castles = []
         routeLines = []
@@ -240,6 +244,7 @@ final class MapModel {
             latestRoutes = value
         }
         updateRouteLines(user: user)
+        await loadCompass()
 
         if let failure {
             if failure is CancellationError { return }
@@ -248,6 +253,13 @@ final class MapModel {
         } else {
             errorMessage = nil
             hasContent = true
+        }
+    }
+
+    /// Brújula: spots to explore, only while the power is active (otherwise the list is empty).
+    func loadCompass() async {
+        if let response: CompassResponse = try? await APIClient.shared.request("GET", "/api/global/compass") {
+            compassSpots = response.active ? response.spots : []
         }
     }
 

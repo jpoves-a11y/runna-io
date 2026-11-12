@@ -215,8 +215,11 @@ export const DEFAULT_CREST: Crest = {
 
 // ─── Items: powers, global boosts and cosmetics ──────────────────────────────
 
-/** competition: only affects the competition map. global: affects the global ranking (small, capped). */
-export type ItemScope = 'competition' | 'global' | 'cosmetic';
+/**
+ * competition: only affects the competition map. global: affects the global ranking (small,
+ * capped). rest: chests of the rest days. cosmetic: permanent looks.
+ */
+export type ItemScope = 'competition' | 'global' | 'rest' | 'cosmetic';
 export type ItemActivation =
   | 'next_run' // applies to your next run, then it's used
   | 'timed' // active for activeHours after you activate it
@@ -240,15 +243,17 @@ export interface ItemDefinition {
    * start counting when the next competition starts. null = never expires.
    */
   unusedTtlHours: number | null;
-  /** 'competition': can only be activated while a competition is running. 'any': whenever. */
-  usablePhase: 'competition' | 'any';
-  category: 'defense' | 'attack' | 'utility' | 'global' | 'cosmetic';
+  /** 'competition': only while a competition is running. 'rest': only in the rest days. 'any': whenever. */
+  usablePhase: 'competition' | 'rest' | 'any';
+  category: 'defense' | 'attack' | 'utility' | 'global' | 'rest' | 'cosmetic';
   /** Only usable in these competition modes (all when missing) */
   modes?: CompetitionMode[];
 }
 
 const DEFENSE_TTL = 72;
 const ATTACK_TTL = 168;
+/** Rest-day items last two weeks: one obtained on Thursday is still there in the next rest days */
+const REST_TTL = 336;
 
 export const ITEMS: Record<string, ItemDefinition> = {
   // Defense (competition): expire sooner
@@ -270,10 +275,26 @@ export const ITEMS: Record<string, ItemDefinition> = {
   spy: { id: 'spy', scope: 'competition', name: 'Espía', description: 'Ves la última carrera de un rival de tu competición.', emoji: '🕵️', rarity: 'common', activation: 'target', unusedTtlHours: ATTACK_TTL, usablePhase: 'competition', category: 'utility' },
   nickname: { id: 'nickname', scope: 'competition', name: 'Pluma del Troll', description: 'Pon un apodo a un rival de tu competición durante 48 h.', emoji: '✏️', rarity: 'common', activation: 'target', activeHours: 48, unusedTtlHours: ATTACK_TTL, usablePhase: 'competition', category: 'utility' },
   reveal: { id: 'reveal', scope: 'competition', name: 'Faro', description: 'Durante 24 h ves los cofres ocultos del mapa.', emoji: '🔦', rarity: 'common', activation: 'timed', activeHours: 24, unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'utility' },
+  revenge: { id: 'revenge', scope: 'competition', name: 'Venganza', description: 'Durante 24 h, si alguien te roba, tu siguiente carrera que le robe cuenta el doble de lo que le quitas.', emoji: '🔁', rarity: 'epic', activation: 'timed', activeHours: 24, unusedTtlHours: DEFENSE_TTL, usablePhase: 'competition', category: 'defense' },
+  ambush: { id: 'ambush', scope: 'competition', name: 'Emboscada', description: 'Durante 24 h, el primer rival que te robe queda saboteado: su siguiente carrera conquista un 20% menos.', emoji: '🪤', rarity: 'rare', activation: 'timed', activeHours: 24, unusedTtlHours: DEFENSE_TTL, usablePhase: 'competition', category: 'defense' },
+  bastion: { id: 'bastion', scope: 'competition', name: 'Bastión', description: 'Refuerza al momento tu zona más grande con 3 capas de fortaleza.', emoji: '🏰', rarity: 'rare', activation: 'instant', unusedTtlHours: DEFENSE_TTL, usablePhase: 'competition', category: 'defense' },
+  club_wall: { id: 'club_wall', scope: 'competition', name: 'Muralla del Club', description: 'Durante 12 h nadie puede robar a tu equipo (Por equipos) o a tu club (Derbi).', emoji: '🧱', rarity: 'legendary', activation: 'timed', activeHours: 12, unusedTtlHours: DEFENSE_TTL, usablePhase: 'competition', category: 'defense', modes: ['teams', 'derby'] },
+  radar: { id: 'radar', scope: 'competition', name: 'Radar', description: 'Durante 24 h ves la última carrera de todos tus rivales.', emoji: '📡', rarity: 'epic', activation: 'timed', activeHours: 24, unusedTtlHours: ATTACK_TTL, usablePhase: 'competition', category: 'utility' },
+  double_or_nothing: { id: 'double_or_nothing', scope: 'competition', name: 'Doble o Nada', description: 'Si tu siguiente carrera tiene 10 km o más, conquista el doble; si es más corta, la mitad.', emoji: '🎲', rarity: 'epic', activation: 'next_run', unusedTtlHours: ATTACK_TTL, usablePhase: 'competition', category: 'attack' },
+  plunder: { id: 'plunder', scope: 'competition', name: 'Saqueo', description: 'Si tu siguiente carrera roba 0,1 km² o más, te llevas un objeto.', emoji: '💰', rarity: 'rare', activation: 'next_run', unusedTtlHours: ATTACK_TTL, usablePhase: 'competition', category: 'attack' },
   // Global boosts: small and capped so the global ranking stays fair
   explorer: { id: 'explorer', scope: 'global', name: 'Explorador', description: 'Tu siguiente carrera suma un 50% extra del área global nueva (máximo 0,5 km² extra).', emoji: '🧭', rarity: 'epic', activation: 'next_run', unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
   wide_trail: { id: 'wide_trail', scope: 'global', name: 'Estela Ancha', description: 'En tu siguiente carrera, también cuenta una franja de 25 m a cada lado del recorrido (útil en idas y vueltas).', emoji: '🛤️', rarity: 'rare', activation: 'next_run', unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
   streak_saver: { id: 'streak_saver', scope: 'global', name: 'Salvarrachas', description: 'Si un día no corres, tu racha no se pierde. Se usa sola.', emoji: '🔥', rarity: 'common', activation: 'passive', unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
+  compass: { id: 'compass', scope: 'global', name: 'Brújula', description: 'Durante 24 h te marca en el mapa global las 3 zonas sin explorar más cercanas.', emoji: '🧭', rarity: 'rare', activation: 'timed', activeHours: 24, unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
+  tourist: { id: 'tourist', scope: 'global', name: 'Turista', description: 'Si tu siguiente carrera es a más de 30 km de tu ciudad, suma el doble de área nueva (máximo 1 km² extra).', emoji: '✈️', rarity: 'epic', activation: 'next_run', unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
+  expedition: { id: 'expedition', scope: 'global', name: 'Expedición', description: 'Si en tu siguiente carrera corres con un amigo o alguien de tu club, los dos ganáis un 25% más de área nueva (máximo 0,3 km² cada uno).', emoji: '👥', rarity: 'rare', activation: 'next_run', unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
+  dawn: { id: 'dawn', scope: 'global', name: 'Alba', description: 'Durante 48 h, las carreras que empiezan antes de las 8:00 suman un 20% más de área nueva (máximo 0,2 km² por carrera).', emoji: '🌄', rarity: 'common', activation: 'timed', activeHours: 48, unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
+  cartographer: { id: 'cartographer', scope: 'global', name: 'Cartógrafo', description: 'Durante 48 h, todas tus carreras cuentan también una franja de 25 m a cada lado del recorrido.', emoji: '🗺️', rarity: 'legendary', activation: 'timed', activeHours: 48, unusedTtlHours: ATTACK_TTL, usablePhase: 'any', category: 'global' },
+  // Rest days: chests
+  master_key: { id: 'master_key', scope: 'rest', name: 'Llave Maestra', description: 'Durante 24 h abres los cofres pasando a 750 m en vez de a 250 m.', emoji: '🗝️', rarity: 'rare', activation: 'timed', activeHours: 24, unusedTtlHours: REST_TTL, usablePhase: 'rest', category: 'rest' },
+  double_loot: { id: 'double_loot', scope: 'rest', name: 'Botín Doble', description: 'El siguiente cofre que abras te da dos objetos.', emoji: '🎁', rarity: 'epic', activation: 'next_run', unusedTtlHours: REST_TTL, usablePhase: 'rest', category: 'rest' },
+  treasure_map: { id: 'treasure_map', scope: 'rest', name: 'Mapa del Tesoro', description: 'Durante 24 h ves los cofres nuevos de tu ciudad una hora antes que nadie.', emoji: '📜', rarity: 'common', activation: 'timed', activeHours: 24, unusedTtlHours: REST_TTL, usablePhase: 'rest', category: 'rest' },
   // Cosmetics: permanent
   title_pionero: { id: 'title_pionero', scope: 'cosmetic', name: 'Título: Pionero', description: 'Se muestra junto a tu nombre en los rankings.', emoji: '🏳️', rarity: 'common', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
   title_incansable: { id: 'title_incansable', scope: 'cosmetic', name: 'Título: Incansable', description: 'Se muestra junto a tu nombre en los rankings.', emoji: '🏃', rarity: 'rare', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
@@ -310,6 +331,29 @@ export const INVENTORY_CAP = 3;
 /** Explorer: extra global area = min(newArea * 0.5, cap) */
 export const EXPLORER_BONUS_RATIO = 0.5;
 export const EXPLORER_BONUS_CAP_M2 = 500_000;
+/** Turista: away from the home city, extra = min(newArea, cap) */
+export const TOURIST_MIN_DISTANCE_M = 30_000;
+export const TOURIST_BONUS_CAP_M2 = 1_000_000;
+/** Expedición: extra = min(newArea * ratio, cap), for the runner and each companion */
+export const EXPEDITION_BONUS_RATIO = 0.25;
+export const EXPEDITION_BONUS_CAP_M2 = 300_000;
+/** Alba: runs starting before this local hour get extra = min(newArea * ratio, cap) */
+export const DAWN_HOUR = 8;
+export const DAWN_BONUS_RATIO = 0.2;
+export const DAWN_BONUS_CAP_M2 = 200_000;
+/** All global boosts of one run together never add more than this */
+export const GLOBAL_BONUS_RUN_CAP_M2 = 1_000_000;
+/** Doble o Nada: the long run that doubles */
+export const DOUBLE_OR_NOTHING_DISTANCE_M = 10_000;
+/** Saqueo: stolen area that wins an item */
+export const PLUNDER_MIN_STOLEN_M2 = 100_000;
+/** Bastión: fortification layers added to the largest zone */
+export const BASTION_LAYERS = 3;
+/** Chests open within this distance (Llave Maestra: the second) */
+export const CHEST_RADIUS_M = 250;
+export const MASTER_KEY_RADIUS_M = 750;
+/** New chests are seen by everybody this long after appearing (Mapa del Tesoro: at once) */
+export const TREASURE_MAP_HEAD_START_MINUTES = 60;
 /** Wide trail: metres added on each side of the track */
 export const WIDE_TRAIL_METERS = 25;
 /** Head start: score bonus in the current competition */
@@ -326,7 +370,7 @@ export function itemDefinition(id: string): ItemDefinition | null {
  */
 export function pickRewardItem(rarity: Rarity, random: () => number = Math.random, owned: Set<string> = new Set()): string {
   const roll = random();
-  const scope: ItemScope = roll < 0.6 ? 'competition' : roll < 0.85 ? 'global' : 'cosmetic';
+  const scope: ItemScope = roll < 0.5 ? 'competition' : roll < 0.72 ? 'global' : roll < 0.85 ? 'rest' : 'cosmetic';
   const order = [rarity, ...RARITIES.slice(0, RARITIES.indexOf(rarity)).reverse(), ...RARITIES.slice(RARITIES.indexOf(rarity) + 1)];
   const pools: ItemScope[] = scope === 'cosmetic' ? ['cosmetic', 'competition'] : [scope, 'competition'];
   for (const poolScope of pools) {

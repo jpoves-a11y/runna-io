@@ -82,6 +82,21 @@ enum PowerSymbol {
         case "explorer": return "safari"
         case "wide_trail": return "road.lanes"
         case "streak_saver": return "flame"
+        case "compass": return "location.north.circle"
+        case "tourist": return "airplane"
+        case "expedition": return "person.2"
+        case "dawn": return "sunrise"
+        case "cartographer": return "map"
+        case "revenge": return "arrow.uturn.backward.circle"
+        case "ambush": return "hand.raised"
+        case "bastion": return "building.columns"
+        case "club_wall": return "shield.checkered"
+        case "radar": return "dot.radiowaves.left.and.right"
+        case "double_or_nothing": return "dice"
+        case "plunder": return "bag"
+        case "master_key": return "key"
+        case "double_loot": return "gift"
+        case "treasure_map": return "scroll"
         default:
             if (powerType ?? "").hasPrefix("title_") { return "textformat" }
             if (powerType ?? "").hasPrefix("crest_") { return "shield.lefthalf.filled" }

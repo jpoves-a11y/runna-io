@@ -548,6 +548,7 @@ struct InventorySheet: View {
     @State private var busyId: String?
     @State private var message: String?
     @State private var spiedRoute: RunRoute?
+    @State private var showRadar = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -557,7 +558,12 @@ struct InventorySheet: View {
                 if !model.active.isEmpty {
                     Section {
                         ForEach(model.active) { item in
-                            itemRow(item, showsButton: false)
+                            if item.itemId == "radar" {
+                                Button { showRadar = true } label: { itemRow(item, showsButton: false) }
+                                    .buttonStyle(.plain)
+                            } else {
+                                itemRow(item, showsButton: false)
+                            }
                         }
                     } header: {
                         Text("Activos")
@@ -609,6 +615,9 @@ struct InventorySheet: View {
             .sheet(item: $spiedRoute) { route in
                 SpyRouteSheet(route: route)
             }
+            .sheet(isPresented: $showRadar) {
+                RadarSheet()
+            }
             .alert("Inventario", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -622,7 +631,8 @@ struct InventorySheet: View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Competición: solo cuentan en la competición de tu club.", systemImage: "flag.2.crossed")
-                Label("Global: pequeños extras con tope para el mapa global.", systemImage: "globe.europe.africa")
+                Label("Global: pequeños extras con tope para el mapa global (como mucho 1 km² extra por carrera entre todos).", systemImage: "globe.europe.africa")
+                Label("Descanso: para los cofres de los días de descanso. Duran dos semanas.", systemImage: "gift")
                 Label("Los defensivos caducan a los 3 días y el resto a los 7 si no los usas. Los que consigues en el descanso empiezan a contar cuando arranca la competición.", systemImage: "clock")
             }
             .font(.footnote)
@@ -655,7 +665,7 @@ struct InventorySheet: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.brand)
                 } else if item.isActive {
-                    Text("Se aplicará en tu siguiente carrera")
+                    Text(item.itemId == "double_loot" ? "Se aplicará al siguiente cofre que abras" : "Se aplicará en tu siguiente carrera")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(Color.brand)
                 } else if let expires = item.expiresDate {
@@ -700,6 +710,7 @@ struct InventorySheet: View {
     private func canUse(_ item: InventoryItem) -> Bool {
         guard let definition = item.definition else { return false }
         if definition.usablePhase == "competition" { return season.isCompeting }
+        if definition.usablePhase == "rest" { return season.cycle?.isRest == true && season.club != nil }
         return true
     }
 
@@ -735,6 +746,8 @@ struct InventorySheet: View {
             Haptics.success()
             if let route = response.route {
                 spiedRoute = route
+            } else if item.itemId == "radar" {
+                showRadar = true
             } else {
                 message = response.message ?? "\(item.name) activado."
             }
@@ -817,6 +830,74 @@ private struct TargetPickerSheet: View {
                     }
                     .disabled(selectedId == nil || (needsNickname && nickname.trimmingCharacters(in: .whitespaces).isEmpty))
                 }
+            }
+        }
+    }
+}
+
+/// Radar: the last run of every rival of my competition (GET /api/season/radar).
+struct RadarSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var rivals: [RadarRival] = []
+    @State private var isLoading = true
+    @State private var selected: RunRoute?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !isLoading && rivals.isEmpty {
+                    Text("Tus rivales todavía no han corrido en esta competición.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(rivals) { rival in
+                    Button {
+                        selected = rival.route
+                    } label: {
+                        HStack(spacing: DS.Spacing.m) {
+                            AvatarView(name: rival.user?.name ?? "?", avatar: rival.user?.avatar, color: rival.user?.color ?? "#888888", size: 36)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(rival.user?.name ?? "Rival")
+                                    .font(.subheadline.weight(.semibold))
+                                if let route = rival.route {
+                                    Text("\(route.name) · \(Format.distance(route.distance)) · \(Format.relative(route.startDate ?? Date()))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                } else {
+                                    Text("Sin carreras en esta competición")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer(minLength: 4)
+                            if let route = rival.route {
+                                RouteShape(coordinates: route.coordinates)
+                                    .stroke(Color.brand, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                                    .frame(width: 44, height: 44)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(rival.route == nil)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .listBackground()
+            .overlay { if isLoading { ProgressView() } }
+            .navigationTitle("Radar")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Cerrar") { dismiss() } }
+            }
+            .task {
+                defer { isLoading = false }
+                if let response: RadarResponse = try? await APIClient.shared.request("GET", "/api/season/radar") {
+                    rivals = response.rivals
+                }
+            }
+            .sheet(item: $selected) { route in
+                SpyRouteSheet(route: route)
             }
         }
     }

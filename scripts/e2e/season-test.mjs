@@ -434,6 +434,10 @@ const spawnAt = eveningMadrid - 2 * 3600_000;
 let chests = 0;
 for (let i = 0; i < 10; i++) chests += Number((await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data.chests ?? 0);
 check('rest days: chests spawn around the club city, capped per day', chests >= 2 && chests <= 8, chests);
+const freshChests = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
+check('a chest is hidden from everybody during its first hour (Mapa del Tesoro)', freshChests.length === 0 || Date.now() >= spawnAt + 3600_000, freshChests.length);
+// The tick was in the evening: an hour later they are public
+await db.execute({ sql: 'update treasures set public_at = ?', args: [new Date(Date.now() - 60_000).toISOString()] });
 const visible = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
 check('club members see the chests (not the hidden ones)', visible.length >= 1 && visible.every((c) => !c.hidden), visible.length);
 const nonMember = (await call('GET', '/api/season/map', { token: (await register('ivan', 'Iván', '#E78AC3')).token })).data.chests;

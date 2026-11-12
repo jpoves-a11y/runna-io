@@ -32,7 +32,8 @@ import {
   type CompetitionEntry,
 } from './season';
 import { competitionContextFor, rebuildGlobalForUser, rebuildCompetitionForUser } from './runPipeline';
-import { parseGeometry } from './globalTerritory';
+import { parseGeometry, unexploredSpots } from './globalTerritory';
+import * as turf from '@turf/turf';
 import { canInvite, isOfficer, joinDecision, parseEntryMode, entryModeFromVisibility, CLUB_DESCRIPTION_MAX, type JoinVia } from './clubRules';
 import { withReasons, haversineMeters } from './antiCheat';
 import {
@@ -44,6 +45,7 @@ import {
   HEAD_START_BONUS_M2,
   LATE_JOIN_HOURS,
   ELIMINATION_CUTS,
+  BASTION_LAYERS,
   CLUB_MAX_MEMBERS,
   CLUB_NAME_MIN,
   CLUB_NAME_MAX,
@@ -427,6 +429,29 @@ async function challengesJson(game: GameStorage, userId: string, info: CycleInfo
   });
 }
 
+/** Bastión: BASTION_LAYERS fortification layers over the user's largest competition zone. */
+async function fortifyLargestZone(storage: WorkerStorage, userId: string): Promise<number> {
+  const territories = await storage.getTerritoriesByUserId(userId);
+  let best: { geometry: any; area: number; routeId: string | null } | null = null;
+  for (const territory of territories) {
+    const geometry = typeof territory.geometry === 'string' ? JSON.parse(territory.geometry) : territory.geometry;
+    const polygons = geometry?.type === 'MultiPolygon' ? geometry.coordinates.map((c: any) => ({ type: 'Polygon', coordinates: c })) : geometry?.type === 'Polygon' ? [geometry] : [];
+    for (const polygon of polygons) {
+      const area = turf.area(polygon as any);
+      if (!best || area > best.area) best = { geometry: polygon, area, routeId: territory.routeId ?? null };
+    }
+  }
+  if (!best || best.area < 10) return 0;
+  const bbox = turf.bbox(best.geometry as any);
+  for (let i = 0; i < BASTION_LAYERS; i++) {
+    await storage.createFortificationRecord({
+      userId, routeId: best.routeId as any, geometry: JSON.stringify(best.geometry), area: best.area,
+      bboxMinLng: bbox[0], bboxMinLat: bbox[1], bboxMaxLng: bbox[2], bboxMaxLat: bbox[3],
+    });
+  }
+  return BASTION_LAYERS;
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 export function registerGameRoutes(app: Hono<AppEnv>): void {
@@ -545,7 +570,11 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     }
     let chests: any[] = [];
     if (await game.getMembership(userId)) {
-      const canSeeHidden = (await game.activeEffects([userId], now)).some((e) => e.itemId === 'reveal');
+      const myEffects = await game.activeEffects([userId], now);
+      const canSeeHidden = myEffects.some((e) => e.itemId === 'reveal');
+      // Mapa del Tesoro: new chests an hour before everybody else
+      const seesEarly = myEffects.some((e) => e.itemId === 'treasure_map');
+      const nowIso = new Date(now).toISOString();
       // Only the chests of my city (or near my home): others are noise, and a small city's chests
       // would hint where its few runners live
       const me = await game.getUserGameRow(userId);
@@ -557,6 +586,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       chests = (await game.activeChests(now))
         .filter((t) => t.city_key === myCity || near(t))
         .filter((t) => Number(t.hidden) !== 1 || canSeeHidden)
+        .filter((t) => seesEarly || !t.public_at || t.public_at <= nowIso)
         .map((t) => ({
           id: t.id, name: t.name, itemId: t.power_type, item: ITEMS[t.power_type] ?? null, rarity: rarityJson(t.rarity),
           lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: Number(t.hidden) === 1, expiresAt: t.expires_at,
@@ -597,6 +627,10 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (def.usablePhase === 'competition' && !context) {
       return fail(c, 409, 'Este poder solo se puede usar mientras participas en una competición de tu club.');
     }
+    if (def.usablePhase === 'rest') {
+      if (!isRestLike(info.phase)) return fail(c, 409, `${def.name} solo se puede usar en los días de descanso.`);
+      if (!(await game.getMembership(userId))) return fail(c, 409, 'Los cofres son para los miembros de un club.');
+    }
     // Some powers make no sense in some modes (no map in Banderas / Exploradores...)
     if (context && def.scope === 'competition' && !itemUsableInMode(def, context.competition.mode as CompetitionMode)) {
       return fail(c, 409, `${def.name} no sirve en el modo ${MODE_INFO[context.competition.mode as CompetitionMode]?.name ?? context.competition.mode}.`);
@@ -609,8 +643,18 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     }
 
     if (def.activation === 'next_run') {
-      if (!(await game.activateItem(fresh.id, null, null, now))) return fail(c, 409, 'No se pudo activar.');
-      return c.json({ success: true, message: `${def.name}: se aplicará en tu siguiente carrera.`, item: itemJson((await game.getInventoryItem(fresh.id))!) });
+      // Turista and Expedición wait for the first run where they apply, for up to a week
+      const waits = def.id === 'tourist' || def.id === 'expedition';
+      const until = waits ? new Date(now + 7 * 24 * 3600 * 1000).toISOString() : null;
+      if (!(await game.activateItem(fresh.id, until, null, now))) return fail(c, 409, 'No se pudo activar.');
+      const message = def.id === 'double_loot'
+        ? `${def.name}: se aplicará al siguiente cofre que abras.`
+        : def.id === 'tourist'
+          ? `${def.name}: se aplicará en tu primera carrera a más de 30 km de tu ciudad (durante 7 días).`
+          : def.id === 'expedition'
+            ? `${def.name}: se aplicará en tu primera carrera con un amigo o alguien de tu club (durante 7 días).`
+            : `${def.name}: se aplicará en tu siguiente carrera.`;
+      return c.json({ success: true, message, item: itemJson((await game.getInventoryItem(fresh.id))!) });
     }
     if (def.activation === 'timed') {
       const until = new Date(now + (def.activeHours ?? 24) * 3600 * 1000).toISOString();
@@ -630,6 +674,10 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (def.activation === 'instant') {
       if (def.id === 'head_start' && context) {
         await game.updateParticipant(context.competition.id, userId, { addBonus: HEAD_START_BONUS_M2 });
+      }
+      if (def.id === 'bastion') {
+        const layers = await fortifyLargestZone(storage, userId);
+        if (layers === 0) return fail(c, 409, 'Todavía no tienes territorio en esta competición que reforzar.');
       }
       await game.consumeItems([fresh.id], now);
       return c.json({ success: true, message: `${def.name} aplicado.` });
@@ -684,6 +732,59 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       return c.json({ success: true, message: 'Sabotaje preparado: su siguiente carrera en 24 h conquistará un 20% menos.', activeUntil: until });
     }
     return fail(c, 400, 'Este objeto no se puede activar.');
+  }));
+
+  /** Brújula (active): the nearest spots not explored yet around the last run (or home). */
+  app.get('/api/global/compass', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const now = Date.now();
+    const compass = (await game.activeEffects([userId], now)).find((e) => e.itemId === 'compass');
+    if (!compass) return c.json({ active: false, spots: [] });
+    const runs = await game.getCountedRunsChronological(userId);
+    const last = runs[runs.length - 1];
+    let center: [number, number] | null = null;
+    if (last) {
+      try {
+        const coords = JSON.parse(last.coordinates);
+        if (Array.isArray(coords) && coords.length > 0) center = [Number(coords[0][0]), Number(coords[0][1])];
+      } catch { /* keep looking */ }
+    }
+    if (!center) {
+      const me = await game.getUserGameRow(userId);
+      if (me?.home_lat !== null && me?.home_lat !== undefined) center = [Number(me.home_lat), Number(me.home_lng)];
+    }
+    if (!center) return c.json({ active: true, activeUntil: compass.metadata?.until ?? null, spots: [] });
+    const territory = await game.getGlobalTerritory(userId);
+    return c.json({ active: true, spots: unexploredSpots(parseGeometry(territory?.geometry) as any, center, 3) });
+  }));
+
+  /** Radar (active): the last run of every rival of my competition. */
+  app.get('/api/season/radar', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const now = Date.now();
+    if (!(await game.activeEffects([userId], now)).some((e) => e.itemId === 'radar')) return c.json({ active: false, rivals: [] });
+    const info = cycleAt(now);
+    const context = await competitionContextFor(game, userId, new Date(now).toISOString(), info, now);
+    if (!context) return c.json({ active: true, rivals: [] });
+    let rivalIds = context.enemyIds;
+    if ((context.competition.mode === 'duel' || context.competition.mode === 'derby') && context.competition.opponentClubId) {
+      const opponent = await game.getClubCompetition(context.competition.opponentClubId, context.competition.cycleNumber);
+      if (opponent) rivalIds = (await game.getParticipants(opponent.id)).map((p) => p.userId);
+    }
+    const bounds = cycleBounds(info.number);
+    const users = await game.getUserLite(rivalIds);
+    const rivals = [];
+    for (const rivalId of rivalIds.slice(0, 30)) {
+      const runs = await game.getCountedRunsChronological(rivalId, new Date(bounds.competitionStart).toISOString(), new Date(bounds.competitionEnd).toISOString());
+      const last = runs[runs.length - 1];
+      rivals.push({
+        user: users.get(rivalId) ?? null,
+        route: last ? { id: last.id, name: last.name, distance: last.distance, duration: last.duration, startedAt: last.started_at, coordinates: JSON.parse(last.coordinates) } : null,
+      });
+    }
+    return c.json({ active: true, rivals });
   }));
 
   app.post('/api/cosmetics/title', requireAuth, handler(async (c) => {

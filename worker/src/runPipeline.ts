@@ -19,10 +19,15 @@ import {
 } from './gameStorage';
 import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, haversineMeters, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
-import { cycleAt, cycleBounds, isRestLike, localDate, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
+import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
 import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry } from './season';
 import { routeToEnclosedPolygon, activitiesOverlapInTime, geometriesOverlapByPercentage, type ConquestVictimInfo } from './territory';
-import { ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, FLAG_CAPTURE_RADIUS_M, ITEMS } from '../../shared/game';
+import {
+  ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, FLAG_CAPTURE_RADIUS_M, ITEMS,
+  TOURIST_MIN_DISTANCE_M, TOURIST_BONUS_CAP_M2, DAWN_HOUR, DAWN_BONUS_RATIO, DAWN_BONUS_CAP_M2,
+  EXPEDITION_BONUS_RATIO, EXPEDITION_BONUS_CAP_M2, GLOBAL_BONUS_RUN_CAP_M2,
+  DOUBLE_OR_NOTHING_DISTANCE_M, PLUNDER_MIN_STOLEN_M2, pickRewardItem,
+} from '../../shared/game';
 
 export interface RunPipelineInput {
   userId: string;
@@ -52,6 +57,12 @@ export interface RunPipelineResult {
   ranTogetherWith: string[];
   /** This run made an inactive member enter their club's running competition */
   joinedCompetition?: boolean;
+  /** Extra global area of each power that applied (explorer, tourist, dawn, expedition) */
+  globalBoosts?: Record<string, number>;
+  /** Saqueo: the item won by a big steal */
+  plunderItem?: string;
+  /** Venganza: extra competition score from stealing back */
+  revengeBonus?: number;
   /**
    * Why a run of a club member didn't count for the competition: it arrived after the close
    * (Monday 06:00), the mode doesn't let anyone in any more, or they joined the club too late.
@@ -194,9 +205,89 @@ export async function competitionContextFor(game: GameStorage, userId: string, r
   let areaFactor = 1;
   const effects = await game.activeEffects(participants.map((p) => p.userId), now);
   if (effects.some((e) => e.itemId === 'rally')) areaFactor *= 1.5;
+  // Muralla del Club: nobody can steal from the team (Por equipos) or the club (Derbi) of its holder
+  if (mode === 'teams' || mode === 'derby') {
+    const enemyEffects = await game.activeEffects(enemyIds, now);
+    const walls = enemyEffects.filter((e) => e.itemId === 'club_wall').map((e) => e.userId);
+    if (walls.length > 0) {
+      if (mode === 'derby') {
+        enemyIds = []; // the whole rival club is behind the wall
+      } else {
+        const wallTeams = new Set(participants.filter((p) => walls.includes(p.userId)).map((p) => p.team));
+        enemyIds = enemyIds.filter((id) => !wallTeams.has(participants.find((p) => p.userId === id)?.team ?? null));
+      }
+    }
+  }
   const sabotages = await game.sabotagesAgainst(userId, now);
   if (sabotages.length > 0) areaFactor *= 0.8;
   return { competition: participation.competition, participant: me, participants, enemyIds, rivalCompetitionId, areaFactor, sabotageIds: sabotages.map((s) => s.id) };
+}
+
+/**
+ * Extra global area of one run from the active global powers, each with its own cap and all of them
+ * together never above GLOBAL_BONUS_RUN_CAP_M2 (so powers can't buy the ranking).
+ */
+export function globalBoosts(input: { newArea: number; explorer: boolean; tourist: boolean; dawn: boolean; expedition: boolean }): { total: number; parts: Record<string, number> } {
+  const parts: Record<string, number> = {};
+  const area = Math.max(0, input.newArea);
+  if (area <= 0) return { total: 0, parts };
+  if (input.explorer) parts.explorer = Math.min(area * EXPLORER_BONUS_RATIO, EXPLORER_BONUS_CAP_M2);
+  if (input.tourist) parts.tourist = Math.min(area, TOURIST_BONUS_CAP_M2);
+  if (input.dawn) parts.dawn = Math.min(area * DAWN_BONUS_RATIO, DAWN_BONUS_CAP_M2);
+  if (input.expedition) parts.expedition = Math.min(area * EXPEDITION_BONUS_RATIO, EXPEDITION_BONUS_CAP_M2);
+  let total = Object.values(parts).reduce((sum, v) => sum + v, 0);
+  if (total > GLOBAL_BONUS_RUN_CAP_M2) {
+    // Scale every part down so they add up to the cap
+    const factor = GLOBAL_BONUS_RUN_CAP_M2 / total;
+    for (const key of Object.keys(parts)) parts[key] = parts[key] * factor;
+    total = GLOBAL_BONUS_RUN_CAP_M2;
+  }
+  return { total, parts };
+}
+
+/** Deterministic random for a seed (rewards decided by a run). */
+function seededRandomFor(seed: string): () => number {
+  let h = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i++) {
+    h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  let a = h >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Someone stole from these victims: a victim with Venganza remembers who (their next steal back
+ * counts double); a victim with Emboscada sabotages the thief (once) and is told.
+ */
+async function reactToSteal(storage: WorkerStorage, game: GameStorage, env: any, thiefId: string, victims: ConquestVictimInfo[], now: number): Promise<void> {
+  const hit = victims.filter((v) => v.stolenArea > 0).map((v) => v.userId);
+  if (hit.length === 0) return;
+  const effects = await game.activeEffects(hit, now);
+  const thief = (await game.getUserLite([thiefId])).get(thiefId);
+  for (const e of effects) {
+    if (e.itemId === 'revenge') {
+      const targets: string[] = Array.isArray(e.metadata?.targets) ? e.metadata.targets : [];
+      if (!targets.includes(thiefId)) await game.setEffectMetadata(e.id, { ...(e.metadata ?? {}), targets: [...targets, thiefId] });
+    }
+    if (e.itemId === 'ambush') {
+      const until = new Date(now + (ITEMS.sabotage.activeHours ?? 24) * 3600 * 1000).toISOString();
+      await game.createActiveEffect(e.userId, 'sabotage', until, { targetUserId: thiefId, fromAmbush: true }, 'ambush', now);
+      await game.consumeItems([e.id], now);
+      await notifyUsers(storage, env, [e.userId], {
+        title: '🪤 ¡Ha caído en tu Emboscada!',
+        body: `${thief?.name ?? 'Un rival'} te ha robado y queda saboteado: su siguiente carrera conquistará un 20% menos.`,
+        tag: `ambush-${e.id}`,
+        data: { type: 'ambush' },
+      });
+    }
+  }
 }
 
 /** The user fell in the Eliminación of this cycle. */
@@ -318,27 +409,72 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
 
   // ── 3. Global mode ──
   const ownEffects = await game.activeEffects([userId], now);
-  const explorer = ownEffects.find((e) => e.itemId === 'explorer');
-  const wideTrail = ownEffects.find((e) => e.itemId === 'wide_trail');
+  const effect = (itemId: string) => ownEffects.find((e) => e.itemId === itemId);
+  const explorer = effect('explorer');
+  const wideTrail = effect('wide_trail');
+  const cartographer = effect('cartographer');
+  const tourist = effect('tourist');
+  const expedition = effect('expedition');
+  const dawn = effect('dawn');
   const runGeometry = runAreaGeometry(analysis.segments);
-  const globalRunGeometry = wideTrail ? runAreaGeometry(analysis.segments, { wideTrail: true }) : runGeometry;
-  const before = Number((await game.getUserGameRow(userId))?.global_area ?? 0);
+  const globalRunGeometry = wideTrail || cartographer ? runAreaGeometry(analysis.segments, { wideTrail: true }) : runGeometry;
+  const me = await game.getUserGameRow(userId);
+  const before = Number(me?.global_area ?? 0);
   let globalNewArea = 0;
   let bonus = 0;
+  let boostParts: Record<string, number> = {};
+  // Expedición: who ran with me (friends or club mates), only looked up when it matters
+  let companions: string[] = [];
+  if (expedition && runGeometry) {
+    const membership = await game.getMembership(userId);
+    const clubmates = membership ? await game.getClubMemberIds(membership.clubId) : [];
+    const friends = await storage.getFriendIds(userId);
+    companions = await ranWithClubmates(storage, [...new Set([...friends, ...clubmates])].filter((id) => id !== userId), route.startedAt, route.completedAt, runGeometry);
+  }
+  const startPoint = coords[0];
+  const homeLat = Number(me?.home_lat);
+  const homeLng = Number(me?.home_lng);
+  const farFromHome = !!startPoint && me?.home_lat !== null && me?.home_lat !== undefined && Number.isFinite(homeLat) && Number.isFinite(homeLng)
+    && haversineMeters([homeLat, homeLng], startPoint) > TOURIST_MIN_DISTANCE_M;
   if (globalRunGeometry) {
     const existing = await game.getGlobalTerritory(userId);
     const merge = mergeIntoGlobal(parseGeometry(existing?.geometry), globalRunGeometry as any);
     if (merge && merge.newArea > 0) {
       globalNewArea = merge.newArea;
       await game.saveGlobalTerritory(userId, JSON.stringify(merge.merged), merge.totalArea);
-      if (explorer) bonus = Math.min(globalNewArea * EXPLORER_BONUS_RATIO, EXPLORER_BONUS_CAP_M2);
+      const boosts = globalBoosts({
+        newArea: globalNewArea,
+        explorer: !!explorer,
+        tourist: !!tourist && farFromHome,
+        dawn: !!dawn && localHour(Date.parse(route.startedAt)) < DAWN_HOUR,
+        expedition: !!expedition && companions.length > 0,
+      });
+      bonus = boosts.total;
+      boostParts = boosts.parts;
       await game.addGlobalAreaEvent({ userId, routeId, area: globalNewArea, bonus, period: monthPeriod(Date.parse(route.startedAt)), runAt: route.startedAt });
+      // Expedición: the companions get the same share (their own event, kept by their rebuilds)
+      if (boostParts.expedition) {
+        const giver = (await game.getUserLite([userId])).get(userId);
+        for (const companion of companions) {
+          await game.addGlobalAreaEvent({ userId: companion, routeId: `expedition:${routeId}`, area: 0, bonus: boostParts.expedition, period: monthPeriod(Date.parse(route.startedAt)), runAt: route.startedAt });
+          await game.syncUserGlobalArea(companion);
+        }
+        await notifyUsers(storage, env, companions, {
+          title: '👥 ¡Expedición!',
+          body: `Has corrido con ${giver?.name ?? 'un compañero'} y su Expedición te suma ${(boostParts.expedition / 1e6).toLocaleString('es-ES', { maximumFractionDigits: 2 })} km² en tu mapa global.`,
+          tag: `expedition-${routeId}`,
+          data: { type: 'expedition' },
+        });
+      }
     }
   }
-  const used = [explorer, wideTrail].filter((e): e is NonNullable<typeof e> => !!e).map((e) => e.id);
+  // Next-run boosts are used up by this run (Turista and Expedición only when they applied)
+  const used = [explorer, wideTrail, boostParts.tourist ? tourist : null, boostParts.expedition ? expedition : null]
+    .filter((e): e is NonNullable<typeof e> => !!e).map((e) => e.id);
   if (used.length > 0 && runGeometry) await game.consumeItems(used, now);
   const globalAfter = await game.syncUserGlobalArea(userId);
   result.globalGain = globalNewArea + bonus;
+  result.globalBoosts = boostParts;
 
   // Huge areas go to review (they still count)
   const review: ValidationReason[] = [];
@@ -369,19 +505,46 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     const mode = context.competition.mode;
     let conquest: Awaited<ReturnType<typeof processTerritoryConquest>> | null = null;
     // Banderas and Exploradores have no competition map: no territory, no steals
+    const myEffects = await game.activeEffects([userId], now);
+    const doubleOrNothing = myEffects.find((e) => e.itemId === 'double_or_nothing');
+    const plunder = myEffects.find((e) => e.itemId === 'plunder');
+    const revenge = myEffects.find((e) => e.itemId === 'revenge');
+    let extraBonus = 0;
     if (runGeometry && !MAPLESS_MODES.includes(mode as any)) {
+      // Doble o Nada: a long run doubles, a short one halves
+      const factor = doubleOrNothing ? (analysis.stats.distanceM >= DOUBLE_OR_NOTHING_DISTANCE_M ? 2 : 0.5) : 1;
       conquest = await processTerritoryConquest(storage, userId, routeId, runGeometry, {
         competitionId: context.competition.id,
         enemyIds: context.enemyIds,
-        areaFactor: context.areaFactor,
+        areaFactor: context.areaFactor * factor,
       }, route.startedAt, route.completedAt);
       if (context.sabotageIds.length > 0) await game.consumeItems(context.sabotageIds, now);
+      const usedNow = [doubleOrNothing, plunder].filter((e): e is NonNullable<typeof e> => !!e).map((e) => e.id);
+      if (usedNow.length > 0) await game.consumeItems(usedNow, now);
+      // Saqueo: a big steal wins an item
+      if (plunder && conquest.areaStolen >= PLUNDER_MIN_STOLEN_M2) {
+        const loot = pickRewardItem('common', seededRandomFor(`plunder:${routeId}`));
+        await game.grantItem(userId, loot, 'plunder', routeId, now);
+        result.plunderItem = loot;
+      }
+      // Venganza: what this run steals from whoever stole from me counts double (once)
+      const targets: string[] = Array.isArray(revenge?.metadata?.targets) ? revenge!.metadata.targets : [];
+      if (revenge && targets.length > 0) {
+        const fromTargets = conquest.victims.filter((v) => targets.includes(v.userId)).reduce((sum, v) => sum + v.stolenArea, 0);
+        if (fromTargets > 0) {
+          extraBonus += fromTargets;
+          result.revengeBonus = fromTargets;
+          await game.consumeItems([revenge.id], now);
+        }
+      }
+      // Venganza and Emboscada of the victims
+      await reactToSteal(storage, game, env, userId, conquest.victims, now);
     }
     await game.updateParticipant(context.competition.id, userId, {
       addRuns: 1,
       addDistance: analysis.stats.distanceM,
       addAreaStolen: conquest?.areaStolen ?? 0,
-      addBonus: conquest?.timeBombPenalty ? -conquest.timeBombPenalty : 0,
+      addBonus: (conquest?.timeBombPenalty ? -conquest.timeBombPenalty : 0) + extraBonus,
     });
     await game.syncParticipantAreas(context.competition.id);
     // Area other participants lost to this run (in the Derbi, the rival club's competition), and the
@@ -440,7 +603,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
   await finish({
     joinedCompetition: result.joinedCompetition ?? false,
     competitionNote: result.competitionNote ?? null,
-    globalArea: { gained: globalNewArea, bonus, total: globalAfter },
+    globalArea: { gained: globalNewArea, bonus, total: globalAfter, boosts: boostParts },
     competition: result.competition
       ? {
         competitionId: result.competition.competitionId, mode: result.competition.mode, newArea: result.competition.newArea,
@@ -511,8 +674,15 @@ export async function rebuildGlobalForUser(storage: WorkerStorage, userId: strin
     (await import('drizzle-orm')).sql`SELECT route_id, bonus FROM global_area_events WHERE user_id = ${userId} AND bonus > 0`,
   );
   for (const e of oldEvents) if (e.route_id) bonusByRoute.set(e.route_id, (bonusByRoute.get(e.route_id) ?? 0) + Number(e.bonus));
+  // Bonuses given by other runners' Expedición are kept as they are
+  const gifts = await game.database.all<{ route_id: string; bonus: number; period: string; run_at: string }>(
+    (await import('drizzle-orm')).sql`SELECT route_id, bonus, period, run_at FROM global_area_events WHERE user_id = ${userId} AND route_id LIKE 'expedition:%'`,
+  );
 
   await game.clearGlobalData(userId);
+  for (const gift of gifts) {
+    await game.addGlobalAreaEvent({ userId, routeId: gift.route_id, area: 0, bonus: Number(gift.bonus), period: gift.period, runAt: gift.run_at });
+  }
   let geometry: any = null;
   let runs = 0;
   const from = new Date(runsCountFromMs()).toISOString();

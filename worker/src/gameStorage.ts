@@ -294,6 +294,8 @@ export async function applyCompetitionColumns(db: Database): Promise<void> {
   await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`);
   await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN city_key TEXT`);
   await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN zone TEXT`);
+  // Mapa del Tesoro: everybody sees a chest from this time; its holders, from when it appears
+  await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN public_at TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN scope TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN source TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN unused_expires_at TEXT`);
@@ -1286,13 +1288,13 @@ export class GameStorage {
       discarded = oldest.power_type;
     }
     let ttlStart = now;
-    if (def.usablePhase === 'competition') {
+    const info = cycleAt(now);
+    if (def.usablePhase === 'competition' && info.phase !== 'competition') {
       // Items obtained outside a competition start their clock when the next one starts
-      const info = cycleAt(now);
-      if (info.phase !== 'competition') {
-        const nextStart = info.phase === 'preseason' ? Date.parse(info.restEndsAt) : Date.parse(info.restEndsAt);
-        ttlStart = Math.max(now, nextStart);
-      }
+      ttlStart = Math.max(now, Date.parse(info.restEndsAt));
+    } else if (def.usablePhase === 'rest' && info.phase === 'competition') {
+      // Rest-day items obtained during a competition start their clock when it ends
+      ttlStart = Math.max(now, Date.parse(info.competitionEndsAt));
     }
     const unusedExpiresAt = def.unusedTtlHours === null ? null : new Date(ttlStart + def.unusedTtlHours * 3600 * 1000).toISOString();
     const id = newId();
@@ -1335,6 +1337,20 @@ export class GameStorage {
   async getInventoryItem(id: string): Promise<InventoryRow | null> {
     const rows = await this.db.all<Row>(sql`SELECT * FROM user_powers WHERE id = ${id}`);
     return rows[0] ? toInventory(rows[0]) : null;
+  }
+
+  /** An effect that starts active without coming from the inventory (e.g. the sabotage of an Emboscada). */
+  async createActiveEffect(userId: string, itemId: string, expiresAt: string | null, metadata: any, source: string, now = Date.now()): Promise<string> {
+    const id = newId();
+    const iso = new Date(now).toISOString();
+    await this.db.run(sql`INSERT INTO user_powers (id, user_id, competition_id, power_type, treasure_id, status, scope, source, activated_at, expires_at, metadata, created_at)
+      VALUES (${id}, ${userId}, ${SEASON_INVENTORY}, ${itemId}, ${source}, 'active', ${ITEMS[itemId]?.scope ?? 'competition'}, ${source}, ${iso}, ${expiresAt},
+        ${metadata === null ? null : JSON.stringify(metadata)}, ${iso})`);
+    return id;
+  }
+
+  async setEffectMetadata(id: string, metadata: any): Promise<void> {
+    await this.db.run(sql`UPDATE user_powers SET metadata = ${JSON.stringify(metadata)} WHERE id = ${id}`);
   }
 
   /** available -> active (with an end time for timed effects). Returns false if it wasn't available. */
@@ -1427,11 +1443,11 @@ export class GameStorage {
     return Number(rows[0]?.n ?? 0);
   }
 
-  async createChest(data: { competitionId: string; name: string; itemId: string; rarity: string; lat: number; lng: number; expiresAt: string; zone: string; hidden: boolean; cityKey: string }): Promise<string> {
+  async createChest(data: { competitionId: string; name: string; itemId: string; rarity: string; lat: number; lng: number; expiresAt: string; zone: string; hidden: boolean; cityKey: string; publicAt?: string | null }): Promise<string> {
     const id = newId();
-    await this.db.run(sql`INSERT INTO treasures (id, competition_id, name, power_type, rarity, lat, lng, spawned_at, expires_at, active, zone, hidden, city_key)
+    await this.db.run(sql`INSERT INTO treasures (id, competition_id, name, power_type, rarity, lat, lng, spawned_at, expires_at, active, zone, hidden, city_key, public_at)
       VALUES (${id}, ${data.competitionId}, ${data.name}, ${data.itemId}, ${data.rarity}, ${data.lat}, ${data.lng}, ${nowIso()}, ${data.expiresAt}, 1,
-        ${data.zone}, ${data.hidden ? 1 : 0}, ${data.cityKey})`);
+        ${data.zone}, ${data.hidden ? 1 : 0}, ${data.cityKey}, ${data.publicAt ?? null})`);
     return id;
   }
 

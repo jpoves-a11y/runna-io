@@ -384,14 +384,16 @@ struct ConquestResult: Decodable {
         let gained: Double
         let bonus: Double
         let total: Double
+        let boosts: [String: Double]
 
-        enum CodingKeys: String, CodingKey { case gained, bonus, total }
+        enum CodingKeys: String, CodingKey { case gained, bonus, total, boosts }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             gained = c.double(.gained) ?? 0
             bonus = c.double(.bonus) ?? 0
             total = c.double(.total) ?? 0
+            boosts = (try? c.decodeIfPresent([String: Double].self, forKey: .boosts)) ?? [:]
         }
     }
 
@@ -407,6 +409,8 @@ struct ConquestResult: Decodable {
     let globalGained: Double
     let globalBonus: Double
     let globalTotal: Double?
+    /// Extra global area of each power that applied: "explorer", "tourist", "dawn", "expedition"
+    let globalBoosts: [String: Double]
     let competition: CompetitionPart?
     /// This run brought me (an inactive member) into my club's running competition.
     let joinedCompetition: Bool
@@ -433,6 +437,7 @@ struct ConquestResult: Decodable {
         globalGained = global?.gained ?? newAreaConquered
         globalBonus = global?.bonus ?? 0
         globalTotal = global?.total
+        globalBoosts = global?.boosts ?? [:]
         competition = try? c.decodeIfPresent(CompetitionPart.self, forKey: .competition)
         joinedCompetition = c.bool(.joinedCompetition) ?? false
         competitionNote = c.string(.competitionNote)

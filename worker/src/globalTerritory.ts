@@ -134,3 +134,41 @@ export function mergeIntoGlobal(existing: AreaGeometry | null, run: AreaGeometry
   // The new area is what the total grew by (consistent with the stored geometry)
   return { merged, newArea: Math.max(0, totalArea - existingArea), totalArea };
 }
+
+/**
+ * Brújula: the nearest spots not explored yet, around `center` ([lat, lng]). A grid of cells of
+ * `cellMeters` within `radiusMeters`; a cell counts as explored when its centre is inside the
+ * global map. Picks are kept at least 2 cells apart, nearest first.
+ */
+export function unexploredSpots(
+  geometry: AreaGeometry | null,
+  center: [number, number],
+  count = 3,
+  cellMeters = 300,
+  radiusMeters = 3000,
+): Array<{ lat: number; lng: number; distanceMeters: number }> {
+  const [lat0, lng0] = center;
+  const dLat = cellMeters / 111_320;
+  const dLng = cellMeters / (111_320 * Math.cos((lat0 * Math.PI) / 180));
+  const steps = Math.ceil(radiusMeters / cellMeters);
+  const feature = geometry ? turf.feature(geometry as any) : null;
+  const candidates: Array<{ lat: number; lng: number; distanceMeters: number }> = [];
+  for (let i = -steps; i <= steps; i++) {
+    for (let j = -steps; j <= steps; j++) {
+      const lat = lat0 + i * dLat;
+      const lng = lng0 + j * dLng;
+      const distanceMeters = turf.distance([lng0, lat0], [lng, lat], { units: 'meters' });
+      if (distanceMeters > radiusMeters || distanceMeters < cellMeters) continue;
+      if (feature && turf.booleanPointInPolygon(turf.point([lng, lat]), feature as any)) continue;
+      candidates.push({ lat, lng, distanceMeters });
+    }
+  }
+  candidates.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  const picks: typeof candidates = [];
+  for (const c of candidates) {
+    if (picks.some((p) => turf.distance([p.lng, p.lat], [c.lng, c.lat], { units: 'meters' }) < cellMeters * 2)) continue;
+    picks.push({ ...c, distanceMeters: Math.round(c.distanceMeters) });
+    if (picks.length >= count) break;
+  }
+  return picks;
+}

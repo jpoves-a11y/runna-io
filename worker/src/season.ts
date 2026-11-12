@@ -19,6 +19,9 @@ import {
   ELIMINATION_IMMUNITY_HOURS,
   ELIMINATION_WARNING_HOURS,
   COMPETITION_GRACE_HOURS,
+  CHEST_RADIUS_M,
+  MASTER_KEY_RADIUS_M,
+  TREASURE_MAP_HEAD_START_MINUTES,
   flagCount,
   eliminationsAt,
   CHALLENGES,
@@ -1162,10 +1165,12 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
     const item = ITEMS[itemId];
     const expiresAt = new Date(Math.min(restEnd, now + 24 * 3600 * 1000)).toISOString();
     const hidden = random() < 0.2;
+    // Everybody sees it an hour after it appears; whoever has the Mapa del Tesoro, at once
+    const publicAt = new Date(now + TREASURE_MAP_HEAD_START_MINUTES * 60 * 1000).toISOString();
     await game.createChest({
       competitionId: `cycle-${info.number}`,
       name: `Cofre ${RARITY_INFO[rarity].label.toLowerCase()}`,
-      itemId, rarity, lat: spot.lat, lng: spot.lng, expiresAt, zone: city.city, hidden, cityKey: city.cityKey,
+      itemId, rarity, lat: spot.lat, lng: spot.lng, expiresAt, zone: city.city, hidden, cityKey: city.cityKey, publicAt,
     });
     spawned++;
     if (!hidden && (rarity === 'epic' || rarity === 'legendary')) {
@@ -1188,14 +1193,25 @@ export async function collectChestsAlongRun(storage: WorkerStorage, game: GameSt
   if (chests.length === 0) return collected;
   const effects = await game.activeEffects([userId], now);
   const canSeeHidden = effects.some((e) => e.itemId === 'reveal');
+  // Llave Maestra: chests open from further away
+  const radius = effects.some((e) => e.itemId === 'master_key') ? MASTER_KEY_RADIUS_M : CHEST_RADIUS_M;
+  let doubleLoot = effects.find((e) => e.itemId === 'double_loot') ?? null;
   const sample = coords.filter((_, i) => i % 3 === 0 || i === coords.length - 1);
   for (const chest of chests) {
     if (Number(chest.hidden) === 1 && !canSeeHidden) continue;
-    const near = sample.some((p) => haversineMeters(p, [Number(chest.lat), Number(chest.lng)]) <= 250);
+    const near = sample.some((p) => haversineMeters(p, [Number(chest.lat), Number(chest.lng)]) <= radius);
     if (!near) continue;
     if (!(await game.claimChest(chest.id, userId))) continue;
     const grant = await game.grantItem(userId, chest.power_type, 'chest', chest.id, now);
     collected.push({ treasureId: chest.id, treasureName: chest.name, powerType: chest.power_type, rarity: chest.rarity, zone: chest.zone ?? null });
+    // Botín Doble: the first chest opened with it gives a second item of the same rarity
+    if (doubleLoot) {
+      const extra = pickRewardItem(chest.rarity as Rarity, seededRandom(`double-loot:${chest.id}`), await game.ownedCosmetics(userId));
+      await game.grantItem(userId, extra, 'chest', chest.id, now);
+      collected.push({ treasureId: `${chest.id}:extra`, treasureName: chest.name, powerType: extra, rarity: chest.rarity, zone: chest.zone ?? null });
+      await game.consumeItems([doubleLoot.id], now);
+      doubleLoot = null;
+    }
     try {
       await storage.createFeedEvent({
         userId,

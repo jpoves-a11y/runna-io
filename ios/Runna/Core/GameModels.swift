@@ -1068,6 +1068,7 @@ struct ItemDefinition: Decodable, Hashable {
     var scopeLabel: String {
         switch scope {
         case "global": return "Global"
+        case "rest": return "Descanso"
         case "cosmetic": return "Cosmético"
         default: return "Competición"
         }
@@ -1130,6 +1131,65 @@ struct InventoryResponse: Decodable {
         items = (try? c.decodeIfPresent([InventoryItem].self, forKey: .items)) ?? []
         cap = c.int(.cap) ?? 3
         equippedTitle = c.string(.equippedTitle)
+    }
+}
+
+/// GET /api/season/radar
+struct RadarResponse: Decodable {
+    let active: Bool
+    let rivals: [RadarRival]
+
+    enum CodingKeys: String, CodingKey { case active, rivals }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        active = c.bool(.active) ?? false
+        rivals = (try? c.decodeIfPresent([RadarRival].self, forKey: .rivals)) ?? []
+    }
+}
+
+struct RadarRival: Decodable, Identifiable {
+    let user: GameUser?
+    let route: RunRoute?
+    var id: String { user?.id ?? route?.id ?? UUID().uuidString }
+
+    enum CodingKeys: String, CodingKey { case user, route }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        user = try? c.decodeIfPresent(GameUser.self, forKey: .user)
+        route = try? c.decodeIfPresent(RunRoute.self, forKey: .route)
+    }
+}
+
+/// GET /api/global/compass (Brújula active): nearest spots not explored yet.
+struct CompassResponse: Decodable {
+    struct Spot: Decodable, Identifiable {
+        let latitude: Double
+        let longitude: Double
+        let distanceMeters: Double
+        var id: String { "\(latitude),\(longitude)" }
+        var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: latitude, longitude: longitude) }
+
+        enum CodingKeys: String, CodingKey { case lat, lng, distanceMeters }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            latitude = c.double(.lat) ?? 0
+            longitude = c.double(.lng) ?? 0
+            distanceMeters = c.double(.distanceMeters) ?? 0
+        }
+    }
+
+    let active: Bool
+    let spots: [Spot]
+
+    enum CodingKeys: String, CodingKey { case active, spots }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        active = c.bool(.active) ?? false
+        spots = (try? c.decodeIfPresent([Spot].self, forKey: .spots)) ?? []
     }
 }
 

@@ -47,9 +47,10 @@ struct ConquestCard: View {
                 tint: gained > 0 ? Color.brand : Color.primary
             )
             if result.globalBonus > 0 {
-                Text("Incluye \(Format.area(result.globalBonus)) del Explorador.")
+                Text(boostsText)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if gained <= 0 {
                 Text("Ya habías corrido por aquí: esta carrera no suma área nueva al mapa global.")
                     .font(.subheadline)
@@ -66,6 +67,18 @@ struct ConquestCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .card(padding: DS.Spacing.xl)
         .accessibilityElement(children: .combine)
+    }
+
+    /// "Incluye 0,05 km² del Explorador y 0,02 km² del Alba."
+    private var boostsText: String {
+        let names = ["explorer": "del Explorador", "tourist": "del Turista", "dawn": "del Alba", "expedition": "de la Expedición"]
+        let parts = result.globalBoosts
+            .filter { $0.value > 0 }
+            .sorted { $0.value > $1.value }
+            .map { "\(Format.area($0.value)) \(names[$0.key] ?? "de tus poderes")" }
+        if parts.isEmpty { return "Incluye \(Format.area(result.globalBonus)) de tus poderes." }
+        if parts.count == 1 { return "Incluye \(parts[0])." }
+        return "Incluye " + parts.dropLast().joined(separator: ", ") + " y " + (parts.last ?? "") + "."
     }
 
     /// Competition map: area won (and stolen) in the running club competition.

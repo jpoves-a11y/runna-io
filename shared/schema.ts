@@ -444,6 +444,7 @@ export const treasures = sqliteTable("treasures", {
   zone: text("zone"), // Zone name where the treasure spawned
   hidden: integer("hidden", { mode: 'boolean' }).notNull().default(false), // only visible with "Faro"
   cityKey: text("city_key"), // city cluster it spawned for
+  publicAt: text("public_at"), // seen by everybody from here (Mapa del Tesoro: from spawned_at)
 });
 
 export const userPowers = sqliteTable("user_powers", {

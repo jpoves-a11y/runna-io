@@ -237,6 +237,43 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check("the map shows the rival club's zones, marked", map.territories.some((t) => t.userId === gala.id && t.rival === true) && map.territories.some((t) => t.userId === ana.id && !t.rival), map.territories.map((t) => [t.userId, t.rival]));
   const view = (await call('GET', '/api/season/current', { token: ana.token })).data.competition;
   check('the Derbi shows both clubs\' scores', view.mode === 'derby' && view.duel?.opponent?.id === clubB.id && view.duel.myClubScore > 0 && view.duel.opponentScore > 0, view.duel);
+  // ── Competition powers ──
+  const activate = async (u, itemId, extra = {}) => call('POST', `/api/inventory/${await grant(u, itemId)}/activate`, { token: u.token, body: extra });
+  check('Emboscada and Venganza ready', (await activate(ana, 'ambush')).status === 200 && (await activate(ben, 'revenge')).status === 200);
+  const h1 = await run(hugo, 'Derbi: Hugo', loop(centre[0] - 0.004, centre[1], 450), start + 9 * HOUR);
+  check('Hugo steals from Ana and Ben', ['ana', 'ben'].every((k) => h1.result.victims?.some((v) => v.userId === users[k].id && v.stolenArea > 0)), h1.result.victims);
+  const trap = await one("select metadata, status from user_powers where user_id = ? and power_type = 'sabotage' and source = 'ambush'", [ana.id]);
+  check("Emboscada: the thief is sabotaged at once", trap?.status === 'active' && JSON.parse(trap.metadata).targetUserId === hugo.id, trap);
+  const ambushUsed = await one("select status from user_powers where user_id = ? and power_type = 'ambush'", [ana.id]);
+  check('Emboscada works once', ambushUsed.status === 'used', ambushUsed);
+  const revengeRow = await one("select metadata from user_powers where user_id = ? and power_type = 'revenge' and status = 'active'", [ben.id]);
+  check('Venganza remembers who stole', JSON.parse(revengeRow?.metadata || '{}').targets?.includes(hugo.id), revengeRow);
+  const benBefore = Number((await one('select p.bonus from competition_participants p join club_competitions c on c.id = p.competition_id where c.cycle_number = 4 and p.user_id = ?', [ben.id])).bonus);
+  const b2 = await run(ben, 'Derbi: Ben se venga', loop(centre[0] - 0.006, centre[1], 450), start + 11 * HOUR);
+  const benAfter = Number((await one('select p.bonus from competition_participants p join club_competitions c on c.id = p.competition_id where c.cycle_number = 4 and p.user_id = ?', [ben.id])).bonus);
+  check('Venganza: stealing back counts double (the extra goes to the score)', b2.result.victims?.some((v) => v.userId === hugo.id) && benAfter - benBefore > 1000, { victims: b2.result.victims, benBefore, benAfter });
+  check('Saqueo ready', (await activate(gala, 'plunder')).status === 200);
+  const g2 = await run(gala, 'Derbi: saqueo', loop(centre[0], centre[1] + 0.003, 700), start + 12 * HOUR);
+  const plundered = await one("select power_type from user_powers where user_id = ? and source = 'plunder'", [gala.id]);
+  check('Saqueo: a big steal wins an item', g2.result.competition?.areaStolen >= 100_000 && !!plundered, { stolen: g2.result.competition?.areaStolen, plundered });
+  const fortsBefore = Number((await one('select count(*) as n from territory_fortifications where user_id = ?', [gala.id])).n);
+  const bastion = await activate(gala, 'bastion');
+  check('Bastión applied', bastion.status === 200, bastion);
+  const fortsAfter = Number((await one('select count(*) as n from territory_fortifications where user_id = ?', [gala.id])).n);
+  check('Bastión: 3 layers on the largest zone', fortsAfter - fortsBefore === 3, { fortsBefore, fortsAfter });
+  await run(hugo, 'Derbi: Hugo saboteado', loop(centre[0] + 0.03, centre[1] + 0.03, 300), start + 13 * HOUR);
+  const trapAfter = await one("select status from user_powers where user_id = ? and power_type = 'sabotage' and source = 'ambush'", [ana.id]);
+  check("the ambush's sabotage is used by the thief's next run", trapAfter.status === 'used', trapAfter);
+  check('Radar on', (await activate(ana, 'radar')).status === 200);
+  const radar = (await call('GET', '/api/season/radar', { token: ana.token })).data;
+  check("Radar: the last run of every rival of the other club", radar.active === true && radar.rivals.length === 3 && radar.rivals.some((r) => r.user?.id === gala.id && r.route?.name === 'Derbi: saqueo'), radar.rivals?.map((r) => [r.user?.name, r.route?.name]));
+  check('Muralla del Club is only for Por equipos and Derbi (here: yes)', (await activate(iris, 'club_wall')).status === 200);
+  const d1 = await run(dani, 'Derbi: contra la muralla', loop(centre[0], centre[1] + 0.003, 700), start + 15 * HOUR);
+  check('Muralla del Club: nobody steals from the rival club', (d1.result.victims ?? []).every((v) => ![gala, hugo, iris].some((u) => u.id === v.userId)), d1.result.victims);
+  check('Doble o Nada ready', (await activate(cris, 'double_or_nothing')).status === 200);
+  const short = await run(cris, 'Derbi: corta', loop(centre[0] + 0.06, centre[1] - 0.06, 300), start + 17 * HOUR);
+  check('Doble o Nada: a short run conquers half', short.result.competition?.newArea > 0 && short.result.competition.newArea < 0.6 * Math.PI * 300 * 300, short.result.competition);
+
   const closeTick = await tick(close + 10 * 60_000);
   check('the Derbi closes (and Huesca\'s objective)', closeTick.data.finished_4 === 3, closeTick.data);
   const match = await one('select * from club_matches where cycle_number = 4');
@@ -309,6 +346,90 @@ const competitionOf = async (index, club) => one('select * from club_competition
   const closeTick = await tick(close + 10 * 60_000);
   const result = JSON.parse((await competitionOf(6, clubA)).result);
   check('Exploradores closes: the explorer wins', closeTick.data.finished_6 === 3 && result.winnerUserId === ana.id, { tick: closeTick.data, winner: result.winnerUserId });
+}
+
+// ───────────── Global powers ─────────────
+
+{
+  // On a day 8 days ago: far from every other run of the test
+  const day = addDays(madridDay(Date.now()), -8);
+  const at = (hhmm) => Date.parse(`${day}T${hhmm}:00Z`);
+  const activate = async (u, itemId) => call('POST', `/api/inventory/${await grant(u, itemId)}/activate`, { token: u.token, body: {} });
+  // Turista: only far from home (Madrid, 270 km), and it waits for such a run
+  check('Turista ready (twice)', (await activate(ana, 'tourist')).status === 200 && (await activate(ben, 'tourist')).status === 200);
+  const madrid = await run(ana, 'Madrid', loop(40.4168, -3.7038, 400), at('10:00'));
+  check('Turista: far from home, the new area counts double', Math.abs((madrid.result.globalArea?.boosts?.tourist ?? 0) - madrid.result.globalArea.gained) < 1, madrid.result.globalArea);
+  const nearHome = await run(ben, 'Cerca de casa', loop(Z[0] + 0.07, Z[1] + 0.07, 400), at('11:00'));
+  const benTourist = await one("select status from user_powers where user_id = ? and power_type = 'tourist'", [ben.id]);
+  check('Turista: near home it does nothing and keeps waiting', !nearHome.result.globalArea?.boosts?.tourist && benTourist.status === 'active', { boosts: nearHome.result.globalArea?.boosts, benTourist });
+  // Alba: before 8:00
+  check('Alba ready', (await activate(cris, 'dawn')).status === 200);
+  const early = await run(cris, 'Madrugón', loop(Z[0] + 0.08, Z[1] - 0.08, 400), at('05:00'));
+  check('Alba: an early run gets 20% more', Math.abs((early.result.globalArea?.boosts?.dawn ?? 0) - 0.2 * early.result.globalArea.gained) < 1, early.result.globalArea);
+  // Expedición: Dani runs with Eva (club mates): both get the extra
+  const evaBonusBefore = Number((await one('select global_bonus_area from users where id = ?', [eva.id])).global_bonus_area);
+  check('Expedición ready', (await activate(dani, 'expedition')).status === 200);
+  const together = loop(Z[0] - 0.09, Z[1] + 0.09, 400);
+  await run(eva, 'Con Dani', together, at('12:00'));
+  const exp = await run(dani, 'Con Eva', together, at('12:01'));
+  const evaBonusAfter = Number((await one('select global_bonus_area from users where id = ?', [eva.id])).global_bonus_area);
+  check('Expedición: the runner and the companion get 25% more', exp.result.globalArea?.boosts?.expedition > 0 && Math.abs((evaBonusAfter - evaBonusBefore) - exp.result.globalArea.boosts.expedition) < 1, { boosts: exp.result.globalArea?.boosts, evaBonusBefore, evaBonusAfter });
+  // The gift survives a rebuild of Eva's map (e.g. after deleting one of her runs)
+  const evaRun = await one("select id from routes where user_id = ? and name = 'Rodaje'", [eva.id]);
+  await call('DELETE', `/api/routes/${eva.id}/${evaRun.id}`, { token: eva.token });
+  const evaBonusRebuilt = Number((await one('select global_bonus_area from users where id = ?', [eva.id])).global_bonus_area);
+  check("Expedición: the companion's extra is kept when their map is rebuilt", Math.abs(evaBonusRebuilt - evaBonusAfter) < 1, { evaBonusAfter, evaBonusRebuilt });
+  // Cartógrafo: an out-and-back also counts a 25 m strip
+  const line = (lat, lng) => {
+    const pts = [];
+    for (let i = 0; i <= 60; i++) pts.push([lat + i * 0.0003, lng]);
+    for (let i = 60; i >= 0; i--) pts.push([lat + i * 0.0003, lng + 0.00001]);
+    return pts;
+  };
+  const plain = await run(fede, 'Ida y vuelta', line(Z[0] - 0.12, Z[1] - 0.12), at('13:00'));
+  check('Cartógrafo ready', (await activate(fede, 'cartographer')).status === 200);
+  const wide = await run(fede, 'Ida y vuelta (Cartógrafo)', line(Z[0] - 0.12, Z[1] - 0.10), at('14:00'));
+  check('Cartógrafo: the strip along the route counts', wide.result.globalArea?.gained > (plain.result.globalArea?.gained ?? 0) + 50_000, { plain: plain.result.globalArea?.gained, wide: wide.result.globalArea?.gained });
+  // Brújula
+  const compassOff = (await call('GET', '/api/global/compass', { token: kai.token })).data;
+  check('Brújula ready', compassOff.active === false && (await activate(kai, 'compass')).status === 200);
+  const compass = (await call('GET', '/api/global/compass', { token: kai.token })).data;
+  check('Brújula: 3 spots not explored yet', compass.active === true && compass.spots.length === 3, compass);
+}
+
+// ───────────── Rest-day powers ─────────────
+
+{
+  // "Now" is a rest day (day 11 of cycle 7)
+  env.SEASON_ANCHOR_DATE = addDays(madridDay(Date.now()), -(11 + 14 * 7));
+  const today = madridDay(Date.now());
+  // In the evening a city is due most of its daily chests (one per tick)
+  let spawned;
+  for (let n = 0; n < 3; n++) spawned = await tick(Date.parse(`${today}T19:00:00Z`));
+  const chests = await all("select * from treasures where active = 1 and city_key = 'ES:zaragoza' order by spawned_at");
+  check('rest days: chests around Zaragoza', spawned.data.phase === 'rest' && chests.length >= 2, { tick: spawned.data, chests: chests.length });
+  // The test ticked in the evening: make them all public now (one is made new again below)
+  await db.execute({ sql: 'update treasures set hidden = 0, public_at = ?', args: [new Date(Date.now() - 60_000).toISOString()] });
+  const [first, second] = chests;
+  const activate = async (u, itemId) => call('POST', `/api/inventory/${await grant(u, itemId)}/activate`, { token: u.token, body: {} });
+  // Mapa del Tesoro: a chest that is not public yet is only seen with it
+  await db.execute({ sql: 'update treasures set public_at = ? where id = ?', args: [new Date(Date.now() + HOUR).toISOString(), second.id] });
+  const before = (await call('GET', '/api/season/map', { token: ana.token })).data.chests.map((c) => c.id);
+  check('a new chest is hidden from everybody for its first hour', !before.includes(second.id) && before.includes(first.id), before);
+  check('Mapa del Tesoro ready', (await activate(ana, 'treasure_map')).status === 200);
+  const after = (await call('GET', '/api/season/map', { token: ana.token })).data.chests.map((c) => c.id);
+  check('Mapa del Tesoro: seen before everybody else', after.includes(second.id), after);
+  // Llave Maestra + Botín Doble: a run passing 500 m from the chest opens it, and it gives two items
+  check('Llave Maestra and Botín Doble ready', (await activate(ana, 'master_key')).status === 200 && (await activate(ana, 'double_loot')).status === 200);
+  const lat = Number(first.lat);
+  const lng = Number(first.lng);
+  const passBy = loop(lat + 500 / 111320 + 300 / 111320, lng, 300); // its nearest point is 500 m away
+  const restRun = await run(ana, 'Cofre lejano', passBy, Date.now() - 2 * HOUR);
+  const got = restRun.result.treasuresCollected ?? [];
+  check('Llave Maestra: the chest opens from 500 m', got.some((t) => t.treasureId === first.id), got);
+  check('Botín Doble: two items from one chest', got.filter((t) => t.treasureId.startsWith(first.id)).length === 2, got);
+  const keyLess = await run(ben, 'Sin llave', loop(Number(second.lat) + 800 / 111320, Number(second.lng), 300), Date.now() - 3 * HOUR);
+  check('without the key a chest 500 m away stays closed', !(keyLess.result.treasuresCollected ?? []).some((t) => t.treasureId === second.id), keyLess.result.treasuresCollected);
 }
 
 console.log(failures === 0 ? '\nAll mode checks passed' : `\n${failures} check(s) failed`);

@@ -140,6 +140,16 @@ struct MapScreen: View {
                 CastleMarker(zone: zone)
             }
         }
+        ForEach(model.visibleCompassSpots) { spot in
+            Annotation("Sin explorar", coordinate: spot.coordinate) {
+                Image(systemName: "location.north.circle.fill")
+                    .font(.system(size: 26))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.brand)
+                    .shadow(color: Color.black.opacity(0.25), radius: 2, x: 0, y: 1)
+                    .accessibilityLabel("Zona sin explorar a \(Int(spot.distanceMeters)) m")
+            }
+        }
         ForEach(model.visibleFlags) { flag in
             Annotation(flag.name, coordinate: flag.coordinate) {
                 FlagMarker(flag: flag, isMine: flag.holderId == session.userId)

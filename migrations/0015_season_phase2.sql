@@ -53,3 +53,6 @@ CREATE TABLE IF NOT EXISTS flag_captures (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_flag_captures_route ON flag_captures(flag_id, route_id);
 CREATE INDEX IF NOT EXISTS idx_flag_captures_competition ON flag_captures(competition_id, captured_at);
+
+-- Mapa del Tesoro: everybody sees a chest from this time; its holders, from when it appears
+ALTER TABLE treasures ADD COLUMN public_at TEXT;
