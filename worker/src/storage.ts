@@ -3021,54 +3021,31 @@ export class WorkerStorage {
   async getFeedForUser(userId: string, limit: number = 30, offset: number = 0): Promise<FeedEventWithDetails[]> {
     await this.ensureFeedTables();
     
-    // Competition state, blocked users and friends are independent: load them in parallel
-    const [comp, blockedIds, friendIdsForFeed] = await Promise.all([
-      this.getActiveCompetition().catch(() => null),
+    // Blocked users and friends are independent: load them in parallel
+    const [blockedIds, friendIdsForFeed] = await Promise.all([
       this.getBlockedUserIds(userId),
       this.getFriendIds(userId),
     ]);
 
-    // Check if competition is active — if so, show ALL users' events (global feed)
-    let isCompetitionMode = false;
-    try {
-      if (comp) {
-        const now = Date.now();
-        const start = new Date(comp.startsAt).getTime();
-        const end = new Date(comp.endsAt).getTime();
-        if (comp.status === 'active' || (now >= start && now <= end)) {
-          isCompetitionMode = true;
-        }
-      }
-    } catch (_) {}
-
     // Sentinel alerts are private to their owner (the defender); events by or against
-    // blocked users (either direction) are hidden.
+    // blocked users (either direction) are hidden. Runs the anti-cheat rejected don't count, so they
+    // don't show either (the runner still sees them in their own run list).
     const visibility = and(
       or(sql`${feedEvents.eventType} != 'sentinel_alert'`, eq(feedEvents.userId, userId)),
+      sql`COALESCE(CASE WHEN json_valid(${feedEvents.metadata}) THEN json_extract(${feedEvents.metadata}, '$.validation.status') END, '') != 'rejected'`,
       blockedIds.length > 0 ? notInArray(feedEvents.userId, blockedIds) : undefined,
       blockedIds.length > 0 ? or(isNull(feedEvents.victimId), notInArray(feedEvents.victimId, blockedIds)) : undefined,
     );
 
-    // Get feed events — global during competition, friends-only otherwise
-    let events;
-    if (isCompetitionMode) {
-      events = await this.db
-        .select()
-        .from(feedEvents)
-        .where(visibility)
-        .orderBy(desc(feedEvents.createdAt))
-        .limit(limit)
-        .offset(offset);
-    } else {
-      const allUserIds = [userId, ...friendIdsForFeed];
-      events = await this.db
-        .select()
-        .from(feedEvents)
-        .where(and(inArray(feedEvents.userId, allUserIds), visibility))
-        .orderBy(desc(feedEvents.createdAt))
-        .limit(limit)
-        .offset(offset);
-    }
+    // The feed is you and your friends (the old friends competition showed everybody's events)
+    const allUserIds = [userId, ...friendIdsForFeed];
+    const events = await this.db
+      .select()
+      .from(feedEvents)
+      .where(and(inArray(feedEvents.userId, allUserIds), visibility))
+      .orderBy(desc(feedEvents.createdAt))
+      .limit(limit)
+      .offset(offset);
 
     if (events.length === 0) return [];
 

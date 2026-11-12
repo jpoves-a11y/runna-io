@@ -218,7 +218,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
         validation: { status: analysis.status, reasons: analysis.reasons, message: analysis.message },
         ...extra,
       },
-    }, false, earlyFeedEventId);
+    }, analysis.status === 'rejected', earlyFeedEventId); // a run that doesn't count sets no records
   };
 
   if (analysis.status === 'rejected') {

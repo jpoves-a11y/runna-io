@@ -356,7 +356,8 @@ export async function generateFeedEvents(
     try {
       if (distance && distance >= 500) {
         const userRoutes = await storage.getRoutesByUserIdChronological(userId);
-        const previousRoutes = userRoutes.filter(r => r.id !== routeId);
+        // Runs the anti-cheat rejected (a car ride at 1:20 /km...) are no records to beat
+        const previousRoutes = userRoutes.filter(r => r.id !== routeId && (r as any).validationStatus !== 'rejected');
 
         // Longest run (only if >1 km and the user has at least 1 previous route)
         if (previousRoutes.length > 0 && distance > 1000) {

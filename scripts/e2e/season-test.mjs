@@ -221,6 +221,14 @@ check('the same run imported twice counts once', c1.result.validation.status ===
 const carRoutes = await call('GET', `/api/routes/${cris.id}`, { token: cris.token });
 const listedCar = Array.isArray(carRoutes.data) ? carRoutes.data.find((r) => r.name === 'En coche') : null;
 check('rejected runs stay in the history with their reason, timestamps not exposed', listedCar?.validationStatus === 'rejected' && listedCar.validationReasons.includes('too_fast') && !('trackMeta' in listedCar), listedCar && { status: listedCar.validationStatus, reasons: listedCar.validationReasons });
+check('the run list says why a run does not count', typeof listedCar?.validationMessage === 'string' && listedCar.validationMessage.length > 0, listedCar?.validationMessage);
+const crisFeed = (await call('GET', `/api/feed/${cris.id}`, { token: cris.token })).data;
+const feedRouteIds = new Set((Array.isArray(crisFeed) ? crisFeed : []).map((e) => e.routeId));
+check('rejected runs are not in the feed; accepted ones are', ![car, walk, dup].some((r) => feedRouteIds.has(r.route.id)) && feedRouteIds.has(c1.route.id), [...feedRouteIds]);
+// A second car ride, after a valid run: 1:20 /km would "beat" Parque Grande, but it doesn't count
+const car2 = await run(cris, 'Otra vez en coche', loop(C[0] - 0.02, C[1], 900), t0 + 12 * 3600_000, { speedKmh: 45 });
+const car2Meta = JSON.parse((await one('select metadata from feed_events where route_id = ?', [car2.route.id]))?.metadata || '{}');
+check('a run that does not count sets no records', car2.result.validation?.status === 'rejected' && !car2Meta.records, car2Meta.records);
 
 // Powers
 async function grant(user, itemId, status = 'available') {
@@ -394,7 +402,8 @@ check('the boost is used up by the run', usedExplorer.status === 'used', usedExp
 
 // ───────────── Reviews and rebuilds ─────────────
 
-const huge = await run(eva, 'Vuelta enorme', loop(C[0] + 0.1, C[1] - 0.1, 1900), morning + 2 * 3600_000, { speedKmh: 12 });
+// 3 h after Eva's other run (at a fixed clock time it could overlap it and count as a duplicate)
+const huge = await run(eva, 'Vuelta enorme', loop(C[0] + 0.1, C[1] - 0.1, 1900), t0 + 9.5 * 3600_000, { speedKmh: 12 });
 check('a huge area goes to review but counts', huge.result.validation?.status === 'flagged' && huge.result.validation.reasons.includes('large_area') && huge.result.globalArea.gained > 10_000_000, huge.result.validation);
 const flagged = await call('GET', '/api/admin/runs/flagged', { token: 'e2e-cron-secret' });
 check('admins list flagged runs', flagged.data.runs.some((r) => r.id === huge.route.id), flagged.data.runs?.length);
