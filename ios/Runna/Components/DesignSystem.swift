@@ -120,7 +120,7 @@ enum DS {
 
     enum Radius {
         /// Cards and grouped containers.
-        static let card: CGFloat = 14
+        static let card: CGFloat = 18
         /// Nested tiles, thumbnails, inputs.
         static let tile: CGFloat = 12
         static let small: CGFloat = 10
@@ -282,6 +282,7 @@ struct CardBackground: ViewModifier {
             .padding(padding)
             .background(Color.surface, in: shape)
             .overlay(shape.strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+            .shadow(color: Color.black.opacity(0.04), radius: 8, x: 0, y: 2)
     }
 }
 
@@ -336,10 +337,9 @@ extension View {
 
     /// Uppercase, tracked, secondary — section header labels.
     func sectionLabelStyle() -> some View {
-        font(Font.sectionLabel)
-            .textCase(.uppercase)
-            .tracking(DS.Tracking.label)
-            .foregroundStyle(.secondary)
+        font(.system(.subheadline, weight: .semibold))
+            .tracking(0.2)
+            .foregroundStyle(Color.primary.opacity(0.75))
     }
 
     /// Just the 0.5pt hairline outline in a continuous rounded rectangle.
@@ -389,8 +389,6 @@ struct GlassGroup<Content: View>: View {
 /// The visual of a round floating control (also usable as a Menu label).
 struct GlassCircleLabel: View {
     let systemImage: String
-    /// Asset drawn as a silhouette instead of the SF Symbol (e.g. the Poderes chest)
-    var assetImage: String? = nil
     var badge: Int? = nil
     var tint: Color? = nil
     var isActive: Bool = false
@@ -404,19 +402,9 @@ struct GlassCircleLabel: View {
     }
 
     var body: some View {
-        Group {
-            if let assetImage {
-                Image(assetImage)
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: size * 0.5, height: size * 0.5)
-            } else {
-                Image(systemName: systemImage)
-                    .font(.system(size: min(DS.Size.icon, size * 0.4), weight: .medium))
-                    .symbolRenderingMode(.monochrome)
-            }
-        }
+        Image(systemName: systemImage)
+            .font(.system(size: min(DS.Size.icon, size * 0.4), weight: .medium))
+            .symbolRenderingMode(.monochrome)
             .foregroundStyle(iconColor)
             .frame(width: size, height: size)
             .glassSurface(Circle(), interactive: true)
@@ -433,7 +421,6 @@ struct GlassCircleLabel: View {
 /// Round floating map control.
 struct GlassCircleButton: View {
     let systemImage: String
-    var assetImage: String? = nil
     let accessibilityLabel: String
     var badge: Int? = nil
     var tint: Color? = nil
@@ -448,7 +435,7 @@ struct GlassCircleButton: View {
             taps += 1
             action()
         } label: {
-            GlassCircleLabel(systemImage: systemImage, assetImage: assetImage, badge: badge, tint: tint, isActive: isActive, size: size, bounceTrigger: taps)
+            GlassCircleLabel(systemImage: systemImage, badge: badge, tint: tint, isActive: isActive, size: size, bounceTrigger: taps)
         }
         .buttonStyle(.pressable)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)
@@ -512,6 +499,15 @@ struct PrimaryActionButton: View {
 
     @State private var taps = 0
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var fill: Color {
+        switch style {
+        case .brand: return Color.brand
+        case .steal: return Color.steal
+        case .gold: return Color.gold
+        }
+    }
 
     var body: some View {
         Button {
@@ -520,7 +516,7 @@ struct PrimaryActionButton: View {
         } label: {
             label
         }
-        .buttonStyle(PressableButtonStyle(scale: 0.98))
+        .buttonStyle(PressableButtonStyle(scale: 0.96))
         .sensoryFeedback(.impact(weight: .medium), trigger: taps)
     }
 
@@ -528,15 +524,41 @@ struct PrimaryActionButton: View {
         HStack(spacing: 8) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 18, weight: .bold))
+                    .symbolEffect(.bounce, value: taps)
             }
             Text(title)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 18, weight: .bold))
         }
-        .foregroundStyle(Color.onBrand)
-        .padding(.horizontal, 32)
-        .frame(minWidth: 160, minHeight: 52)
-        .background(Color.brand, in: Capsule())
+        .foregroundStyle(style == .brand ? Color.onBrand : Color.white)
+        .padding(.horizontal, 34)
+        .frame(minWidth: 170, minHeight: 56)
+        .background {
+            Capsule()
+                .fill(LinearGradient(colors: [fill.opacity(0.88), fill, style == .brand ? Color.brandDeep : fill], startPoint: .top, endPoint: .bottom))
+        }
+        .overlay {
+            // Light from the top edge
+            Capsule()
+                .strokeBorder(
+                    LinearGradient(colors: [Color.white.opacity(0.35), Color.white.opacity(0)], startPoint: .top, endPoint: .center),
+                    lineWidth: 1
+                )
+        }
+        .background {
+            if pulse && isEnabled && !reduceMotion {
+                Capsule()
+                    .stroke(fill, lineWidth: 2)
+                    .phaseAnimator([false, true]) { halo, grow in
+                        halo
+                            .scaleEffect(grow ? 1.16 : 1)
+                            .opacity(grow ? 0 : 0.55)
+                    } animation: { grow in
+                        grow ? .easeOut(duration: 1.6).delay(0.8) : .linear(duration: 0.01)
+                    }
+            }
+        }
+        .shadow(color: fill.opacity(isEnabled ? 0.45 : 0), radius: 14, x: 0, y: 6)
         .opacity(isEnabled ? 1 : 0.4)
         .contentShape(Capsule())
     }

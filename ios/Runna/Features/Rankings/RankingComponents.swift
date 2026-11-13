@@ -144,45 +144,41 @@ struct RankingMeBadge: View {
 
 // MARK: - Top three
 
-/// Restrained top-3 summary: three equal columns (rank, avatar, name, area) split by hairlines.
+/// Top three on a podium over a banner in the brand's colours.
 struct RankingTopThreeCard: View {
     let items: [RankingItem]
     var onSelect: ((RankingItem) -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            column(place: 1)
-            StatDivider(height: 120)
-                .padding(.top, DS.Spacing.s)
-            column(place: 2)
-            StatDivider(height: 120)
-                .padding(.top, DS.Spacing.s)
-            column(place: 3)
+        PodiumStage(entries: items.prefix(3).map { item in
+            PodiumEntry(
+                id: item.id,
+                name: item.isMe ? "Tú" : item.displayName,
+                avatar: item.avatar,
+                color: item.color,
+                score: Format.area(item.area),
+                value: item.area,
+                isMe: item.isMe
+            )
+        }) { id in
+            if let item = items.first(where: { $0.id == id }) { onSelect?(item) }
         }
-        .padding(.vertical, DS.Spacing.l)
-        .padding(.horizontal, DS.Spacing.xs)
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.top, DS.Spacing.l)
+        .padding(.bottom, DS.Spacing.m)
         .frame(maxWidth: .infinity)
-        .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        .hairlineBorder(radius: DS.Radius.card)
-    }
-
-    @ViewBuilder
-    private func column(place: Int) -> some View {
-        if items.count >= place {
-            let item: RankingItem = items[place - 1]
-            if let onSelect {
-                Button {
-                    onSelect(item)
-                } label: {
-                    RankingTopThreeColumn(item: item, place: place)
-                }
-                .buttonStyle(.pressable)
-            } else {
-                RankingTopThreeColumn(item: item, place: place)
+        .background {
+            ZStack {
+                LinearGradient(colors: [Color(hex: "#0A5C40"), Color(hex: "#16A36F")], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 130, weight: .black))
+                    .foregroundStyle(.white.opacity(0.08))
+                    .rotationEffect(.degrees(-12))
+                    .offset(x: 120, y: -30)
             }
-        } else {
-            RankingTopThreeEmpty(place: place)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
+        .shadow(color: Color(hex: "#0A5C40").opacity(0.25), radius: 14, x: 0, y: 7)
     }
 }
 

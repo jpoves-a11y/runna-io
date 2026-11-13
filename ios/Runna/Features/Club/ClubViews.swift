@@ -244,14 +244,17 @@ struct ClubHomeView: View {
     }
 
     private func hero(_ competition: ClubCompetition) -> some View {
-        CompetitionHero(
-            competition: competition,
-            userId: session.userId,
-            countdown: season.shortCountdown,
-            myClubCrest: model.club?.crest,
-            maxRows: 12
-        ) { userId in
-            if userId != session.userId { profileUserId = userId }
+        // The countdown moves on by itself
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
+            CompetitionHero(
+                competition: competition,
+                userId: session.userId,
+                countdown: season.shortCountdown,
+                myClubCrest: model.club?.crest,
+                maxRows: 12
+            ) { userId in
+                if userId != session.userId { profileUserId = userId }
+            }
         }
     }
 
@@ -260,7 +263,7 @@ struct ClubHomeView: View {
             showInventory = true
         } label: {
             HStack(spacing: DS.Spacing.m) {
-                PowersIcon(size: 20)
+                PowersIcon(size: 20, glow: season.availableItemCount > 0)
                     .foregroundStyle(Color.brand)
                     .frame(width: 36, height: 36)
                     .background(Color.brand.opacity(0.12), in: Circle())

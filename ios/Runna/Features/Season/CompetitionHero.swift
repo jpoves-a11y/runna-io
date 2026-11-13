@@ -130,6 +130,8 @@ struct CompetitionHero: View {
     var maxRows: Int = 10
     var onSelectUser: ((String) -> Void)? = nil
 
+    @State private var celebrate = 0
+
     private var theme: ModeTheme { ModeTheme(mode: competition.mode) }
     private var isIndividual: Bool { ["ffa", "flags", "elimination", "explorers"].contains(competition.mode) }
 
@@ -146,7 +148,27 @@ struct CompetitionHero: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+        .overlay { ConfettiBurst(trigger: celebrate, colors: theme.colors + [Color.gold, Color.white]) }
         .shadow(color: theme.colors[0].opacity(0.25), radius: 16, x: 0, y: 8)
+        .onAppear(perform: checkProgress)
+        .onChange(of: competition.myRank) { _, _ in checkProgress() }
+    }
+
+    /// Moving up a place (or to a better chest) since the last look: confetti and a haptic.
+    private func checkProgress() {
+        guard competition.isActive, let rank = competition.myRank else { return }
+        let defaults = UserDefaults.standard
+        let rankKey = "hero.lastRank.\(competition.id)"
+        let chestKey = "hero.lastChest.\(competition.id)"
+        let lastRank = defaults.integer(forKey: rankKey)
+        let chest = ChestProjection(competition: competition, userId: userId).current ?? -1
+        let lastChest = defaults.object(forKey: chestKey) as? Int
+        defaults.set(rank, forKey: rankKey)
+        defaults.set(chest, forKey: chestKey)
+        if (lastRank > 0 && rank < lastRank) || (lastChest != nil && chest > lastChest!) {
+            celebrate += 1
+            Haptics.success()
+        }
     }
 
     // MARK: Banner
@@ -216,21 +238,26 @@ struct CompetitionHero: View {
     // MARK: Podium
 
     private var podium: some View {
-        let top = Array(competition.standings.prefix(3))
-        let order: [Int] = [1, 0, 2].filter { $0 < top.count }
+        let entries = competition.standings.prefix(3).map { standing in
+            PodiumEntry(
+                id: standing.userId,
+                name: standing.userId == userId ? "Tú" : (standing.user?.name ?? "Corredor"),
+                avatar: standing.user?.avatar,
+                color: standing.user?.color ?? "#888888",
+                score: competition.scoreText(standing.score),
+                value: standing.score,
+                isMe: standing.userId == userId
+            )
+        }
         return VStack(spacing: DS.Spacing.m) {
-            if top.isEmpty {
+            if entries.isEmpty {
                 Text("Nadie ha puntuado todavía")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white.opacity(0.85))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, DS.Spacing.l)
             } else {
-                HStack(alignment: .bottom, spacing: DS.Spacing.s) {
-                    ForEach(order, id: \.self) { index in
-                        podiumColumn(top[index], place: index + 1)
-                    }
-                }
+                PodiumStage(entries: Array(entries)) { id in onSelectUser?(id) }
             }
             if let line = myPositionLine {
                 Text(line)
@@ -241,54 +268,6 @@ struct CompetitionHero: View {
                     .background(.black.opacity(0.22), in: Capsule())
             }
         }
-    }
-
-    private func podiumColumn(_ standing: CompetitionStanding, place: Int) -> some View {
-        let isMe = standing.userId == userId
-        let avatar: CGFloat = place == 1 ? 58 : 46
-        let medal: Color = place == 1 ? Color(hex: "#F5C542") : place == 2 ? Color(hex: "#D7DCE3") : Color(hex: "#D08A4E")
-        return Button {
-            if !isMe { onSelectUser?(standing.userId) }
-        } label: {
-            VStack(spacing: 6) {
-                if place == 1 {
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(medal)
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                }
-                AvatarView(name: standing.user?.name ?? "?", avatar: standing.user?.avatar, color: standing.user?.color ?? "#888888", size: avatar)
-                    .overlay(alignment: .bottomTrailing) {
-                        Text("\(place)")
-                            .font(.system(size: 12, weight: .black))
-                            .foregroundStyle(.black.opacity(0.75))
-                            .frame(width: 20, height: 20)
-                            .background(medal, in: Circle())
-                            .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
-                            .offset(x: 3, y: 3)
-                    }
-                Text(isMe ? "Tú" : (standing.user?.name ?? "Corredor"))
-                    .font(.footnote.weight(isMe ? .heavy : .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(competition.scoreText(standing.score))
-                    .font(Font.stat(place == 1 ? 18 : 15, weight: .bold))
-                    .monospacedDigit()
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                // Pedestal
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(.white.opacity(isMe ? 0.32 : 0.16))
-                    .frame(height: place == 1 ? 34 : place == 2 ? 22 : 14)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(isMe ? .white.opacity(0.8) : .clear, lineWidth: 1.5)
-                    )
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.plain)
     }
 
     /// "Tú · 5º · a 0,12 km² del 4º" — or how far ahead the leader I am.
@@ -626,5 +605,88 @@ private struct DiagonalStripes: Shape {
             x += gap
         }
         return path
+    }
+}
+
+// MARK: - Podium
+
+/// One of the top three on a podium.
+struct PodiumEntry: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let avatar: String?
+    let color: String
+    let score: String
+    var value: Double = 0
+    var isMe: Bool = false
+}
+
+/// The top three as a podium (2 · 1 · 3) with a crown, medals and pedestals, drawn in white for a
+/// coloured banner (competition, rankings).
+struct PodiumStage: View {
+    let entries: [PodiumEntry]
+    var onSelect: ((String) -> Void)? = nil
+
+    var body: some View {
+        let order: [Int] = [1, 0, 2].filter { $0 < entries.count }
+        HStack(alignment: .bottom, spacing: DS.Spacing.s) {
+            ForEach(order, id: \.self) { index in
+                column(entries[index], place: index + 1)
+            }
+        }
+    }
+
+    static func medal(_ place: Int) -> Color {
+        place == 1 ? Color(hex: "#F5C542") : place == 2 ? Color(hex: "#D7DCE3") : Color(hex: "#D08A4E")
+    }
+
+    private func column(_ entry: PodiumEntry, place: Int) -> some View {
+        let avatar: CGFloat = place == 1 ? 58 : 46
+        let medal = Self.medal(place)
+        return Button {
+            if !entry.isMe { onSelect?(entry.id) }
+        } label: {
+            VStack(spacing: 6) {
+                if place == 1 {
+                    Image(systemName: "crown.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(medal)
+                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                }
+                AvatarView(name: entry.name, avatar: entry.avatar, color: entry.color, size: avatar)
+                    .overlay(alignment: .bottomTrailing) {
+                        Text("\(place)")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(.black.opacity(0.75))
+                            .frame(width: 20, height: 20)
+                            .background(medal, in: Circle())
+                            .overlay(Circle().strokeBorder(.white, lineWidth: 1.5))
+                            .offset(x: 3, y: 3)
+                    }
+                Text(entry.name)
+                    .font(.footnote.weight(entry.isMe ? .heavy : .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(entry.score)
+                    .font(Font.stat(place == 1 ? 18 : 15, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .contentTransition(.numericText(value: entry.value))
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.white.opacity(entry.isMe ? 0.32 : 0.16))
+                    .frame(height: place == 1 ? 34 : place == 2 ? 22 : 14)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(entry.isMe ? .white.opacity(0.8) : .clear, lineWidth: 1.5)
+                    )
+            }
+            .frame(maxWidth: .infinity)
+            .animation(.snappy, value: entry.value)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Puesto \(place): \(entry.name), \(entry.score)")
     }
 }

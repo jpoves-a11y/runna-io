@@ -35,6 +35,14 @@ struct RankingsView: View {
                 .animation(.snappy, value: board)
             }
             .screenBackground()
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if board == .global, let pinned = pinnedMe {
+                    pinnedRow(pinned)
+                        .padding(.horizontal, DS.Spacing.l)
+                        .padding(.bottom, DS.Spacing.s)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
             .navigationTitle("Ranking")
             .toolbar { ProfileToolbarItem() }
             .refreshable { await QuickRefresh.run { await load(force: true) } }
@@ -62,6 +70,54 @@ struct RankingsView: View {
                 ClubDetailSheet(clubId: club.id)
             }
         }
+    }
+
+    // MARK: Pinned row
+
+    private struct PinnedMe {
+        let rank: Int
+        let area: Double
+        let gapUp: Double?
+    }
+
+    /// My place, pinned at the bottom when it's far down the list (or not in it).
+    private var pinnedMe: PinnedMe? {
+        guard let ranking = model.globalRanking, let rank = ranking.myRank, ranking.entries.count > 1 else { return nil }
+        if let index = ranking.entries.firstIndex(where: { $0.user.id == session.userId }) {
+            guard index >= 6 else { return nil }
+            let me = ranking.entries[index]
+            let above = index > 0 ? ranking.entries[index - 1].area : nil
+            return PinnedMe(rank: rank, area: me.area, gapUp: above.map { max(0, $0 - me.area) })
+        }
+        return PinnedMe(rank: rank, area: ranking.myArea, gapUp: nil)
+    }
+
+    private func pinnedRow(_ pinned: PinnedMe) -> some View {
+        HStack(spacing: DS.Spacing.m) {
+            Text("\(pinned.rank)º")
+                .font(Font.stat(20, weight: .bold))
+                .foregroundStyle(Color.brand)
+                .frame(minWidth: 36, alignment: .leading)
+            if let user = session.user {
+                AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 32)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Tú")
+                    .font(.subheadline.weight(.bold))
+                if let gap = pinned.gapUp, gap > 0 {
+                    Text("a \(Format.area(gap)) del \(pinned.rank - 1)º")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 4)
+            Text(Format.area(pinned.area))
+                .font(Font.stat(17, weight: .semibold))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, DS.Spacing.l)
+        .padding(.vertical, 10)
+        .glassSurface(Capsule())
     }
 
     // MARK: Global
@@ -136,9 +192,9 @@ struct RankingsView: View {
     private func footnote(_ ranking: GlobalRankingResponse) -> String {
         let place: String = ranking.label.isEmpty ? "" : " · \(ranking.label)"
         if ranking.period == "month" {
-            return "Área nueva conquistada este mes\(place). Nadie te la puede quitar."
+            return "Área nueva de este mes\(place)."
         }
-        return "Área total del mapa global\(place). Solo se muestra el área, nunca los recorridos."
+        return "Área total del mapa global\(place)."
     }
 
     @ViewBuilder
@@ -170,8 +226,16 @@ struct RankingsView: View {
     @ViewBuilder
     private var competitionBoard: some View {
         if let competition = season.competition {
-            CompetitionCard(competition: competition, userId: session.userId, maxRows: 50) { userId in
-                open(userId)
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                CompetitionHero(
+                    competition: competition,
+                    userId: session.userId,
+                    countdown: season.shortCountdown,
+                    myClubCrest: season.club?.crest,
+                    maxRows: 50
+                ) { userId in
+                    open(userId)
+                }
             }
         } else if season.club == nil {
             EmptyStateView(
@@ -195,7 +259,7 @@ struct RankingsView: View {
         if let last = season.current?.lastResult {
             VStack(alignment: .leading, spacing: DS.Spacing.s) {
                 SectionHeader(title: "Última competición")
-                CompetitionCard(competition: last, userId: session.userId, maxRows: 10) { userId in
+                CompetitionHero(competition: last, userId: session.userId, myClubCrest: season.club?.crest, maxRows: 10) { userId in
                     open(userId)
                 }
             }
@@ -248,8 +312,8 @@ struct RankingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
                 .hairlineBorder(radius: DS.Radius.card)
                 Text(model.clubSort == .league
-                     ? "Puntos de liga: 3 por duelo ganado, 1 por empate, 2 por objetivo común conseguido y 1 si la mayoría del club corre."
-                     : "Suma del área global de todos los miembros.")
+                     ? "Duelo ganado 3 · empate 1 · objetivo 2 · club activo 1."
+                     : "Suma del área global de sus miembros.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

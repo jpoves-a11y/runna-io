@@ -19,12 +19,15 @@ struct SeasonPhaseChip: View {
                     Text(title(cycle))
                         .font(.footnote.weight(.semibold))
                         .lineLimit(1)
-                    if let countdown = store.shortCountdown {
-                        Text(countdown)
-                            .font(.footnote)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    TimelineView(.periodic(from: .now, by: 30)) { _ in
+                        if let countdown = store.shortCountdown {
+                            Text(countdown)
+                                .font(.footnote)
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .contentTransition(.numericText())
+                                .lineLimit(1)
+                        }
                     }
                 }
                 .padding(.horizontal, 12)
