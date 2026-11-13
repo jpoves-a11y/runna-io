@@ -49,6 +49,10 @@ struct ChestProjection {
     struct Tier: Identifiable {
         let rarity: String
         let label: String
+        /// Small line under the label (what the tier means)
+        var detail: String? = nil
+        /// The detail reads as an achievement (green, with a tick) once reached
+        var success = false
         var id: String { rarity }
     }
 
@@ -74,7 +78,11 @@ struct ChestProjection {
                 current = nil
             }
         case "target":
-            tiers = [Tier(rarity: "common", label: "No llegáis"), Tier(rarity: "rare", label: "Meta"), Tier(rarity: "epic", label: "Meta +50%")]
+            tiers = [
+                Tier(rarity: "common", label: "Intento", detail: "Objetivo no cumplido"),
+                Tier(rarity: "rare", label: "Meta", detail: "Objetivo cumplido", success: true),
+                Tier(rarity: "epic", label: "Hazaña", detail: "Objetivo cumplido + extra (×1,5)", success: true),
+            ]
             if let target = c.target {
                 current = target.total >= target.target * 1.5 ? 2 : target.achieved ? 1 : 0
                 note = "Meta del club: \(Format.area(target.target)) entre todos · +50%: \(Format.area(target.target * 1.5))"
@@ -584,6 +592,21 @@ struct ChestTrack: View {
                     .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                if let detail = tier.detail {
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        if tier.success {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        Text(detail)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(tier.success && reached ? Color.brand : Color.secondary.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 2)
+                }
             }
         }
         .accessibilityElement(children: .ignore)
