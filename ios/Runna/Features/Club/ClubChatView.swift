@@ -567,7 +567,7 @@ private struct ChatBubbleRow: View {
                     .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
                 if let date = message.date {
-                    Text(date, format: .dateTime.hour().minute())
+                    Text(date, format: .dateTime.hour().minute().locale(Locale(identifier: "es_ES")))
                         .font(.caption2)
                         .opacity(0.6)
                         .frame(maxWidth: .infinity, alignment: .trailing)

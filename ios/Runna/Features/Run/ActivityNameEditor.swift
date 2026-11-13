@@ -82,7 +82,9 @@ struct ActivityNameEditor: View {
                         }
                     }
                 }
-                .scrollClipDisabled()
+                // Scrolls edge to edge inside the card, clipped by it (no chips past its border)
+                .padding(.horizontal, -DS.Spacing.l)
+                .contentMargins(.horizontal, DS.Spacing.l, for: .scrollContent)
             }
             if let errorMessage {
                 Text(errorMessage)
@@ -92,6 +94,7 @@ struct ActivityNameEditor: View {
         }
         .padding(DS.Spacing.l)
         .background(Color.brand.opacity(0.07), in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                 .strokeBorder(Color.brand.opacity(0.22), lineWidth: 1)

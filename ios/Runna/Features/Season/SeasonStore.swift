@@ -93,6 +93,23 @@ final class SeasonStore {
         return "Competición en \(text)"
     }
 
+    /// "2d 14h", "5h 20m", "12 min": the countdown on banners and the map.
+    var shortCountdown: String? {
+        guard let cycle else { return nil }
+        if cycle.closing { return "Cierre 6:00" }
+        guard let end = cycle.phaseEndsAt, end.timeIntervalSinceNow > 0 else { return nil }
+        return Self.shortRemaining(end.timeIntervalSinceNow)
+    }
+
+    static func shortRemaining(_ seconds: TimeInterval) -> String {
+        let minutes = max(1, Int(seconds / 60))
+        let days = minutes / 1440
+        let hours = (minutes % 1440) / 60
+        if days > 0 { return hours > 0 ? "\(days)d \(hours)h" : "\(days)d" }
+        if hours > 0 { return "\(hours)h \(minutes % 60)m" }
+        return "\(minutes) min"
+    }
+
     static func remaining(_ seconds: TimeInterval) -> String {
         let hours = Int(seconds / 3600)
         if hours >= 48 { return "\(hours / 24) días" }

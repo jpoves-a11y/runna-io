@@ -27,19 +27,21 @@ struct ClubTabView: View {
                     FriendsView(embedded: true)
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                Picker("Sección", selection: $router.clubSection) {
-                    Text("Mi club").tag(AppRouter.ClubSection.club)
-                    // The chat only with a club
-                    if model.isMember {
-                        Text(model.chatUnread > 0 ? "Chat (\(model.chatUnread))" : "Chat").tag(AppRouter.ClubSection.chat)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ProfileToolbarItem()
+                ToolbarItem(placement: .principal) {
+                    Picker("Sección", selection: $router.clubSection) {
+                        Text("Club").tag(AppRouter.ClubSection.club)
+                        // The chat only with a club
+                        if model.isMember {
+                            Text(model.chatUnread > 0 ? "Chat · \(model.chatUnread)" : "Chat").tag(AppRouter.ClubSection.chat)
+                        }
+                        Text("Amigos").tag(AppRouter.ClubSection.friends)
                     }
-                    Text("Amigos").tag(AppRouter.ClubSection.friends)
+                    .pickerStyle(.segmented)
+                    .frame(width: model.isMember ? 250 : 180)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, DS.Spacing.l)
-                .padding(.vertical, DS.Spacing.s)
-                .background(Color.canvas)
             }
         }
     }
@@ -105,9 +107,19 @@ struct ClubHomeView: View {
                 UserProfileSheet(userId: user.id)
             }
             .confirmationDialog("¿Salir del club?", isPresented: $confirmLeave, titleVisibility: .visible) {
-                Button("Salir", role: .destructive) { run { try await model.leave() } }
+                if model.isOwner && memberCount > 1 {
+                    Button("Entendido", role: .cancel) {}
+                } else {
+                    Button(model.isOwner ? "Salir y borrar el club" : "Salir", role: .destructive) { run { try await model.leave() } }
+                }
             } message: {
-                Text("Dejarás de competir con ellos. Durante una competición no se puede salir.")
+                if model.isOwner && memberCount > 1 {
+                    Text("Eres el líder: antes de salir, pasa el liderazgo a otro miembro desde su menú en Miembros.")
+                } else if model.isOwner {
+                    Text("Eres el único miembro: al salir se borra el club.")
+                } else {
+                    Text("Dejarás de competir con ellos. Durante una competición no se puede salir.")
+                }
             }
             .confirmationDialog("¿Borrar el club?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Borrar club", role: .destructive) { run { try await model.deleteClub() } }
@@ -116,6 +128,8 @@ struct ClubHomeView: View {
             }
             .errorAlert($errorMessage)
     }
+
+    private var memberCount: Int { model.detail?.members.count ?? 0 }
 
     @ViewBuilder
     private var content: some View {
@@ -158,21 +172,21 @@ struct ClubHomeView: View {
                         }
                     }
                     Divider()
-                    if model.isOwner && (model.detail?.members.count ?? 0) <= 1 {
+                    Button(role: .destructive) {
+                        confirmLeave = true
+                    } label: {
+                        Label("Salir del club", systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                    if model.isOwner {
                         Button(role: .destructive) {
                             confirmDelete = true
                         } label: {
                             Label("Borrar club", systemImage: "trash")
                         }
-                    } else {
-                        Button(role: .destructive) {
-                            confirmLeave = true
-                        } label: {
-                            Label("Salir del club", systemImage: "rectangle.portrait.and.arrow.right")
-                        }
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
                 }
                 .accessibilityLabel("Opciones del club")
             }
@@ -182,7 +196,7 @@ struct ClubHomeView: View {
     private func memberContent(detail: ClubDetailResponse, club: ClubSummary) -> some View {
         ScrollView {
             VStack(spacing: DS.Spacing.l) {
-                ClubHeaderCard(club: club, trophies: detail.trophies, showsCode: true)
+                ClubHeaderCard(club: club, trophies: detail.trophies)
                 seasonSection
                 if detail.isAdmin && !detail.pendingRequests.isEmpty {
                     requestsSection(detail.pendingRequests)
@@ -202,88 +216,144 @@ struct ClubHomeView: View {
     @ViewBuilder
     private var seasonSection: some View {
         if let cycle = season.cycle {
-            VStack(alignment: .leading, spacing: DS.Spacing.s) {
-                SectionHeader(
-                    title: cycle.phaseTitle,
-                    subtitle: season.phaseCountdown,
-                    actionTitle: season.availableItemCount > 0 ? "Inventario (\(season.availableItemCount))" : "Inventario",
-                    action: { showInventory = true }
-                )
+            VStack(alignment: .leading, spacing: DS.Spacing.m) {
                 if let competition = season.competition {
-                    CompetitionCard(competition: competition, userId: session.userId, maxRows: 10) { userId in
-                        if userId != session.userId { profileUserId = userId }
-                    }
+                    hero(competition)
                 } else if cycle.isCompetition {
                     entryNotice(cycle)
                     if let clubCompetition = season.clubCompetition {
-                        CompetitionCard(competition: clubCompetition, userId: session.userId, maxRows: 10) { userId in
-                            if userId != session.userId { profileUserId = userId }
-                        }
+                        hero(clubCompetition)
                     }
                 }
                 if cycle.isRest {
-                    restInfo(cycle)
+                    restBanner(cycle)
                     if !season.challenges.isEmpty {
                         ChallengesCard(challenges: season.challenges)
                     }
                     if let last = season.current?.lastResult {
-                        CompetitionCard(competition: last, userId: session.userId, maxRows: 3)
+                        hero(last)
                     }
                 }
+                inventoryButton
             }
         }
     }
 
-    /// Why I don't take part in my club's competition, and whether I can still enter.
+    private func hero(_ competition: ClubCompetition) -> some View {
+        CompetitionHero(
+            competition: competition,
+            userId: session.userId,
+            countdown: season.shortCountdown,
+            myClubCrest: model.club?.crest,
+            maxRows: 12
+        ) { userId in
+            if userId != session.userId { profileUserId = userId }
+        }
+    }
+
+    private var inventoryButton: some View {
+        Button {
+            showInventory = true
+        } label: {
+            HStack(spacing: DS.Spacing.m) {
+                Image(systemName: "bag.fill")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.brand)
+                    .frame(width: 36, height: 36)
+                    .background(Color.brand.opacity(0.12), in: Circle())
+                Text("Poderes y objetos")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer()
+                if season.availableItemCount > 0 {
+                    Text("\(season.availableItemCount)")
+                        .font(.footnote.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.onBrand)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.brand, in: Capsule())
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .card(padding: DS.Spacing.m)
+        }
+        .buttonStyle(.pressable)
+    }
+
+    /// Why I don't take part in my club's competition, in one line.
     private func entryNotice(_ cycle: SeasonCycle) -> some View {
         let next = Format.relative(APIDate.parse(cycle.restEndsAt))
         let (symbol, title, text): (String, String, String) = {
             switch season.competitionEntry {
             case "on_first_run":
-                return ("figure.run", "No participas todavía", "No corriste en los 14 días antes de empezar. Sal a correr: con tu primera carrera entras en la competición.")
+                return ("figure.run", "Aún no compites", "Sal a correr y entras.")
             case "closed_entry":
-                return ("lock", "Esta competición ya está cerrada", "Los equipos se cierran al empezar y no corriste en los 14 días anteriores. Vuelve a correr y entrarás en la próxima competición (\(next)).")
+                return ("lock.fill", "Competición cerrada", "Entras en la próxima, \(next).")
             case "next_cycle":
-                return ("calendar", "Compites desde la próxima", "Entraste en el club después de las primeras 48 horas. La próxima competición empieza \(next).")
+                return ("calendar", "Compites en la próxima", "Empieza \(next).")
             default:
-                return ("calendar", "Tu club no compite en esta ronda", "La próxima competición empieza \(next).")
+                return ("calendar", "Tu club descansa esta ronda", "La próxima empieza \(next).")
             }
         }()
-        return HStack(alignment: .top, spacing: DS.Spacing.m) {
+        return HStack(spacing: DS.Spacing.m) {
             Image(systemName: symbol)
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: 28)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.brand)
+                .frame(width: 36, height: 36)
+                .background(Color.brand.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(Font.cardTitle)
+                    .font(.subheadline.weight(.bold))
                 Text(text)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
-        .card()
+        .card(padding: DS.Spacing.m)
     }
 
-    private func restInfo(_ cycle: SeasonCycle) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Días de descanso")
-                .font(Font.cardTitle)
-            Text("Aparecen cofres alrededor de tu ciudad: pasa corriendo cerca para abrirlos. Completa tus retos para ganar objetos para la próxima competición.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let next = cycle.nextMode {
-                Text("Próximo modo: \(next.name)")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.top, 2)
+    /// Rest days: the next mode as a small banner, with the countdown.
+    private func restBanner(_ cycle: SeasonCycle) -> some View {
+        let theme = ModeTheme(mode: cycle.mode)
+        return HStack(spacing: DS.Spacing.m) {
+            Image(systemName: theme.symbol)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 48, height: 48)
+                .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cycle.phase == "preseason" ? "PRETEMPORADA" : "DESCANSO")
+                    .font(.caption.weight(.heavy))
+                    .tracking(1)
+                    .foregroundStyle(.white.opacity(0.8))
+                Text(cycle.nextMode?.name ?? cycle.modeInfo?.name ?? "Próxima competición")
+                    .font(.system(size: 20, weight: .black).width(.condensed))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text("Cofres por la ciudad y retos activos")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            Spacer(minLength: 4)
+            if let countdown = season.shortCountdown {
+                VStack(spacing: 1) {
+                    Text(countdown)
+                        .font(.subheadline.weight(.bold))
+                        .monospacedDigit()
+                    Text("para empezar")
+                        .font(.caption2)
+                        .opacity(0.85)
+                }
+                .foregroundStyle(.white)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        .padding(DS.Spacing.l)
+        .background(theme.gradient, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private func requestsSection(_ requests: [ClubJoinRequest]) -> some View {
@@ -337,23 +407,23 @@ struct ClubHomeView: View {
     private func memberRow(_ member: ClubMember, detail: ClubDetailResponse) -> some View {
         HStack(spacing: DS.Spacing.m) {
             AvatarView(name: member.user.name, avatar: member.user.avatar, color: member.user.color, size: 36)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(member.user.id == session.userId ? "Tú" : member.user.name)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    if let role = member.roleLabel {
-                        Text(role)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.brand)
-                    }
-                }
-                Text(Format.area(member.globalArea))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+            Text(member.user.id == session.userId ? "Tú" : member.user.name)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            if let role = member.roleLabel {
+                Text(role)
+                    .font(.caption2.weight(.bold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(Color.brand)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.brand.opacity(0.12), in: Capsule())
             }
             Spacer(minLength: 4)
+            Text(Format.area(member.globalArea))
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
             if member.user.id != session.userId && (detail.isOwner || (detail.isAdmin && member.role == "member")) {
                 Menu {
                     if detail.isOwner {
@@ -408,67 +478,103 @@ struct ClubHomeView: View {
 private struct ClubSelectedUser: Identifiable { let id: String }
 struct ClubJoinToken: Identifiable { let id: String }
 
-/// Crest, name, slogan, city and the club's standing.
+/// Crest, name, slogan, city and the club's standing, on a wash of the crest's colour.
 struct ClubHeaderCard: View {
     let club: ClubSummary
     var trophies: ClubTrophies? = nil
-    var showsCode: Bool = false
+    @State private var showsAbout = false
+
+    private var trophyCount: Int { (trophies?.duelsWon ?? 0) + (trophies?.targetsAchieved ?? 0) }
 
     var body: some View {
         VStack(spacing: DS.Spacing.m) {
-            HStack(spacing: DS.Spacing.l) {
-                CrestView(crest: club.crest, size: 68)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(club.name)
-                        .font(.title3.weight(.semibold))
-                        .lineLimit(2)
-                    if let slogan = club.slogan, !slogan.isEmpty {
-                        Text(slogan)
-                            .font(.subheadline)
-                            .italic()
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                    HStack(spacing: 6) {
-                        Image(systemName: club.entrySymbol)
-                        Text([club.entryLabel, club.city].compactMap { $0 }.joined(separator: " · "))
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            if let description = club.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HairlineDivider()
-            HStack(spacing: 0) {
-                StatTile(value: "\(club.memberCount)", label: "Miembros")
-                StatDivider()
-                StatTile(value: "\(club.leaguePoints)", label: "Puntos liga")
-                StatDivider()
-                StatTile(value: "\(club.rating)", label: "Nivel")
-                if let trophies, trophies.duelsWon + trophies.targetsAchieved > 0 {
-                    StatDivider()
-                    StatTile(value: "\(trophies.duelsWon + trophies.targetsAchieved)", label: "Trofeos")
-                }
-            }
-            if showsCode, let code = club.joinCode {
-                HStack {
-                    Text("Código para unirse")
-                        .font(.footnote)
+            CrestView(crest: club.crest, size: 88)
+                .shadow(color: Color(hex: club.crest.primary).opacity(0.45), radius: 14, x: 0, y: 8)
+                .padding(.top, DS.Spacing.s)
+            VStack(spacing: 4) {
+                Text(club.name)
+                    .font(.system(size: 26, weight: .bold))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                if let slogan = club.slogan, !slogan.isEmpty {
+                    Text("«\(slogan)»")
+                        .font(.subheadline)
+                        .italic()
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(code)
-                        .font(.system(.body, design: .monospaced).weight(.semibold))
-                        .textSelection(.enabled)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
                 }
+            }
+            HStack(spacing: 6) {
+                if let city = club.city { chip(city, "mappin") }
+                chip(club.entryLabel, club.entrySymbol)
+                chip("\(club.memberCount)", "person.2.fill")
+            }
+            HStack(spacing: 0) {
+                stat("\(club.rating)", "Nivel")
+                stat("\(club.leaguePoints)", "Liga")
+                if trophyCount > 0 { stat("\(trophyCount)", "Trofeos") }
+            }
+            .padding(.vertical, 10)
+            .background(Color.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            if let description = club.description, !description.isEmpty {
+                Button {
+                    withAnimation(.snappy) { showsAbout.toggle() }
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Sobre el club")
+                                .font(.footnote.weight(.semibold))
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .rotationEffect(.degrees(showsAbout ? 180 : 0))
+                        }
+                        .foregroundStyle(.secondary)
+                        if showsAbout {
+                            Text(description)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .transition(.opacity)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
         }
-        .card()
+        .padding(DS.Spacing.l)
+        .frame(maxWidth: .infinity)
+        .background(
+            LinearGradient(
+                colors: [Color(hex: club.crest.primary).opacity(0.3), Color(hex: club.crest.secondary).opacity(0.08), Color.surface],
+                startPoint: .top, endPoint: .bottom
+            ),
+            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+    }
+
+    private func chip(_ text: String, _ symbol: String) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.surface.opacity(0.8), in: Capsule())
+    }
+
+    private func stat(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(Font.stat(20, weight: .bold))
+                .monospacedDigit()
+            Text(label)
+                .statLabelStyle()
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

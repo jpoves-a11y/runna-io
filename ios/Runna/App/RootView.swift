@@ -78,12 +78,12 @@ struct MainTabView: View {
                 .tabItem { Label("Club", systemImage: "shield.lefthalf.filled") }
                 .badge(clubModel.chatUnread)
                 .tag(AppRouter.Tab.club)
-            ProfileView()
-                .tabItem { Label("Perfil", systemImage: "person.crop.circle") }
-                .tag(AppRouter.Tab.profile)
         }
         .tint(Color.brand)
         .modifier(TabBarMinimizeOnScroll())
+        .sheet(isPresented: $router.showProfile) {
+            ProfileView(isSheet: true)
+        }
         .sensoryFeedback(.selection, trigger: router.selectedTab)
         .fullScreenCover(isPresented: Binding(
             get: { tracker.isPresented },

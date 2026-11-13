@@ -9,6 +9,10 @@ struct ProfileView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
 
+    @Environment(\.dismiss) private var dismiss
+    /// Shown as a sheet from my avatar (there's no Profile tab any more)
+    var isSheet = false
+
     @State private var model = ProfileModel.shared
     @State private var showEdit = false
     @State private var avatarItem: PhotosPickerItem?
@@ -32,7 +36,15 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack {
             list
-                .navigationTitle("Perfil")
+                .navigationTitle("Perfil y ajustes")
+                .navigationBarTitleDisplayMode(isSheet ? .inline : .large)
+                .toolbar {
+                    if isSheet {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Cerrar") { dismiss() }
+                        }
+                    }
+                }
                 .refreshable { await QuickRefresh.run { await reload(force: true) } }
                 .task(id: router.reloadSignal) {
                     await reload(force: model.reloadTracker.consume(router.reloadSignal))

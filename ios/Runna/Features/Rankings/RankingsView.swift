@@ -36,6 +36,7 @@ struct RankingsView: View {
             }
             .screenBackground()
             .navigationTitle("Ranking")
+            .toolbar { ProfileToolbarItem() }
             .refreshable { await QuickRefresh.run { await load(force: true) } }
             .task(id: router.reloadSignal) {
                 await load(force: model.reloadTracker.consume(router.reloadSignal))
@@ -149,7 +150,7 @@ struct RankingsView: View {
                 title: "Elige tu ciudad",
                 message: "Para ver el ranking de tu país y de tu ciudad, indica en tu perfil dónde corres.",
                 actionTitle: "Ir al perfil",
-                action: { router.selectedTab = .profile }
+                action: { router.showProfile = true }
             )
             .card()
         case .needsClub:
@@ -299,7 +300,7 @@ struct RankingsView: View {
     /// Other players open their profile; the user's own row goes to the Profile tab.
     private func open(_ userId: String) {
         if userId == session.userId {
-            router.selectedTab = .profile
+            router.showProfile = true
         } else {
             selectedUserId = userId
         }

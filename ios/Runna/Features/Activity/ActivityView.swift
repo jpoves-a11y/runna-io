@@ -23,6 +23,7 @@ struct ActivityView: View {
             }
             .animation(.snappy(duration: 0.25), value: router.activitySection)
             .navigationTitle("Actividad")
+            .toolbar { ProfileToolbarItem() }
             .screenBackground()
         }
     }

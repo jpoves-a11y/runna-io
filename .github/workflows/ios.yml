@@ -136,7 +136,8 @@ jobs:
             sleep 12
             xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
           }
-          shoot tab/map 1-map
+          shoot tab/map/global 1-map
+          shoot tab/map/competition 1b-map-competition
           shoot tab/rankings 2-rankings
           shoot tab/activity/feed 3-feed
           shoot tab/activity/mine 4-my-runs

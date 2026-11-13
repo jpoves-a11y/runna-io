@@ -8,7 +8,7 @@ final class AppRouter {
     static let shared = AppRouter()
 
     enum Tab: Hashable {
-        case map, rankings, activity, club, profile
+        case map, rankings, activity, club
     }
 
     /// The Club tab shows my club, its chat or my friends.
@@ -29,6 +29,8 @@ final class AppRouter {
     var pendingInviteToken: String?
     /// Bumped when something changed elsewhere (e.g. a notification arrived) so screens reload.
     var reloadSignal = 0
+    /// Opens my profile and settings (from my avatar at the top of each tab).
+    var showProfile = false
     /// Opens the inventory (powers, boosts, cosmetics) on the map.
     var showPowers = false
     /// Opens the latest weekly competition summary in Rankings.
@@ -68,8 +70,12 @@ final class AppRouter {
                 clubSection = parts.count >= 2 && parts[1] == "friends" ? .friends : parts.count >= 2 && parts[1] == "chat" ? .chat : .club
                 selectedTab = .club
             case "friends": showFriends()
-            case "profile": selectedTab = .profile
+            case "profile": showProfile = true
             default: selectedTab = .map
+            }
+            // runnaio://tab/map/<global|competition>
+            if parts.count >= 2, parts.first == "map", let mode = MapMode(rawValue: parts[1]) {
+                MapModel.shared.mode = mode
             }
             if parts.count >= 2, parts.first == "activity" {
                 activitySection = parts[1] == "mine" ? .mine : .feed
@@ -99,7 +105,7 @@ final class AppRouter {
         #endif
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)
-            selectedTab = .profile
+            showProfile = true
             reloadSignal += 1
         default:
             break

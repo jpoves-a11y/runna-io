@@ -10,23 +10,31 @@ struct SeasonPhaseChip: View {
 
     var body: some View {
         if let cycle = store.cycle {
+            let theme = ModeTheme(mode: cycle.mode)
             Button(action: action) {
                 HStack(spacing: 6) {
-                    Image(systemName: cycle.isCompetition ? ModeInfo.symbol(cycle.mode) : "gift")
-                        .font(.caption.weight(.semibold))
-                    Text(title(cycle))
-                        .font(.footnote.weight(.semibold))
+                    Image(systemName: cycle.isCompetition ? theme.symbol : "gift.fill")
+                        .font(.caption.weight(.bold))
+                    Text(title(cycle).uppercased())
+                        .font(.caption.weight(.heavy))
+                        .tracking(0.6)
                         .lineLimit(1)
-                    if let countdown = store.phaseCountdown {
+                    if let countdown = store.shortCountdown {
                         Text(countdown)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(.caption.weight(.bold))
+                            .monospacedDigit()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.22), in: Capsule())
                             .lineLimit(1)
                     }
                 }
+                .foregroundStyle(.white)
                 .padding(.horizontal, 12)
                 .frame(minHeight: 32)
-                .glassSurface(Capsule(), interactive: true)
+                .background(theme.gradient, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 1))
+                .shadow(color: theme.colors[0].opacity(0.3), radius: 6, y: 2)
             }
             .buttonStyle(.pressable)
             .accessibilityLabel("\(title(cycle)). \(store.phaseCountdown ?? "")")
