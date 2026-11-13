@@ -1,3 +1,4 @@
+import { subrequestsLeft, countSubrequest } from './db';
 // Web Push helper for Cloudflare Workers
 // Implements RFC 8291 (Message Encryption) and RFC 8292 (VAPID)
 // Uses Web Crypto API (available in CF Workers)
@@ -607,6 +608,11 @@ export async function sendPushToUser(
   vapidPrivateKey: string,
   vapidSubject: string
 ): Promise<void> {
+  // Each push is a subrequest of this invocation: never use the last ones (the caller still needs them)
+  const allowed = Math.max(0, Math.min(subscriptions.length, subrequestsLeft() - 4));
+  if (allowed < subscriptions.length) console.warn(`[PUSH] Only ${allowed}/${subscriptions.length} pushes fit in this invocation`);
+  subscriptions = subscriptions.slice(0, allowed);
+  countSubrequest(subscriptions.length);
   const results = await Promise.allSettled(
     subscriptions.map((sub) =>
       sendPushNotification(sub, payload, vapidPublicKey, vapidPrivateKey, vapidSubject)

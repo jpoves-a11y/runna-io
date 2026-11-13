@@ -37,9 +37,12 @@ function defaultSeasonAnchor() {
 }
 const seasonAnchor = process.env.E2E_SEASON_ANCHOR || defaultSeasonAnchor();
 
+let chain = Promise.resolve();
 const env = {
   DATABASE_URL: databaseUrl,
   SEASON_ANCHOR_DATE: seasonAnchor,
+  // Cloudflare's free plan: 50 subrequests per invocation (long jobs resume on the next run)
+  SUBREQUEST_LIMIT: process.env.E2E_SUBREQUEST_LIMIT || 50,
   ENVIRONMENT: 'test',
   UPSTASH_CRON_SECRET: 'e2e-cron-secret',
   FRONTEND_URL: 'http://localhost:5000',
@@ -48,9 +51,19 @@ const env = {
     send: async (body) => {
       // Like a real queue: processed after the request returns
       setTimeout(() => {
-        worker
-          .queue({ messages: [{ body, ack() {}, retry() { console.error('[e2e queue] retry requested for', body.type); } }] }, env)
-          .catch((error) => console.error('[e2e queue] failed:', error));
+        const stats = globalThis.__runnaDbStats;
+        const run = () => {
+          const before = stats?.statements ?? 0;
+          if (process.env.E2E_SQL_TRACE) globalThis.__runnaDbTrace = [];
+          return worker
+            .queue({ messages: [{ body, ack() {}, retry() { console.error('[e2e queue] retry requested for', body.type); } }] }, env)
+            .then(() => {
+              if (process.env.E2E_SUBREQUEST_LOG && stats) console.log(`[subrequests] ${stats.statements - before} QUEUE ${body.type}`);
+              if (process.env.E2E_SQL_TRACE) { for (const line of globalThis.__runnaDbTrace) console.log(`[sql] ${line}`); globalThis.__runnaDbTrace = null; }
+            })
+            .catch((error) => console.error('[e2e queue] failed:', error));
+        };
+        if (process.env.E2E_SUBREQUEST_LOG) chain = chain.then(run); else run();
       }, 50);
     },
   },
@@ -58,7 +71,23 @@ const env = {
 
 const ctx = { waitUntil: (promise) => { Promise.resolve(promise).catch(() => {}); }, passThroughOnException() {} };
 
-serve({ fetch: (request) => worker.fetch(request, env, ctx), port, hostname: '127.0.0.1' }, () => {
+// Database round trips per request (Cloudflare counts each one as a subrequest: 50 on the free plan).
+// E2E_SUBREQUEST_LOG=1 prints them; requests run one at a time so the counts don't mix.
+const measured = async (request) => {
+  const stats = globalThis.__runnaDbStats;
+  if (!process.env.E2E_SUBREQUEST_LOG || !stats) return worker.fetch(request, env, ctx);
+  const run = chain.then(async () => {
+    const before = stats.statements;
+    const response = await worker.fetch(request, env, ctx);
+    const used = stats.statements - before;
+    const url = new URL(request.url);
+    console.log(`[subrequests] ${used} ${request.method} ${url.pathname}`);
+    return response;
+  });
+  chain = run.catch(() => {});
+  return run;
+};
+serve({ fetch: measured, port, hostname: '127.0.0.1' }, () => {
   console.log(`[e2e] API listening on http://127.0.0.1:${port} (${databaseUrl}), season anchor ${seasonAnchor}`);
   if (process.env.E2E_RUN_CRON === '1') runCronOnce();
 });

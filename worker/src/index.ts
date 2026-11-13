@@ -10,7 +10,7 @@ import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 import { configurePush } from './pushHelper';
 import { runScheduledTasks } from './cron';
 import { registerPublicPages } from './pages';
-import { createDb } from './db';
+import { createDb, startInvocation } from './db';
 import { WorkerStorage } from './storage';
 import { setSeasonAnchor } from './cycles';
 import { refreshRunsCountFrom } from './gameStorage';
@@ -144,6 +144,7 @@ function needsDatabase(request: Request): boolean {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    startInvocation((env as any).SUBREQUEST_LIMIT);
     configurePush(env);
     setSeasonAnchor(env.SEASON_ANCHOR_DATE);
     if (needsDatabase(request)) {
@@ -154,6 +155,7 @@ export default {
     return app.fetch(request, env, ctx);
   },
   async queue(batch: Parameters<typeof handleQueueBatch>[0], env: Env) {
+    startInvocation((env as any).SUBREQUEST_LIMIT);
     configurePush(env);
     setSeasonAnchor(env.SEASON_ANCHOR_DATE);
     await ensureSchema(env);
@@ -162,6 +164,7 @@ export default {
   },
   scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     // Cloudflare Cron Trigger (every minute): runs the due /api/tasks/* in-process (see cron.ts)
+    startInvocation((env as any).SUBREQUEST_LIMIT);
     configurePush(env);
     setSeasonAnchor(env.SEASON_ANCHOR_DATE);
     ctx.waitUntil(

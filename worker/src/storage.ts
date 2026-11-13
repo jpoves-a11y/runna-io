@@ -108,6 +108,7 @@ import {
 import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle-orm';
 import { type Database } from './db';
 import { applyGameSchema, applyCompetitionColumns, GameStorage } from './gameStorage';
+import { applySchemaPlan } from './schemaPlan';
 import { messageFor, type ValidationReason } from './antiCheat';
 
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
@@ -269,7 +270,15 @@ export class WorkerStorage {
    */
   ensureSchemaUpgrades(): Promise<void> {
     if (!WorkerStorage.schemaUpgrades) {
-      WorkerStorage.schemaUpgrades = this.applySchemaUpgrades().catch((error) => {
+      // Two database round trips in all (see schemaPlan.ts): reading the schema, and one batch with
+      // whatever is missing. The read-path indexes go in the same batch.
+      WorkerStorage.schemaUpgrades = applySchemaPlan(this.db, async (collector) => {
+        const planned = new WorkerStorage(collector);
+        await planned.applySchemaUpgrades();
+        await planned.applyReadPathIndexes();
+      }).then(() => {
+        WorkerStorage.indexesEnsured = Promise.resolve();
+      }).catch((error) => {
         WorkerStorage.schemaUpgrades = null; // retry on the next request
         console.error('[SCHEMA] Upgrade failed:', error);
       });

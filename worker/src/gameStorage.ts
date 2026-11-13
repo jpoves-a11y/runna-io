@@ -1,6 +1,7 @@
 // Data access for Global mode, clubs, seasons, inventory and challenges.
 // Raw SQL through drizzle's `sql` template (values are always bound parameters).
 import { sql } from 'drizzle-orm';
+import { readExistingSchema } from './schemaPlan';
 import type { Database } from './db';
 import {
   ITEMS,
@@ -991,6 +992,14 @@ export class GameStorage {
     }));
   }
 
+  /** Members of every club, in one query. */
+  async getAllClubMemberIds(): Promise<Map<string, string[]>> {
+    const rows = await this.db.all<Row>(sql`SELECT club_id, user_id FROM club_members`);
+    const map = new Map<string, string[]>();
+    for (const row of rows) map.set(row.club_id, [...(map.get(row.club_id) ?? []), row.user_id]);
+    return map;
+  }
+
   async getClubMemberIds(clubId: string): Promise<string[]> {
     const rows = await this.db.all<Row>(sql`SELECT user_id FROM club_members WHERE club_id = ${clubId}`);
     return rows.map((r) => r.user_id);
@@ -1796,7 +1805,7 @@ export class GameStorage {
         await this.removeMember(membership.clubId, userId);
       }
     }
-    for (const statement of [
+    await this.runWritesInOneTrip([
       sql`DELETE FROM club_requests WHERE user_id = ${userId}`,
       sql`DELETE FROM competition_participants WHERE user_id = ${userId}`,
       sql`DELETE FROM user_challenges WHERE user_id = ${userId}`,
@@ -1812,11 +1821,33 @@ export class GameStorage {
       sql`DELETE FROM club_message_reactions WHERE user_id = ${userId} OR message_id IN (SELECT id FROM club_messages WHERE user_id = ${userId})`,
       sql`DELETE FROM club_messages WHERE user_id = ${userId}`,
       sql`DELETE FROM club_mutes WHERE user_id = ${userId}`,
-    ]) {
-      try {
-        await this.db.run(statement);
-      } catch {
-        /* table not created yet */
+    ], 'DELETE ACCOUNT');
+  }
+
+  /**
+   * Runs write statements in one round trip (a batch), leaving out those on tables this database
+   * doesn't have. If the batch fails, one by one, ignoring errors.
+   */
+  async runWritesInOneTrip(statements: ReturnType<typeof sql>[], label: string): Promise<void> {
+    const existing = await readExistingSchema(this.db);
+    const dialect = (this.db as any).dialect;
+    const queries = statements
+      .map((statement) => dialect.sqlToQuery(statement) as { sql: string; params: unknown[] })
+      .filter((q) => {
+        const table = /^\s*(?:DELETE\s+FROM|UPDATE)\s+["`]?(\w+)/i.exec(q.sql)?.[1]?.toLowerCase();
+        return !table || existing.tables.has(table);
+      });
+    const client = (this.db as any).$client;
+    try {
+      await client.batch(queries.map((q) => ({ sql: q.sql, args: q.params as any[] })), 'write');
+    } catch (error) {
+      console.error(`[${label}] Batch failed, one by one:`, error);
+      for (const q of queries) {
+        try {
+          await client.execute({ sql: q.sql, args: q.params as any[] });
+        } catch (statementError) {
+          console.warn(`[${label}] Statement skipped:`, String(statementError).slice(0, 200));
+        }
       }
     }
   }
@@ -1862,13 +1893,8 @@ export class GameStorage {
       sql`DELETE FROM routes`,
       sql`UPDATE users SET total_area = 0, global_area = 0, global_bonus_area = 0, streak_days = 0, streak_last_date = NULL`,
     ];
-    for (const statement of optional) {
-      try {
-        await this.db.run(statement);
-      } catch (error) {
-        console.warn('[SEASON RESET] Statement skipped:', String(error).slice(0, 200));
-      }
-    }
+    // One round trip: only the tables this database has, all in one batch
+    await this.runWritesInOneTrip(optional, 'SEASON RESET');
     return { routes: Number(count[0]?.n ?? 0) };
   }
 }

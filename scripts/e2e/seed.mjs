@@ -121,7 +121,12 @@ await call('POST', `/api/clubs/${club.id}/invites`, { token: alice.token, body: 
 // Season: the first tick does the one-time reset and starts the running competition with the clubs
 // as they are now. Then the season cutoff goes back 4 days and the participants are backdated to
 // the start of the competition, so the runs below (last 30 h) count.
-const tick = await call('POST', '/api/admin/season/tick', { token: cronSecret, body: {} });
+// With 50 subrequests per run (Cloudflare free plan) the reset and the start take a few ticks
+let tick = null;
+for (let i = 0; i < 10; i++) {
+  tick = await call('POST', '/api/admin/season/tick', { token: cronSecret, body: {} });
+  if (!tick.paused && tick.phase && !tick.reset && tick.started === undefined) break;
+}
 if (tick.phase !== 'competition') throw new Error(`expected a running competition, got ${JSON.stringify(tick)}`);
 await call('POST', '/api/admin/season/runs-from', { token: cronSecret, body: { at: new Date(Date.now() - 4 * 86400_000).toISOString() } });
 const season = await call('GET', '/api/season/current', { token: alice.token });

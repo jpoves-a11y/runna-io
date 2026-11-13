@@ -38,6 +38,7 @@ import {
 } from '../../shared/game';
 import { computeAwards, runDaysByUser, type AwardCandidate, type AwardContext } from './awards';
 import { CHAT_RETENTION_DAYS } from './clubChat';
+import { checkBudget, subrequestsLeft, SubrequestBudgetError } from './db';
 import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
 import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
@@ -379,17 +380,23 @@ async function playersOf(game: GameStorage, members: string[], now: number): Pro
   return { active, players: isYoungSeason(now) ? new Set(members) : active };
 }
 
+/** Every club with its members and who is active: three queries whatever the number of clubs. */
 async function snapshotClubs(game: GameStorage, now: number): Promise<ClubSnapshot[]> {
   const clubs = await game.getAllClubs();
+  const membersByClub = await game.getAllClubMemberIds();
+  const allMembers = [...membersByClub.values()].flat();
+  const activeAll = await game.activeUserIds(allMembers, new Date(now - ACTIVE_WINDOW_MS).toISOString());
+  const young = isYoungSeason(now);
   const result: ClubSnapshot[] = [];
   for (const club of clubs) {
-    const members = await game.getClubMemberIds(club.id);
+    const members = membersByClub.get(club.id) ?? [];
     if (members.length === 0) continue;
+    const active = new Set(members.filter((id) => activeAll.has(id)));
     const hasCenter = club.centerLat !== null && club.centerLng !== null;
     const center = hasCenter ? { lat: Number(club.centerLat), lng: Number(club.centerLng) } : null;
     const cityKey = club.city ? cityKeyOf(club.countryCode, club.city, center?.lat ?? 0, center?.lng ?? 0)
       : center ? cityKeyOf(null, null, center.lat, center.lng) : null;
-    result.push({ id: club.id, name: club.name, rating: club.rating, members, cityKey, center, ...(await playersOf(game, members, now)) });
+    result.push({ id: club.id, name: club.name, rating: club.rating, members, cityKey, center, active, players: young ? new Set(members) : active });
   }
   return result;
 }
@@ -460,7 +467,9 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
     await game.upsertCycle(info.number, { status: 'competition', startedAt: new Date(now).toISOString() });
   }
   const existing = new Set((await game.getCompetitionsOfCycle(info.number)).map((c) => c.clubId));
-  const clubs = (await snapshotClubs(game, now)).filter((c) => !existing.has(c.id));
+  // Every club: a start that ran out of subrequests half-way announces the ones it created before
+  const allClubs = await snapshotClubs(game, now);
+  const clubs = allClubs.filter((c) => !existing.has(c.id));
   let duels = 0;
   let competitions = 0;
   const handled = new Set<string>();
@@ -493,6 +502,7 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
 
     const byId = new Map(clubs.map((c) => [c.id, c]));
     for (const pairing of pairings) {
+      checkBudget('pairing clubs', 15);
       const a = byId.get(pairing.a)!;
       const b = byId.get(pairing.b)!;
       const runnersCounted = Math.min(a.active.size, b.active.size);
@@ -514,15 +524,20 @@ export async function startCycle(storage: WorkerStorage, game: GameStorage, env:
 
   for (const club of clubs) {
     if (handled.has(club.id)) continue;
+    checkBudget('creating club competitions', 15);
     if (await createInternalCompetition(game, info, club, info.mode, now)) competitions++;
   }
 
   // Tell each club's members: the participants that it starts (with their club's actual mode), the
   // inactive ones that they don't take part and whether they can still enter
   let inactive = 0;
-  for (const club of clubs) {
-    const competition = await game.getClubCompetition(club.id, info.number);
+  const competitionsByClub = new Map((await game.getCompetitionsOfCycle(info.number)).map((c) => [c.clubId, c]));
+  for (const club of allClubs) {
+    const competition = competitionsByClub.get(club.id);
     if (!competition) continue;
+    checkBudget('announcing the competition', 15);
+    // Once per club, however many runs the start takes
+    if (!(await game.claimSetting(`season_announced_${info.number}_${club.id}`, String(now)))) continue;
     const mode = competition.mode as CompetitionMode;
     const modeInfo = MODE_INFO[mode] ?? MODE_INFO[info.mode];
     const players = club.members.filter((id) => club.players.has(id));
@@ -929,6 +944,7 @@ async function advanceEliminations(storage: WorkerStorage, game: GameStorage, en
   let processed = 0;
   for (const competition of await game.getCompetitionsOfCycle(cycleNumber)) {
     if (competition.mode !== 'elimination' || competition.status !== 'active') continue;
+    checkBudget('elimination cuts', 20);
     const lock = `elimination_${competition.id}`;
     if (!(await game.claimSetting(lock, String(now)))) continue;
     try {
@@ -1193,6 +1209,7 @@ export async function finishCycle(storage: WorkerStorage, game: GameStorage, env
   const doneMatches = new Set<string>();
   for (const competition of competitions) {
     try {
+      checkBudget('finishing competitions', 25);
       if (CLUB_VS_CLUB_MODES.includes(competition.mode as CompetitionMode) && competition.matchId) {
         if (doneMatches.has(competition.matchId)) continue;
         doneMatches.add(competition.matchId);
@@ -1201,6 +1218,7 @@ export async function finishCycle(storage: WorkerStorage, game: GameStorage, env
         await finishInternal(storage, game, env, competition);
       }
     } catch (error) {
+      if (error instanceof SubrequestBudgetError) throw error;
       console.error(`[SEASON] Could not finish competition ${competition.id}:`, error);
     }
   }
@@ -1249,6 +1267,7 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
   const restEnd = restWindow(info).end;
   let spawned = 0;
   for (const city of await game.clubMemberCities()) {
+    checkBudget('rest-day chests', 10);
     const perDay = chestsPerDay(city.members);
     const due = Math.ceil(perDay * dayFraction);
     const already = await game.countChestsSpawnedSince(city.cityKey, new Date(dayStart).toISOString());
@@ -1419,7 +1438,21 @@ export async function applyRunToChallenges(game: GameStorage, userId: string, in
  */
 export async function seasonTick(storage: WorkerStorage, game: GameStorage, env: any, now = Date.now()): Promise<Record<string, unknown>> {
   const report: Record<string, unknown> = {};
+  try {
+    return await runSeasonTick(storage, game, env, now, report);
+  } catch (error) {
+    if (!(error instanceof SubrequestBudgetError)) throw error;
+    // Carries on in the next tick (every step is resumable)
+    console.warn(`[SEASON] ${error.message}`);
+    report.paused = error.message;
+    return report;
+  }
+}
+
+async function runSeasonTick(storage: WorkerStorage, game: GameStorage, env: any, now: number, report: Record<string, unknown>): Promise<Record<string, unknown>> {
   report.reset = await ensureSeasonReset(game, now);
+  // The reset is a big batch: the rest waits for the next tick
+  if (report.reset && subrequestsLeft() < 35) return report;
   const info = cycleAt(now);
   report.cycle = info.number;
   report.phase = info.phase;
@@ -1434,6 +1467,7 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
     try {
       report[`finished_${number}`] = await finishCycle(storage, game, env, number, now);
     } catch (error) {
+      if (error instanceof SubrequestBudgetError) throw error;
       console.error(`[SEASON] Finishing cycle ${number} failed, will retry:`, error);
       report[`finished_${number}`] = { error: String(error) };
     } finally {
@@ -1465,6 +1499,7 @@ export async function seasonTick(storage: WorkerStorage, game: GameStorage, env:
         // Release so the next tick starts it again (createCompetition skips clubs already done)
         console.error(`[SEASON] Starting cycle ${info.number} failed, will retry:`, error);
         await game.deleteSetting(startKey);
+        if (error instanceof SubrequestBudgetError) throw error;
         report.started = { error: String(error) };
       }
     } else {

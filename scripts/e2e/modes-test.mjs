@@ -47,21 +47,37 @@ const env = {
   UPSTASH_CRON_SECRET: 'e2e-cron-secret',
   WORKER_URL: 'https://api.example.test',
   // Preseason first (the reset happens on the first tick)
+  // These tests check whole ticks at once; budget-test.mjs checks the real 50-subrequest limit
+  SUBREQUEST_LIMIT: 100000,
   SEASON_ANCHOR_DATE: addDays(madridDay(Date.now()), 30),
   TERRITORY_QUEUE: {
     send: async (body) => {
+      const before = globalThis.__runnaDbStats?.statements ?? 0;
+      if (process.env.E2E_SQL_TRACE) globalThis.__runnaDbTrace = [];
       await worker.queue({ messages: [{ body, ack() {}, retry() { throw new Error(`queue retry for ${body.type}`); } }] }, env);
+      const used = (globalThis.__runnaDbStats?.statements ?? 0) - before;
+      queueUsed += used;
+      if (process.env.E2E_SUBREQUEST_LOG) console.log(`[subrequests] ${used} QUEUE ${body.type}`);
+      if (process.env.E2E_SQL_TRACE && used >= 55) for (const line of globalThis.__runnaDbTrace) console.log(`[sql] ${line}`);
+      globalThis.__runnaDbTrace = null;
     },
   },
 };
 
+let queueUsed = 0;
 async function call(method, route, { token, body } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const before = globalThis.__runnaDbStats?.statements ?? 0;
+  const queuedBefore = queueUsed;
   const res = await worker.fetch(new Request(`http://127.0.0.1:8787${route}`, {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body),
   }), env, ctx);
+  if (process.env.E2E_SUBREQUEST_LOG) {
+    const used = (globalThis.__runnaDbStats?.statements ?? 0) - before - (queueUsed - queuedBefore);
+    console.log(`[subrequests] ${used} ${method} ${route.split('?')[0]}`);
+  }
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
   while (pending.length) await Promise.allSettled(pending.splice(0));
