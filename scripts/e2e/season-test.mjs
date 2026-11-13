@@ -155,6 +155,19 @@ const publicAna = Array.isArray(found.data) ? found.data.find((u) => u.id === an
 check('home coordinates are never public', !!publicAna && !('homeLat' in publicAna) && !('homeLng' in publicAna) && !('locationUpdatedAt' in publicAna), publicAna);
 
 const crest = { shape: 'classic', pattern: 'stripes', primary: '#16A34A', secondary: '#FFFFFF', icon: 'flame.fill', initials: 'ZR' };
+// Base city: a club is from its creator's city; only runners from there join
+const nomad = await register('nomad', 'Nómada', '#123456');
+const noCity = await call('POST', '/api/clubs', { token: nomad.token, body: { name: 'Sin Ciudad', crest } });
+check('creating a club needs a base city', noCity.status === 409 && noCity.data.code === 'no_city', noCity.data);
+check('without a base city the search lists no clubs', (await call('GET', '/api/clubs/search?q=', { token: nomad.token })).data.needsCity === true);
+await call('PATCH', '/api/users/me/location', { token: nomad.token, body: { city: 'Huesca', countryCode: 'ES', countryName: 'España', lat: 42.14, lng: -0.41 } });
+const shapes = await call('POST', '/api/clubs', { token: nomad.token, body: { name: 'Huesca Trail', crest: { shape: 'banner', pattern: 'saltire', primary: '#1D4ED8', secondary: '#FDE68A', iconColor: '#DC2626', trim: '#111827', icon: 'mountain.2.fill', initials: 'HT' } } });
+check('every shape and pattern is free (estandarte, aspa), with icon and outline colours', shapes.status === 201 && shapes.data.club.crest.shape === 'banner'
+  && shapes.data.club.crest.iconColor === '#DC2626' && shapes.data.club.crest.trim === '#111827' && shapes.data.club.city === 'Huesca', shapes.data);
+const nomadClubId = shapes.data.club?.id;
+// (the Huesca club goes away: the rest of the test counts Zaragoza's clubs)
+check('the leader alone deletes the club', (await call('DELETE', `/api/clubs/${nomadClubId}`, { token: nomad.token })).status === 200);
+
 const lockedCrest = await call('POST', '/api/clubs', { token: ana.token, body: { name: 'Zaragoza Runners', crest: { ...crest, icon: 'crown.fill' } } });
 check('locked crest pieces are refused', lockedCrest.status === 400, lockedCrest);
 const badName = await call('POST', '/api/clubs', { token: ana.token, body: { name: 'ab', crest } });
@@ -165,6 +178,15 @@ const dupName = await call('POST', '/api/clubs', { token: dani.token, body: { na
 check('club names are unique (any letter case)', dupName.status === 409, dupName);
 check('public join', (await call('POST', `/api/clubs/${club1.id}/join`, { token: ben.token, body: {} })).data.joined === true);
 check('join with the code', (await call('POST', '/api/clubs/join-code', { token: cris.token, body: { code: club1.joinCode.toLowerCase() } })).data.joined === true);
+const huescaJoin = await call('POST', `/api/clubs/${club1.id}/join`, { token: nomad.token, body: {} });
+check('a runner from another city cannot join', huescaJoin.status === 409 && huescaJoin.data.code === 'other_city' && huescaJoin.data.error.includes('Zaragoza'), huescaJoin.data);
+check('nor with the code', (await call('POST', '/api/clubs/join-code', { token: nomad.token, body: { code: club1.joinCode } })).status === 409);
+const nomadSearch = (await call('GET', '/api/clubs/search?q=', { token: nomad.token })).data;
+check('the search lists only clubs of my city', nomadSearch.city === 'Huesca' && nomadSearch.clubs.every((c) => c.city === 'Huesca') && !nomadSearch.clubs.some((c) => c.id === club1.id), nomadSearch);
+const leaveCity = await call('PATCH', '/api/users/me/location', { token: ben.token, body: { city: 'Teruel', countryCode: 'ES', countryName: 'España' } });
+check("a member can't move to another city while in the club", leaveCity.status === 409 && leaveCity.data.code === 'club_city', leaveCity.data);
+const invitedFromHuesca = await call('POST', `/api/clubs/${club1.id}/invites`, { token: ana.token, body: { userId: nomad.id } });
+check('nor be invited from another city', invitedFromHuesca.status === 409 && invitedFromHuesca.data.code === 'other_city', invitedFromHuesca.data);
 const twice = await call('POST', '/api/clubs/join-code', { token: cris.token, body: { code: club1.joinCode } });
 check('one club at a time', twice.status === 409, twice);
 
@@ -277,6 +299,15 @@ check('chat: older messages page by page', older === false || page2.messages.len
 const tick = await admin('/api/admin/season/tick');
 check('first tick: one-time reset and start of cycle 0', tick.data.reset === true && tick.data.cycle === 0 && tick.data.phase === 'competition' && tick.data.started?.competitions === 3, tick.data);
 check('chat: the start of the competition is announced in the club chat', (await chat(ana)).messages.some((m) => m.kind === 'system' && m.body.startsWith('Empieza la competición: Todos contra todos.')));
+// A reset that ran out of subrequests left old competition territory and areas: the clean-up
+// (once) removes what is older than the reset and recomputes the areas
+await db.execute({ sql: "insert into territories (id, user_id, route_id, geometry, area, conquered_at) values ('old-territory', ?, null, '{}', 777777, '2026-01-01 10:00:00')", args: [hugo.id] });
+await db.execute({ sql: 'update users set total_area = 777777 where id = ?', args: [hugo.id] });
+await db.execute({ sql: "delete from app_settings where key = 'season_v2_reset_cleanup_1'" });
+const cleanupTick = await admin('/api/admin/season/tick');
+const hugoArea = await one('select total_area from users where id = ?', [hugo.id]);
+check('old competition km² are cleaned up after the reset', cleanupTick.data.resetCleanup === true && Number(hugoArea.total_area) === 0
+  && !(await one("select id from territories where id = 'old-territory'")), { tick: cleanupTick.data, hugoArea });
 const tickAgain = await admin('/api/admin/season/tick');
 check('the tick is idempotent', tickAgain.data.reset === false && !tickAgain.data.started, tickAgain.data);
 const competitions = await all('select club_id, mode from club_competitions where cycle_number = 0');
@@ -509,6 +540,7 @@ await call('POST', `/api/clubs/${club3.id}/join`, { token: hugo.token, body: {} 
 // From now on the season is older than 14 days: inactivity applies. Iris joins club 1 without runs.
 await admin('/api/admin/season/runs-from', { at: new Date(Date.now() - 40 * DAY).toISOString() });
 const iris = await register('iris', 'Iris', '#66C2A5');
+await call('PATCH', '/api/users/me/location', { token: iris.token, body: { city: 'zaragoza ', countryCode: 'ES', countryName: 'España', lat: C[0], lng: C[1] } });
 check('a new member joins in the rest days', (await call('POST', `/api/clubs/${club1.id}/join`, { token: iris.token, body: {} })).data.joined === true);
 const c1Start = Date.parse(season0.cycle.restEndsAt) + 10 * 60_000;
 const duelTick = await admin('/api/admin/season/tick', { time: new Date(c1Start).toISOString() });

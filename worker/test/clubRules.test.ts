@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { joinDecision, canInvite, entryModeFromVisibility, visibilityOf, parseEntryMode } from '../src/clubRules';
+import { joinDecision, canInvite, entryModeFromVisibility, visibilityOf, parseEntryMode, sameCity, cityRefusal, normalizeCity } from '../src/clubRules';
 
 test('entering from the search: open joins, approval asks, invite-only is not reachable', () => {
   assert.equal(joinDecision('open', 'search', 'all'), 'join');
@@ -50,4 +50,22 @@ test('older app versions: public / private map to the entry types and back', () 
   assert.equal(visibilityOf('invite_only'), 'private');
   assert.equal(parseEntryMode('approval'), 'approval');
   assert.equal(parseEntryMode('closed'), null);
+});
+
+test('base city: same city whatever the accents, case or spaces; clubs from before the rule accept anyone', () => {
+  const club = { city: 'Zaragoza', countryCode: 'ES' };
+  assert.equal(sameCity({ city: ' zaragoza ', countryCode: 'ES' }, club), true);
+  assert.equal(sameCity({ city: 'Zaragozá', countryCode: 'es' }, club), true);
+  assert.equal(sameCity({ city: 'Huesca', countryCode: 'ES' }, club), false);
+  // Same name in another country
+  assert.equal(sameCity({ city: 'Zaragoza', countryCode: 'MX' }, club), false);
+  assert.equal(sameCity({ city: 'Huesca', countryCode: 'ES' }, { city: null, countryCode: null }), true);
+});
+
+test('base city: why someone cannot join', () => {
+  const club = { city: 'Zaragoza', countryCode: 'ES' };
+  assert.equal(cityRefusal({ city: 'Zaragoza', countryCode: 'ES' }, club), null);
+  assert.match(cityRefusal({ city: null, countryCode: null }, club) ?? '', /Elige tu ciudad base/);
+  assert.match(cityRefusal({ city: 'Huesca', countryCode: 'ES' }, club) ?? '', /Solo pueden unirse corredores de Zaragoza/);
+  assert.equal(normalizeCity('  San   Sebastián '), 'san sebastian');
 });

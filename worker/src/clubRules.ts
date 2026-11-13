@@ -61,3 +61,39 @@ export function joinDecision(entryMode: EntryMode, via: JoinVia, permission: Inv
   if (!inviterRole || permission !== 'all') return entryMode === 'invite_only' ? 'forbidden' : entryMode === 'approval' ? 'request' : 'join';
   return entryMode === 'approval' ? 'request' : 'join';
 }
+
+// ─── Base city ───────────────────────────────────────────────────────────────
+
+/** "Zaragoza", " zaragoza ", "Zaragozá" → the same key. */
+export function normalizeCity(city: string | null | undefined): string {
+  return (city ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * A club belongs to the base city of whoever created it, and only runners with that base city can
+ * be members. Clubs from before the rule (no city) accept anyone.
+ */
+export function sameCity(
+  user: { city?: string | null; countryCode?: string | null },
+  club: { city?: string | null; countryCode?: string | null },
+): boolean {
+  if (!normalizeCity(club.city)) return true;
+  if (normalizeCity(user.city) !== normalizeCity(club.city)) return false;
+  return !club.countryCode || !user.countryCode || club.countryCode.toUpperCase() === user.countryCode.toUpperCase();
+}
+
+/** Why a user can't be in this club, or null when they can. */
+export function cityRefusal(
+  user: { city?: string | null; countryCode?: string | null } | null,
+  club: { city?: string | null; countryCode?: string | null },
+): string | null {
+  if (!normalizeCity(club.city)) return null;
+  if (!user || !normalizeCity(user.city)) return `Este club es de ${club.city}. Elige tu ciudad base en Perfil para poder unirte.`;
+  if (!sameCity(user, club)) return `Este club es de ${club.city} y tu ciudad base es ${user.city}. Solo pueden unirse corredores de ${club.city}.`;
+  return null;
+}

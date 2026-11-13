@@ -175,33 +175,46 @@ export const CLUB_SLOGAN_MAX = 80;
 export type ClubRole = 'owner' | 'admin' | 'member';
 export type ClubVisibility = 'public' | 'private';
 
-export type CrestShape = 'classic' | 'round' | 'hex' | 'diamond' | 'banner';
-export type CrestPattern = 'plain' | 'stripes' | 'chevron' | 'diagonal' | 'quartered' | 'cross' | 'stars';
+export type CrestShape = 'classic' | 'round' | 'hex' | 'diamond' | 'banner' | 'rounded' | 'pointed' | 'octagon';
+export type CrestPattern =
+  | 'plain' | 'stripes' | 'chevron' | 'diagonal' | 'quartered' | 'cross' | 'stars'
+  | 'halves' | 'bend' | 'checkers' | 'saltire' | 'rings' | 'waves' | 'border';
 
 export interface Crest {
   shape: CrestShape;
   pattern: CrestPattern;
-  primary: string; // #RRGGBB
-  secondary: string; // #RRGGBB
+  primary: string; // #RRGGBB, background
+  secondary: string; // #RRGGBB, pattern
+  /** #RRGGBB of the icon and initials (older crests: the pattern colour) */
+  iconColor: string;
+  /** #RRGGBB of the outline (older crests: the pattern colour) */
+  trim: string;
   icon: string; // SF Symbol name from CREST_ICONS
   initials: string; // 0-3 letters
 }
 
 /** Crest pieces: free ones can always be used; the others need the cosmetic unlocked by a member. */
 export const CREST_SHAPES: Record<CrestShape, { unlock?: string }> = {
-  classic: {}, round: {}, hex: {},
-  diamond: { unlock: 'crest_shape_diamond' },
-  banner: { unlock: 'crest_shape_banner' },
+  classic: {}, round: {}, hex: {}, diamond: {}, banner: {}, rounded: {}, pointed: {}, octagon: {},
 };
 export const CREST_PATTERNS: Record<CrestPattern, { unlock?: string }> = {
-  plain: {}, stripes: {}, chevron: {}, diagonal: {},
-  quartered: { unlock: 'crest_pattern_quartered' },
-  cross: { unlock: 'crest_pattern_cross' },
-  stars: { unlock: 'crest_pattern_stars' },
+  plain: {}, stripes: {}, chevron: {}, diagonal: {}, quartered: {}, cross: {}, stars: {},
+  halves: {}, bend: {}, checkers: {}, saltire: {}, rings: {}, waves: {}, border: {},
 };
 export const CREST_ICONS: Record<string, { unlock?: string }> = {
-  'figure.run': {}, 'flame.fill': {}, 'bolt.fill': {}, 'star.fill': {}, 'leaf.fill': {},
-  'mountain.2.fill': {}, 'hare.fill': {}, 'heart.fill': {}, 'sun.max.fill': {}, 'moon.fill': {},
+  // Running
+  'figure.run': {}, 'figure.walk': {}, 'figure.hiking': {}, 'shoeprints.fill': {}, 'stopwatch.fill': {}, 'timer': {},
+  'medal.fill': {}, 'flag.fill': {}, 'flag.checkered': {}, 'location.north.fill': {}, 'map.fill': {}, 'mappin': {},
+  // Energy
+  'flame.fill': {}, 'bolt.fill': {}, 'star.fill': {}, 'heart.fill': {}, 'shield.fill': {}, 'target': {},
+  // Nature
+  'leaf.fill': {}, 'tree.fill': {}, 'mountain.2.fill': {}, 'sun.max.fill': {}, 'moon.fill': {}, 'sunrise.fill': {},
+  'cloud.bolt.fill': {}, 'snowflake': {}, 'drop.fill': {}, 'wind': {}, 'water.waves': {},
+  // Animals
+  'hare.fill': {}, 'tortoise.fill': {}, 'fish.fill': {}, 'ant.fill': {}, 'ladybug.fill': {},
+  // City
+  'building.columns.fill': {}, 'building.2.fill': {}, 'globe.europe.africa.fill': {}, 'sparkle': {},
+  // Rewards (chests and challenges)
   'pawprint.fill': { unlock: 'crest_icon_pawprint' },
   'bird.fill': { unlock: 'crest_icon_bird' },
   'sparkles': { unlock: 'crest_icon_sparkles' },
@@ -210,7 +223,7 @@ export const CREST_ICONS: Record<string, { unlock?: string }> = {
 };
 
 export const DEFAULT_CREST: Crest = {
-  shape: 'classic', pattern: 'plain', primary: '#16A34A', secondary: '#FFFFFF', icon: 'figure.run', initials: '',
+  shape: 'classic', pattern: 'plain', primary: '#16A34A', secondary: '#FFFFFF', iconColor: '#FFFFFF', trim: '#FFFFFF', icon: 'figure.run', initials: '',
 };
 
 // ─── Items: powers, global boosts and cosmetics ──────────────────────────────
@@ -305,11 +318,6 @@ export const ITEMS: Record<string, ItemDefinition> = {
   crest_icon_sparkles: { id: 'crest_icon_sparkles', scope: 'cosmetic', name: 'Escudo: Destellos', description: 'Icono para el escudo de tu club.', emoji: '✨', rarity: 'rare', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
   crest_icon_trophy: { id: 'crest_icon_trophy', scope: 'cosmetic', name: 'Escudo: Trofeo', description: 'Icono para el escudo de tu club.', emoji: '🏆', rarity: 'epic', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
   crest_icon_crown: { id: 'crest_icon_crown', scope: 'cosmetic', name: 'Escudo: Corona', description: 'Icono para el escudo de tu club.', emoji: '👑', rarity: 'legendary', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
-  crest_shape_diamond: { id: 'crest_shape_diamond', scope: 'cosmetic', name: 'Escudo: Forma diamante', description: 'Forma para el escudo de tu club.', emoji: '🔷', rarity: 'rare', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
-  crest_shape_banner: { id: 'crest_shape_banner', scope: 'cosmetic', name: 'Escudo: Forma estandarte', description: 'Forma para el escudo de tu club.', emoji: '🚩', rarity: 'epic', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
-  crest_pattern_quartered: { id: 'crest_pattern_quartered', scope: 'cosmetic', name: 'Escudo: Cuartelado', description: 'Fondo para el escudo de tu club.', emoji: '🟫', rarity: 'rare', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
-  crest_pattern_cross: { id: 'crest_pattern_cross', scope: 'cosmetic', name: 'Escudo: Cruz', description: 'Fondo para el escudo de tu club.', emoji: '✚', rarity: 'epic', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
-  crest_pattern_stars: { id: 'crest_pattern_stars', scope: 'cosmetic', name: 'Escudo: Estrellas', description: 'Fondo para el escudo de tu club.', emoji: '🌟', rarity: 'legendary', activation: 'owned', unusedTtlHours: null, usablePhase: 'any', category: 'cosmetic' },
 };
 
 /**

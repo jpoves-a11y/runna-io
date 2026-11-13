@@ -51,18 +51,29 @@ enum GameTitle {
 struct Crest: Decodable, Hashable {
     var shape: String
     var pattern: String
+    /// Background
     var primary: String
+    /// Pattern drawn over the background
     var secondary: String
+    /// Icon and initials
+    var iconColor: String
+    /// Outline
+    var trim: String
     var icon: String
     var initials: String
 
-    enum CodingKeys: String, CodingKey { case shape, pattern, primary, secondary, icon, initials }
+    enum CodingKeys: String, CodingKey { case shape, pattern, primary, secondary, iconColor, trim, icon, initials }
 
-    init(shape: String = "classic", pattern: String = "plain", primary: String = "#16A34A", secondary: String = "#FFFFFF", icon: String = "figure.run", initials: String = "") {
+    init(
+        shape: String = "classic", pattern: String = "plain", primary: String = "#16A34A", secondary: String = "#FFFFFF",
+        iconColor: String = "#FFFFFF", trim: String = "#FFFFFF", icon: String = "figure.run", initials: String = ""
+    ) {
         self.shape = shape
         self.pattern = pattern
         self.primary = primary
         self.secondary = secondary
+        self.iconColor = iconColor
+        self.trim = trim
         self.icon = icon
         self.initials = initials
     }
@@ -73,12 +84,18 @@ struct Crest: Decodable, Hashable {
         pattern = c.string(.pattern) ?? "plain"
         primary = c.string(.primary) ?? "#16A34A"
         secondary = c.string(.secondary) ?? "#FFFFFF"
+        // Crests from before these colours existed used the pattern colour for both
+        iconColor = c.string(.iconColor) ?? secondary
+        trim = c.string(.trim) ?? secondary
         icon = c.string(.icon) ?? "figure.run"
         initials = c.string(.initials) ?? ""
     }
 
     var json: [String: Any] {
-        ["shape": shape, "pattern": pattern, "primary": primary, "secondary": secondary, "icon": icon, "initials": initials]
+        [
+            "shape": shape, "pattern": pattern, "primary": primary, "secondary": secondary,
+            "iconColor": iconColor, "trim": trim, "icon": icon, "initials": initials,
+        ]
     }
 }
 
@@ -88,48 +105,130 @@ enum CrestCatalog {
         let id: String
         let label: String
         /// Cosmetic item that unlocks it (nil = free)
-        let unlock: String?
+        var unlock: String? = nil
+    }
+
+    struct IconGroup: Identifiable {
+        let title: String
+        let icons: [Piece]
+        var id: String { title }
     }
 
     static let shapes: [Piece] = [
-        Piece(id: "classic", label: "Clásico", unlock: nil),
-        Piece(id: "round", label: "Redondo", unlock: nil),
-        Piece(id: "hex", label: "Hexágono", unlock: nil),
-        Piece(id: "diamond", label: "Diamante", unlock: "crest_shape_diamond"),
-        Piece(id: "banner", label: "Estandarte", unlock: "crest_shape_banner"),
+        Piece(id: "classic", label: "Clásico"),
+        Piece(id: "pointed", label: "Francés"),
+        Piece(id: "round", label: "Redondo"),
+        Piece(id: "rounded", label: "Placa"),
+        Piece(id: "hex", label: "Hexágono"),
+        Piece(id: "octagon", label: "Octógono"),
+        Piece(id: "diamond", label: "Diamante"),
+        Piece(id: "banner", label: "Estandarte"),
     ]
 
     static let patterns: [Piece] = [
-        Piece(id: "plain", label: "Liso", unlock: nil),
-        Piece(id: "stripes", label: "Franjas", unlock: nil),
-        Piece(id: "chevron", label: "Chevrón", unlock: nil),
-        Piece(id: "diagonal", label: "Diagonal", unlock: nil),
-        Piece(id: "quartered", label: "Cuartelado", unlock: "crest_pattern_quartered"),
-        Piece(id: "cross", label: "Cruz", unlock: "crest_pattern_cross"),
-        Piece(id: "stars", label: "Estrellas", unlock: "crest_pattern_stars"),
+        Piece(id: "plain", label: "Liso"),
+        Piece(id: "halves", label: "Partido"),
+        Piece(id: "bend", label: "Tronchado"),
+        Piece(id: "stripes", label: "Franjas"),
+        Piece(id: "diagonal", label: "Banda"),
+        Piece(id: "chevron", label: "Chevrón"),
+        Piece(id: "quartered", label: "Cuartelado"),
+        Piece(id: "checkers", label: "Ajedrezado"),
+        Piece(id: "cross", label: "Cruz"),
+        Piece(id: "saltire", label: "Aspa"),
+        Piece(id: "border", label: "Bordura"),
+        Piece(id: "rings", label: "Anillos"),
+        Piece(id: "waves", label: "Ondas"),
+        Piece(id: "stars", label: "Estrellas"),
     ]
 
-    static let icons: [Piece] = [
-        Piece(id: "figure.run", label: "Corredor", unlock: nil),
-        Piece(id: "flame.fill", label: "Llama", unlock: nil),
-        Piece(id: "bolt.fill", label: "Rayo", unlock: nil),
-        Piece(id: "star.fill", label: "Estrella", unlock: nil),
-        Piece(id: "leaf.fill", label: "Hoja", unlock: nil),
-        Piece(id: "mountain.2.fill", label: "Montaña", unlock: nil),
-        Piece(id: "hare.fill", label: "Liebre", unlock: nil),
-        Piece(id: "heart.fill", label: "Corazón", unlock: nil),
-        Piece(id: "sun.max.fill", label: "Sol", unlock: nil),
-        Piece(id: "moon.fill", label: "Luna", unlock: nil),
-        Piece(id: "pawprint.fill", label: "Huella", unlock: "crest_icon_pawprint"),
-        Piece(id: "bird.fill", label: "Ave", unlock: "crest_icon_bird"),
-        Piece(id: "sparkles", label: "Destellos", unlock: "crest_icon_sparkles"),
-        Piece(id: "trophy.fill", label: "Trofeo", unlock: "crest_icon_trophy"),
-        Piece(id: "crown.fill", label: "Corona", unlock: "crest_icon_crown"),
+    static let iconGroups: [IconGroup] = [
+        IconGroup(title: "Correr", icons: [
+            Piece(id: "figure.run", label: "Corredor"),
+            Piece(id: "figure.walk", label: "Caminante"),
+            Piece(id: "figure.hiking", label: "Montaña"),
+            Piece(id: "shoeprints.fill", label: "Huellas"),
+            Piece(id: "stopwatch.fill", label: "Cronómetro"),
+            Piece(id: "timer", label: "Temporizador"),
+            Piece(id: "medal.fill", label: "Medalla"),
+            Piece(id: "flag.fill", label: "Bandera"),
+            Piece(id: "flag.checkered", label: "Meta"),
+            Piece(id: "location.north.fill", label: "Rumbo"),
+            Piece(id: "map.fill", label: "Mapa"),
+            Piece(id: "mappin", label: "Chincheta"),
+        ]),
+        IconGroup(title: "Energía", icons: [
+            Piece(id: "flame.fill", label: "Llama"),
+            Piece(id: "bolt.fill", label: "Rayo"),
+            Piece(id: "star.fill", label: "Estrella"),
+            Piece(id: "heart.fill", label: "Corazón"),
+            Piece(id: "shield.fill", label: "Escudo"),
+            Piece(id: "target", label: "Diana"),
+            Piece(id: "sparkle", label: "Destello"),
+        ]),
+        IconGroup(title: "Naturaleza", icons: [
+            Piece(id: "leaf.fill", label: "Hoja"),
+            Piece(id: "tree.fill", label: "Árbol"),
+            Piece(id: "mountain.2.fill", label: "Cumbres"),
+            Piece(id: "sun.max.fill", label: "Sol"),
+            Piece(id: "sunrise.fill", label: "Amanecer"),
+            Piece(id: "moon.fill", label: "Luna"),
+            Piece(id: "cloud.bolt.fill", label: "Tormenta"),
+            Piece(id: "snowflake", label: "Copo"),
+            Piece(id: "drop.fill", label: "Gota"),
+            Piece(id: "wind", label: "Viento"),
+            Piece(id: "water.waves", label: "Río"),
+        ]),
+        IconGroup(title: "Animales", icons: [
+            Piece(id: "hare.fill", label: "Liebre"),
+            Piece(id: "tortoise.fill", label: "Tortuga"),
+            Piece(id: "fish.fill", label: "Pez"),
+            Piece(id: "ant.fill", label: "Hormiga"),
+            Piece(id: "ladybug.fill", label: "Mariquita"),
+        ]),
+        IconGroup(title: "Ciudad", icons: [
+            Piece(id: "building.columns.fill", label: "Columnas"),
+            Piece(id: "building.2.fill", label: "Edificios"),
+            Piece(id: "globe.europe.africa.fill", label: "Mundo"),
+        ]),
+        IconGroup(title: "Recompensas", icons: [
+            Piece(id: "pawprint.fill", label: "Huella", unlock: "crest_icon_pawprint"),
+            Piece(id: "bird.fill", label: "Ave", unlock: "crest_icon_bird"),
+            Piece(id: "sparkles", label: "Destellos", unlock: "crest_icon_sparkles"),
+            Piece(id: "trophy.fill", label: "Trofeo", unlock: "crest_icon_trophy"),
+            Piece(id: "crown.fill", label: "Corona", unlock: "crest_icon_crown"),
+        ]),
     ]
 
+    static var icons: [Piece] { iconGroups.flatMap(\.icons) }
+
+    /// Swatches: deep tones, brights, pastels and neutrals.
     static let colors: [String] = [
-        "#16A34A", "#0E8A5F", "#1D4ED8", "#0EA5E9", "#7C3AED", "#DB2777",
-        "#DC2626", "#EA580C", "#CA8A04", "#111827", "#6B7280", "#FFFFFF", "#FDE68A",
+        "#7F1D1D", "#B91C1C", "#DC2626", "#EA580C", "#F59E0B", "#CA8A04", "#FDE68A",
+        "#14532D", "#16A34A", "#0E8A5F", "#10B981", "#0F766E", "#0EA5E9", "#BAE6FD",
+        "#1E3A8A", "#1D4ED8", "#4F46E5", "#7C3AED", "#A855F7", "#DB2777", "#FBCFE8",
+        "#111827", "#374151", "#6B7280", "#9CA3AF", "#E5E7EB", "#F5F0E6", "#FFFFFF",
+    ]
+
+    /// Ready-made colour sets (background, pattern, icon, outline).
+    struct Palette: Identifiable {
+        let name: String
+        let primary: String
+        let secondary: String
+        let icon: String
+        let trim: String
+        var id: String { name }
+    }
+
+    static let palettes: [Palette] = [
+        Palette(name: "Bosque", primary: "#14532D", secondary: "#16A34A", icon: "#F5F0E6", trim: "#F5F0E6"),
+        Palette(name: "Atardecer", primary: "#EA580C", secondary: "#F59E0B", icon: "#FFFFFF", trim: "#7F1D1D"),
+        Palette(name: "Océano", primary: "#1E3A8A", secondary: "#0EA5E9", icon: "#FFFFFF", trim: "#BAE6FD"),
+        Palette(name: "Clásico", primary: "#B91C1C", secondary: "#FDE68A", icon: "#FDE68A", trim: "#111827"),
+        Palette(name: "Noche", primary: "#111827", secondary: "#374151", icon: "#F59E0B", trim: "#F59E0B"),
+        Palette(name: "Lavanda", primary: "#7C3AED", secondary: "#A855F7", icon: "#FFFFFF", trim: "#FBCFE8"),
+        Palette(name: "Hielo", primary: "#E5E7EB", secondary: "#BAE6FD", icon: "#1E3A8A", trim: "#1E3A8A"),
+        Palette(name: "Tierra", primary: "#F5F0E6", secondary: "#CA8A04", icon: "#7F1D1D", trim: "#7F1D1D"),
     ]
 }
 

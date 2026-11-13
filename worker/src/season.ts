@@ -329,10 +329,36 @@ function km2(m2: number): string {
 export const SEASON_RESET_KEY = 'season_v2_reset';
 
 /** Runs the "start from zero" reset once (the first time the new code runs). */
+/**
+ * Once after the launch reset: removes what the reset should have removed and recomputes the areas
+ * (a reset that ran out of subrequests skipped its last statements). Only data older than the reset.
+ */
+const RESET_CLEANUP_KEY = `${'season_v2_reset'}_cleanup_1`;
+export async function ensureResetCleanup(game: GameStorage, now = Date.now()): Promise<boolean> {
+  if (await game.getSetting(RESET_CLEANUP_KEY)) return false;
+  const resetAt = await game.getSetting('season_reset_at');
+  if (!resetAt) return false;
+  if (!(await game.claimSetting(RESET_CLEANUP_KEY, String(now)))) return false;
+  try {
+    await game.cleanUpBeforeReset(resetAt);
+  } catch (error) {
+    await game.deleteSetting(RESET_CLEANUP_KEY); // the next tick tries again
+    throw error;
+  }
+  console.log(`[SEASON] Clean-up of the data from before the reset (${resetAt}) done`);
+  return true;
+}
+
 export async function ensureSeasonReset(game: GameStorage, now = Date.now()): Promise<boolean> {
   if (await game.getSetting(SEASON_RESET_KEY)) return false;
   const lockKey = `${SEASON_RESET_KEY}_lock`;
-  if (!(await game.claimSetting(lockKey, String(now)))) return false;
+  if (!(await game.claimSetting(lockKey, String(now)))) {
+    // A reset that died half-way (out of subrequests) left its lock: after 10 minutes, try again
+    const lockedAt = Number(await game.getSetting(lockKey));
+    if (!Number.isFinite(lockedAt) || now - lockedAt < 10 * 60_000) return false;
+    await game.deleteSetting(lockKey);
+    if (!(await game.claimSetting(lockKey, String(now)))) return false;
+  }
   let result: { routes: number };
   try {
     result = await game.resetForNewSeason();
@@ -1453,6 +1479,8 @@ async function runSeasonTick(storage: WorkerStorage, game: GameStorage, env: any
   report.reset = await ensureSeasonReset(game, now);
   // The reset is a big batch: the rest waits for the next tick
   if (report.reset && subrequestsLeft() < 35) return report;
+  report.resetCleanup = await ensureResetCleanup(game, now);
+  if (report.resetCleanup && subrequestsLeft() < 35) return report;
   const info = cycleAt(now);
   report.cycle = info.number;
   report.phase = info.phase;

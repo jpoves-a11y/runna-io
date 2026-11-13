@@ -36,7 +36,7 @@ import {
 import { competitionContextFor, rebuildGlobalForUser, rebuildCompetitionForUser } from './runPipeline';
 import { parseGeometry, unexploredSpots } from './globalTerritory';
 import * as turf from '@turf/turf';
-import { canInvite, isOfficer, joinDecision, parseEntryMode, entryModeFromVisibility, CLUB_DESCRIPTION_MAX, type JoinVia } from './clubRules';
+import { canInvite, isOfficer, joinDecision, parseEntryMode, entryModeFromVisibility, cityRefusal, sameCity, CLUB_DESCRIPTION_MAX, type JoinVia } from './clubRules';
 import { withReasons, haversineMeters } from './antiCheat';
 import { CHAT_PAGE_SIZE, CHAT_REACTIONS, canDeleteMessage, canMute, isReaction, muteHours, normalizeMessage, parseMentions } from './clubChat';
 import { LIMITS, lockedForSeconds, recordAttempt } from './rateLimit';
@@ -128,7 +128,7 @@ function clubJson(club: ClubRow, options: { role?: ClubRole | null } = {}) {
     name: club.name,
     slogan: club.slogan,
     description: club.description,
-    crest: { ...DEFAULT_CREST, ...club.crest },
+    crest: crestJson(club.crest),
     color: club.color,
     visibility: club.visibility,
     entryMode: club.entryMode,
@@ -183,11 +183,15 @@ function cleanName(value: unknown): string {
 
 /** Checks a crest; locked pieces need the cosmetic owned by someone in the club (or the creator). */
 export function validateCrest(input: any, unlocked: Set<string>): { crest: Crest } | { error: string } {
-  const crest: Crest = { ...DEFAULT_CREST, ...(input && typeof input === 'object' ? input : {}) };
+  const given = input && typeof input === 'object' ? input : {};
+  const crest: Crest = { ...DEFAULT_CREST, ...given };
+  // Older apps send no icon / outline colour: the pattern colour, as before
+  if (!given.iconColor) crest.iconColor = crest.secondary;
+  if (!given.trim) crest.trim = crest.secondary;
   if (!(crest.shape in CREST_SHAPES)) return { error: 'Forma de escudo no válida.' };
   if (!(crest.pattern in CREST_PATTERNS)) return { error: 'Fondo de escudo no válido.' };
   if (!(crest.icon in CREST_ICONS)) return { error: 'Icono de escudo no válido.' };
-  if (!HEX.test(crest.primary) || !HEX.test(crest.secondary)) return { error: 'Colores de escudo no válidos.' };
+  if (![crest.primary, crest.secondary, crest.iconColor, crest.trim].every((hex) => HEX.test(String(hex)))) return { error: 'Colores de escudo no válidos.' };
   crest.initials = String(crest.initials ?? '').trim().toUpperCase();
   if ([...crest.initials].length > 3 || !/^[\p{L}\p{N}]*$/u.test(crest.initials)) return { error: 'Las iniciales del escudo son de 0 a 3 letras o números.' };
   for (const unlock of [CREST_SHAPES[crest.shape].unlock, CREST_PATTERNS[crest.pattern].unlock, CREST_ICONS[crest.icon].unlock]) {
@@ -195,7 +199,18 @@ export function validateCrest(input: any, unlocked: Set<string>): { crest: Crest
       return { error: `Esa pieza del escudo está bloqueada: consigue «${ITEMS[unlock]?.name ?? unlock}» en un cofre o reto.` };
     }
   }
-  return { crest: { shape: crest.shape, pattern: crest.pattern, primary: crest.primary.toUpperCase(), secondary: crest.secondary.toUpperCase(), icon: crest.icon, initials: crest.initials } };
+  return { crest: {
+    shape: crest.shape, pattern: crest.pattern, primary: crest.primary.toUpperCase(), secondary: crest.secondary.toUpperCase(),
+    iconColor: crest.iconColor.toUpperCase(), trim: crest.trim.toUpperCase(), icon: crest.icon, initials: crest.initials,
+  } };
+}
+
+/** A stored crest for the app: older ones have no icon / outline colour (the pattern colour then). */
+function crestJson(stored: Partial<Crest> | null | undefined): Crest {
+  const crest = { ...DEFAULT_CREST, ...(stored ?? {}) } as Crest;
+  if (!stored?.iconColor) crest.iconColor = crest.secondary;
+  if (!stored?.trim) crest.trim = crest.secondary;
+  return crest;
 }
 
 function validateClubName(name: string): string | null {
@@ -226,8 +241,16 @@ async function inRunningCompetition(game: GameStorage, userId: string): Promise<
   return !!(await game.getActiveParticipation(userId));
 }
 
+/** The user's base city, for the club rule (members share the club's city). */
+async function baseCityOf(game: GameStorage, userId: string): Promise<{ city: string | null; countryCode: string | null } | null> {
+  const row = await game.getUserGameRow(userId);
+  return row ? { city: row.city ?? null, countryCode: row.country_code ?? null } : null;
+}
+
 async function joinClub(storage: WorkerStorage, game: GameStorage, env: any, club: ClubRow, userId: string): Promise<{ ok: true; joinedCompetition: boolean; competitionEntry: CompetitionEntry } | { ok: false; status: 409; error: string }> {
   if (await game.getMembership(userId)) return { ok: false, status: 409, error: 'Ya estás en un club. Sal de él antes de unirte a otro.' };
+  const refusal = cityRefusal(await baseCityOf(game, userId), club);
+  if (refusal) return { ok: false, status: 409, error: refusal };
   if (club.memberCount >= CLUB_MAX_MEMBERS) return { ok: false, status: 409, error: `El club está completo (${CLUB_MAX_MEMBERS} miembros).` };
   if (!(await game.addMember(club.id, userId, 'member'))) return { ok: false, status: 409, error: 'Ya estás en un club.' };
   const competitionEntry = await joinRunningCompetition(game, club.id, userId);
@@ -264,6 +287,9 @@ async function requestToJoin(storage: WorkerStorage, game: GameStorage, env: any
  */
 async function enterClub(c: Ctx, storage: WorkerStorage, game: GameStorage, club: ClubRow, userId: string, via: JoinVia, inviterId: string | null = null) {
   if (await game.getMembership(userId)) return fail(c, 409, 'Ya estás en un club. Sal de él antes de unirte a otro.');
+  // Members share the club's base city (a request from elsewhere could never be accepted)
+  const refusal = cityRefusal(await baseCityOf(game, userId), club);
+  if (refusal) return fail(c, 409, refusal, { code: 'other_city', clubCity: club.city });
   let inviterRole: ClubRole | null = null;
   if (inviterId) {
     const inviter = await game.getMembership(inviterId);
@@ -357,7 +383,7 @@ async function competitionResultJson(game: GameStorage, competition: Competition
     finishedAt: competition.finishedAt,
     participated: Boolean(participant),
     seen: participant ? participant.resultSeenAt !== null : false,
-    club: club ? { id: club.id, name: club.name, crest: { ...DEFAULT_CREST, ...club.crest }, color: club.color } : null,
+    club: club ? { id: club.id, name: club.name, crest: crestJson(club.crest), color: club.color } : null,
     clubResult: {
       total: Number(result.total ?? competition.score ?? 0),
       participants: standings.length,
@@ -1037,6 +1063,14 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const user = await game.getUserGameRow(userId);
     if (!user) return fail(c, 404, 'Usuario no encontrado.');
     const same = (user.city ?? '').toLowerCase() === city.toLowerCase() && user.country_code === countryCode;
+    // Club members share the club's city: moving away means leaving the club first
+    const membership = await game.getMembership(userId);
+    if (membership && !same) {
+      const club = await game.getClub(membership.clubId);
+      if (club && !sameCity({ city, countryCode }, club)) {
+        return fail(c, 409, `Tu club, ${club.name}, es de ${club.city}. Sal del club antes de cambiar tu ciudad base.`, { code: 'club_city' });
+      }
+    }
     if (user.city && user.location_updated_at && !same) {
       const next = Date.parse(user.location_updated_at) + 30 * 24 * 3600 * 1000;
       if (next > Date.now()) {
@@ -1093,7 +1127,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
         rank: i + 1,
         user: { id: r.id, username: r.username, name: r.name, avatar: r.avatar ?? null, color: r.color, title: r.title ?? null } as PublicUserLite,
         area: r.score,
-        club: club ? { id: club.id, name: club.name, crest: { ...DEFAULT_CREST, ...club.crest }, color: club.color } : null,
+        club: club ? { id: club.id, name: club.name, crest: crestJson(club.crest), color: club.color } : null,
       };
     });
     // Ties share the rank
@@ -1132,7 +1166,10 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const userId = c.get('authUserId');
     const q = (c.req.query('q') ?? '').trim().slice(0, 40);
     const me = await game.getUserGameRow(userId);
-    let clubs = await game.searchClubs({ query: q, limit: 200 });
+    // Only clubs of my base city can be joined: those are the ones listed
+    if (!me?.city) return c.json({ clubs: [], needsCity: true });
+    let clubs = (await game.searchClubs({ query: q, limit: 200 }))
+      .filter((club) => sameCity({ city: me.city, countryCode: me.country_code }, club));
     const homeLat = Number(me?.home_lat);
     const homeLng = Number(me?.home_lng);
     const distance = (club: ClubRow) => {
@@ -1142,15 +1179,14 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       const a = Math.sin(dLat / 2) ** 2 + Math.cos((homeLat * Math.PI) / 180) * Math.cos((club.centerLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
       return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(a)));
     };
-    const sameCity = (club: ClubRow) => !!me?.city && (club.city ?? '').toLowerCase() === String(me.city).toLowerCase();
     clubs = clubs
       .map((club) => ({ club, km: distance(club) }))
-      .sort((a, b) => Number(sameCity(b.club)) - Number(sameCity(a.club))
-        || (a.km ?? 1e9) - (b.km ?? 1e9)
+      .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9)
         || b.club.memberCount - a.club.memberCount)
       .map((x) => x.club);
     const pending = new Set((await game.getPendingRequestOfUser(userId)).map((r) => r.clubId));
     return c.json({
+      city: me.city,
       clubs: clubs.slice(0, 50).map((club) => ({ ...clubJson(club), distanceKm: distance(club), requestPending: pending.has(club.id), full: club.memberCount >= CLUB_MAX_MEMBERS })),
     });
   }));
@@ -1174,6 +1210,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const description = cleanDescription(input.description);
     if (description && [...description].length > CLUB_DESCRIPTION_MAX) return fail(c, 400, `La descripción no puede tener más de ${CLUB_DESCRIPTION_MAX} caracteres.`);
     const me = await game.getUserGameRow(userId);
+    // A club is from its creator's base city, and only runners from there can join
+    if (!me?.city) return fail(c, 409, 'Elige tu ciudad base en Perfil antes de crear un club: el club será de esa ciudad.', { code: 'no_city' });
     const round = (v: unknown) => (Number.isFinite(Number(v)) && v !== null ? Math.round(Number(v) * 100) / 100 : null);
     let joinCode = randomCode();
     for (let i = 0; i < 5 && await game.getClubByCode(joinCode); i++) joinCode = randomCode();
@@ -1382,6 +1420,12 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       if (!target) return fail(c, 404, 'Usuario no encontrado.');
       if (await storage.isBlockedEitherWay(userId, input.userId)) return fail(c, 403, 'No puedes invitar a este usuario.');
       if (await game.getMembership(input.userId)) return fail(c, 409, `${target.name} ya está en un club.`);
+      const targetCity = await baseCityOf(game, input.userId);
+      if (cityRefusal(targetCity, club)) {
+        return fail(c, 409, targetCity?.city
+          ? `${target.name} es de ${targetCity.city}: en este club solo pueden entrar corredores de ${club.city}.`
+          : `${target.name} aún no ha elegido su ciudad base. Solo pueden entrar corredores de ${club.city}.`, { code: 'other_city' });
+      }
       const inviteId = await game.createClubRequest(clubId, input.userId, 'invite', userId);
       const me = (await game.getUserLite([userId])).get(userId);
       await notifyUsers(storage, c.env, [input.userId], {

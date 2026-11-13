@@ -1855,6 +1855,31 @@ export class GameStorage {
   // ─── Reset of the old game (one time) ─────────────────────────────────────
 
   /**
+   * Finishes a launch reset that ran out of subrequests half-way (its statements were skipped one
+   * by one): removes what is older than the reset — runs, competition territory, steals, feed — and
+   * recomputes everybody's areas. Anything from after the reset is kept.
+   */
+  async cleanUpBeforeReset(resetAt: string): Promise<void> {
+    const before = (column: ReturnType<typeof sql>) => sql`julianday(${column}) < julianday(${resetAt})`;
+    await this.runWritesInOneTrip([
+      sql`DELETE FROM territories WHERE ${before(sql`conquered_at`)}`,
+      sql`DELETE FROM territory_fortifications WHERE ${before(sql`created_at`)}`,
+      sql`DELETE FROM conquest_metrics WHERE ${before(sql`created_at`)}`,
+      sql`DELETE FROM feed_events WHERE ${before(sql`created_at`)}`,
+      sql`DELETE FROM feed_comments WHERE feed_event_id NOT IN (SELECT id FROM feed_events)`,
+      sql`DELETE FROM global_area_events WHERE ${before(sql`run_at`)}`,
+      sql`DELETE FROM routes WHERE ${before(sql`COALESCE(started_at, completed_at)`)}`,
+      sql`UPDATE users SET total_area = COALESCE((SELECT SUM(t.area) FROM territories t WHERE t.user_id = users.id), 0)`,
+      sql`UPDATE users SET
+        global_bonus_area = COALESCE((SELECT SUM(e.bonus) FROM global_area_events e WHERE e.user_id = users.id), 0),
+        global_area = COALESCE((SELECT g.area FROM global_territories g WHERE g.user_id = users.id), 0)
+          + COALESCE((SELECT SUM(e.bonus) FROM global_area_events e WHERE e.user_id = users.id), 0)`,
+      sql`UPDATE competition_participants SET area = COALESCE((SELECT total_area FROM users WHERE users.id = competition_participants.user_id), 0)
+        WHERE competition_id IN (SELECT id FROM club_competitions WHERE status = 'active')`,
+    ], 'RESET CLEANUP');
+  }
+
+  /**
    * Starts the new game from zero: removes every run and everything derived from it (territories,
    * feed, metrics, powers, chests, global map) and marks imported activities as "before season"
    * so they are never imported again. Users, friends, clubs and integrations are kept.
