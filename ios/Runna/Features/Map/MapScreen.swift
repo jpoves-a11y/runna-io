@@ -330,7 +330,8 @@ struct MapScreen: View {
                     }
                 }
             )
-            if season.cycle != nil {
+            // In Competición the bar already shows the mode and the countdown
+            if season.cycle != nil && !(model.mode == .competition && season.competition?.isActive == true) {
                 HStack {
                     SeasonPhaseChip(store: season) {
                         router.clubSection = .club

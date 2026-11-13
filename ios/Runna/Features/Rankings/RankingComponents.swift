@@ -158,7 +158,8 @@ struct RankingTopThreeCard: View {
                 color: item.color,
                 score: Format.area(item.area),
                 value: item.area,
-                isMe: item.isMe
+                isMe: item.isMe,
+                avatarName: item.name
             )
         }) { id in
             if let item = items.first(where: { $0.id == id }) { onSelect?(item) }

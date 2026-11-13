@@ -246,7 +246,8 @@ struct CompetitionHero: View {
                 color: standing.user?.color ?? "#888888",
                 score: competition.scoreText(standing.score),
                 value: standing.score,
-                isMe: standing.userId == userId
+                isMe: standing.userId == userId,
+                avatarName: standing.user?.name
             )
         }
         return VStack(spacing: DS.Spacing.m) {
@@ -619,6 +620,8 @@ struct PodiumEntry: Identifiable, Hashable {
     let score: String
     var value: Double = 0
     var isMe: Bool = false
+    /// Real name for the avatar's initial (the label may read "Tú")
+    var avatarName: String? = nil
 }
 
 /// The top three as a podium (2 · 1 · 3) with a crown, medals and pedestals, drawn in white for a
@@ -653,7 +656,7 @@ struct PodiumStage: View {
                         .foregroundStyle(medal)
                         .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
                 }
-                AvatarView(name: entry.name, avatar: entry.avatar, color: entry.color, size: avatar)
+                AvatarView(name: entry.avatarName ?? entry.name, avatar: entry.avatar, color: entry.color, size: avatar)
                     .overlay(alignment: .bottomTrailing) {
                         Text("\(place)")
                             .font(.system(size: 12, weight: .black))

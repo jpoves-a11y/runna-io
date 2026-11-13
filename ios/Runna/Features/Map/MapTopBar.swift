@@ -72,10 +72,22 @@ struct MapTopBar: View {
 
     private var value: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(mode == .global ? "Mapa global" : (competition?.modeName ?? "Competición"))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(mode == .global ? "Mapa global" : (competition?.modeName ?? "Competición"))
+                    .lineLimit(1)
+                if mode == .competition, competition != nil {
+                    // The countdown moves on by itself
+                    TimelineView(.periodic(from: .now, by: 30)) { _ in
+                        if let countdown = season.shortCountdown {
+                            Text("· \(countdown)")
+                                .monospacedDigit()
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 if mode == .competition && competition == nil {
                     Text("Sin competición")
