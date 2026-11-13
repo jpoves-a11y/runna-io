@@ -596,23 +596,12 @@ struct MapHeaderCard: View {
             Button(action: onTap) {
                 HStack(spacing: DS.Spacing.m) {
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(competition.modeName.uppercased())
-                                .font(.caption2.weight(.heavy))
-                                .tracking(0.8)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                            if let countdown = season.shortCountdown {
-                                Label(countdown, systemImage: "timer")
-                                    .font(.caption2.weight(.bold))
-                                    .monospacedDigit()
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(.black.opacity(0.22), in: Capsule())
-                            }
-                        }
-                        .foregroundStyle(.white.opacity(0.9))
+                        Text(competition.modeName.uppercased())
+                            .font(.caption2.weight(.heavy))
+                            .tracking(0.8)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                            .foregroundStyle(.white.opacity(0.9))
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
                             Text(competition.mode == "flags" ? competition.scoreText(competition.myScore) : score.value)
                                 .font(Font.stat(26, weight: .bold))
@@ -626,6 +615,16 @@ struct MapHeaderCard: View {
                         }
                         .foregroundStyle(.white)
                         .animation(.snappy, value: competition.myScore)
+                        if let countdown = season.shortCountdown {
+                            Label(countdown, systemImage: "timer")
+                                .font(.caption2.weight(.bold))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.black.opacity(0.22), in: Capsule())
+                        }
                     }
                     Spacer(minLength: 4)
                     if let rarity = projection.currentRarity {

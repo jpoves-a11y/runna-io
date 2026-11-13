@@ -237,7 +237,7 @@ struct CompetitionHero: View {
         let avatar: CGFloat = place == 1 ? 58 : 46
         let medal: Color = place == 1 ? Color(hex: "#F5C542") : place == 2 ? Color(hex: "#D7DCE3") : Color(hex: "#D08A4E")
         return Button {
-            onSelectUser?(standing.userId)
+            if !isMe { onSelectUser?(standing.userId) }
         } label: {
             VStack(spacing: 6) {
                 if place == 1 {
@@ -278,7 +278,6 @@ struct CompetitionHero: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
-        .disabled(onSelectUser == nil || isMe)
     }
 
     /// "Tú · 5º · a 0,12 km² del 4º" — or how far ahead the leader I am.
