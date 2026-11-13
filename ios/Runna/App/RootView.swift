@@ -110,6 +110,9 @@ struct MainTabView: View {
         )) { demo in
             WeatherDemoView(kind: demo.id)
         }
+        .sheet(isPresented: Binding(get: { router.showClubFormDemo }, set: { router.showClubFormDemo = $0 })) {
+            ClubFormView(mode: .create)
+        }
         #endif
         .seasonResultsInbox()
         // My club (and its unread chat messages) on launch and whenever something changes

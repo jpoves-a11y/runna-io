@@ -82,9 +82,8 @@ final class ClubModel {
 
     // MARK: - Joining
 
-    func search(_ query: String) async throws -> [ClubSummary] {
-        let response: ClubSearchResponse = try await APIClient.shared.request("GET", "/api/clubs/search", query: ["q": query])
-        return response.clubs
+    func search(_ query: String) async throws -> ClubSearchResponse {
+        try await APIClient.shared.request("GET", "/api/clubs/search", query: ["q": query])
     }
 
     func create(name: String, slogan: String, description: String, crest: Crest, entryMode: String, invitePermission: String) async throws -> ClubJoinResponse {

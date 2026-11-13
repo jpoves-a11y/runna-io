@@ -572,12 +572,18 @@ struct ClubDetailResponse: Decodable {
 
 struct ClubSearchResponse: Decodable {
     let clubs: [ClubSummary]
+    /// Clubs only take runners of their base city: without one, nothing is listed
+    let needsCity: Bool
+    /// My base city (the clubs listed are all from it)
+    let city: String?
 
-    enum CodingKeys: String, CodingKey { case clubs }
+    enum CodingKeys: String, CodingKey { case clubs, needsCity, city }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         clubs = (try? c.decodeIfPresent([ClubSummary].self, forKey: .clubs)) ?? []
+        needsCity = (try? c.decodeIfPresent(Bool.self, forKey: .needsCity)) ?? false
+        city = c.string(.city)
     }
 }
 

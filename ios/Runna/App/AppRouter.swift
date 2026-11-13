@@ -36,6 +36,8 @@ final class AppRouter {
     #if DEBUG
     /// Shows the replay's weather on its own: "rain", "snow" or "fog" (e2e screenshots).
     var weatherDemo: String?
+    /// Opens the new-club form (e2e screenshots).
+    var showClubFormDemo = false
     #endif
 
     private init() {}
@@ -90,6 +92,10 @@ final class AppRouter {
         case "weather":
             // runnaio://weather/<rain|snow|fog> (e2e screenshots)
             weatherDemo = parts.first ?? "rain"
+        case "clubform":
+            // runnaio://clubform (e2e screenshots)
+            selectedTab = .club
+            showClubFormDemo = true
         #endif
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)

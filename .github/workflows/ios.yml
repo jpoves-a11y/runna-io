@@ -146,6 +146,7 @@ jobs:
           shoot tab/profile 6-profile
           # Competition screens (DEBUG-only deep links handled by AppRouter)
           shoot powers 7-inventory
+          shoot clubform 7b-club-form
           # End-of-competition summary (Alicia has one pending in the seed): club, awards, rewards
           shoot season/results 8-results
           shoot season/results/awards 8b-results-awards

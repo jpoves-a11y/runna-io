@@ -535,6 +535,8 @@ struct ClubDiscoverView: View {
     @State private var model = ClubModel.shared
     @State private var query = ""
     @State private var results: [ClubSummary] = []
+    @State private var needsCity = false
+    @State private var myCity: String?
     @State private var isSearching = false
     @State private var code = ""
     @State private var selectedClub: ClubSummary?
@@ -621,9 +623,15 @@ struct ClubDiscoverView: View {
                     ProgressView()
                 }
                 if !isSearching && results.isEmpty {
-                    Text(query.isEmpty ? "No hay clubes abiertos todavía. ¡Crea el primero!" : "Ningún club coincide con la búsqueda.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    if needsCity {
+                        Label("Elige tu ciudad base en Perfil: cada club pertenece a una ciudad y solo admite corredores de ella.", systemImage: "mappin.slash")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(query.isEmpty ? "Aún no hay clubes en \(myCity ?? "tu ciudad"). ¡Crea el primero!" : "Ningún club de \(myCity ?? "tu ciudad") coincide con la búsqueda.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 ForEach(results) { club in
                     Button {
@@ -634,12 +642,16 @@ struct ClubDiscoverView: View {
                     .buttonStyle(.plain)
                 }
             } header: {
-                Text(query.isEmpty ? "Clubes cerca de ti" : "Resultados")
+                Text(query.isEmpty ? (myCity.map { "Clubes de \($0)" } ?? "Clubes de tu ciudad") : "Resultados")
+            } footer: {
+                if !needsCity {
+                    Text("Solo puedes unirte a clubes de tu ciudad base.")
+                }
             }
         }
         .listStyle(.insetGrouped)
         .listBackground()
-        .searchable(text: $query, prompt: "Buscar clubes por nombre o ciudad")
+        .searchable(text: $query, prompt: "Buscar clubes por nombre")
         .task(id: query) {
             // Debounce typing
             if !query.isEmpty { try? await Task.sleep(nanoseconds: 350_000_000) }
@@ -661,7 +673,10 @@ struct ClubDiscoverView: View {
         isSearching = true
         defer { isSearching = false }
         do {
-            results = try await model.search(query.trimmingCharacters(in: .whitespaces))
+            let response = try await model.search(query.trimmingCharacters(in: .whitespaces))
+            results = response.clubs
+            needsCity = response.needsCity
+            myCity = response.city
         } catch is CancellationError {
             return
         } catch {
@@ -921,52 +936,44 @@ struct ClubFormView: View {
     @State private var errorMessage: String?
     @State private var resultMessage: String?
     @State private var didSetUp = false
+    @State private var initialsEdited = false
+    @FocusState private var focused: Field?
+
+    private enum Field { case name, slogan, description }
 
     private var isEditing: Bool {
         if case .edit = mode { return true }
         return false
     }
 
+    /// The club's base city: the club's own when editing, mine when creating.
+    private var city: String? {
+        if case .edit(let club, _) = mode { return club.city }
+        return SeasonStore.shared.globalMe?.city
+    }
+
+    private var needsCity: Bool { !isEditing && city == nil }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TextField("Nombre del club", text: $name)
-                    TextField("Eslogan (opcional)", text: $slogan, axis: .vertical)
-                        .lineLimit(1...3)
-                } header: {
-                    Text("Club")
-                }
-                Section {
-                    TextField("Quiénes sois, cuándo quedáis, qué buscáis…", text: $descriptionText, axis: .vertical)
-                        .lineLimit(3...8)
-                        .onChange(of: descriptionText) { _, value in
-                            if value.count > 500 { descriptionText = String(value.prefix(500)) }
-                        }
-                } header: {
-                    Text("Descripción")
-                } footer: {
-                    Text("\(descriptionText.count)/500 · Se ve en el buscador y en la ficha del club.")
-                }
-                Section {
-                    Picker("Entrada", selection: $entryMode) {
-                        ForEach(ClubEntry.modes, id: \.self) { mode in
-                            Label(ClubEntry.label(mode), systemImage: ClubEntry.symbol(mode)).tag(mode)
-                        }
+            ScrollView {
+                VStack(spacing: DS.Spacing.l) {
+                    hero
+                    if needsCity { cityMissingCard }
+                    detailsCard
+                    entryCard
+                    VStack(alignment: .leading, spacing: DS.Spacing.s) {
+                        SectionHeader(title: "Escudo", subtitle: "Forma, fondo, colores e icono: todo a vuestro gusto.")
+                        CrestEditor(crest: $crest, unlocked: unlocked, onInitialsEdited: { initialsEdited = true })
+                            .card()
                     }
-                    if canChooseInvites {
-                        Picker("Quién puede invitar", selection: $invitePermission) {
-                            Text("Todos los miembros").tag("all")
-                            Text("Líder y oficiales").tag("officers")
-                        }
-                    }
-                } header: {
-                    Text("Quién entra")
-                } footer: {
-                    Text(entryFooter)
                 }
-                CrestEditor(crest: $crest, unlocked: unlocked)
+                .padding(.horizontal, DS.Spacing.screen)
+                .padding(.vertical, DS.Spacing.l)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .dismissesKeyboardOnTapOutside()
+            .screenBackground()
             .navigationTitle(isEditing ? "Editar club" : "Nuevo club")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -975,11 +982,22 @@ struct ClubFormView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isEditing ? "Guardar" : "Crear") { save() }
-                        .disabled(isSaving || name.trimmingCharacters(in: .whitespaces).count < 3)
+                        .fontWeight(.semibold)
+                        .disabled(isSaving || needsCity || name.trimmingCharacters(in: .whitespaces).count < 3)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Listo") { focused = nil }
+                        .fontWeight(.semibold)
                 }
             }
             .onAppear(perform: setUp)
+            .onChange(of: name) { _, value in
+                guard !isEditing, !initialsEdited else { return }
+                crest.initials = Self.initials(of: value)
+            }
             .task {
+                if !isEditing && SeasonStore.shared.globalMe == nil { await SeasonStore.shared.load() }
                 // Pieces I own myself (creating) — when editing the server also counts the club's
                 if !isEditing, let inventory: InventoryResponse = try? await APIClient.shared.request("GET", "/api/inventory") {
                     unlocked = Set(inventory.items.filter(\.isOwnedCosmetic).map(\.itemId))
@@ -994,17 +1012,196 @@ struct ClubFormView: View {
         }
     }
 
+    // MARK: Sections
+
+    private var hero: some View {
+        VStack(spacing: DS.Spacing.m) {
+            CrestView(crest: crest, size: 84)
+                .shadow(color: Color.black.opacity(0.18), radius: 8, x: 0, y: 4)
+                .animation(.snappy, value: crest)
+            VStack(spacing: 4) {
+                Text(name.trimmingCharacters(in: .whitespaces).isEmpty ? "Tu club" : name)
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                if !slogan.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text(slogan)
+                        .font(.subheadline.italic())
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
+            }
+            if let city {
+                Label(city, systemImage: "mappin.and.ellipse")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.brand)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.brand.opacity(0.12), in: Capsule())
+                Text(isEditing ? "Solo pueden unirse corredores de esta ciudad." : "La ciudad del club es tu ciudad base: solo podrán unirse corredores de aquí.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, DS.Spacing.l)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, DS.Spacing.l)
+        .background(
+            LinearGradient(colors: [Color(hex: crest.primary).opacity(0.22), Color.surface], startPoint: .top, endPoint: .bottom),
+            in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+    }
+
+    private var cityMissingCard: some View {
+        HStack(alignment: .top, spacing: DS.Spacing.m) {
+            Image(systemName: "mappin.slash")
+                .font(.title3)
+                .foregroundStyle(Color.steal)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Elige tu ciudad base")
+                    .font(.headline)
+                Text("Un club pertenece a una ciudad y solo admite corredores de ella. Elige tu ciudad base en Perfil y vuelve aquí.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    private var detailsCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: "Datos del club")
+            VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                field("Nombre", required: true) {
+                    TextField("Ej. Corredores del Retiro", text: $name)
+                        .focused($focused, equals: .name)
+                        .submitLabel(.next)
+                        .onSubmit { focused = .slogan }
+                }
+                field("Eslogan") {
+                    TextField("Una frase que os defina (opcional)", text: $slogan, axis: .vertical)
+                        .lineLimit(1...3)
+                        .focused($focused, equals: .slogan)
+                }
+                field("Descripción", counter: "\(descriptionText.count)/500") {
+                    TextField("Quiénes sois, cuándo quedáis, qué buscáis…", text: $descriptionText, axis: .vertical)
+                        .lineLimit(3...8)
+                        .focused($focused, equals: .description)
+                        .onChange(of: descriptionText) { _, value in
+                            if value.count > 500 { descriptionText = String(value.prefix(500)) }
+                        }
+                }
+                Text("Se ve en el buscador y en la ficha del club.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .card()
+        }
+    }
+
+    private func field<Content: View>(_ title: String, required: Bool = false, counter: String? = nil, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title + (required ? " *" : ""))
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if let counter {
+                    Text(counter)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            content()
+                .padding(.horizontal, DS.Spacing.m)
+                .padding(.vertical, 12)
+                .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+        }
+    }
+
+    private var entryCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+            SectionHeader(title: "Quién entra")
+            VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                ForEach(ClubEntry.modes, id: \.self) { option in
+                    entryOption(option)
+                }
+                if canChooseInvites {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Quién puede invitar")
+                            .font(.subheadline.weight(.semibold))
+                        Picker("Quién puede invitar", selection: $invitePermission) {
+                            Text("Todos").tag("all")
+                            Text("Líder y oficiales").tag("officers")
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    .padding(.top, 4)
+                }
+                Text(entryFooter)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .card()
+        }
+    }
+
+    private func entryOption(_ option: String) -> some View {
+        let selected = entryMode == option
+        return Button {
+            withAnimation(.snappy) { entryMode = option }
+        } label: {
+            HStack(spacing: DS.Spacing.m) {
+                Image(systemName: ClubEntry.symbol(option))
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(selected ? Color.onBrand : Color.brand)
+                    .frame(width: 36, height: 36)
+                    .background(selected ? Color.brand : Color.brand.opacity(0.12), in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ClubEntry.label(option))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(ClubEntry.explanation(option))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(selected ? Color.brand : Color.secondary.opacity(0.5))
+            }
+            .padding(DS.Spacing.m)
+            .background(selected ? Color.brand.opacity(0.08) : Color.surfaceRaised, in: RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.tile, style: .continuous)
+                    .strokeBorder(selected ? Color.brand : Color.clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(.pressable)
+        .sensoryFeedback(.selection, trigger: selected)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// "Corredores del Retiro" → "CR"
+    static func initials(of name: String) -> String {
+        let words = name.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let letters = words.count > 1 ? words.prefix(3).compactMap(\.first) : Array(name.filter { $0.isLetter || $0.isNumber }.prefix(2))
+        return String(letters).uppercased()
+    }
+
     /// Only the leader decides who can invite (when creating, I am the leader).
     private var canChooseInvites: Bool { !isEditing || model.isOwner }
 
     private var entryFooter: String {
-        var text = ClubEntry.explanation(entryMode)
-        if canChooseInvites {
-            text += invitePermission == "officers"
-                ? " Solo el líder y los oficiales pueden invitar y ver el código."
-                : (entryMode == "approval" ? " Las invitaciones de los miembros también necesitan aprobación." : " Cualquier miembro puede invitar.")
-        }
-        return text
+        guard canChooseInvites else { return ClubEntry.explanation(entryMode) }
+        return invitePermission == "officers"
+            ? "Solo el líder y los oficiales pueden invitar y ver el código."
+            : (entryMode == "approval" ? "Las invitaciones de los miembros también necesitan aprobación." : "Cualquier miembro puede invitar.")
     }
 
     private func setUp() {
@@ -1019,8 +1216,7 @@ struct ClubFormView: View {
             crest = club.crest
             unlocked = pieces
         } else {
-            let initials = String(name.prefix(2)).uppercased()
-            crest = Crest(initials: initials)
+            crest = Crest(initials: Self.initials(of: name))
         }
     }
 
