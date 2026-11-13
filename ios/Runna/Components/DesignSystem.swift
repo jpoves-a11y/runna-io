@@ -389,6 +389,8 @@ struct GlassGroup<Content: View>: View {
 /// The visual of a round floating control (also usable as a Menu label).
 struct GlassCircleLabel: View {
     let systemImage: String
+    /// Asset drawn as a silhouette instead of the SF Symbol (e.g. the Poderes chest)
+    var assetImage: String? = nil
     var badge: Int? = nil
     var tint: Color? = nil
     var isActive: Bool = false
@@ -402,9 +404,19 @@ struct GlassCircleLabel: View {
     }
 
     var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: min(DS.Size.icon, size * 0.4), weight: .medium))
-            .symbolRenderingMode(.monochrome)
+        Group {
+            if let assetImage {
+                Image(assetImage)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size * 0.5, height: size * 0.5)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: min(DS.Size.icon, size * 0.4), weight: .medium))
+                    .symbolRenderingMode(.monochrome)
+            }
+        }
             .foregroundStyle(iconColor)
             .frame(width: size, height: size)
             .glassSurface(Circle(), interactive: true)
@@ -421,6 +433,7 @@ struct GlassCircleLabel: View {
 /// Round floating map control.
 struct GlassCircleButton: View {
     let systemImage: String
+    var assetImage: String? = nil
     let accessibilityLabel: String
     var badge: Int? = nil
     var tint: Color? = nil
@@ -435,7 +448,7 @@ struct GlassCircleButton: View {
             taps += 1
             action()
         } label: {
-            GlassCircleLabel(systemImage: systemImage, badge: badge, tint: tint, isActive: isActive, size: size, bounceTrigger: taps)
+            GlassCircleLabel(systemImage: systemImage, assetImage: assetImage, badge: badge, tint: tint, isActive: isActive, size: size, bounceTrigger: taps)
         }
         .buttonStyle(.pressable)
         .sensoryFeedback(.impact(weight: .light), trigger: taps)

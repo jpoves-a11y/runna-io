@@ -162,7 +162,11 @@ struct ClubHomeView: View {
                     Button {
                         showInventory = true
                     } label: {
-                        Label("Inventario", systemImage: "bag")
+                        Label {
+                            Text("Poderes")
+                        } icon: {
+                            PowersIcon()
+                        }
                     }
                     if model.isAdmin {
                         Button {
@@ -256,12 +260,11 @@ struct ClubHomeView: View {
             showInventory = true
         } label: {
             HStack(spacing: DS.Spacing.m) {
-                Image(systemName: "bag.fill")
-                    .font(.body.weight(.semibold))
+                PowersIcon(size: 20)
                     .foregroundStyle(Color.brand)
                     .frame(width: 36, height: 36)
                     .background(Color.brand.opacity(0.12), in: Circle())
-                Text("Poderes y objetos")
+                Text("Poderes")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                 Spacer()

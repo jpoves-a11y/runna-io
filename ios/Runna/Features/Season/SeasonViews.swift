@@ -15,26 +15,21 @@ struct SeasonPhaseChip: View {
                 HStack(spacing: 6) {
                     Image(systemName: cycle.isCompetition ? theme.symbol : "gift.fill")
                         .font(.caption.weight(.bold))
-                    Text(title(cycle).uppercased())
-                        .font(.caption.weight(.heavy))
-                        .tracking(0.6)
+                        .foregroundStyle(cycle.isCompetition ? theme.accent : Color.brand)
+                    Text(title(cycle))
+                        .font(.footnote.weight(.semibold))
                         .lineLimit(1)
                     if let countdown = store.shortCountdown {
                         Text(countdown)
-                            .font(.caption.weight(.bold))
+                            .font(.footnote)
                             .monospacedDigit()
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.black.opacity(0.22), in: Capsule())
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                .foregroundStyle(.white)
                 .padding(.horizontal, 12)
                 .frame(minHeight: 32)
-                .background(theme.gradient, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 1))
-                .shadow(color: theme.colors[0].opacity(0.3), radius: 6, y: 2)
+                .glassSurface(Capsule(), interactive: true)
             }
             .buttonStyle(.pressable)
             .accessibilityLabel("\(title(cycle)). \(store.phaseCountdown ?? "")")
@@ -606,7 +601,7 @@ struct InventorySheet: View {
             .overlay {
                 if model.isLoading { ProgressView() }
             }
-            .navigationTitle("Inventario")
+            .navigationTitle("Poderes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -626,7 +621,7 @@ struct InventorySheet: View {
             .sheet(isPresented: $showRadar) {
                 RadarSheet()
             }
-            .alert("Inventario", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+            .alert("Poderes", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(message ?? "")

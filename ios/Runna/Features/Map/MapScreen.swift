@@ -425,7 +425,8 @@ struct MapScreen: View {
     private var inventoryButton: some View {
         GlassCircleButton(
             systemImage: "bag",
-            accessibilityLabel: season.availableItemCount > 0 ? "Inventario, \(season.availableItemCount) objetos" : "Inventario",
+            assetImage: PowersIcon.asset,
+            accessibilityLabel: season.availableItemCount > 0 ? "Poderes, \(season.availableItemCount) disponibles" : "Poderes",
             badge: season.availableItemCount
         ) {
             router.showPowers = true
@@ -532,8 +533,9 @@ private struct SelectedUser: Identifiable {
     let id: String
 }
 
-/// Compact card at the top of the map. Global: my world map and my world rank.
-/// Competición: the mode's banner with my score, my place, the chest I'm playing for and the countdown.
+/// Compact card at the top of the map, the same layout in both modes: my avatar (opens my profile),
+/// what's counted, my number and my place. Competición adds the mode's colour as a thin edge and
+/// the countdown.
 struct MapHeaderCard: View {
     @Environment(AppRouter.self) private var router
     let user: AppUser?
@@ -542,33 +544,24 @@ struct MapHeaderCard: View {
     let season: SeasonStore
     let onTap: () -> Void
 
+    private var competition: ClubCompetition? {
+        guard mode == .competition, let competition = season.competition, competition.isActive else { return nil }
+        return competition
+    }
+
     var body: some View {
-        if mode == .competition, let competition = season.competition, competition.isActive {
-            competitionCard(competition)
-        } else {
-            globalCard
-        }
-    }
-
-    private var avatarButton: some View {
-        Button {
-            router.showProfile = true
-        } label: {
-            if let user {
-                AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 38)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Perfil y ajustes")
-    }
-
-    private var globalCard: some View {
         HStack(spacing: DS.Spacing.m) {
-            if user != nil {
-                avatarButton
+            if let user {
+                Button {
+                    router.showProfile = true
+                } label: {
+                    AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 36)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Perfil y ajustes")
                 Button(action: onTap) {
-                    HStack(spacing: DS.Spacing.m) {
-                        mainValue
+                    HStack(spacing: DS.Spacing.s) {
+                        leading
                         Spacer(minLength: DS.Spacing.s)
                         trailing
                     }
@@ -581,122 +574,64 @@ struct MapHeaderCard: View {
                 Spacer()
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(minHeight: 60)
+        .padding(.leading, competition == nil ? 12 : 16)
+        .padding(.trailing, 14)
+        .padding(.vertical, 9)
+        .frame(minHeight: 58)
         .glassSurface(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .overlay(alignment: .leading) {
+            if let competition {
+                UnevenRoundedRectangle(topLeadingRadius: DS.Radius.card, bottomLeadingRadius: DS.Radius.card, style: .continuous)
+                    .fill(ModeTheme(mode: competition.mode).gradient)
+                    .frame(width: 5)
+            }
+        }
+        .animation(.snappy, value: mode)
     }
 
-    private func competitionCard(_ competition: ClubCompetition) -> some View {
-        let theme = ModeTheme(mode: competition.mode)
-        let projection = ChestProjection(competition: competition, userId: user?.id)
-        let score = Format.areaParts(competition.myScore)
-        return HStack(spacing: DS.Spacing.m) {
-            avatarButton
-            Button(action: onTap) {
-                HStack(spacing: DS.Spacing.m) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(competition.modeName.uppercased())
-                            .font(.caption2.weight(.heavy))
-                            .tracking(0.8)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                            .foregroundStyle(.white.opacity(0.9))
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text(competition.mode == "flags" ? competition.scoreText(competition.myScore) : score.value)
-                                .font(Font.stat(26, weight: .bold))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                            if competition.mode != "flags" {
-                                Text(score.unit)
-                                    .font(.subheadline.weight(.semibold))
-                                    .opacity(0.8)
-                            }
-                        }
-                        .foregroundStyle(.white)
-                        .animation(.snappy, value: competition.myScore)
-                        if let countdown = season.shortCountdown {
-                            Label(countdown, systemImage: "timer")
-                                .font(.caption2.weight(.bold))
-                                .monospacedDigit()
-                                .lineLimit(1)
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.black.opacity(0.22), in: Capsule())
-                        }
-                    }
-                    Spacer(minLength: 4)
-                    if let rarity = projection.currentRarity {
-                        Image(Rarity.chestImage(rarity))
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 34, height: 34)
-                            .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
-                            .accessibilityLabel("Cofre \(Rarity.label(rarity))")
-                    }
-                    if let rank = competition.myRank {
-                        VStack(spacing: 0) {
-                            Text("\(rank)º")
-                                .font(.system(size: 24, weight: .black).width(.condensed))
-                                .foregroundStyle(rank == 1 ? Color(hex: "#F5C542") : .white)
-                                .contentTransition(.numericText())
-                            Text("de \(competition.participants)")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.8))
-                        }
-                        .frame(minWidth: 44)
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+    private var title: (symbol: String, text: String, tint: Color) {
+        if let competition {
+            let theme = ModeTheme(mode: competition.mode)
+            return (theme.symbol, competition.modeName, theme.accent)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(minHeight: 64)
-        .background {
-            ZStack(alignment: .trailing) {
-                theme.gradient
-                Image(systemName: theme.symbol)
-                    .font(.system(size: 72, weight: .black))
-                    .foregroundStyle(.white.opacity(0.1))
-                    .rotationEffect(.degrees(-12))
-                    .offset(x: 10)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-        }
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
-        .shadow(color: theme.colors[0].opacity(0.35), radius: 10, x: 0, y: 4)
-    }
-
-    private var label: String {
-        mode == .global ? "Tu mapa global" : "Tu competición"
+        return mode == .global ? ("globe.europe.africa.fill", "Mapa global", Color.brand) : ("flag.checkered", "Competición", Color.secondary)
     }
 
     private var value: Double {
+        if let competition { return competition.myScore }
         if mode == .global { return season.globalMe?.area ?? 0 }
-        return season.competition?.myScore ?? user?.totalArea ?? 0
+        return 0
     }
 
-    private var mainValue: some View {
+    private var leading: some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 6) {
-                Text(label)
-                    .statLabelStyle()
+            HStack(spacing: 5) {
+                Image(systemName: title.symbol)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(title.tint)
+                Text(title.text)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if isLoading {
                     ProgressView()
                         .controlSize(.mini)
                 }
             }
             if value > 0 {
-                let area = Format.areaParts(value)
-                StatValue(value: area.value, unit: area.unit, font: Font.stat(26, weight: .semibold))
-                    .animation(.snappy, value: value)
+                if let competition, competition.mode == "flags" {
+                    Text(competition.scoreText(value))
+                        .font(Font.stat(24, weight: .semibold))
+                        .monospacedDigit()
+                } else {
+                    let area = Format.areaParts(value)
+                    StatValue(value: area.value, unit: area.unit, font: Font.stat(24, weight: .semibold))
+                        .animation(.snappy, value: value)
+                }
             } else {
-                Text(mode == .global ? "Aún sin territorio" : "Sin territorio")
+                Text(mode == .global ? "Aún sin territorio" : (competition == nil ? "Sin competición ahora" : "Sin territorio"))
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(competition == nil && mode == .competition ? .secondary : .primary)
             }
         }
         .accessibilityElement(children: .combine)
@@ -704,24 +639,38 @@ struct MapHeaderCard: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if mode == .global, let rank = season.globalMe?.worldRank {
-            miniStat(value: "#\(rank)", label: "Mundo", tint: rank == 1 ? Color.gold : Color.primary)
-        } else if mode == .competition, let competition = season.competition, let rank = competition.myRank {
-            miniStat(value: "\(rank)/\(competition.participants)", label: "Puesto", tint: rank == 1 ? Color.gold : Color.primary)
-        }
-    }
-
-    private func miniStat(value: String, label: String, tint: Color) -> some View {
-        VStack(alignment: .trailing, spacing: 1) {
-            Text(value)
-                .font(Font.stat(20, weight: .semibold))
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .contentTransition(.numericText())
-                .lineLimit(1)
-            Text(label)
-                .statLabelStyle()
-                .lineLimit(1)
+        if let competition {
+            VStack(alignment: .trailing, spacing: 1) {
+                if let rank = competition.myRank {
+                    HStack(alignment: .firstTextBaseline, spacing: 1) {
+                        Text("\(rank)º")
+                            .font(Font.stat(22, weight: .bold))
+                            .foregroundStyle(rank == 1 ? Color.gold : Color.primary)
+                            .contentTransition(.numericText())
+                        Text("/\(competition.participants)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let countdown = season.shortCountdown {
+                    Label(countdown, systemImage: "timer")
+                        .font(.caption2.weight(.medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
+                }
+            }
+        } else if mode == .global, let rank = season.globalMe?.worldRank {
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("#\(rank)")
+                    .font(Font.stat(22, weight: .bold))
+                    .foregroundStyle(rank == 1 ? Color.gold : Color.primary)
+                    .contentTransition(.numericText())
+                Text("Mundo")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

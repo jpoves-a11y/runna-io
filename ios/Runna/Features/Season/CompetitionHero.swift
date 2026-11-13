@@ -55,6 +55,8 @@ struct ChestProjection {
     let tiers: [Tier]
     /// Index in `tiers` of the chest I'd get now (nil = none, e.g. not taking part)
     let current: Int?
+    /// One short line on what the tiers mean, when the labels alone don't say it
+    var note: String? = nil
 
     init(competition c: ClubCompetition, userId: String?) {
         let me = c.standings.first { $0.userId == userId }
@@ -72,9 +74,10 @@ struct ChestProjection {
                 current = nil
             }
         case "target":
-            tiers = [Tier(rarity: "common", label: "Sin llegar"), Tier(rarity: "rare", label: "Objetivo"), Tier(rarity: "epic", label: "×1,5")]
+            tiers = [Tier(rarity: "common", label: "No llegáis"), Tier(rarity: "rare", label: "Meta"), Tier(rarity: "epic", label: "Meta +50%")]
             if let target = c.target {
                 current = target.total >= target.target * 1.5 ? 2 : target.achieved ? 1 : 0
+                note = "Meta del club: \(Format.area(target.target)) entre todos · +50%: \(Format.area(target.target * 1.5))"
             } else {
                 current = nil
             }
@@ -509,7 +512,7 @@ struct ChestTrack: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             if !compact {
                 HStack {
-                    Text("Tu cofre")
+                    Text("Tu cofre si acabara ahora")
                         .font(.caption.weight(.heavy))
                         .textCase(.uppercase)
                         .tracking(1)
@@ -543,6 +546,13 @@ struct ChestTrack: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
+            }
+            if !compact, let note = projection.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
             }
         }
     }

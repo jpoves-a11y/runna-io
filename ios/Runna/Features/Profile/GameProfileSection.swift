@@ -67,7 +67,7 @@ struct GameProfileSection: View {
                     showInventory = true
                 } label: {
                     HStack {
-                        SocialSettingsLabel(title: "Inventario y título", systemImage: "bag")
+                        SocialSettingsLabel(title: "Poderes y título", systemImage: "bag")
                         Spacer()
                         Text(GameTitle.name(me.title) ?? "Sin título")
                             .font(.subheadline)
