@@ -8,6 +8,8 @@ struct TerritoryShape: Identifiable {
     let id: String
     let userId: String
     let ownerName: String
+    /// The owner's own colour (identity), as chosen in their profile.
+    let hex: String
     let color: Color
     let isShared: Bool
     let polygon: MKPolygon
@@ -15,8 +17,35 @@ struct TerritoryShape: Identifiable {
     let rings: [[CLLocationCoordinate2D]]
     /// Someone else's global map shown for information (lighter, not tappable as a rival).
     var isOverlay: Bool = false
-    /// Derbi: a zone of the rival club (red outline).
+    /// Derbi: a zone of the rival club.
     var isRival: Bool = false
+    /// Por equipos: the owner's team.
+    var team: Int? = nil
+    var avatar: String? = nil
+    /// The territory record this polygon belongs to, and that record's area (m²).
+    var recordId: String = ""
+    var recordArea: Double = 0
+
+    // Set by MapPalette for the current map
+    var relation: TerritoryRelation = .other
+    /// Colour on this map: the owner's, unless it clashes with mine or with a neighbour.
+    var displayColor: Color
+    var style: TerritoryStyle
+
+    init(id: String, userId: String, ownerName: String, hex: String, isShared: Bool, polygon: MKPolygon, rings: [[CLLocationCoordinate2D]], isOverlay: Bool = false) {
+        self.id = id
+        self.userId = userId
+        self.ownerName = ownerName
+        self.hex = hex
+        let tint = Color(hex: hex)
+        self.color = tint
+        self.isShared = isShared
+        self.polygon = polygon
+        self.rings = rings
+        self.isOverlay = isOverlay
+        self.displayColor = tint
+        self.style = .plain(tint)
+    }
 }
 
 /// One of the user's own runs drawn as a thin line on the map.
@@ -68,8 +97,12 @@ enum GlobalOverlay: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class MapModel {
-    private(set) var globalShapes: [TerritoryShape] = []
-    private(set) var competitionShapes: [TerritoryShape] = []
+    private(set) var globalShapes: [TerritoryShape] = [] {
+        didSet { restyle() }
+    }
+    private(set) var competitionShapes: [TerritoryShape] = [] {
+        didSet { restyle() }
+    }
     private(set) var chests: [Chest] = []
     /// Banderas: the flags of my competition and who holds them.
     private(set) var flags: [CompetitionFlag] = []
@@ -82,6 +115,8 @@ final class MapModel {
     private(set) var errorMessage: String?
     /// The competition map has data to show (I take part in a running competition).
     private(set) var hasCompetitionMap = false
+    /// Mode of the competition on the map ("ffa", "teams", "derby"…).
+    private(set) var competitionMode: String?
 
     /// Saved by the map screen (UserDefaults "map_mode" / "map_global_overlay").
     var mode: MapMode = MapMode(rawValue: UserDefaults.standard.string(forKey: "map_mode") ?? "") ?? .global
@@ -90,9 +125,54 @@ final class MapModel {
     /// Most recent own runs drawn on the map.
     private let maxRouteLines = 40
 
-    /// What the map draws in the current mode.
+    /// What the map draws in the current mode, coloured by MapPalette.
     var visibleShapes: [TerritoryShape] {
-        mode == .global ? globalShapes : competitionShapes
+        mode == .global ? styledGlobalShapes : styledCompetitionShapes
+    }
+
+    // MARK: - Palette
+
+    private(set) var styledGlobalShapes: [TerritoryShape] = []
+    private(set) var styledCompetitionShapes: [TerritoryShape] = []
+    private var globalRunners: [MapRunner] = []
+    private var competitionRunners: [MapRunner] = []
+
+    /// The moment the colours depend on (set by the map screen: competition, ranking, my colour).
+    var paletteContext: PaletteContext? {
+        didSet { if paletteContext != oldValue { restyle() } }
+    }
+    /// The runner whose territory is shown in full (everyone else fades), or compared with mine in Global.
+    var focusUserId: String? {
+        didSet { if focusUserId != oldValue { restyle() } }
+    }
+    /// Saved by the map screen (UserDefaults "map_global_view").
+    var globalView: GlobalView = GlobalView(rawValue: UserDefaults.standard.string(forKey: "map_global_view") ?? "") ?? .normal {
+        didSet { if globalView != oldValue { restyle() } }
+    }
+
+    private func restyle() {
+        guard var context = paletteContext else {
+            styledGlobalShapes = globalShapes
+            styledCompetitionShapes = competitionShapes
+            globalRunners = []
+            competitionRunners = []
+            return
+        }
+        context.focusUserId = focusUserId
+        context.globalView = globalView
+        var global = context
+        global.mode = .global
+        var competition = context
+        competition.mode = .competition
+        styledGlobalShapes = MapPalette.apply(globalShapes, context: global)
+        styledCompetitionShapes = MapPalette.apply(competitionShapes, context: competition)
+        globalRunners = MapRunner.runners(from: styledGlobalShapes)
+        competitionRunners = MapRunner.runners(from: styledCompetitionShapes)
+    }
+
+    /// The runners on the current map (not me), for "Comparar con…", the pins and the quick card.
+    var visibleRunners: [MapRunner] {
+        mode == .global ? globalRunners : competitionRunners
     }
 
     var visibleFortifications: [FortificationShape] { mode == .competition ? fortifications : [] }
@@ -149,6 +229,9 @@ final class MapModel {
         routeColor = nil
         hasContent = false
         hasCompetitionMap = false
+        competitionMode = nil
+        focusUserId = nil
+        paletteContext = nil
         reloadTracker = ReloadSignalTracker()
         globalShapes = []
         competitionShapes = []
@@ -280,6 +363,7 @@ final class MapModel {
     }
 
     private func applySeasonMap(_ response: SeasonMapResponse, ownColor: String) {
+        competitionMode = response.mode
         competitionShapes = Self.makeShapes(response.territories)
         chests = response.chests
         flags = response.flags
@@ -395,16 +479,27 @@ final class MapModel {
         var result: [TerritoryShape] = []
         for overlay in response.overlays {
             guard let user = overlay.user else { continue }
-            result += polygonsToShapes(
+            var shapes = polygonsToShapes(
                 idPrefix: "overlay-\(user.id)", userId: user.id, ownerName: user.name, color: user.color,
                 polygons: overlay.polygons, isShared: false, isOverlay: true
             )
+            for index in shapes.indices {
+                shapes[index].avatar = user.avatar
+                shapes[index].recordId = "overlay-\(user.id)"
+                shapes[index].recordArea = overlay.area
+            }
+            result += shapes
         }
         if let me = response.me {
-            result += polygonsToShapes(
+            var shapes = polygonsToShapes(
                 idPrefix: "me", userId: me.user?.id ?? "me", ownerName: "Tú", color: me.user?.color ?? ownColor,
                 polygons: me.polygons, isShared: false, isOverlay: false
             )
+            for index in shapes.indices {
+                shapes[index].recordId = "me"
+                shapes[index].recordArea = me.area
+            }
+            result += shapes
         }
         return result
     }
@@ -416,8 +511,12 @@ final class MapModel {
                 idPrefix: territory.id, userId: territory.userId, ownerName: territory.owner?.name ?? "",
                 color: territory.color, polygons: territory.polygons, isShared: !territory.coRunnerColors.isEmpty, isOverlay: false
             )
-            if territory.rival {
-                for index in shapes.indices { shapes[index].isRival = true }
+            for index in shapes.indices {
+                shapes[index].isRival = territory.rival
+                shapes[index].team = territory.team
+                shapes[index].avatar = territory.owner?.avatar
+                shapes[index].recordId = territory.id
+                shapes[index].recordArea = territory.area
             }
             result += shapes
         }
@@ -434,7 +533,7 @@ final class MapModel {
                 id: "\(idPrefix)-\(index)",
                 userId: userId,
                 ownerName: ownerName,
-                color: Color(hex: color),
+                hex: color,
                 isShared: isShared,
                 polygon: polygon,
                 rings: rings,

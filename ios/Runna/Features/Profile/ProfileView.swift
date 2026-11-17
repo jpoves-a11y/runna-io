@@ -486,7 +486,6 @@ struct EditProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var color = ""
-    @State private var takenColors: Set<String> = []
     @State private var isSaving = false
     @State private var errorMessage: String?
 
@@ -512,7 +511,7 @@ struct EditProfileView: View {
                 } header: {
                     SocialSectionHeader(title: "Color de tu territorio")
                 } footer: {
-                    Text("Tu color te identifica en el mapa. Los colores con un icono ya los usa alguno de tus amigos.")
+                    Text("Tu color te identifica en el mapa. Puedes elegir cualquiera: si alguien cerca de ti tiene uno parecido, tu mapa los distingue solo.")
                 }
                 .listRowBackground(Color.surface)
             }
@@ -568,7 +567,6 @@ struct EditProfileView: View {
     }
 
     private func colorSwatch(_ option: String) -> some View {
-        let taken = takenColors.contains(option.uppercased()) && option.uppercased() != session.user?.color.uppercased()
         let selected = option.uppercased() == color.uppercased()
         return Button {
             color = option
@@ -579,10 +577,6 @@ struct EditProfileView: View {
                     Image(systemName: "checkmark")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(Color.white)
-                } else if taken {
-                    Image(systemName: "person.fill")
-                        .font(.caption)
-                        .foregroundStyle(Color.white.opacity(0.9))
                 }
             }
             .frame(height: 40)
@@ -591,10 +585,8 @@ struct EditProfileView: View {
                 Circle().strokeBorder(Color(hex: option), lineWidth: selected ? 2.5 : 0)
             }
             .animation(.snappy, value: selected)
-            .opacity(taken ? 0.35 : 1)
         }
         .buttonStyle(.plain)
-        .disabled(taken)
         .accessibilityLabel(AppConfig.userColorNames[option] ?? option)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -602,10 +594,6 @@ struct EditProfileView: View {
     private func load() async {
         name = session.user?.name ?? ""
         color = session.user?.color ?? ""
-        if let userId = session.userId,
-           let friends = try? await APIClient.shared.request("GET", "/api/friends/\(userId)", as: [AppUser].self) {
-            takenColors = Set(friends.map { $0.color.uppercased() })
-        }
     }
 
     private func save() {

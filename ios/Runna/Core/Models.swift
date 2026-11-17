@@ -167,11 +167,13 @@ struct Territory: Decodable, Identifiable {
     let coRunnerColors: [String]
     /// Polygons (outer ring first, then holes) in map coordinates.
     let polygons: [[[CLLocationCoordinate2D]]]
-    /// Derbi: a zone of the rival club (drawn with a red outline).
+    /// Derbi: a zone of the rival club.
     let rival: Bool
+    /// Por equipos: the owner's team (competition map).
+    let team: Int?
 
     enum CodingKeys: String, CodingKey {
-        case id, userId, routeId, area, conqueredAt, user, ranTogetherWithColors, geometry, rival
+        case id, userId, routeId, area, conqueredAt, user, ranTogetherWithColors, geometry, rival, team
     }
 
     private struct ColorRef: Decodable { let color: String }
@@ -187,6 +189,7 @@ struct Territory: Decodable, Identifiable {
         coRunnerColors = (try? c.decodeIfPresent([ColorRef].self, forKey: .ranTogetherWithColors))?.map(\.color) ?? []
         polygons = GeoJSON.polygons(from: c.jsonObject(.geometry))
         rival = c.bool(.rival) ?? false
+        team = c.int(.team)
     }
 
     var color: String { owner?.color ?? "#888888" }

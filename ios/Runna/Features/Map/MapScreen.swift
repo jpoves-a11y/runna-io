@@ -18,6 +18,10 @@ struct MapScreen: View {
     @State private var heading: Double = 0
     @State private var selectedUserId: String?
     @State private var selectedChest: Chest?
+    /// Runner whose quick card is open (tapped territory or avatar).
+    @State private var selectedRunnerId: String?
+    /// Visible region, for grouping the avatars at the current zoom.
+    @State private var visibleRegion: MKCoordinateRegion?
     @State private var uploadedPendingRuns = 0
     @State private var confirmDiscardRun = false
     @AppStorage("map_show_own_routes") private var showOwnRoutes = true
@@ -76,10 +80,21 @@ struct MapScreen: View {
         }
         .onChange(of: model.mode) { _, mode in
             UserDefaults.standard.set(mode.rawValue, forKey: "map_mode")
+            clearSelection()
             syncTracker()
         }
         .onChange(of: model.overlay) { _, overlay in
             UserDefaults.standard.set(overlay.rawValue, forKey: "map_global_overlay")
+            clearSelection()
+        }
+        .onChange(of: model.globalView) { _, view in
+            UserDefaults.standard.set(view.rawValue, forKey: "map_global_view")
+            clearSelection()
+            syncTracker()
+        }
+        .onChange(of: paletteContext, initial: true) { _, context in
+            model.paletteContext = context
+            syncTracker()
         }
     }
 
@@ -100,15 +115,19 @@ struct MapScreen: View {
             }
             .onMapCameraChange(frequency: .onEnd) { context in
                 lastCamera = context.camera
+                visibleRegion = context.region
                 withAnimation(.snappy) { heading = context.camera.heading }
             }
             .onTapGesture { location in
                 if let chest = chestNear(location, proxy: proxy) {
                     selectedChest = chest
-                } else if let coordinate = proxy.convert(location, from: .local),
+                } else if !isFogView,
+                          let coordinate = proxy.convert(location, from: .local),
                           let shape = model.shape(at: coordinate),
-                          shape.userId != session.userId, shape.userId != "me" {
-                    selectedUserId = shape.userId
+                          shape.relation != .mine, shape.userId != session.userId, shape.userId != "me" {
+                    withAnimation(.snappy) { selectedRunnerId = shape.userId }
+                } else if selectedRunnerId != nil {
+                    withAnimation(.snappy) { selectedRunnerId = nil }
                 }
             }
         }
@@ -120,8 +139,19 @@ struct MapScreen: View {
         UserAnnotation()
         ForEach(model.visibleShapes) { shape in
             MapPolygon(shape.polygon)
-                .foregroundStyle(shape.color.opacity(fillOpacity(for: shape)))
-                .stroke(shape.isRival ? Color.steal : shape.color.opacity(shape.isOverlay ? 0.6 : 1), style: strokeStyle(for: shape))
+                .foregroundStyle(shape.style.fill.opacity(shape.style.fillOpacity))
+                .stroke(shape.style.stroke.opacity(shape.style.strokeOpacity), style: shape.style.strokeStyle)
+        }
+        ForEach(pinClusters) { cluster in
+            Annotation("", coordinate: cluster.coordinate) {
+                Button {
+                    tap(cluster)
+                } label: {
+                    RunnerPin(cluster: cluster)
+                }
+                .buttonStyle(.plain)
+            }
+            .annotationTitles(.hidden)
         }
         ForEach(model.visibleFortifications) { fort in
             MapPolygon(fort.polygon)
@@ -166,25 +196,107 @@ struct MapScreen: View {
         }
     }
 
-    private func isMine(_ shape: TerritoryShape) -> Bool {
-        shape.userId == session.userId || shape.userId == "me"
-    }
+    // MARK: - Colours, avatars and focus
 
-    /// Own territory slightly stronger; overlays (other people's global maps) light.
-    private func fillOpacity(for shape: TerritoryShape) -> Double {
-        if shape.isOverlay { return 0.12 }
-        if shape.isShared { return 0.38 }
-        return isMine(shape) ? 0.34 : 0.26
-    }
-
-    /// 2.5pt outline, 3pt for your own; shared territories, overlays and the rival club's zones in
-    /// the Derbi get a dashed outline.
-    private func strokeStyle(for shape: TerritoryShape) -> StrokeStyle {
-        let width: CGFloat = shape.isOverlay ? 1.5 : (isMine(shape) ? 3 : 2.5)
-        if shape.isShared || shape.isOverlay || shape.isRival {
-            return StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: [8, 5])
+    /// What the colours depend on right now: the competition on the map, where I am in its
+    /// ranking and my own colour (see MapPalette).
+    private var paletteContext: PaletteContext {
+        let competition = season.competition
+        let myId = session.userId
+        var directRivals: Set<String> = []
+        var danger: Set<String> = []
+        if let competition, let myId {
+            // The runners just above (two) and below (one) me, still in the game
+            let standings = competition.standings
+                .filter { $0.eliminatedCut == nil }
+                .sorted { $0.rank < $1.rank }
+            if let index = standings.firstIndex(where: { $0.userId == myId }) {
+                for offset in [-2, -1, 1] where standings.indices.contains(index + offset) {
+                    directRivals.insert(standings[index + offset].userId)
+                }
+            }
+            if let window = competition.elimination?.window {
+                danger = Set(window.filter(\.danger).map(\.userId))
+            }
         }
-        return StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
+        return PaletteContext(
+            mode: model.mode,
+            myId: myId,
+            myColor: session.user?.color ?? "#16A34A",
+            competitionMode: model.competitionMode ?? competition?.mode,
+            myTeam: competition?.myTeam,
+            directRivals: directRivals,
+            danger: danger
+        )
+    }
+
+    /// Global "Sin pisar por nadie": territories are fog, nothing to tap.
+    private var isFogView: Bool {
+        model.mode == .global && model.globalView == .unexplored
+    }
+
+    /// Faces on the territories: in the competition, and over friends' / club mates' maps in Global.
+    private var pinClusters: [RunnerCluster] {
+        let showsPins = model.mode == .global
+            ? model.overlay != .onlyMe && model.globalView == .normal
+            : model.hasCompetitionMap
+        guard showsPins else { return [] }
+        var runners = model.visibleRunners
+        if let focus = model.focusUserId {
+            runners = runners.filter { $0.id == focus }
+        }
+        // The biggest maps first if there are very many
+        if runners.count > 80 {
+            runners = Array(runners.sorted { $0.area > $1.area }.prefix(80))
+        }
+        return RunnerCluster.clusters(runners, region: visibleRegion)
+    }
+
+    private var selectedRunner: MapRunner? {
+        guard let selectedRunnerId else { return nil }
+        return model.visibleRunners.first { $0.id == selectedRunnerId }
+    }
+
+    private var focusedRunner: MapRunner? {
+        guard let focus = model.focusUserId else { return nil }
+        return model.visibleRunners.first { $0.id == focus }
+    }
+
+    /// One face opens its card; a group zooms in until its faces separate.
+    private func tap(_ cluster: RunnerCluster) {
+        if cluster.runners.count == 1, let runner = cluster.runners.first {
+            withAnimation(.snappy) { selectedRunnerId = runner.id }
+        } else {
+            withAnimation(.smooth(duration: 0.8)) { camera = .region(cluster.region) }
+        }
+    }
+
+    private func toggleFocus(_ userId: String) {
+        withAnimation(.snappy) {
+            model.focusUserId = model.focusUserId == userId ? nil : userId
+            selectedRunnerId = nil
+        }
+        syncTracker()
+    }
+
+    private func clearSelection() {
+        selectedRunnerId = nil
+        model.focusUserId = nil
+    }
+
+    /// What this runner's zones mean for me, in a few words.
+    private func relationText(_ runner: MapRunner) -> String {
+        switch runner.relation {
+        case .mine: return "Tú"
+        case .ally:
+            return (model.competitionMode ?? season.competition?.mode) == "teams" ? "Tu equipo" : "Tu club"
+        case .rival:
+            return (model.competitionMode ?? season.competition?.mode) == "derby" ? "Club rival · se puede robar" : "Equipo rival · se puede robar"
+        case .directRival: return "Justo a tu lado en la clasificación · se puede robar"
+        case .other: return "Se puede robar"
+        case .danger: return "En peligro de eliminación · se puede robar"
+        case .overlay: return "Su mapa global"
+        }
     }
 
     // MARK: - Camera
@@ -343,10 +455,41 @@ struct MapScreen: View {
             if model.mode == .competition && !model.hasCompetitionMap {
                 noCompetitionCard
             }
+            if let runner = focusedRunner {
+                HStack {
+                    FocusPill(
+                        runner: runner,
+                        title: model.mode == .global ? "Comparando con \(runner.name)" : "Viendo a \(runner.name)"
+                    ) {
+                        toggleFocus(runner.id)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            if isFogView {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.brand)
+                    Text(model.overlay == .onlyMe
+                         ? "Lo despejado es donde aún no has corrido"
+                         : "Lo despejado es terreno que nadie ha pisado")
+                        .font(.footnote.weight(.medium))
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .glassSurface(Capsule())
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
             if let error = model.errorMessage, !model.isLoading {
                 ErrorBanner(message: "No hemos podido cargar el mapa. \(error)", retry: { Task { await reload(force: true) } })
             }
         }
+        .animation(.snappy, value: model.focusUserId)
+        .animation(.snappy, value: model.globalView)
     }
 
     /// Competition mode without a running competition: why, and what to do.
@@ -455,6 +598,29 @@ struct MapScreen: View {
                         Text(overlay.title).tag(overlay)
                     }
                 }
+                Divider()
+                Picker("Vista", selection: $model.globalView) {
+                    Label(GlobalView.normal.title, systemImage: "map").tag(GlobalView.normal)
+                    Label(GlobalView.unexplored.title, systemImage: "cloud.fog").tag(GlobalView.unexplored)
+                }
+                let runners = model.visibleRunners.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                if model.overlay != .onlyMe && model.globalView == .normal && !runners.isEmpty {
+                    Menu {
+                        ForEach(runners) { runner in
+                            Button {
+                                toggleFocus(runner.id)
+                            } label: {
+                                if model.focusUserId == runner.id {
+                                    Label(runner.name, systemImage: "checkmark")
+                                } else {
+                                    Text(runner.name)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Comparar con…", systemImage: "person.2")
+                    }
+                }
             }
         } label: {
             GlassCircleLabel(systemImage: "square.3.layers.3d")
@@ -467,6 +633,18 @@ struct MapScreen: View {
 
     private var bottomArea: some View {
         VStack(spacing: DS.Spacing.s) {
+            if let runner = selectedRunner {
+                TerritoryCallout(
+                    runner: runner,
+                    relationText: relationText(runner),
+                    isFocused: model.focusUserId == runner.id,
+                    focusTitle: model.mode == .global ? "Comparar" : "Enfocar",
+                    onFocus: { toggleFocus(runner.id) },
+                    onProfile: { selectedUserId = runner.id },
+                    onClose: { withAnimation(.snappy) { selectedRunnerId = nil } }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if tracker.hasRecoverableRun {
                 recoveredRunCard
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -482,6 +660,7 @@ struct MapScreen: View {
         }
         .animation(.snappy, value: tracker.hasRecoverableRun)
         .animation(.snappy, value: uploadedPendingRuns)
+        .animation(.snappy, value: selectedRunnerId)
     }
 
     private var recoveredRunCard: some View {

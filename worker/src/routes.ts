@@ -225,81 +225,8 @@ function inBackground(c: { executionCtx: { waitUntil(promise: Promise<unknown>):
   }
 }
 
-/**
- * Get all colors used by a user's friends (and the user themselves).
- * Returns the set of colors that would conflict for a given user joining a friend group.
- */
-async function getFriendGroupColors(storage: WorkerStorage, userId: string): Promise<Set<string>> {
-  const friendIds = await storage.getFriendIds(userId);
-  const colors = new Set<string>();
-  for (const fid of friendIds) {
-    const friend = await storage.getUser(fid);
-    if (friend) colors.add(friend.color.toUpperCase());
-  }
-  return colors;
-}
-
-/**
- * Find a color from USER_COLORS that doesn't conflict with any colors in the provided sets.
- * Returns null if no color is available (very unlikely with 12 colors).
- */
-function findAvailableColor(usedColors: Set<string>): string | null {
-  for (const color of USER_COLORS) {
-    if (!usedColors.has(color.toUpperCase())) {
-      return color;
-    }
-  }
-  return null;
-}
-
-/**
- * When two users are about to become friends, check if they have the same color.
- * If so, auto-reassign the second user (accepter) to an available color.
- * Also checks against all friends of both users to avoid any group conflicts.
- * Returns the new color assigned, or null if no change was needed.
- */
-async function resolveColorConflictOnFriendship(
-  storage: WorkerStorage,
-  user1Id: string,
-  user2Id: string
-): Promise<{ changed: boolean; newColor?: string; userId?: string }> {
-  const user1 = await storage.getUser(user1Id);
-  const user2 = await storage.getUser(user2Id);
-  if (!user1 || !user2) return { changed: false };
-
-  // Collect all colors in the combined friend group
-  const user1FriendColors = await getFriendGroupColors(storage, user1Id);
-  const user2FriendColors = await getFriendGroupColors(storage, user2Id);
-
-  // Add the users' own colors
-  user1FriendColors.add(user1.color.toUpperCase());
-  user2FriendColors.add(user2.color.toUpperCase());
-
-  // Check if user2's color conflicts with user1 or any of user1's friends
-  if (user1FriendColors.has(user2.color.toUpperCase())) {
-    // user2 needs a new color - find one not used by either friend group
-    const allUsed = new Set([...user1FriendColors, ...user2FriendColors]);
-    const newColor = findAvailableColor(allUsed);
-    if (newColor) {
-      await storage.updateUser(user2Id, { color: newColor });
-      console.log(`[COLOR CONFLICT] Auto-changed ${user2.name}'s color from ${user2.color} to ${newColor}`);
-      return { changed: true, newColor, userId: user2Id };
-    }
-  }
-
-  // Also check if user1's color conflicts with user2's friends
-  if (user2FriendColors.has(user1.color.toUpperCase())) {
-    const allUsed = new Set([...user1FriendColors, ...user2FriendColors]);
-    const newColor = findAvailableColor(allUsed);
-    if (newColor) {
-      await storage.updateUser(user1Id, { color: newColor });
-      console.log(`[COLOR CONFLICT] Auto-changed ${user1.name}'s color from ${user1.color} to ${newColor}`);
-      return { changed: true, newColor, userId: user1Id };
-    }
-  }
-
-  return { changed: false };
-}
+// Colours are free: each user keeps the one they chose. The app tells similar colours apart on
+// its own map (MapPalette.swift), so friendships never change anybody's colour.
 
 // Helper: generate a SINGLE merged feed event per activity
 // All conquest details (victims, ran-together, records, treasures) are stored in metadata JSON
@@ -2002,11 +1929,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (color !== undefined) {
         if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) {
           return c.json({ error: 'Color no válido' }, 400);
-        }
-        // Check if the new color conflicts with any friend's color
-        const friendColors = await getFriendGroupColors(storage, id);
-        if (friendColors.has(color.toUpperCase())) {
-          return c.json({ error: 'Este color ya lo usa uno de tus amigos. Elige otro.' }, 400);
         }
         updateData.color = color;
       }
@@ -3713,9 +3635,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Request already processed" }, 400);
       }
 
-      // Auto-resolve color conflicts before creating friendship
-      const colorResult = await resolveColorConflictOnFriendship(storage, request.senderId, userId);
-
       // Create bidirectional friendship
       await storage.createBidirectionalFriendship(request.senderId, request.recipientId);
       
@@ -3759,7 +3678,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
         // Friends no longer steal territory from each other: nothing to reprocess
       });
 
-      return c.json({ success: true, colorChanged: colorResult.changed, newColor: colorResult.newColor || null });
+      // colorChanged / newColor: kept for older app versions (colours never change any more)
+      return c.json({ success: true, colorChanged: false, newColor: null });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -4062,9 +3982,6 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: 'No puedes aceptar esta invitación' }, 403);
       }
 
-      // Auto-resolve color conflicts before creating friendship
-      const colorResult = await resolveColorConflictOnFriendship(storage, invite.userId, userId);
-
       await storage.createBidirectionalFriendship(invite.userId, userId);
       await storage.deleteFriendInvite(invite.id);
 
@@ -4072,7 +3989,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const { notifyFriendRequestAccepted } = await import('./notifications');
       await notifyFriendRequestAccepted(storage, invite.userId, userId, c.env);
 
-      return c.json({ success: true, friendId: invite.userId, colorChanged: colorResult.changed, newColor: colorResult.newColor || null });
+      return c.json({ success: true, friendId: invite.userId, colorChanged: false, newColor: null });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }

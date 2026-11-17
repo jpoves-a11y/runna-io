@@ -100,10 +100,20 @@ struct RunView: View {
 
     private var map: some View {
         Map(position: $camera) {
+            // While running only one thing matters: mine, what I can steal right now, the rest
             ForEach(tracker.territoryShapes) { shape in
-                MapPolygon(shape.polygon)
-                    .foregroundStyle(shape.color.opacity(0.18))
-                    .stroke(shape.color.opacity(0.5), lineWidth: 1)
+                if shape.relation == .mine {
+                    MapPolygon(shape.polygon)
+                        .foregroundStyle(shape.displayColor.opacity(0.2))
+                        .stroke(shape.displayColor.opacity(0.7), lineWidth: 1.5)
+                } else if shape.relation.isStealable {
+                    MapPolygon(shape.polygon)
+                        .foregroundStyle(Color.steal.opacity(0.14))
+                        .stroke(Color.steal.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round, dash: TerritoryStyle.dashed))
+                } else {
+                    MapPolygon(shape.polygon)
+                        .foregroundStyle(Color.secondary.opacity(0.08))
+                }
             }
             UserAnnotation()
             if tracker.coordinates.count >= 2 {
