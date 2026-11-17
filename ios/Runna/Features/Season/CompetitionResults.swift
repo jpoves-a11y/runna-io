@@ -518,10 +518,7 @@ private struct RewardChestCell: View {
                             .multilineTextAlignment(.center)
                     }
                 } else {
-                    Image(Rarity.chestImage(item.rarity))
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 72)
+                    ChestView(rarity: item.rarity, size: 72)
                         .transition(.scale(scale: 1.1).combined(with: .opacity))
                     RarityPill(rarity: item.rarity)
                     Text("Cofre")

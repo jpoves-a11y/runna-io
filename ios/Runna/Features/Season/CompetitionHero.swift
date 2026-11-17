@@ -557,10 +557,7 @@ struct ChestTrack: View {
                         .frame(width: 58, height: 58)
                         .blur(radius: 6)
                 }
-                Image(Rarity.chestImage(tier.rarity))
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: size, height: size)
+                ChestView(rarity: tier.rarity, size: size, animated: reached)
                     .saturation(reached ? 1 : 0.15)
                     .opacity(reached ? 1 : 0.55)
             }

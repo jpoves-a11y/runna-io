@@ -425,10 +425,7 @@ struct ChestMarker: View {
     let chest: Chest
 
     var body: some View {
-        Image(Rarity.chestImage(chest.rarity))
-            .resizable()
-            .scaledToFit()
-            .frame(width: 38, height: 38)
+        ChestView(rarity: chest.rarity, size: 38)
             .opacity(chest.hidden ? 0.6 : 1)
             .shadow(color: Color.black.opacity(0.28), radius: 3, x: 0, y: 2)
             .overlay(alignment: .topTrailing) {
@@ -453,10 +450,7 @@ struct ChestDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.l) {
             HStack(spacing: DS.Spacing.m) {
-                Image(Rarity.chestImage(chest.rarity))
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 64, height: 64)
+                ChestView(rarity: chest.rarity, size: 64)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(chest.item?.name ?? chest.name)

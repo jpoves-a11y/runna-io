@@ -436,10 +436,7 @@ private struct FeedTreasureBlock: View {
 
     var body: some View {
         HStack(spacing: DS.Spacing.m) {
-            Image(Rarity.chestImage(rarity))
-                .resizable()
-                .scaledToFit()
-                .frame(width: 44, height: 44)
+            ChestView(rarity: rarity, size: 44)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)

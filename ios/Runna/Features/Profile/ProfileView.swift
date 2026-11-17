@@ -16,6 +16,8 @@ struct ProfileView: View {
     @State private var model = ProfileModel.shared
     @State private var showEdit = false
     @State private var avatarItem: PhotosPickerItem?
+    /// Photo picked from the library, waiting to be framed in the circle.
+    @State private var photoToCrop: PhotoToCrop?
     @State private var isUploadingAvatar = false
     @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
     @State private var confirmLogout = false
@@ -53,7 +55,17 @@ struct ProfileView: View {
                     if phase == .active { Task { notificationStatus = await PushManager.shared.authorizationStatus() } }
                 }
                 .onChange(of: avatarItem) { _, item in
-                    if let item { uploadAvatar(item) }
+                    if let item { loadPhotoToCrop(item) }
+                }
+                .fullScreenCover(item: $photoToCrop) { photo in
+                    AvatarCropView(
+                        image: photo.image,
+                        onCancel: { photoToCrop = nil },
+                        onChoose: { cropped in
+                            photoToCrop = nil
+                            uploadAvatar(cropped)
+                        }
+                    )
                 }
                 .sheet(isPresented: $showEdit) {
                     EditProfileView()
@@ -402,7 +414,8 @@ struct ProfileView: View {
         }
     }
 
-    private func uploadAvatar(_ item: PhotosPickerItem) {
+    /// Loads the picked photo (scaled down to 2048 px) and opens "Mover y ajustar".
+    private func loadPhotoToCrop(_ item: PhotosPickerItem) {
         isUploadingAvatar = true
         Task {
             defer {
@@ -411,11 +424,30 @@ struct ProfileView: View {
             }
             do {
                 guard let data = try await item.loadTransferable(type: Data.self),
-                      let image = UIImage(data: data),
-                      let jpeg = image.squareCropped().resized(maxDimension: 512).jpegData(compressionQuality: 0.8) else {
+                      let image = UIImage(data: data) else {
                     errorMessage = "No se ha podido leer la imagen."
                     return
                 }
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    image.resized(maxDimension: 2048)
+                }.value
+                photoToCrop = PhotoToCrop(image: prepared)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Uploads the square framed in `AvatarCropView` (already 512×512).
+    private func uploadAvatar(_ image: UIImage) {
+        guard let jpeg = image.jpegData(compressionQuality: 0.8) else {
+            errorMessage = "No se ha podido leer la imagen."
+            return
+        }
+        isUploadingAvatar = true
+        Task {
+            defer { isUploadingAvatar = false }
+            do {
                 try await session.uploadAvatar(jpegData: jpeg)
                 avatarUploads += 1
             } catch {
@@ -603,17 +635,10 @@ extension Bundle {
     }
 }
 
-extension UIImage {
-    /// Centre square crop (avatars are shown in circles).
-    func squareCropped() -> UIImage {
-        let side = min(size.width, size.height)
-        let origin = CGPoint(x: (size.width - side) / 2, y: (size.height - side) / 2)
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = scale
-        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
-            draw(at: CGPoint(x: -origin.x, y: -origin.y))
-        }
-    }
+/// A photo from the library on its way to the crop screen.
+private struct PhotoToCrop: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }
 
 /// Conquest stats of the Profile tab, kept across tab switches (stale-while-revalidate).
