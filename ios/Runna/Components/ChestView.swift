@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// A chest with a light effect that grows with its rarity:
-/// common — a glint now and then · rare — breathing blue glow · epic — purple aura and sparkles ·
-/// legendary — flames licking the outline, golden glow and sparkles.
+/// A chest with a light effect that grows with its rarity (Metal shaders in ChestEffects.metal):
+/// common — a metallic glint now and then · rare — blue wisps of light around the outline ·
+/// epic — swirling purple aura and twinkling sparkles · legendary — soft diamond-blue flames
+/// rising from the outline, their light flickering on the chest, rising embers and sparkles.
 /// The effects draw outside the frame (they never change the layout) and ignore touches.
 /// With Reduce Motion only a still glow is shown.
 struct ChestView: View {
@@ -12,19 +13,21 @@ struct ChestView: View {
     var animated: Bool = true
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var start = Date()
 
     var body: some View {
         Group {
             if !animated {
-                ChestEffects(tier: ChestTier(rarity), size: size, time: nil, lit: false)
+                ChestEffects(style: ChestStyle(rarity), size: size, time: nil, lit: false)
             } else if reduceMotion {
-                ChestEffects(tier: ChestTier(rarity), size: size, time: nil, lit: true)
+                ChestEffects(style: ChestStyle(rarity), size: size, time: nil, lit: true)
             } else {
                 TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                     ChestEffects(
-                        tier: ChestTier(rarity),
+                        style: ChestStyle(rarity),
                         size: size,
-                        time: context.date.timeIntervalSinceReferenceDate,
+                        // Seconds since it appeared: small numbers keep the shaders' Float precise
+                        time: context.date.timeIntervalSince(start),
                         lit: true
                     )
                 }
@@ -34,64 +37,79 @@ struct ChestView: View {
     }
 }
 
-// MARK: - Tier
+// MARK: - Style per rarity
 
-private enum ChestTier: Int, Comparable {
-    case common, rare, epic, legendary
+private struct ChestStyle {
+    struct Aura {
+        let color: Color
+        /// 0: wisps rise; 1: they also swirl around the chest.
+        let swirl: Double
+        let strength: Double
+    }
+
+    let rarity: String
+    let glintPeriod: Double
+    let glint: Double
+    let glintTint: Color
+    let aura: Aura?
+    let fire: Bool
+    let sparkles: Int
+    let embers: Int
 
     init(_ rarity: String) {
+        self.rarity = rarity
         switch rarity {
-        case "rare": self = .rare
-        case "epic": self = .epic
-        case "legendary": self = .legendary
-        default: self = .common
+        case "rare":
+            glintPeriod = 3.4; glint = 1.4; glintTint = Color(red: 0.4, green: 0.7, blue: 1)
+            aura = Aura(color: Color(red: 0.30, green: 0.64, blue: 1), swirl: 0, strength: 1.5)
+            fire = false; sparkles = 0; embers = 0
+        case "epic":
+            glintPeriod = 3.0; glint = 1.4; glintTint = Color(red: 0.75, green: 0.5, blue: 1)
+            aura = Aura(color: Color(red: 0.70, green: 0.42, blue: 1), swirl: 1, strength: 1.7)
+            fire = false; sparkles = 5; embers = 0
+        case "legendary":
+            glintPeriod = 2.6; glint = 1.3; glintTint = Color(red: 0.6, green: 0.85, blue: 1)
+            aura = Aura(color: Rarity.diamondLight, swirl: 0, strength: 0.55)
+            fire = true; sparkles = 4; embers = 12
+        default:
+            glintPeriod = 4.2; glint = 1.3; glintTint = Color(red: 1, green: 0.95, blue: 0.85)
+            aura = nil; fire = false; sparkles = 0; embers = 0
         }
     }
 
-    static func < (lhs: ChestTier, rhs: ChestTier) -> Bool { lhs.rawValue < rhs.rawValue }
-
-    var rarity: String {
-        switch self {
-        case .common: return "common"
-        case .rare: return "rare"
-        case .epic: return "epic"
-        case .legendary: return "legendary"
-        }
-    }
-
-    var glow: Color { Rarity.glowColor(rarity) }
-
-    /// Seconds between two glints across the chest.
-    var shinePeriod: Double {
-        switch self {
-        case .common: return 4.2
-        case .rare: return 3.2
-        case .epic: return 2.8
-        case .legendary: return 2.4
-        }
-    }
+    var particleColor: Color { aura?.color ?? .white }
 }
 
 // MARK: - Effects
 
 private struct ChestEffects: View {
-    let tier: ChestTier
+    let style: ChestStyle
     let size: CGFloat
     /// nil: a still frame (Reduce Motion or no animation).
     let time: Double?
-    /// false: no glow either.
+    /// false: no light at all.
     let lit: Bool
 
-    private var imageName: String { Rarity.chestImage(tier.rarity) }
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Room around the chest for the glow and the flames (fraction of `size` on each side).
+    private let pad: CGFloat = 0.35
+    private var side: CGFloat { size * (1 + pad * 2) }
+    private var imageName: String { Rarity.chestImage(style.rarity) }
+    private var isDark: Bool { colorScheme == .dark }
 
     var body: some View {
-        chest
-            .scaleEffect(pulse)
+        surface
             .background {
                 if lit { behind }
             }
             .overlay {
-                if lit, let time { front(time) }
+                if lit, let time {
+                    ChestParticles(style: style, size: size, time: time, isDark: isDark)
+                        .frame(width: side, height: side)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
     }
 
@@ -102,245 +120,206 @@ private struct ChestEffects: View {
             .frame(width: size, height: size)
     }
 
-    /// The chest's exact outline, to be tinted and blurred into a glow.
+    /// The chest with its glint (and the flames' light on it).
+    @ViewBuilder
+    private var surface: some View {
+        if lit, let time {
+            chest.colorEffect(ShaderLibrary.chestSurface(
+                .float(time),
+                .float(size),
+                .float(style.glintPeriod),
+                .float(style.glint),
+                .color(style.glintTint),
+                .float(style.fire ? 1 : 0),
+                .color(Rarity.diamondLight)
+            ))
+        } else {
+            chest
+        }
+    }
+
+    /// The chest's exact outline in white, with transparent room around it.
     private var silhouette: some View {
         Image(imageName)
             .renderingMode(.template)
             .resizable()
             .scaledToFit()
+            .foregroundStyle(.white)
             .frame(width: size, height: size)
+            .padding(size * pad)
     }
 
-    private var pulse: CGFloat {
-        guard let time, lit, tier >= .epic else { return 1 }
-        return 1 + 0.025 * CGFloat(sin(time * 2 * .pi / 2.2))
-    }
-
-    /// 0…1 breathing value, 0.5 when still.
-    private func breath(_ period: Double) -> Double {
-        guard let time else { return 0.5 }
-        return 0.5 + 0.5 * sin(time * 2 * .pi / period)
-    }
-
-    private var haloOpacity: Double {
-        switch tier {
-        case .common: return 0
-        case .rare: return 0.35 + 0.35 * breath(2.4)
-        case .epic: return 0.5 + 0.35 * breath(2.2)
-        case .legendary:
-            guard let time else { return 0.75 }
-            // Flicker like firelight
-            return min(1, 0.7 + 0.15 * sin(time * 7.3) + 0.1 * sin(time * 13.1 + 1.7))
-        }
-    }
-
-    @ViewBuilder
     private var behind: some View {
         ZStack {
-            if tier >= .rare {
+            if let aura = style.aura {
                 silhouette
-                    .foregroundStyle(tier.glow)
-                    .blur(radius: size * 0.08)
-                    .scaleEffect(1.08)
-                    .opacity(haloOpacity)
+                    .blur(radius: size * 0.11)
+                    .layerEffect(ShaderLibrary.chestAura(
+                        // Still frame: a fixed moment of the wisps
+                        .float(time ?? 1.3),
+                        .float(size),
+                        .float(side),
+                        .color(aura.color),
+                        .float(aura.swirl),
+                        .float(aura.strength)
+                    ), maxSampleOffset: .zero)
             }
-            if tier == .legendary {
-                silhouette
-                    .foregroundStyle(Rarity.flameColor)
-                    .blur(radius: size * 0.16)
-                    .scaleEffect(1.2)
-                    .opacity(haloOpacity * 0.6)
-                if let time {
-                    ChestFlames(time: time, size: size)
-                }
+            if style.fire, let time {
+                let flames = silhouette
+                    .blur(radius: size * 0.03)
+                    .layerEffect(
+                        ShaderLibrary.chestFire(.float(time), .float(size), .float(1)),
+                        maxSampleOffset: CGSize(width: size * 0.2, height: size * 0.4)
+                    )
+                // Bloom: a blurred copy, adding light on dark backgrounds
+                flames
+                    .blur(radius: size * 0.06)
+                    .opacity(isDark ? 0.8 : 0.6)
+                    .blendMode(isDark ? .plusLighter : .normal)
+                flames
             }
         }
+        .frame(width: side, height: side)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-
-    private func front(_ time: Double) -> some View {
-        ZStack {
-            shine(time)
-            if tier >= .epic {
-                ChestSparkles(time: time, size: size, color: tier.glow, count: tier == .legendary ? 7 : 5)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
-    /// A diagonal band of light that sweeps across the chest (only over the chest itself).
-    private func shine(_ time: Double) -> some View {
-        let period = tier.shinePeriod
-        let phase = (time / period).truncatingRemainder(dividingBy: 1)
-        // The sweep takes the first 35 % of the period; the rest is a pause
-        let progress = phase / 0.35
-        let x = (-0.8 + 1.6 * progress) * size
-        return LinearGradient(
-            colors: [.clear, .white.opacity(tier == .common ? 0.55 : 0.7), .clear],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-        .frame(width: size * 0.32, height: size * 1.6)
-        .rotationEffect(.degrees(22))
-        .offset(x: x)
-        .opacity(progress <= 1 ? 1 : 0)
-        .frame(width: size, height: size)
-        .mask { chest }
-        .blendMode(.plusLighter)
     }
 }
 
 // MARK: - Particles
 
-/// Deterministic pseudo-random value in 0..<1 for a seed.
+/// Deterministic pseudo-random value in 0..<1.
 private func fract(_ value: Double) -> Double {
     value - floor(value)
 }
 
-/// Flames rising from the top and sides of the chest: blurred circles cut at an alpha threshold
-/// (metaballs), so neighbouring particles merge into tongues of fire. Two layers: orange outside,
-/// yellow core.
-private struct ChestFlames: View {
-    let time: Double
+/// Twinkling four-point sparkles around the top and sides, and (legendary) embers rising from the
+/// flames. Drawn as soft radial glows, added as light on dark backgrounds.
+private struct ChestParticles: View {
+    let style: ChestStyle
     let size: CGFloat
+    let time: Double
+    let isDark: Bool
 
-    /// The canvas reaches this far beyond the chest frame on every side (fraction of `size`).
     private let pad: CGFloat = 0.35
-
-    private var count: Int { size < 48 ? 14 : 24 }
-    /// Each particle is a vertical ellipse, so the merged shapes read as tongues of fire.
-    private let stretch: CGFloat = 1.4
-
-    var body: some View {
-        Canvas { context, canvasSize in
-            let particles = self.particles()
-            var outer = context
-            outer.addFilter(.alphaThreshold(min: 0.45, color: Rarity.flameColor))
-            outer.addFilter(.blur(radius: size * 0.04))
-            outer.drawLayer { layer in
-                for particle in particles {
-                    layer.fill(flame(at: particle.center, radius: particle.radius), with: .color(.black))
-                }
-            }
-            var inner = context
-            inner.addFilter(.alphaThreshold(min: 0.5, color: Rarity.flameCoreColor))
-            inner.addFilter(.blur(radius: size * 0.028))
-            inner.drawLayer { layer in
-                for particle in particles {
-                    // Smaller and a little lower: the hot core at the base of each tongue
-                    let center = CGPoint(x: particle.center.x, y: particle.center.y + particle.radius * 0.3)
-                    layer.fill(flame(at: center, radius: particle.radius * 0.55), with: .color(.black))
-                }
-            }
-        }
-        .frame(width: size * (1 + pad * 2), height: size * (1 + pad * 2))
-        .opacity(0.95)
-    }
-
-    private func flame(at center: CGPoint, radius: CGFloat) -> Path {
-        let height = radius * stretch
-        return Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - height, width: radius * 2, height: height * 2))
-    }
-
-    private struct Particle {
-        let center: CGPoint
-        let radius: CGFloat
-    }
-
-    private func particles() -> [Particle] {
-        var result: [Particle] = []
-        result.reserveCapacity(count)
-        let origin = size * pad
-        for index in 0..<count {
-            let seed = Double(index)
-            let period = 0.8 + 0.5 * fract(seed * 0.731)
-            let cycleTime = time / period + fract(seed * 0.377)
-            let life = fract(cycleTime)
-            let cycle = floor(cycleTime)
-            // Evenly spread along the top half of the outline (left side → lid → right side),
-            // with a small jitter that changes every time the particle is reborn
-            let jitter = fract(seed * 0.618 + cycle * 0.29) - 0.5
-            let theta = Double.pi * (seed + 0.5 + 0.7 * jitter) / Double(count)
-            let startX = 0.5 + 0.44 * cos(theta)
-            let startY = 0.53 - 0.33 * sin(theta)
-            // Rises and leans outwards a little
-            let rise = (0.13 + 0.1 * fract(seed * 0.913)) * life
-            let lean = 0.05 * life * cos(theta)
-            let wobble = 0.012 * sin(time * 6 + seed * 2.1)
-            let x = startX + lean + wobble
-            let y = startY - rise
-            let radius = size * (0.02 + 0.045 * pow(1 - life, 0.7))
-            result.append(Particle(
-                center: CGPoint(x: origin + CGFloat(x) * size, y: origin + CGFloat(y) * size),
-                radius: radius
-            ))
-        }
-        return result
-    }
-}
-
-/// Four-pointed sparkles that blink on and off around the chest.
-private struct ChestSparkles: View {
-    let time: Double
-    let size: CGFloat
-    let color: Color
-    let count: Int
-
-    private let pad: CGFloat = 0.3
 
     var body: some View {
         Canvas { context, _ in
-            let origin = size * pad
-            for index in 0..<count {
-                let seed = Double(index)
-                let period = 1.4 + 1.1 * fract(seed * 0.531)
-                let cycleTime = time / period + fract(seed * 0.271)
-                let life = fract(cycleTime)
-                let cycle = floor(cycleTime)
-                // A new spot around the outline each time it lights up
-                let angle = 2 * Double.pi * fract(seed * 0.618 + cycle * 0.377)
-                let x = 0.5 + 0.48 * cos(angle)
-                let y = 0.5 + 0.36 * sin(angle)
-                let strength = pow(sin(life * .pi), 2)
-                guard strength > 0.02 else { continue }
-                let radius = size * 0.075 * CGFloat(strength) * (0.7 + 0.3 * CGFloat(fract(seed * 0.83)))
-                let center = CGPoint(x: origin + CGFloat(x) * size, y: origin + CGFloat(y) * size)
-                context.fill(star(at: center, radius: radius * 1.6), with: .color(color.opacity(0.55 * strength)))
-                context.fill(star(at: center, radius: radius), with: .color(.white.opacity(strength)))
+            context.blendMode = isDark ? .plusLighter : .normal
+            context.opacity = isDark ? 1 : 0.6
+            if style.embers > 0 {
+                drawEmbers(in: &context, count: size < 48 ? style.embers / 2 : style.embers)
+            }
+            if style.sparkles > 0 {
+                drawSparkles(in: &context)
             }
         }
-        .frame(width: size * (1 + pad * 2), height: size * (1 + pad * 2))
-        .blendMode(.plusLighter)
     }
 
-    private func star(at center: CGPoint, radius: CGFloat) -> Path {
-        let waist = radius * 0.22
-        var path = Path()
-        path.move(to: CGPoint(x: center.x, y: center.y - radius))
-        path.addLine(to: CGPoint(x: center.x + waist, y: center.y - waist))
-        path.addLine(to: CGPoint(x: center.x + radius, y: center.y))
-        path.addLine(to: CGPoint(x: center.x + waist, y: center.y + waist))
-        path.addLine(to: CGPoint(x: center.x, y: center.y + radius))
-        path.addLine(to: CGPoint(x: center.x - waist, y: center.y + waist))
-        path.addLine(to: CGPoint(x: center.x - radius, y: center.y))
-        path.addLine(to: CGPoint(x: center.x - waist, y: center.y - waist))
-        path.closeSubpath()
-        return path
+    private func point(_ x: Double, _ y: Double) -> CGPoint {
+        CGPoint(x: size * pad + CGFloat(x) * size, y: size * pad + CGFloat(y) * size)
+    }
+
+    /// A soft dot: bright core plus a wide faint halo.
+    private func glow(_ context: inout GraphicsContext, at center: CGPoint, radius: CGFloat, color: Color, intensity: Double) {
+        guard radius > 0.05, intensity > 0.01 else { return }
+        let halo = radius * 3
+        context.fill(
+            Path(ellipseIn: CGRect(x: center.x - halo, y: center.y - halo, width: halo * 2, height: halo * 2)),
+            with: .radialGradient(
+                Gradient(colors: [color.opacity(0.35 * intensity), color.opacity(0)]),
+                center: center, startRadius: 0, endRadius: halo
+            )
+        )
+        context.fill(
+            Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)),
+            with: .radialGradient(
+                Gradient(colors: [color.opacity(min(1, intensity)), color.opacity(0)]),
+                center: center, startRadius: 0, endRadius: radius
+            )
+        )
+    }
+
+    private func drawEmbers(in context: inout GraphicsContext, count: Int) {
+        for index in 0..<count {
+            let seed = Double(index)
+            let period = 1.6 + 1.2 * fract(seed * 0.613)
+            let cycleTime = time / period + fract(seed * 0.419)
+            let life = fract(cycleTime)
+            let cycle = floor(cycleTime)
+            let startX = 0.12 + 0.76 * fract(seed * 0.618 + cycle * 0.31)
+            let startY = 0.24 + 0.16 * abs(startX - 0.5)
+            let x = startX + 0.06 * sin(time * 2.3 + seed * 1.7) * life + 0.03 * sin(time * 5.1 + seed) * life
+            let y = startY - 0.55 * life
+            let flicker = 0.7 + 0.3 * sin(time * 17 + seed * 3)
+            let fade = pow(1 - life, 1.5) * min(1, life / 0.08)
+            // White-blue when born, deeper blue as it cools
+            let color = Color(red: 0.85 - 0.70 * life, green: 0.97 - 0.52 * life, blue: 1)
+            glow(&context, at: point(x, y), radius: size * 0.012 * CGFloat(1.2 - life * 0.5) * 2.2, color: color, intensity: fade * flicker)
+        }
+    }
+
+    private func drawSparkles(in context: inout GraphicsContext) {
+        for index in 0..<style.sparkles {
+            let seed = Double(index)
+            let period = 1.7 + 1.3 * fract(seed * 0.531)
+            let cycleTime = time / period + fract(seed * 0.271)
+            let life = fract(cycleTime)
+            let cycle = floor(cycleTime)
+            // A new spot each time it lights up, around the top and the sides
+            let angle = Double.pi * (0.85 + 1.3 * fract(seed * 0.618 + cycle * 0.377))
+            let distance = 0.30 + 0.16 * fract(seed * 0.77 + cycle * 0.53)
+            let x = 0.5 + distance * 1.25 * cos(angle)
+            let y = 0.5 + distance * 0.95 * sin(angle) - 0.02
+            // Sharp attack, slow decay
+            let attack = min(1, life / 0.12)
+            let decay = 1 - smoothstep(0.12, 1, life)
+            let strength = attack * decay
+            guard strength > 0.02 else { continue }
+            let radius = size * 0.075 * CGFloat(strength)
+            let center = point(x, y)
+            glow(&context, at: center, radius: radius * 0.7, color: style.particleColor, intensity: strength * 0.45)
+            glow(&context, at: center, radius: radius * 0.35, color: .white, intensity: strength)
+            // Cross flare, slowly turning
+            var flare = context
+            flare.translateBy(x: center.x, y: center.y)
+            flare.rotate(by: .radians(life * 0.6))
+            let length = radius * 2.2
+            let thickness = max(0.6, radius * 0.08)
+            for turn in 0..<2 {
+                var arm = flare
+                arm.rotate(by: .degrees(Double(turn) * 90))
+                arm.fill(
+                    Path(roundedRect: CGRect(x: -length, y: -thickness / 2, width: length * 2, height: thickness), cornerRadius: thickness / 2),
+                    with: .linearGradient(
+                        Gradient(stops: [
+                            .init(color: .white.opacity(0), location: 0),
+                            .init(color: .white.opacity(strength * 0.9), location: 0.5),
+                            .init(color: .white.opacity(0), location: 1)
+                        ]),
+                        startPoint: CGPoint(x: -length, y: 0),
+                        endPoint: CGPoint(x: length, y: 0)
+                    )
+                )
+            }
+        }
+    }
+
+    private func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+        let t = min(max((x - edge0) / (edge1 - edge0), 0), 1)
+        return t * t * (3 - 2 * t)
     }
 }
 
 #Preview("Cofres") {
-    VStack(spacing: 40) {
+    VStack(spacing: 48) {
         ForEach([38, 64, 100], id: \.self) { size in
-            HStack(spacing: 28) {
+            HStack(spacing: 32) {
                 ForEach(["common", "rare", "epic", "legendary"], id: \.self) { rarity in
                     ChestView(rarity: rarity, size: CGFloat(size))
                 }
             }
         }
     }
-    .padding(40)
+    .padding(48)
     .background(Color.canvas)
 }

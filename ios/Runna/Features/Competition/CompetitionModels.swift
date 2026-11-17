@@ -36,19 +36,8 @@ enum Rarity {
         return LinearGradient(colors: [base, base], startPoint: .top, endPoint: .bottom)
     }
 
-    /// Vivid light for the chest effects (the label colours above are muted on purpose).
-    static func glowColor(_ rarity: String) -> Color {
-        switch rarity {
-        case "rare": return Color(uiColor: UIColor(rgb: 0x4DA3FF))
-        case "epic": return Color(uiColor: UIColor(rgb: 0xB26BFF))
-        case "legendary": return Color(uiColor: UIColor(rgb: 0xFFC23D))
-        default: return Color(uiColor: UIColor(rgb: 0xFFE7B0))
-        }
-    }
-
-    /// Outer and inner colour of the legendary chest's flames.
-    static let flameColor = Color(uiColor: UIColor(rgb: 0xFF6A00))
-    static let flameCoreColor = Color(uiColor: UIColor(rgb: 0xFFD34D))
+    /// Light of the legendary chest's diamond-blue flames (its glow, and their light on the chest).
+    static let diamondLight = Color(red: 0.35, green: 0.72, blue: 1)
 
     /// Asset catalogue image (chest_common, chest_rare, chest_epic, chest_legendary).
     static func chestImage(_ rarity: String) -> String {
