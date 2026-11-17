@@ -4,7 +4,17 @@ struct RankingsView: View {
     @Environment(SessionStore.self) private var session
     @Environment(AppRouter.self) private var router
 
-    enum Board: Hashable { case global, competition, clubs }
+    enum Board: Hashable, CaseIterable {
+        case global, competition, clubs
+
+        var title: String {
+            switch self {
+            case .global: return "Global"
+            case .competition: return "Competición"
+            case .clubs: return "Clubes"
+            }
+        }
+    }
 
     @State private var board: Board = .global
     @State private var model = RankingsModel.shared
@@ -16,13 +26,7 @@ struct RankingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
-                    Picker("Clasificación", selection: $board) {
-                        Text("Global").tag(Board.global)
-                        Text("Competición").tag(Board.competition)
-                        Text("Clubes").tag(Board.clubs)
-                    }
-                    .pickerStyle(.segmented)
-                    .sensoryFeedback(.selection, trigger: board)
+                    RankingTabs(options: Board.allCases, selection: $board) { $0.title }
                     switch board {
                     case .global: globalBoard
                     case .competition: competitionBoard
@@ -124,23 +128,25 @@ struct RankingsView: View {
 
     private var globalBoard: some View {
         @Bindable var model = model
-        return VStack(spacing: DS.Spacing.m) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(RankingsModel.GlobalScope.allCases) { scope in
-                        ChipToggle(title: scope.title, isOn: model.globalScope == scope) {
-                            model.globalScope = scope
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
+        return VStack(spacing: DS.Spacing.l) {
+            HStack(spacing: DS.Spacing.s) {
+                ScopeMenuButton(
+                    label: "Ámbito",
+                    options: RankingsModel.GlobalScope.allCases,
+                    selection: $model.globalScope,
+                    title: { $0.title },
+                    systemImage: { $0.systemImage }
+                )
+                Spacer(minLength: DS.Spacing.s)
+                CompactSegmented(
+                    label: "Periodo",
+                    options: RankingsModel.Period.allCases,
+                    selection: $model.period,
+                    title: { $0.title }
+                )
             }
-            Picker("Periodo", selection: $model.period) {
-                Text("Desde siempre").tag(RankingsModel.Period.all)
-                Text("Este mes").tag(RankingsModel.Period.month)
-            }
-            .pickerStyle(.segmented)
             globalContent
+                .animation(.snappy, value: model.globalKey)
         }
     }
 
@@ -270,21 +276,25 @@ struct RankingsView: View {
 
     private var clubsBoard: some View {
         @Bindable var model = model
-        return VStack(spacing: DS.Spacing.m) {
-            HStack(spacing: 6) {
-                ForEach(RankingsModel.ClubScope.allCases) { scope in
-                    ChipToggle(title: scope.title, isOn: model.clubScope == scope) {
-                        model.clubScope = scope
-                    }
-                }
-                Spacer(minLength: 0)
+        return VStack(spacing: DS.Spacing.l) {
+            HStack(spacing: DS.Spacing.s) {
+                ScopeMenuButton(
+                    label: "Ámbito",
+                    options: RankingsModel.ClubScope.allCases,
+                    selection: $model.clubScope,
+                    title: { $0.title },
+                    systemImage: { $0.systemImage }
+                )
+                Spacer(minLength: DS.Spacing.s)
+                CompactSegmented(
+                    label: "Orden",
+                    options: RankingsModel.ClubSort.allCases,
+                    selection: $model.clubSort,
+                    title: { $0.title }
+                )
             }
-            Picker("Orden", selection: $model.clubSort) {
-                Text("Liga").tag(RankingsModel.ClubSort.league)
-                Text("Área de sus miembros").tag(RankingsModel.ClubSort.area)
-            }
-            .pickerStyle(.segmented)
             clubsContent
+                .animation(.snappy, value: model.clubKey)
         }
     }
 
@@ -401,6 +411,15 @@ final class RankingsModel {
             case .club: return "Club"
             }
         }
+        var systemImage: String {
+            switch self {
+            case .world: return "globe.europe.africa"
+            case .country: return "flag"
+            case .city: return "building.2"
+            case .friends: return "person.2"
+            case .club: return "shield.lefthalf.filled"
+            }
+        }
     }
 
     enum ClubScope: String, CaseIterable, Identifiable {
@@ -413,10 +432,24 @@ final class RankingsModel {
             case .city: return "Ciudad"
             }
         }
+        var systemImage: String {
+            switch self {
+            case .world: return "globe.europe.africa"
+            case .country: return "flag"
+            case .city: return "building.2"
+            }
+        }
     }
 
-    enum Period: String { case all, month }
-    enum ClubSort: String { case league, area }
+    enum Period: String, CaseIterable {
+        case all, month
+        var title: String { self == .all ? "Total" : "Mes" }
+    }
+
+    enum ClubSort: String, CaseIterable {
+        case league, area
+        var title: String { self == .league ? "Liga" : "Área" }
+    }
     enum Problem { case needsLocation, needsClub }
 
     var globalScope: GlobalScope = .world

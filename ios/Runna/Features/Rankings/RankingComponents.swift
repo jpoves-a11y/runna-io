@@ -523,3 +523,146 @@ struct RankingSkeleton: View {
         .frame(height: 56)
     }
 }
+
+// MARK: - Filters
+
+/// Top-level boards as text tabs: the selected one bold, with a brand underline that slides between them.
+struct RankingTabs<T: Hashable>: View {
+    let options: [T]
+    @Binding var selection: T
+    let title: (T) -> String
+
+    @Namespace private var underline
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.xl) {
+            ForEach(options, id: \.self) { option in
+                tab(option)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, DS.Spacing.xs)
+        .sensoryFeedback(.selection, trigger: selection)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private func tab(_ option: T) -> some View {
+        let selected = option == selection
+        return Button {
+            guard option != selection else { return }
+            withAnimation(.snappy) { selection = option }
+        } label: {
+            Text(title(option))
+                .font(.title3.weight(selected ? .bold : .semibold))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .padding(.bottom, 9)
+                .overlay(alignment: .bottom) {
+                    if selected {
+                        Capsule()
+                            .fill(Color.brand)
+                            .frame(height: 3)
+                            .matchedGeometryEffect(id: "underline", in: underline)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title(option))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// One capsule ("🌍 Mundo ⌄") that opens the native menu of scopes, instead of a row of chips.
+struct ScopeMenuButton<T: Hashable>: View {
+    let label: String
+    let options: [T]
+    @Binding var selection: T
+    let title: (T) -> String
+    let systemImage: (T) -> String
+
+    var body: some View {
+        Menu {
+            Picker(label, selection: $selection) {
+                ForEach(options, id: \.self) { option in
+                    Label(title(option), systemImage: systemImage(option))
+                        .tag(option)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage(selection))
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.brand)
+                Text(title(selection))
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .background(Capsule().fill(Color.surface))
+            .overlay(Capsule().strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+            .contentShape(Capsule())
+        }
+        .menuOrder(.fixed)
+        .sensoryFeedback(.selection, trigger: selection)
+        .accessibilityLabel("\(label): \(title(selection))")
+    }
+}
+
+/// Small 2–3 option switch for secondary filters (period, sort): the selected one is filled.
+struct CompactSegmented<T: Hashable>: View {
+    let label: String
+    let options: [T]
+    @Binding var selection: T
+    let title: (T) -> String
+
+    @Namespace private var thumb
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.self) { option in
+                segment(option)
+            }
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.surface))
+        .overlay(Capsule().strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline))
+        .sensoryFeedback(.selection, trigger: selection)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
+    }
+
+    private func segment(_ option: T) -> some View {
+        let selected = option == selection
+        return Button {
+            guard option != selection else { return }
+            withAnimation(.snappy) { selection = option }
+        } label: {
+            Text(title(option))
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(selected ? Color(uiColor: .systemBackground) : Color.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 26)
+                .background {
+                    if selected {
+                        Capsule()
+                            .fill(Color.primary)
+                            .matchedGeometryEffect(id: "thumb", in: thumb)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title(option))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
