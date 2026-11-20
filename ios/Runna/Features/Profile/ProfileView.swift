@@ -351,6 +351,18 @@ struct ProfileView: View {
         .listRowBackground(Color.surface)
     }
 
+    /// Closes the profile and walks through the app again (this time it can be closed).
+    private func replayTour() {
+        let firstName = session.user?.name.split(separator: " ").first.map(String.init)
+        router.showProfile = false
+        if isSheet { dismiss() }
+        Task {
+            // After the sheet has gone
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            TourController.shared.start(firstName: firstName, replay: true)
+        }
+    }
+
     private func savePrivacyZone(_ enabled: Bool) {
         isSavingPrivacyZone = true
         Task {
@@ -366,6 +378,11 @@ struct ProfileView: View {
 
     private var aboutSection: some View {
         Section {
+            Button {
+                replayTour()
+            } label: {
+                SocialSettingsLabel(title: "Ver tutorial", systemImage: "sparkles")
+            }
             Link(destination: AppConfig.privacyURL) {
                 SocialSettingsLabel(title: "Política de privacidad", systemImage: "lock")
             }

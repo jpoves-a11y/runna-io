@@ -534,6 +534,7 @@ struct MapScreen: View {
         GlassGroup(spacing: DS.Spacing.s) {
             VStack(spacing: DS.Spacing.s) {
                 inventoryButton
+                    .tourAnchor(.powers)
                 layersMenu
                 if abs(heading) > 2 && abs(heading) < 358 {
                     GlassCircleButton(systemImage: "location.north.line", accessibilityLabel: "Orientar al norte", tint: .steal) {
@@ -556,6 +557,7 @@ struct MapScreen: View {
                 }
             }
         }
+        .tourAnchor(.mapControls)
     }
 
     /// Powers, global boosts and cosmetics won in chests, challenges and competitions.
@@ -658,11 +660,13 @@ struct MapScreen: View {
             // First two weeks: welcome missions; later, with no friends nor club, a nudge to find some
             if selectedRunnerId == nil && !tracker.hasRecoverableRun {
                 WelcomeMissionsCard()
+                    .tourAnchor(.missions)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             PrimaryActionButton(title: "Correr", systemImage: "figure.run", pulse: true) {
                 tracker.isPresented = true
             }
+            .tourAnchor(.runButton)
             .accessibilityHint("Abre la pantalla para grabar una carrera")
         }
         .animation(.snappy, value: tracker.hasRecoverableRun)

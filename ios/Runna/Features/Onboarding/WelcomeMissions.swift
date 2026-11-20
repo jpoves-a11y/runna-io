@@ -88,7 +88,10 @@ struct WelcomeMissionsCard: View {
         .sheet(isPresented: $showsInvite) {
             InviteFriendSheet()
         }
-        .alert("¡Primeros pasos completados!", isPresented: $model.rewardJustGranted) {
+        .alert("¡Primeros pasos completados!", isPresented: Binding(
+            get: { model.rewardJustGranted && !TourController.shared.isActive },
+            set: { model.rewardJustGranted = $0 }
+        )) {
             Button("Ver mis poderes") { router.showPowers = true }
             Button("Genial", role: .cancel) {}
         } message: {

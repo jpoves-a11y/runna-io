@@ -8,6 +8,7 @@ struct ActivityView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 ActivitySectionPicker(selection: $router.activitySection)
+                    .tourAnchor(.activityPicker)
                     .padding(.horizontal, DS.Spacing.l)
                     .padding(.top, DS.Spacing.xs)
                     .padding(.bottom, DS.Spacing.m)

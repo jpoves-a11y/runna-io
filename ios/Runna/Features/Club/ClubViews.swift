@@ -41,6 +41,7 @@ struct ClubTabView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: model.isMember ? 250 : 180)
+                    .tourAnchor(.clubPicker)
                 }
             }
         }

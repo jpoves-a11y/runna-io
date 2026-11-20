@@ -58,7 +58,10 @@ struct SplashView: View {
 struct MainTabView: View {
     @Environment(AppRouter.self) private var router
     @Environment(RunTracker.self) private var tracker
+    @Environment(SessionStore.self) private var session
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
+    /// First-login guided tour over the real app (GuidedTour.swift)
+    @State private var tour = TourController.shared
     /// For the unread chat messages on the Club tab
     @State private var clubModel = ClubModel.shared
 
@@ -81,6 +84,14 @@ struct MainTabView: View {
         }
         .tint(Color.brand)
         .modifier(TabBarMinimizeOnScroll())
+        // The guided tour covers everything, tab bar included
+        .overlay {
+            if tour.isActive {
+                GuidedTourOverlay()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: tour.isActive)
         .sheet(isPresented: $router.showProfile) {
             ProfileView(isSheet: true)
         }
@@ -90,21 +101,6 @@ struct MainTabView: View {
             set: { tracker.isPresented = $0 }
         )) {
             RunView()
-        }
-        .fullScreenCover(isPresented: Binding(
-            // Shown once, after the first login on this device (never on top of a run being recorded)
-            get: { !onboardingDone && !tracker.isPresented && !OnboardingView.isDisabledForTests },
-            set: { if !$0 { onboardingDone = true } }
-        )) {
-            OnboardingView {
-                onboardingDone = true
-                Analytics.track("onboarding_done")
-                // Without a club, the Club tab shows the clubs of the user's city (and asks for it first)
-                if !clubModel.isMember {
-                    self.router.clubSection = .club
-                    self.router.selectedTab = .club
-                }
-            }
         }
         .modifier(PendingPhotosModifier())
         // Results of activities imported from a watch, shown on entering the app whatever the tab
@@ -127,6 +123,10 @@ struct MainTabView: View {
         .onAppear {
             openRunIfRequested()
             Analytics.track("app_open")
+            startTourIfNeeded()
+        }
+        .onChange(of: tracker.isPresented) { _, presented in
+            if !presented { startTourIfNeeded() }
         }
         .onReceive(NotificationCenter.default.publisher(for: StartRunRequest.notification)) { _ in
             openRunIfRequested()
@@ -134,6 +134,13 @@ struct MainTabView: View {
         .onChange(of: self.router.selectedTab) { _, tab in
             Analytics.track("tab_view", ["tab": String(describing: tab)])
         }
+    }
+
+    /// Once per device, after the first login: never on top of a run being recorded.
+    private func startTourIfNeeded() {
+        guard !onboardingDone, !TourController.isDisabledForTests, !tracker.isPresented, !tour.isActive else { return }
+        let firstName = session.user?.name.split(separator: " ").first.map(String.init)
+        tour.start(firstName: firstName, replay: false)
     }
 
     private func openRunIfRequested() {

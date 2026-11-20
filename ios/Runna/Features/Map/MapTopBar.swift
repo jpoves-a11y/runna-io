@@ -22,6 +22,7 @@ struct MapTopBar: View {
     var body: some View {
         HStack(spacing: DS.Spacing.m) {
             avatar
+                .tourAnchor(.mapAvatar)
             Button(action: onTapStats) {
                 HStack(spacing: DS.Spacing.s) {
                     value
@@ -31,10 +32,12 @@ struct MapTopBar: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .tourAnchor(.mapStats)
             Rectangle()
                 .fill(Color.primary.opacity(0.12))
                 .frame(width: 1, height: 26)
             modeSwitch
+                .tourAnchor(.mapModeSwitch)
         }
         .padding(.leading, 8)
         .padding(.trailing, 6)

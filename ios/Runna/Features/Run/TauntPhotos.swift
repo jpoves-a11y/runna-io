@@ -154,6 +154,9 @@ struct PendingPhotosModifier: ViewModifier {
             .onChange(of: router.reloadSignal) { _, _ in
                 Task { await refresh() }
             }
+            .onChange(of: TourController.shared.isActive) { _, active in
+                if !active, current == nil { showNext() }
+            }
             .sheet(item: $current, onDismiss: showNext) { photo in
                 EphemeralPhotoView(photo: photo)
             }
@@ -169,6 +172,8 @@ struct PendingPhotosModifier: ViewModifier {
 
     private func showNext() {
         guard !pending.isEmpty else { return }
+        // Not on top of the first-login tour: they show once it's over
+        guard !TourController.shared.isActive else { return }
         current = pending.removeFirst()
     }
 }
