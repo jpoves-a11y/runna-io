@@ -268,6 +268,9 @@ page = await raw('POST', '/admin/login', { form: { secret: 'e2e-cron-secret' } }
 const cookie = (page.headers.get('set-cookie') ?? '').split(';')[0];
 check('admin login sets a secure cookie', page.status === 303 && cookie.startsWith('runna_admin=') && /HttpOnly/.test(page.headers.get('set-cookie')) && /SameSite=Strict/.test(page.headers.get('set-cookie')));
 page = await raw('GET', '/admin', { headers: { Cookie: cookie } });
+const dashboard = await page.text();
+check('dashboard warns about the open report', page.status === 200 && dashboard.includes('Resumen') && dashboard.includes('1 denuncia pendiente'), dashboard.slice(0, 400));
+page = await raw('GET', '/admin/reports', { headers: { Cookie: cookie } });
 const html = await page.text();
 check('panel lists the open report', page.status === 200 && html.includes('Insultos') && html.includes('Pendientes (1)'), html.slice(0, 300));
 check('panel is not cached', page.headers.get('cache-control') === 'no-store');
@@ -300,6 +303,47 @@ if (comment) {
 page = await raw('GET', '/admin/stats', { headers: { Cookie: cookie } });
 const stats = await page.text();
 check('stats page renders', page.status === 200 && stats.includes('Embudo') && stats.includes('rankings'), stats.slice(0, 300));
+
+// Competitions: calendar and a club competition of the current cycle (inserted by hand)
+page = await raw('GET', '/admin/competitions', { headers: { Cookie: cookie } });
+const compsHtml = await page.text();
+check('competitions page shows the calendar', page.status === 200 && compsHtml.includes('Calendario') && compsHtml.includes('Empieza') && (compsHtml.match(/<tr/g) ?? []).length >= 10, compsHtml.slice(0, 400));
+const cycleMatch = compsHtml.match(/Este ciclo \((-?\d+)\)/);
+const cycleNumber = cycleMatch ? Number(cycleMatch[1]) : 0;
+const compId = `comp${stamp}`;
+await db.execute({ sql: "insert into club_competitions (id, cycle_number, club_id, mode, status) values (?, ?, ?, 'ffa', 'active')", args: [compId, cycleNumber, clubId] });
+await db.execute({ sql: 'insert into competition_participants (competition_id, user_id, area, runs, distance) values (?, ?, 250000, 3, 12000)', args: [compId, ana.id] });
+page = await raw('GET', '/admin/competitions', { headers: { Cookie: cookie } });
+const compsHtml2 = await page.text();
+check('current cycle lists the club competition', compsHtml2.includes(`/admin/competitions/${compId}`) && compsHtml2.includes(`Club ${stamp}`), compsHtml2.slice(compsHtml2.indexOf('Este ciclo'), compsHtml2.indexOf('Este ciclo') + 600));
+page = await raw('GET', `/admin/competitions/${compId}`, { headers: { Cookie: cookie } });
+const compDetail = await page.text();
+check('competition detail shows the standings', page.status === 200 && compDetail.includes('Clasificación (1)') && compDetail.includes('ana'), compDetail.slice(0, 400));
+page = await raw('GET', '/admin/competitions/nope', { headers: { Cookie: cookie } });
+check('unknown competition is a 404', page.status === 404);
+
+// Users: search, detail, suspend and reinstate from the profile
+page = await raw('GET', `/admin/users?q=${encodeURIComponent(bea.username)}`, { headers: { Cookie: cookie } });
+const usersHtml = await page.text();
+check('user search finds by username', page.status === 200 && usersHtml.includes(`/admin/users/${bea.id}`), usersHtml.slice(0, 400));
+page = await raw('GET', `/admin/users/${bea.id}`, { headers: { Cookie: cookie } });
+const userHtml = await page.text();
+check('user detail renders', page.status === 200 && userHtml.includes('Últimas carreras') && userHtml.includes('Denuncias recibidas'), userHtml.slice(0, 400));
+page = await raw('POST', '/admin/users/ban', { headers: { Cookie: cookie }, form: { csrf, user: bea.id, reason: 'Pruebas' } });
+check('suspend from the user page', page.status === 303 && (await one('select ban_reason from users where id = ?', [bea.id]))?.ban_reason === 'Pruebas');
+page = await raw('POST', '/admin/users/unban', { headers: { Cookie: cookie }, form: { csrf, user: bea.id, back: 'user' } });
+check('reinstate goes back to the user page', page.status === 303 && page.headers.get('location').startsWith(`/admin/users/${bea.id}`) && !(await one('select banned_at from users where id = ?', [bea.id])).banned_at);
+bea.token = (await call('POST', '/api/auth/login', { body: { username: bea.username, password: 'e2e-password' } })).data.token;
+
+// Runs: a flagged run is approved from the panel
+await db.execute({ sql: "update routes set validation_status = 'flagged', validation_reasons = '[\"gps_jumps\"]' where id = ?", args: [route.id] });
+page = await raw('GET', '/admin/runs', { headers: { Cookie: cookie } });
+const runsHtml = await page.text();
+check('runs page lists the flagged run', page.status === 200 && runsHtml.includes('En revisión (1)') && runsHtml.includes('saltos de GPS'), runsHtml.slice(0, 400));
+page = await raw('POST', '/admin/runs/review', { headers: { Cookie: cookie }, form: { csrf, route: route.id, action: 'approve' } });
+check('approve a flagged run', page.status === 303 && decodeURIComponent(page.headers.get('location')).includes('aprobada') && (await one('select validation_status from routes where id = ?', [route.id])).validation_status === 'accepted', page.headers.get('location'));
+page = await raw('GET', '/admin/runs', { headers: { Cookie: cookie } });
+check('pages without a cookie go to the login', (await raw('GET', '/admin/users')).headers.get('location') === '/admin/login');
 
 // ---------- 7. Account deletion clears the new tables ----------
 res = await call('DELETE', `/api/users/${ana.id}`, { token: ana.token });

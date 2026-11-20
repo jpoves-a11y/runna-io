@@ -14,6 +14,7 @@ import { WorkerStorage } from './storage';
 import { createDb } from './db';
 import { adminPage, escapeHtml } from './pages';
 import { clientIp, lockedForSeconds, recordAttempt, clearAttempts, LIMITS } from './rateLimit';
+import { dashboardBody, competitionsBody, competitionDetailBody, usersBody, userDetailBody, runsBody } from './adminViews';
 
 type AdminContext = Context<AppEnv>;
 
@@ -71,8 +72,21 @@ function noStore(c: AdminContext) {
   c.header('X-Frame-Options', 'DENY');
 }
 
-const NAV = `<nav class="admin-nav"><a href="/admin">Denuncias</a><a href="/admin/stats">Estadísticas</a>
-<form method="post" action="/admin/logout"><button class="link">Salir</button></form></nav>`;
+const NAV_ITEMS: Array<[string, string]> = [
+  ['/admin', 'Resumen'],
+  ['/admin/reports', 'Denuncias'],
+  ['/admin/competitions', 'Competiciones'],
+  ['/admin/users', 'Usuarios'],
+  ['/admin/runs', 'Carreras'],
+  ['/admin/stats', 'Estadísticas'],
+];
+
+/** Top navigation; `active` is the path of the current section. */
+function nav(active: string): string {
+  const links = NAV_ITEMS.map(([href, label]) => `<a href="${href}"${href === active ? ' class="active" aria-current="page"' : ''}>${label}</a>`).join('');
+  return `<nav class="admin-nav">${links}<form method="post" action="/admin/logout"><button class="link">Salir</button></form></nav>`;
+}
+const NAV = nav('/admin/reports');
 
 function loginPage(message = ''): string {
   return adminPage('Panel · Runna.io', `
@@ -360,7 +374,7 @@ async function statsPage(c: AdminContext): Promise<string> {
   const step = (label: string, value: number, total: number, note = '') =>
     `<tr><td>${label}</td><td class="num">${number(value)}</td><td class="num">${percent(value, total)}</td><td class="muted">${note}</td></tr>`;
 
-  return adminPage('Estadísticas · Runna.io', `${NAV}
+  return adminPage('Estadísticas · Runna.io', `${nav('/admin/stats')}
 <h1>Estadísticas</h1>
 <div class="tiles">
 <div class="tile"><span>Usuarios</span><strong>${number(users.total)}</strong><small>+${number(users.d7)} en 7 días · +${number(users.d30)} en 30</small></div>
@@ -429,7 +443,25 @@ export function registerAdminPanel(app: Hono<AppEnv>): void {
     return c.redirect('/admin/login', 303);
   });
 
-  app.get('/admin', async (c) => {
+  /** A panel page: signed in or back to the login; `?ok=` shows a confirmation on top. */
+  const section = (path: string, title: string, render: (storage: WorkerStorage, csrf: string, c: AdminContext) => Promise<string | null>) =>
+    async (c: AdminContext) => {
+      const session = await adminSession(c);
+      if (!session) return c.redirect('/admin/login', 303);
+      const body = await render(await storageOf(c), session.csrf, c);
+      if (body === null) return html(c, adminPage('No encontrado · Runna.io', `${nav(path)}<h1>No encontrado</h1>`), 404);
+      const flash = c.req.query('ok');
+      return html(c, adminPage(`${title} · Runna.io`, `${nav(path)}${flash ? `<p class="flash">${escapeHtml(flash)}</p>` : ''}${body}`));
+    };
+
+  app.get('/admin', section('/admin', 'Resumen', (storage) => dashboardBody(storage)));
+  app.get('/admin/competitions', section('/admin/competitions', 'Competiciones', (storage) => competitionsBody(storage)));
+  app.get('/admin/competitions/:id', section('/admin/competitions', 'Competición', (storage, _csrf, c) => competitionDetailBody(storage, c.req.param('id') ?? '')));
+  app.get('/admin/users', section('/admin/users', 'Usuarios', (storage, _csrf, c) => usersBody(storage, c.req.query('q') ?? '')));
+  app.get('/admin/users/:id', section('/admin/users', 'Usuario', (storage, csrf, c) => userDetailBody(storage, c.req.param('id') ?? '', csrf)));
+  app.get('/admin/runs', section('/admin/runs', 'Carreras', (storage, csrf) => runsBody(storage, csrf)));
+
+  app.get('/admin/reports', async (c) => {
     const session = await adminSession(c);
     if (!session) return c.redirect('/admin/login', 303);
     const flash = c.req.query('ok') ?? null;
@@ -450,7 +482,7 @@ export function registerAdminPanel(app: Hono<AppEnv>): void {
     const [report] = await storage.database.all<{ id: string; target_type: string; target_id: string; reported_user_id: string | null; reason: string }>(
       sql`SELECT id, target_type, target_id, reported_user_id, reason FROM reports WHERE id = ${reportId}`,
     );
-    if (!report) return c.redirect('/admin?ok=' + encodeURIComponent('Esa denuncia ya no existe.'), 303);
+    if (!report) return c.redirect('/admin/reports?ok=' + encodeURIComponent('Esa denuncia ya no existe.'), 303);
     let message = '';
     if (action === 'remove') {
       await removeContent(storage, report.target_type, report.target_id);
@@ -473,14 +505,44 @@ export function registerAdminPanel(app: Hono<AppEnv>): void {
       await resolveReport(storage, report.id, 'open', null);
       message = 'Denuncia reabierta.';
     }
-    return c.redirect('/admin?ok=' + encodeURIComponent(message), 303);
+    return c.redirect('/admin/reports?ok=' + encodeURIComponent(message), 303);
   });
 
   app.post('/admin/users/unban', async (c) => {
     const form = await c.req.parseBody();
     if (!(await checkCsrf(c, form))) return c.redirect('/admin/login', 303);
     const storage = await storageOf(c);
-    await unbanUser(storage, String(form.user ?? ''));
-    return c.redirect('/admin?ok=' + encodeURIComponent('Usuario reactivado.'), 303);
+    const userId = String(form.user ?? '');
+    await unbanUser(storage, userId);
+    const back = form.back === 'user' ? `/admin/users/${encodeURIComponent(userId)}` : '/admin/reports';
+    return c.redirect(`${back}?ok=` + encodeURIComponent('Usuario reactivado.'), 303);
+  });
+
+  app.post('/admin/users/ban', async (c) => {
+    const form = await c.req.parseBody();
+    if (!(await checkCsrf(c, form))) return c.redirect('/admin/login', 303);
+    const storage = await storageOf(c);
+    const userId = String(form.user ?? '');
+    const reason = String(form.reason ?? '').trim() || 'Suspendido desde el panel';
+    await banUser(storage, userId, reason);
+    return c.redirect(`/admin/users/${encodeURIComponent(userId)}?ok=` + encodeURIComponent('Usuario suspendido: sus sesiones se han cerrado.'), 303);
+  });
+
+  // Review of a run the anti-cheat flagged: the same endpoint the API offers (/api/admin/runs/:id/review)
+  app.post('/admin/runs/review', async (c) => {
+    const form = await c.req.parseBody();
+    if (!(await checkCsrf(c, form))) return c.redirect('/admin/login', 303);
+    const secret = adminSecret(c)!;
+    const routeId = String(form.route ?? '');
+    const action = form.action === 'revert' ? 'revert' : 'approve';
+    const response = await app.fetch(new Request(`https://internal/api/admin/runs/${encodeURIComponent(routeId)}/review`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    }), c.env, (() => { try { return c.executionCtx; } catch { return undefined; } })());
+    const message = response.ok
+      ? (action === 'approve' ? 'Carrera aprobada: sigue contando.' : 'La carrera ya no cuenta; su territorio se ha recalculado.')
+      : `No se pudo revisar (${response.status}).`;
+    return c.redirect('/admin/runs?ok=' + encodeURIComponent(message), 303);
   });
 }
