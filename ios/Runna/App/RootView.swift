@@ -98,6 +98,12 @@ struct MainTabView: View {
         )) {
             OnboardingView {
                 onboardingDone = true
+                Analytics.track("onboarding_done")
+                // Without a club, the Club tab shows the clubs of the user's city (and asks for it first)
+                if !clubModel.isMember {
+                    router.clubSection = .club
+                    router.selectedTab = .club
+                }
             }
         }
         .modifier(PendingPhotosModifier())
@@ -117,6 +123,26 @@ struct MainTabView: View {
         .seasonResultsInbox()
         // My club (and its unread chat messages) on launch and whenever something changes
         .task(id: router.reloadSignal) { await clubModel.load() }
+        // "Empezar una carrera" (Siri, Shortcuts, Control Center, runnaio://run/start)
+        .onAppear {
+            openRunIfRequested()
+            Analytics.track("app_open")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: StartRunRequest.notification)) { _ in
+            openRunIfRequested()
+        }
+        .onChange(of: router.selectedTab) { _, tab in
+            Analytics.track("tab_view", ["tab": String(describing: tab)])
+        }
+    }
+
+    private func openRunIfRequested() {
+        guard let source = StartRunRequest.consume() else { return }
+        Analytics.track("start_run_intent", ["source": source])
+        router.showProfile = false
+        guard !tracker.isPresented else { return }
+        tracker.autoStartRequested = true
+        tracker.isPresented = true
     }
 }
 

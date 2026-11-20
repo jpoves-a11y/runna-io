@@ -1,4 +1,5 @@
 import Foundation
+import WidgetKit
 import Observation
 
 /// Login state of the app: the session token (kept in the keychain) and the current user.
@@ -83,6 +84,7 @@ final class SessionStore {
             return
         }
         api.sessionToken = token
+        shareSessionWithWidget(token: token, userId: userId)
         // Cached API responses of another account are never shown
         ResponseCache.shared.setOwner(userId)
         if let data = UserDefaults.standard.data(forKey: cachedUserKey),
@@ -117,6 +119,66 @@ final class SessionStore {
         startSession(user: response, token: token)
     }
 
+    // MARK: - Sign in with Apple
+
+    /// What Apple gave the app, plus the nonce the request was made with.
+    struct AppleCredential {
+        let identityToken: String
+        let authorizationCode: String?
+        let rawNonce: String
+        let fullName: String?
+    }
+
+    enum AppleSignInOutcome {
+        case signedIn
+        /// A new account: the app asks for a username and the age / terms first.
+        case needsProfile(name: String?, suggestedUsername: String?)
+    }
+
+    private struct AppleAuthResponse: Decodable {
+        let user: AppUser?
+        let needsProfile: Bool
+        let name: String?
+        let suggestedUsername: String?
+        let created: Bool
+
+        enum CodingKeys: String, CodingKey { case needsProfile, name, suggestedUsername, created, token }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            needsProfile = c.bool(.needsProfile) ?? false
+            name = c.string(.name)
+            suggestedUsername = c.string(.suggestedUsername)
+            created = c.bool(.created) ?? false
+            user = c.string(.token) == nil ? nil : try? AppUser(from: decoder)
+        }
+    }
+
+    /// Signs in with Apple; with `username` (and the accepted terms) it creates the account.
+    func signInWithApple(_ credential: AppleCredential, username: String? = nil, name: String? = nil, acceptedTerms: Bool = false) async throws -> AppleSignInOutcome {
+        var body: [String: Any] = [
+            "identityToken": credential.identityToken,
+            "nonce": credential.rawNonce,
+            "color": AppConfig.userColors.randomElement() ?? "#377EB8",
+        ]
+        if let code = credential.authorizationCode { body["authorizationCode"] = code }
+        if let fullName = name ?? credential.fullName, !fullName.isEmpty { body["name"] = fullName }
+        if let username {
+            body["username"] = username.trimmingCharacters(in: .whitespaces)
+            body["acceptedTerms"] = acceptedTerms
+        }
+        let response: AppleAuthResponse = try await api.request("POST", "/api/auth/apple", body: body)
+        if response.needsProfile {
+            return .needsProfile(name: response.name ?? credential.fullName, suggestedUsername: response.suggestedUsername)
+        }
+        guard let user = response.user, let token = user.token else {
+            throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inténtalo más tarde.")
+        }
+        Analytics.track(response.created ? "signup_completed" : "login", ["method": "apple"])
+        startSession(user: user, token: token)
+        return .signedIn
+    }
+
     /// Step 1 of sign-up: the server checks that the email and username are free and emails a code.
     /// No account exists until `verifyEmail(code:)`.
     func register(name: String, username: String, email: String, password: String) async throws {
@@ -130,6 +192,7 @@ final class SessionStore {
                 "color": AppConfig.userColors.randomElement() ?? "#377EB8",
             ]
         )
+        Analytics.track("signup_started", ["method": "email"])
         let pending = PendingVerification(
             email: response.email ?? email.trimmingCharacters(in: .whitespaces).lowercased(),
             createdAt: Date()
@@ -150,6 +213,7 @@ final class SessionStore {
         guard let token = response.token else {
             throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inicia sesión con tu email y contraseña.")
         }
+        Analytics.track("signup_completed", ["method": "email"])
         clearPendingVerification()
         startSession(user: response, token: token)
     }
@@ -279,8 +343,10 @@ final class SessionStore {
         KeychainStore.set(token, for: tokenKey)
         KeychainStore.set(user.id, for: userIdKey)
         api.sessionToken = token
+        shareSessionWithWidget(token: token, userId: user.id)
         setUser(user)
         state = .loggedIn
+        Analytics.shared.flush()
         NotificationCenter.default.post(name: RunOwner.didChangeNotification, object: nil)
         Task {
             // Before the onboarding is done, its last page asks for permission in context
@@ -307,9 +373,17 @@ final class SessionStore {
     /// - Parameter clearDeviceData: also deletes the runs waiting to be uploaded and the unfinished run
     ///   (explicit logout or account deletion). When the server rejects the token they are kept: they are tagged
     ///   with their owner, so another account never uploads them, and the same user gets them back after logging in.
+    /// The home-screen widget reads its summary with this session (shared keychain group).
+    private func shareSessionWithWidget(token: String, userId: String) {
+        SharedSession.save(.init(token: token, userId: userId, apiBaseURL: AppConfig.apiBaseURL.absoluteString))
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
     func endSession(clearDeviceData: Bool = false) {
         KeychainStore.delete(tokenKey)
         KeychainStore.delete(userIdKey)
+        SharedSession.clear()
+        WidgetCenter.shared.reloadAllTimelines()
         UserDefaults.standard.removeObject(forKey: cachedUserKey)
         api.sessionToken = nil
         user = nil
@@ -332,6 +406,7 @@ final class SessionStore {
         CompetitionStore.shared.clear()
         SeasonStore.shared.reset()
         ClubModel.shared.reset()
+        WelcomeMissionsModel.shared.reset()
         ActivityMapSnapshots.removeAll()
         RemoteImageCache.shared.removeAll()
         ConquestInbox.shared.reset()

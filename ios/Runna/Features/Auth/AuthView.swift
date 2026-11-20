@@ -141,6 +141,8 @@ private struct LoginForm: View {
             .font(.subheadline.weight(.medium))
             .foregroundStyle(Color.brand)
             .frame(minHeight: 44)
+
+            AppleSignInSection(isRegister: false)
         }
         .errorAlert($errorMessage)
         .sheet(isPresented: $showsPasswordReset) {
@@ -201,6 +203,8 @@ private struct RegisterForm: View {
             }
             .buttonStyle(PrimaryButtonStyle())
             .disabled(isLoading)
+
+            AppleSignInSection(isRegister: true)
         }
         .errorAlert($errorMessage)
     }

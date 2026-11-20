@@ -29,6 +29,8 @@ final class RunTracker {
 
     /// Shows the run screen.
     var isPresented = false
+    /// The run screen was opened by Siri / Control Center: it starts recording by itself.
+    var autoStartRequested = false
 
     private(set) var phase: Phase = .idle
     private(set) var coordinates: [CLLocationCoordinate2D] = []

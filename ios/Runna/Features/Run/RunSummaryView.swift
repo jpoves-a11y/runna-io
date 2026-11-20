@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import StoreKit
+import WidgetKit
 
 /// Shown after finishing a run: upload progress, conquered territory and victims.
 struct RunSummaryView: View {
@@ -9,6 +10,9 @@ struct RunSummaryView: View {
 
     @Environment(SessionStore.self) private var session
     @Environment(\.requestReview) private var requestReview
+    /// After the first run of someone without friends: invite one (once per device)
+    @State private var showsFirstInvite = false
+    private static let firstInviteKey = "firstRunInvite.shown"
     /// The name given on this screen (empty: the default one)
     @State private var routeName = ""
     @State private var errorMessage: String?
@@ -88,6 +92,12 @@ struct RunSummaryView: View {
             .navigationTitle("Resumen")
             .navigationBarTitleDisplayMode(.inline)
             .errorAlert($errorMessage)
+            .sheet(isPresented: $showsFirstInvite, onDismiss: onClose) {
+                InviteFriendSheet(
+                    title: "¡Primera carrera hecha!",
+                    message: "Invita a alguien: cuando acepte, veréis el territorio del otro y podréis robároslo."
+                )
+            }
             .sheet(item: $tauntVictim) { victim in
                 TauntComposerView(victim: victim) {
                     sentVictimIds.insert(victim.userId)
@@ -154,8 +164,15 @@ struct RunSummaryView: View {
 
     /// Closing after a good result is the moment to ask for a rating (ReviewPrompter decides).
     private func close() {
+        WidgetCenter.shared.reloadAllTimelines()
         if case .done(let result) = submission.state {
             Analytics.track("run_uploaded", ["newArea": Int(result?.globalGained ?? 0), "stole": (result?.totalStolen ?? 0) > 0])
+            let hasFriends = (session.user?.friendCount ?? 0) > 0
+            if !hasFriends, result?.isRejected != true, !UserDefaults.standard.bool(forKey: Self.firstInviteKey) {
+                UserDefaults.standard.set(true, forKey: Self.firstInviteKey)
+                showsFirstInvite = true // closes when the sheet does
+                return
+            }
             if ReviewPrompter.shouldAsk(after: result) {
                 Analytics.track("review_prompt_shown")
                 requestReview()

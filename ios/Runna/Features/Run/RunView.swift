@@ -39,6 +39,14 @@ struct RunView: View {
         .onAppear {
             tracker.refreshRecoverableRun()
             tracker.startPreview()
+            // "Empezar una carrera" from Siri / Control Center: start at once when nothing is in the way
+            if tracker.autoStartRequested {
+                tracker.autoStartRequested = false
+                let allowed = tracker.authorizationStatus == .authorizedWhenInUse || tracker.authorizationStatus == .authorizedAlways
+                if tracker.phase == .idle, !tracker.hasRecoverableRun, allowed, canStart {
+                    startRun()
+                }
+            }
         }
         .onDisappear {
             tracker.stopPreview()

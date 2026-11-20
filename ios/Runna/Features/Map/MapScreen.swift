@@ -655,6 +655,11 @@ struct MapScreen: View {
                 uploadedCard
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // First two weeks: welcome missions; later, with no friends nor club, a nudge to find some
+            if selectedRunnerId == nil && !tracker.hasRecoverableRun {
+                WelcomeMissionsCard()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             PrimaryActionButton(title: "Correr", systemImage: "figure.run", pulse: true) {
                 tracker.isPresented = true
             }

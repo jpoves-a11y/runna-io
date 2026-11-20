@@ -45,9 +45,18 @@ final class AppRouter {
     private init() {}
 
     func handle(url: URL) {
+        // Universal links (https://<API host>/invite/…, /club-invite/…, /open?tab=…) open the app
+        // directly when it's installed: the same as the runnaio:// link of each page
+        if url.scheme == "https" || url.scheme == "http" {
+            if let appLink = Self.appLink(forWeb: url) { handle(url: appLink) }
+            return
+        }
         guard url.scheme == AppConfig.urlScheme else { return }
         let parts = url.pathComponents.filter { $0 != "/" }
         switch url.host {
+        case "run":
+            // runnaio://run/start (widgets, shortcuts): opens the run screen and starts recording
+            if parts.first == "start" { StartRunRequest.post(source: "link") }
         case "friends":
             // runnaio://friends/accept/<token>
             if parts.count >= 2, parts[0] == "accept" {
@@ -109,6 +118,29 @@ final class AppRouter {
             reloadSignal += 1
         default:
             break
+        }
+    }
+
+    /// Domains whose links open the app (com.apple.developer.associated-domains in the entitlements).
+    static let universalLinkHosts: Set<String> = [AppConfig.apiBaseURL.host ?? "", "runna-io-api.runna-io-api.workers.dev"]
+
+    /// The runnaio:// link of a web page of the Worker (pages.ts), or nil when it isn't one.
+    static func appLink(forWeb url: URL) -> URL? {
+        guard let host = url.host, universalLinkHosts.contains(host) else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let token = parts.count >= 2 ? parts[1] : ""
+        let tokenIsValid = token.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
+        switch parts.first {
+        case "invite" where tokenIsValid:
+            return URL(string: "\(AppConfig.urlScheme)://friends/accept/\(token)")
+        case "club-invite" where tokenIsValid:
+            return URL(string: "\(AppConfig.urlScheme)://clubs/join/\(token)")
+        case "open":
+            let tab = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "tab" }?.value ?? "map"
+            let allowed = ["map", "rankings", "activity", "club", "friends", "profile"]
+            return URL(string: "\(AppConfig.urlScheme)://tab/\(allowed.contains(tab) ? tab : "map")")
+        default:
+            return nil
         }
     }
 

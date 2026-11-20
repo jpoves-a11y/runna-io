@@ -264,8 +264,13 @@ final class APIClient {
 
     static func errorMessage(from data: Data, status: Int) -> String {
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let message = object["error"] as? String, !message.isEmpty { return message }
-            if let message = object["message"] as? String, !message.isEmpty { return message }
+            let error = object["error"] as? String ?? ""
+            let message = object["message"] as? String ?? ""
+            // {"error": "account_suspended", "message": "Tu cuenta…"}: the code is for the app, the message for people
+            let isCode = !error.isEmpty && error.range(of: "^[a-z0-9_]+$", options: .regularExpression) != nil
+            if isCode, !message.isEmpty { return message }
+            if !error.isEmpty { return error }
+            if !message.isEmpty { return message }
         }
         switch status {
         case 401: return "Tu sesión ha caducado. Vuelve a iniciar sesión."

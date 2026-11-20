@@ -30,6 +30,10 @@ struct RunnaApp: App {
                 .onOpenURL { url in
                     router.handle(url: url)
                 }
+                // Universal links (invites shared as https links) when the scene gets them as an activity
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    if let url = activity.webpageURL { router.handle(url: url) }
+                }
         }
     }
 }
