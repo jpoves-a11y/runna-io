@@ -16,16 +16,23 @@ enum TourAnchor: Hashable {
 }
 
 struct TourStep: Identifiable {
+    enum Placement { case auto, above, below }
+
     let id: String
     let tab: AppRouter.Tab
-    /// nil: a card in the middle, without spotlight (welcome and the end)
+    /// nil: a card in the middle, without spotlight (welcome, competition, the end)
     let anchor: TourAnchor?
+    /// SF Symbol shown in the card
+    let symbol: String
     let title: String
+    /// Markdown: **words** are highlighted in the brand colour
     let text: String
     /// Extra room around the highlighted part
     var padding: CGFloat = 8
     /// Rounded rectangle corner of the spotlight (capsules and circles get a big one)
     var cornerRadius: CGFloat = 16
+    /// Where the card goes relative to the spotlight
+    var placement: Placement = .auto
     /// Left out when its part isn't on screen (e.g. the missions card after the first two weeks)
     var optional = false
 }
@@ -130,54 +137,57 @@ final class TourController {
     }
 
     private static func makeSteps(firstName: String?) -> [TourStep] {
-        let hello = firstName.map { "¡Hola, \($0)!" } ?? "¡Hola!"
+        let welcome = firstName.map { "¡Bienvenido, \($0)!" } ?? "¡Bienvenido!"
         return [
-            TourStep(id: "welcome", tab: .map, anchor: nil,
-                     title: hello,
-                     text: "En Runna.io cada carrera se convierte en territorio en el mapa de tu ciudad. Te enseño lo importante en un minuto."),
-            TourStep(id: "stats", tab: .map, anchor: .mapStats,
+            TourStep(id: "welcome", tab: .map, anchor: nil, symbol: "figure.run",
+                     title: welcome,
+                     text: "¿Listo para conquistar tu ciudad? Te enseño lo más importante en un momento."),
+            TourStep(id: "stats", tab: .map, anchor: .mapStats, symbol: "square.dashed.inset.filled",
                      title: "Tu territorio",
-                     text: "Aquí ves cuánto mapa es tuyo y en qué puesto vas. Cada vez que cierras un recorrido corriendo, el área de dentro pasa a ser tuya.",
+                     text: "Aquí ves cuánto mapa es tuyo y en qué puesto vas. Cada vez que acabes una carrera, el área que encierra tu recorrido pasa a ser **tuya**.",
                      cornerRadius: 29),
-            TourStep(id: "modes", tab: .map, anchor: .mapModeSwitch,
+            TourStep(id: "modes", tab: .map, anchor: .mapModeSwitch, symbol: "map",
                      title: "Dos mapas",
-                     text: "Global es tu mapa para siempre: lo que conquistas ahí nadie te lo quita. Competición es la batalla de tu club cada dos semanas, y ahí sí se roba territorio.",
+                     text: "**Global**: en este mapa vas sumando conquistas sin que nadie te robe.\n\n**Competición**: aquí es donde lucharás tanto contra tu club como contra otros.",
                      padding: 6, cornerRadius: 24),
-            TourStep(id: "controls", tab: .map, anchor: .mapControls,
+            TourStep(id: "controls", tab: .map, anchor: .mapControls, symbol: "slider.horizontal.3",
                      title: "Tus herramientas",
-                     text: "Cambia las capas del mapa, mira tus recorridos o vuelve a centrarte en tu ubicación.",
+                     text: "Cambia las **capas** del mapa, mira tus **recorridos** o vuelve a **centrarte** en tu ubicación.",
                      cornerRadius: 28),
-            TourStep(id: "powers", tab: .map, anchor: .powers,
+            TourStep(id: "powers", tab: .map, anchor: .powers, symbol: "bolt.fill",
                      title: "Poderes",
-                     text: "Los cofres que recoges corriendo te dan poderes: escudos, área doble y alguna sorpresa. Los usas desde aquí.",
+                     text: "Los cofres que recoges corriendo o ganas en competición te dan **poderes**: escudos, área doble y alguna sorpresa. Los usas desde aquí.",
                      cornerRadius: 28),
-            TourStep(id: "missions", tab: .map, anchor: .missions,
+            TourStep(id: "missions", tab: .map, anchor: .missions, symbol: "checklist",
                      title: "Primeros pasos",
-                     text: "Cinco retos para arrancar con buen pie. Complétalos y te regalamos un poder.",
-                     optional: true),
-            TourStep(id: "run", tab: .map, anchor: .runButton,
+                     text: "Cinco retos para arrancar con buen pie. Complétalos y te regalamos un **poder**.",
+                     placement: .above, optional: true),
+            TourStep(id: "run", tab: .map, anchor: .runButton, symbol: "figure.run",
                      title: "A correr",
-                     text: "Toca aquí cuando salgas a correr. Te avisaré por voz de cada kilómetro y de cuándo pisas territorio que puedes robar. También vale decir «Oye Siri, empieza una carrera en Runna.io».",
-                     cornerRadius: 22),
-            TourStep(id: "rankings", tab: .rankings, anchor: .rankingTabs,
+                     text: "Toca aquí cuando salgas a correr. Te avisaré **por voz** de cada kilómetro y de cuándo pisas territorio que puedes robar. También vale decir «Oye Siri, empieza una carrera en Runna.io».",
+                     cornerRadius: 22, placement: .above),
+            TourStep(id: "rankings", tab: .rankings, anchor: .rankingTabs, symbol: "trophy",
                      title: "Ranking",
-                     text: "Compárate con tus amigos, con tu ciudad o con todo el mundo, y mira cómo va tu club.",
+                     text: "Compárate con tus **amigos**, con tu **ciudad** o con **todo el mundo**, y mira cómo va tu club.",
                      cornerRadius: 14),
-            TourStep(id: "activity", tab: .activity, anchor: .activityPicker,
+            TourStep(id: "activity", tab: .activity, anchor: .activityPicker, symbol: "bubble.left.and.bubble.right",
                      title: "Actividad",
-                     text: "Lo que hacen tus amigos: carreras, robos y cofres. Comenta, reacciona y pica a quien te robe. En «Mis carreras» tienes todas las tuyas.",
+                     text: "Lo que hacen tus amigos: carreras, robos y cofres. Comenta, reacciona y pica a quien te robe. En **Mis carreras** puedes ver tus últimas hazañas, ¡y compartirlas!",
                      cornerRadius: 12),
-            TourStep(id: "club", tab: .club, anchor: .clubPicker,
+            TourStep(id: "club", tab: .club, anchor: .clubPicker, symbol: "shield.lefthalf.filled",
                      title: "Tu club",
-                     text: "Únete a un club de tu ciudad, o crea el tuyo, para competir juntos cada dos semanas. Aquí también están su chat y tus amigos.",
+                     text: "Únete a un club de tu ciudad, o crea el tuyo, para competir juntos. Aquí también están su **chat** y tus **amigos**.",
                      cornerRadius: 12),
-            TourStep(id: "profile", tab: .map, anchor: .mapAvatar,
+            TourStep(id: "competition", tab: .club, anchor: nil, symbol: "flag.checkered",
+                     title: "La competición",
+                     text: "Cada **dos semanas** empieza una competición nueva, con un modo de juego distinto cada vez.\n\nEntre una y otra hay un **periodo de gracia** para refrescar y conseguir más cofres."),
+            TourStep(id: "profile", tab: .map, anchor: .mapAvatar, symbol: "person.crop.circle",
                      title: "Tu perfil",
-                     text: "Tu foto, tus relojes, los avisos por voz y la zona privada para que nadie vea dónde vives. Desde aquí puedes repetir este tutorial cuando quieras.",
+                     text: "Desde aquí podrás personalizar tu **perfil** y tus **ajustes**.",
                      padding: 6, cornerRadius: 26),
-            TourStep(id: "done", tab: .map, anchor: nil,
+            TourStep(id: "done", tab: .map, anchor: nil, symbol: "flag.fill",
                      title: "¡Listo para conquistar!",
-                     text: "Activa las notificaciones para saber cuándo te roban territorio o te reta un amigo. Lo demás lo irás descubriendo corriendo."),
+                     text: "Activa las **notificaciones** para saber cuándo te roban territorio o te reta un amigo. Lo demás lo irás descubriendo corriendo."),
         ]
     }
 }
@@ -214,6 +224,8 @@ struct GuidedTourOverlay: View {
     @State private var tour = TourController.shared
     @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
     @State private var isRequesting = false
+    @State private var ringPulse = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { proxy in
@@ -223,29 +235,39 @@ struct GuidedTourOverlay: View {
             ZStack(alignment: .topLeading) {
                 scrim(size: size, hole: hole)
                 if let hole {
-                    RoundedRectangle(cornerRadius: corner(for: hole), style: .continuous)
-                        .stroke(Color.white.opacity(0.9), lineWidth: 2)
-                        .frame(width: hole.width, height: hole.height)
-                        .offset(x: hole.minX, y: hole.minY)
-                        .allowsHitTesting(false)
+                    spotlightRing(hole)
                 }
                 if let step = tour.step {
-                    card(step: step)
-                        .frame(maxWidth: 420)
-                        .padding(.horizontal, DS.Spacing.l)
-                        .frame(width: size.width)
-                        .modifier(CardPlacement(hole: hole, size: size, safeTop: proxy.safeAreaInsets.top, safeBottom: proxy.safeAreaInsets.bottom))
-                        .id(step.id)
-                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                    TourCardSlot(
+                        hole: hole,
+                        placement: step.placement,
+                        size: size,
+                        safeTop: max(proxy.safeAreaInsets.top, 20),
+                        safeBottom: max(proxy.safeAreaInsets.bottom, 20)
+                    ) {
+                        card(step: step)
+                            .frame(maxWidth: 440)
+                            .padding(.horizontal, DS.Spacing.l)
+                    }
+                    .id(step.id)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(y: 10)),
+                        removal: .opacity
+                    ))
                 }
             }
-            .animation(.spring(response: 0.45, dampingFraction: 0.86), value: hole)
-            .animation(.easeInOut(duration: 0.2), value: tour.step?.id)
+            .animation(.spring(response: 0.5, dampingFraction: 0.85), value: hole)
+            .animation(.easeOut(duration: 0.25), value: tour.step?.id)
         }
         .ignoresSafeArea()
         .task { notificationStatus = await PushManager.shared.authorizationStatus() }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) { ringPulse = true }
+        }
         .accessibilityAddTraits(.isModal)
     }
+
+    // MARK: Spotlight
 
     /// The highlighted part (with its padding), in the overlay's coordinates; nil for a centred card.
     private func spotlightRect(origin: CGPoint) -> CGRect? {
@@ -260,7 +282,7 @@ struct GuidedTourOverlay: View {
     /// Dimmed screen with the spotlight cut out. Taps outside the card do nothing (the app is paused).
     private func scrim(size: CGSize, hole: CGRect?) -> some View {
         Rectangle()
-            .fill(Color.black.opacity(0.62))
+            .fill(Color.black.opacity(colorScheme == .dark ? 0.7 : 0.58))
             .mask {
                 Rectangle()
                     .overlay(alignment: .topLeading) {
@@ -278,67 +300,174 @@ struct GuidedTourOverlay: View {
             .onTapGesture {}
     }
 
+    /// A fine ring in the brand colour around the spotlight, with a soft halo that breathes.
+    private func spotlightRing(_ hole: CGRect) -> some View {
+        let shape = RoundedRectangle(cornerRadius: corner(for: hole), style: .continuous)
+        return ZStack {
+            shape
+                .stroke(Color.brand.opacity(ringPulse ? 0.0 : 0.45), lineWidth: 6)
+                .padding(-5)
+            shape
+                .stroke(Color.white.opacity(0.95), lineWidth: 1.5)
+            shape
+                .stroke(Color.brand, lineWidth: 1)
+                .padding(-2)
+        }
+        .frame(width: hole.width, height: hole.height)
+        .offset(x: hole.minX, y: hole.minY)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: Card
+
     private func card(step: TourStep) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.m) {
-            HStack {
-                Text("\(tour.index + 1) de \(tour.steps.count)")
-                    .font(.caption.weight(.semibold).monospacedDigit())
+        let isHero = step.anchor == nil
+        return VStack(alignment: isHero ? .center : .leading, spacing: DS.Spacing.l) {
+            header(step: step, isHero: isHero)
+            VStack(alignment: isHero ? .center : .leading, spacing: DS.Spacing.s) {
+                Text(step.title)
+                    .font(.system(size: isHero ? 28 : 22, weight: .bold))
+                    .tracking(-0.4)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(isHero ? .center : .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(Self.styledText(step.text))
+                    .font(.system(size: 16))
+                    .lineSpacing(3)
                     .foregroundStyle(.secondary)
-                Spacer()
-                if tour.canClose {
-                    Button("Cerrar") { tour.close() }
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+                    .multilineTextAlignment(isHero ? .center : .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(step.title)
-                .font(.title3.weight(.bold))
-                .fixedSize(horizontal: false, vertical: true)
-            Text(step.text)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: isHero ? .center : .leading)
             if step.id == "done" {
                 notificationButton
             }
-            progress
-            HStack(spacing: DS.Spacing.m) {
-                if tour.index > 0 {
-                    Button("Atrás") {
-                        Haptics.tap()
-                        tour.back()
-                    }
-                    .buttonStyle(SecondaryButtonStyle(tint: Color.primary))
-                }
-                Button {
-                    Haptics.tap()
-                    tour.next()
-                } label: {
-                    Text(tour.isLast ? "Empezar" : tour.index == 0 ? "Vamos" : "Siguiente")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PrimaryButtonStyle())
-            }
+            buttons
         }
         .padding(DS.Spacing.xl)
-        .background(Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+        .padding(.top, isHero ? DS.Spacing.s : 0)
+        .background {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color(uiColor: .systemBackground))
+                .shadow(color: Color.black.opacity(0.28), radius: 24, x: 0, y: 12)
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                .stroke(Color.hairline, lineWidth: DS.Stroke.hairline)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.12 : 0), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
     }
 
-    private var progress: some View {
-        HStack(spacing: 5) {
-            ForEach(tour.steps.indices, id: \.self) { i in
-                Capsule()
-                    .fill(i <= tour.index ? Color.brand : Color.secondary.opacity(0.25))
-                    .frame(width: i == tour.index ? 18 : 6, height: 6)
+    /// Icon tile and "PASO 3 DE 13" with a thin progress bar; the welcome and end cards get a big icon.
+    @ViewBuilder
+    private func header(step: TourStep, isHero: Bool) -> some View {
+        if isHero {
+            VStack(spacing: DS.Spacing.l) {
+                HStack {
+                    stepLabel
+                    Spacer()
+                    closeButton
+                }
+                ZStack {
+                    Circle()
+                        .fill(Color.brand.opacity(0.12))
+                        .frame(width: 84, height: 84)
+                    Circle()
+                        .fill(Color.brand)
+                        .frame(width: 60, height: 60)
+                    Image(systemName: step.symbol)
+                        .font(.system(size: 26, weight: .semibold))
+                        .foregroundStyle(Color.onBrand)
+                }
+                .accessibilityHidden(true)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: DS.Spacing.m) {
+                HStack(spacing: DS.Spacing.m) {
+                    Image(systemName: step.symbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.brand)
+                        .frame(width: 40, height: 40)
+                        .background(Color.brand.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .accessibilityHidden(true)
+                    stepLabel
+                    Spacer()
+                    closeButton
+                }
+                progressBar
             }
         }
-        .animation(.snappy, value: tour.index)
+    }
+
+    private var stepLabel: some View {
+        Text("PASO \(tour.index + 1) DE \(tour.steps.count)")
+            .font(.system(size: 11, weight: .semibold))
+            .tracking(1.2)
+            .foregroundStyle(Color.brand)
+    }
+
+    @ViewBuilder
+    private var closeButton: some View {
+        if tour.canClose {
+            Button {
+                tour.close()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
+                    .background(Color.secondary.opacity(0.12), in: Circle())
+            }
+            .accessibilityLabel("Cerrar tutorial")
+        }
+    }
+
+    private var progressBar: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.15))
+                Capsule()
+                    .fill(Color.brand)
+                    .frame(width: max(6, geo.size.width * CGFloat(tour.index + 1) / CGFloat(max(tour.steps.count, 1))))
+            }
+        }
+        .frame(height: 4)
+        .animation(.spring(response: 0.45, dampingFraction: 0.9), value: tour.index)
         .accessibilityHidden(true)
+    }
+
+    private var buttons: some View {
+        HStack(spacing: DS.Spacing.m) {
+            if tour.index > 0 {
+                Button {
+                    Haptics.tap()
+                    tour.back()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 52, height: 52)
+                        .background(Color.secondary.opacity(0.12), in: Circle())
+                }
+                .accessibilityLabel("Atrás")
+            }
+            Button {
+                Haptics.tap()
+                tour.next()
+            } label: {
+                HStack(spacing: 8) {
+                    Text(tour.isLast ? "Empezar a correr" : tour.index == 0 ? "Empezar el recorrido" : "Siguiente")
+                    Image(systemName: tour.isLast ? "figure.run" : "arrow.right")
+                        .font(.system(size: 15, weight: .bold))
+                }
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.onBrand)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(Color.brand, in: Capsule())
+            }
+            .buttonStyle(.pressable)
+        }
     }
 
     @ViewBuilder
@@ -346,7 +475,7 @@ struct GuidedTourOverlay: View {
         switch notificationStatus {
         case .authorized, .provisional, .ephemeral:
             Label("Notificaciones activadas", systemImage: "checkmark.circle.fill")
-                .font(.subheadline.weight(.medium))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.brand)
         case .denied:
             Text("Puedes activarlas cuando quieras en Ajustes.")
@@ -361,63 +490,76 @@ struct GuidedTourOverlay: View {
                     isRequesting = false
                 }
             } label: {
-                if isRequesting {
-                    ProgressView()
-                } else {
-                    Label("Activar notificaciones", systemImage: "bell.badge")
+                HStack(spacing: 8) {
+                    if isRequesting {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "bell.badge.fill")
+                        Text("Activar notificaciones")
+                    }
                 }
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.brand)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(Color.brand.opacity(0.12), in: Capsule())
             }
-            .buttonStyle(SecondaryButtonStyle(tint: Color.brand))
+            .buttonStyle(.pressable)
             .disabled(isRequesting)
         }
     }
-}
 
-/// Puts the card below the spotlight when there's room, above it otherwise, in the middle without one.
-private struct CardPlacement: ViewModifier {
-    let hole: CGRect?
-    let size: CGSize
-    let safeTop: CGFloat
-    let safeBottom: CGFloat
-
-    func body(content: Content) -> some View {
-        GeometryReader { _ in
-            content
-                .fixedSize(horizontal: false, vertical: true)
-                .background(GeometryReader { card in
-                    Color.clear.preference(key: CardHeightKey.self, value: card.size.height)
-                })
-                .modifier(CardOffset(hole: hole, size: size, safeTop: safeTop, safeBottom: safeBottom))
+    /// Markdown body: **words** in the brand colour and semibold, paragraphs kept.
+    static func styledText(_ markdown: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        guard var text = try? AttributedString(markdown: markdown, options: options) else { return AttributedString(markdown) }
+        for run in text.runs where run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
+            text[run.range].foregroundColor = Color.brand
+            text[run.range].font = .system(size: 16, weight: .semibold)
         }
+        return text
     }
 }
 
-private struct CardHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 260
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct CardOffset: ViewModifier {
+/// Puts the card below the spotlight or above it (whichever the step asks, else where there's more
+/// room), or in the middle without one. It aligns the card's edge to the gap, so its height never
+/// has to be known and it can't cover the highlighted part.
+private struct TourCardSlot<Content: View>: View {
     let hole: CGRect?
+    let placement: TourStep.Placement
     let size: CGSize
     let safeTop: CGFloat
     let safeBottom: CGFloat
-    @State private var cardHeight: CGFloat = 260
+    @ViewBuilder let content: Content
 
-    func body(content: Content) -> some View {
-        content
-            .onPreferenceChange(CardHeightKey.self) { cardHeight = $0 }
-            .offset(y: y)
-    }
+    private let gap: CGFloat = 16
 
-    private var y: CGFloat {
-        let gap: CGFloat = 14
-        let top = max(safeTop, 20) + 12
-        let bottom = size.height - max(safeBottom, 20) - 12
-        guard let hole else { return max(top, (size.height - cardHeight) / 2) }
-        if hole.maxY + gap + cardHeight <= bottom { return hole.maxY + gap }
-        if hole.minY - gap - cardHeight >= top { return hole.minY - gap - cardHeight }
-        // Neither fits (a tall part): over the half of the screen away from it
-        return hole.midY > size.height / 2 ? top : bottom - cardHeight
+    var body: some View {
+        let top = safeTop + 8
+        let bottom = size.height - safeBottom - 8
+        if let hole {
+            let spaceBelow = bottom - (hole.maxY + gap)
+            let spaceAbove = (hole.minY - gap) - top
+            let goesAbove: Bool = {
+                switch placement {
+                case .above: return true
+                case .below: return false
+                case .auto: return spaceBelow < 280 && spaceAbove > spaceBelow
+                }
+            }()
+            if goesAbove {
+                // The card's bottom edge sits just above the spotlight
+                content
+                    .frame(width: size.width, height: max(0, hole.minY - gap - top), alignment: .bottom)
+                    .offset(y: top)
+            } else {
+                content
+                    .frame(width: size.width, height: max(0, bottom - hole.maxY - gap), alignment: .top)
+                    .offset(y: hole.maxY + gap)
+            }
+        } else {
+            content
+                .frame(width: size.width, height: size.height)
+        }
     }
 }

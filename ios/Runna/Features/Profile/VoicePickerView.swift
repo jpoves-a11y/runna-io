@@ -96,30 +96,20 @@ struct VoicePickerView: View {
                     }
                 }
             }
-            Text("Cuando vuelvas, la verás aquí para elegirla.")
+            Text("Cuando vuelvas a Runna.io, la verás aquí para elegirla.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Button {
-                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-            } label: {
-                Label("Abrir Ajustes", systemImage: "gear")
-            }
-            .buttonStyle(SecondaryButtonStyle(tint: Color.brand))
-            .padding(.top, 4)
         }
         .padding(.vertical, 4)
     }
 
-    /// The menu was renamed in iOS 26 ("Contenido leído" → "Leer y hablar").
-    static var downloadSteps: [String] {
-        let menu: String
-        if #available(iOS 26.0, *) { menu = "Leer y hablar" } else { menu = "Contenido leído" }
-        return [
-            "Abre Ajustes → Accesibilidad → \(menu) → Voces.",
-            "Entra en Español y elige una voz (por ejemplo, Mónica o Jorge).",
-            "Toca la versión «Mejorada» o «Premium» para descargarla (con wifi).",
-        ]
-    }
+    /// Apple moves and renames these menus between iOS versions, and apps can't open them directly:
+    /// the search field of Ajustes always finds them.
+    static let downloadSteps: [String] = [
+        "Abre la app Ajustes y escribe «Voces» en el buscador de arriba. Entra en el resultado de Contenido leído.",
+        "Elige Español y toca una voz (por ejemplo, Mónica o Jorge).",
+        "Descarga la versión «Mejorada» o «Premium» con el botón de la nube (mejor con wifi).",
+    ]
 
     private func select(_ voice: AVSpeechSynthesisVoice) {
         selectedId = voice.identifier
