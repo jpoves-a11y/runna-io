@@ -31,6 +31,7 @@ import {
 } from './auth';
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
+import { PRIVACY_ZONE_METERS } from './privacyZone';
 import { publicBaseUrl } from './pages';
 import { GameStorage, SEASON_INVENTORY, isBeforeSeason } from './gameStorage';
 import { AWARDS, type AwardId } from '../../shared/game';
@@ -1916,9 +1917,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const storage = new WorkerStorage(db);
       const id = c.req.param('id');
       const body = await c.req.json();
-      const { name, color, avatar } = body;
+      const { name, color, avatar, privacyZone } = body;
       
-      const updateData: Partial<{ name: string; color: string; avatar: string }> = {};
+      const updateData: Partial<{ name: string; color: string; avatar: string; privacyZoneM: number }> = {};
+      if (privacyZone !== undefined) {
+        if (typeof privacyZone !== 'boolean') return c.json({ error: 'privacyZone no válido' }, 400);
+        updateData.privacyZoneM = privacyZone ? PRIVACY_ZONE_METERS : 0;
+      }
       if (name !== undefined) {
         const trimmed = typeof name === 'string' ? name.trim() : '';
         if (!trimmed || trimmed.length > 50) {
@@ -2157,7 +2162,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       });
       const validationPreview = { status: preview.status, reasons: preview.reasons as string[], message: preview.message };
 
-      let route: Route;
+      let route: Route & { privacyCut?: { start: number; end: number } };
       try {
         route = await storage.createRoute(routeData);
       } catch (createError) {
@@ -2172,12 +2177,17 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Before the territory is processed (the queue reads them)
       try {
-        const points: [number, number][] = JSON.parse(routeData.coordinates);
-        const pointTimes = parsePointTimes(rawPointTimes, points.length);
-        if (pointTimes) await storage.saveRoutePointTimes(route.id, pointTimes.map((t) => Math.round(t)));
+        // With the privacy zone on, the stored track lost its ends: times and altitudes are cut alike
+        const fullPoints: [number, number][] = JSON.parse(routeData.coordinates);
+        const cut = route.privacyCut;
+        const points: [number, number][] = cut ? fullPoints.slice(cut.start, cut.end) : fullPoints;
+        const fullTimes = parsePointTimes(rawPointTimes, fullPoints.length);
+        const pointTimes = fullTimes && cut ? fullTimes.slice(cut.start, cut.end) : fullTimes;
+        if (pointTimes && pointTimes.length > 0) await storage.saveRoutePointTimes(route.id, pointTimes.map((t) => Math.round(t)));
         // Activity profile (charts of the activity screen)
         const startMs = Date.parse(routeData.startedAt);
-        const altitudes = Array.isArray(rawAltitudes) && rawAltitudes.length === points.length ? rawAltitudes : null;
+        const fullAltitudes = Array.isArray(rawAltitudes) && rawAltitudes.length === fullPoints.length ? rawAltitudes : null;
+        const altitudes = fullAltitudes && cut ? fullAltitudes.slice(cut.start, cut.end) : fullAltitudes;
         if (pointTimes || altitudes) {
           const profile = buildProfile(points.map(([lat, lng], i) => ({
             lat,
@@ -3019,7 +3029,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (!(await canSeeRunsOf(storage, c.get('authUserId'), userId))) {
         return c.json({ error: 'private_runs', message: 'Sus carreras solo las ven sus amigos y los miembros de su club.' }, 403);
       }
-      const routes = await storage.getRoutesByUserId(userId);
+      const routes = await storage.getRoutesByUserId(userId, c.get('authUserId'));
       return c.json(routes);
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -6949,7 +6959,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // GET /api/territories/fortifications — Get all fortification records (for map overlay)
-  app.get('/api/territories/fortifications', async (c) => {
+  app.get('/api/territories/fortifications', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);
@@ -6983,7 +6993,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   // GET /api/competition/participants — All users in the system (for nickname target selector etc.)
-  app.get('/api/competition/participants', async (c) => {
+  app.get('/api/competition/participants', requireAuth, async (c) => {
     try {
       const db = getDb(c.env);
       const storage = new WorkerStorage(db);

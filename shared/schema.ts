@@ -29,6 +29,17 @@ export const users = sqliteTable("users", {
   verificationCode: text("verification_code"), // 6-digit code
   verificationCodeExpiresAt: text("verification_code_expires_at"), // ISO timestamp
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // Privacy zone: metres hidden at the start and end of each new run (0 = off). The hidden ends
+  // don't count as territory and only the runner sees them (route_private_ends)
+  privacyZoneM: integer("privacy_zone_m").notNull().default(0),
+  // Sign in with Apple: the Apple user id ("sub") and the refresh token used to revoke on deletion
+  appleSub: text("apple_sub"),
+  appleRefreshToken: text("apple_refresh_token"),
+  // Moderation (admin panel): a suspended user can't sign in and their sessions are revoked
+  bannedAt: text("banned_at"),
+  banReason: text("ban_reason"),
+  // When the welcome missions' gift was given (once)
+  welcomeRewardAt: text("welcome_reward_at"),
 });
 
 export const routes = sqliteTable("routes", {
@@ -301,7 +312,33 @@ export const reports = sqliteTable("reports", {
   reportedUserId: text("reported_user_id"),
   reason: text("reason").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // Admin panel: open | resolved | dismissed, and what was done (content_removed, user_banned)
+  status: text("status").notNull().default('open'),
+  resolvedAt: text("resolved_at"),
+  action: text("action"),
 });
+
+// Start and end of a run hidden by the runner's privacy zone (only the runner sees them)
+export const routePrivateEnds = sqliteTable("route_private_ends", {
+  routeId: text("route_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  head: text("head").notNull(), // JSON Array<[lat, lng]> cut from the start
+  tail: text("tail").notNull(), // JSON Array<[lat, lng]> cut from the end
+});
+
+// Product analytics from the app (admin panel /admin/stats); purged after 180 days
+export const appEvents = sqliteTable("app_events", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id"),
+  installId: text("install_id"),
+  name: text("name").notNull(),
+  props: text("props"), // JSON object
+  appVersion: text("app_version"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  nameCreatedIdx: index("idx_app_events_name_created").on(table.name, table.createdAt),
+  userIdx: index("idx_app_events_user").on(table.userId),
+}));
 
 // Blocked users: content between blocker and blocked is hidden both ways
 export const userBlocks = sqliteTable("user_blocks", {

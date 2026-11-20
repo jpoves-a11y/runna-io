@@ -1,4 +1,5 @@
 import * as turf from '@turf/turf';
+import { privacyCut, isNoCut, joinPrivateEnds, type PrivacyCut, type LatLng } from './privacyZone';
 import { isRunningActivityType, NOT_RUNNING_SKIP_REASON } from './sports';
 import {
   users,
@@ -230,11 +231,13 @@ export class WorkerStorage {
     await this.db.run(sql`DELETE FROM active_runs WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM activity_ready_notifications WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM route_private_ends WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(reports).where(or(eq(reports.reporterId, userId), eq(reports.reportedUserId, userId)));
     await this.db.delete(userBlocks).where(or(eq(userBlocks.blockerId, userId), eq(userBlocks.blockedId, userId)));
     await this.db.delete(feedComments).where(eq(feedComments.userId, userId));
     await this.db.delete(feedEvents).where(eq(feedEvents.userId, userId));
+    await this.db.run(sql`DELETE FROM app_events WHERE user_id = ${userId}`);
     await this.db.delete(ephemeralPhotos).where(eq(ephemeralPhotos.senderId, userId));
     await this.db.delete(inactivityReminders).where(eq(inactivityReminders.userId, userId));
     await this.db.delete(territoryLossNotifications).where(eq(territoryLossNotifications.userId, userId));
@@ -382,6 +385,41 @@ export class WorkerStorage {
       started_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`);
+    // Launch features (migrations/0017_launch_features.sql): privacy zone, Sign in with Apple,
+    // moderation and product analytics
+    for (const column of [
+      sql`ALTER TABLE users ADD COLUMN privacy_zone_m INTEGER NOT NULL DEFAULT 0`,
+      sql`ALTER TABLE users ADD COLUMN apple_sub TEXT`,
+      sql`ALTER TABLE users ADD COLUMN apple_refresh_token TEXT`,
+      sql`ALTER TABLE users ADD COLUMN banned_at TEXT`,
+      sql`ALTER TABLE users ADD COLUMN ban_reason TEXT`,
+      sql`ALTER TABLE users ADD COLUMN welcome_reward_at TEXT`,
+      sql`ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'open'`,
+      sql`ALTER TABLE reports ADD COLUMN resolved_at TEXT`,
+      sql`ALTER TABLE reports ADD COLUMN action TEXT`,
+    ]) {
+      try { await this.db.run(column); } catch (_) { /* column already exists */ }
+    }
+    await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub ON users(apple_sub)`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_private_ends (
+      route_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      head TEXT NOT NULL,
+      tail TEXT NOT NULL
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_route_private_ends_user ON route_private_ends(user_id)`);
+    await this.db.run(sql`CREATE TABLE IF NOT EXISTS app_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT,
+      install_id TEXT,
+      name TEXT NOT NULL,
+      props TEXT,
+      app_version TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_app_events_name_created ON app_events(name, created_at)`);
+    await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_app_events_user ON app_events(user_id)`);
     // Runs whose "X ha salido a correr" push went out (once per run, however often it's processed)
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS friend_activity_notified (
       route_id TEXT PRIMARY KEY REFERENCES routes(id) ON DELETE CASCADE,
@@ -720,7 +758,7 @@ export class WorkerStorage {
     return Number(count || 0) + 1;
   }
 
-  async updateUser(userId: string, data: Partial<Pick<User, 'name' | 'color' | 'avatar'>>): Promise<User> {
+  async updateUser(userId: string, data: Partial<Pick<User, 'name' | 'color' | 'avatar' | 'privacyZoneM'>>): Promise<User> {
     const [updatedUser] = await this.db
       .update(users)
       .set(data)
@@ -736,20 +774,91 @@ export class WorkerStorage {
       .where(eq(users.id, userId));
   }
 
-  async createRoute(insertRoute: InsertRoute): Promise<Route> {
+  /**
+   * Stores a run. With the runner's privacy zone on, its first and last metres are cut here, before
+   * anything is computed from it (every source of runs goes through this method); the cut ends go to
+   * route_private_ends and `privacyCut` says which points were kept, so callers can cut the arrays
+   * aligned with the points (times, altitudes) the same way.
+   */
+  async createRoute(insertRoute: InsertRoute): Promise<Route & { privacyCut?: PrivacyCut; originalPointCount?: number }> {
     // Safely stringify coordinates — avoid double-encoding if already a string
-    const coordsValue = typeof insertRoute.coordinates === 'string'
+    let coordsValue = typeof insertRoute.coordinates === 'string'
       ? insertRoute.coordinates
       : JSON.stringify(insertRoute.coordinates);
+    let trackMeta = insertRoute.trackMeta;
+    let privateEnds: { head: LatLng[]; tail: LatLng[] } | null = null;
+    let cut: PrivacyCut | undefined;
+    let originalPointCount: number | undefined;
+    const zone = await this.getPrivacyZoneMeters(insertRoute.userId);
+    if (zone > 0) {
+      let points: unknown;
+      try { points = JSON.parse(coordsValue); } catch { points = null; }
+      if (Array.isArray(points) && points.length > 0 && points.every((p) => Array.isArray(p) && p.length >= 2)) {
+        const track = points as LatLng[];
+        const planned = privacyCut(track, zone);
+        if (!isNoCut(planned, track.length)) {
+          cut = planned;
+          originalPointCount = track.length;
+          privateEnds = { head: track.slice(0, planned.start), tail: track.slice(Math.max(planned.start, planned.end)) };
+          if (planned.start >= planned.end) privateEnds = { head: track, tail: [] };
+          coordsValue = JSON.stringify(track.slice(planned.start, planned.end));
+          // Per-point times of the anti-cheat stay aligned with the kept points
+          if (trackMeta) {
+            try {
+              const meta = JSON.parse(trackMeta);
+              if (meta && Array.isArray(meta.t)) {
+                if (meta.t.length === track.length) meta.t = meta.t.slice(planned.start, planned.end);
+                else delete meta.t;
+                trackMeta = JSON.stringify(meta);
+              }
+            } catch (_) { /* unreadable meta: stored as is */ }
+          }
+        }
+      }
+    }
     const routeValues = {
       ...insertRoute,
       coordinates: coordsValue,
+      trackMeta,
     };
     const [route] = await this.db
       .insert(routes)
       .values(routeValues)
       .returning();
+    if (privateEnds) {
+      await this.db.run(sql`INSERT OR REPLACE INTO route_private_ends (route_id, user_id, head, tail)
+        VALUES (${route.id}, ${route.userId}, ${JSON.stringify(privateEnds.head)}, ${JSON.stringify(privateEnds.tail)})`);
+      return { ...route, privacyCut: cut, originalPointCount };
+    }
     return route;
+  }
+
+  /** Metres hidden at each end of the user's new runs (0 = privacy zone off). */
+  async getPrivacyZoneMeters(userId: string): Promise<number> {
+    try {
+      const [row] = await this.db.select({ zone: users.privacyZoneM }).from(users).where(eq(users.id, userId)).limit(1);
+      return Number(row?.zone ?? 0) || 0;
+    } catch (_) {
+      return 0; // column not there yet: off
+    }
+  }
+
+  async setPrivacyZoneMeters(userId: string, meters: number): Promise<void> {
+    await this.db.update(users).set({ privacyZoneM: meters }).where(eq(users.id, userId));
+  }
+
+  /** Hidden start and end of the runner's runs, by route id (only for the runner themselves). */
+  async getPrivateEndsByUser(userId: string): Promise<Map<string, { head: LatLng[]; tail: LatLng[] }>> {
+    const result = new Map<string, { head: LatLng[]; tail: LatLng[] }>();
+    try {
+      const rows = await this.db.all<{ route_id: string; head: string; tail: string }>(
+        sql`SELECT route_id, head, tail FROM route_private_ends WHERE user_id = ${userId}`
+      );
+      for (const row of rows) {
+        try { result.set(row.route_id, { head: JSON.parse(row.head), tail: JSON.parse(row.tail) }); } catch (_) { /* skip */ }
+      }
+    } catch (_) { /* table not there yet */ }
+    return result;
   }
 
   // Get all routes from all users, sorted oldest first (for chronological reprocessing)
@@ -843,6 +952,7 @@ export class WorkerStorage {
   async deleteRanTogetherDataForRoute(routeId: string): Promise<void> {
     await this.ensureSchemaUpgrades();
     await this.db.run(sql`DELETE FROM route_streams WHERE route_id = ${routeId}`);
+    await this.db.run(sql`DELETE FROM route_private_ends WHERE route_id = ${routeId}`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id = ${routeId}`);
   }
 
@@ -1120,12 +1230,14 @@ export class WorkerStorage {
       .where(sql`${routes.userId} IN (${sql.raw(placeholders)}) AND ${routes.startedAt} >= ${minTime} AND ${routes.startedAt} <= ${maxTime}`);
   }
 
-  async getRoutesByUserId(userId: string): Promise<RouteWithTerritory[]> {
+  /** `viewerId` = who asks: the runner gets the ends hidden by their privacy zone back. */
+  async getRoutesByUserId(userId: string, viewerId?: string): Promise<RouteWithTerritory[]> {
     const userRoutes = await this.db
       .select()
       .from(routes)
       .where(eq(routes.userId, userId))
       .orderBy(desc(routes.completedAt));
+    const privateEnds = viewerId === userId ? await this.getPrivateEndsByUser(userId) : new Map<string, { head: LatLng[]; tail: LatLng[] }>();
 
     // Territories and ran-together names of every route in a few batched queries (was 1 + N per route)
     const territoryByRoute = new Map<string, Territory>();
@@ -1204,11 +1316,16 @@ export class WorkerStorage {
           }
         }
 
+        // The runner sees their whole run, including the ends their privacy zone hides from others
+        const ends = privateEnds.get(route.id);
+        if (ends) parsedCoordinates = joinPrivateEnds(parsedCoordinates, ends.head, ends.tail);
+
         // trackMeta (per-point timestamps) is only for the anti-cheat: not sent to clients
         const { trackMeta: _trackMeta, ...publicRoute } = route as typeof route & { trackMeta?: string | null };
         return {
           ...publicRoute,
           coordinates: parsedCoordinates,
+          privacyHidden: ends ? { head: ends.head.length, tail: ends.tail.length } : undefined,
           territory: territory || undefined,
           ranTogetherWithUsers,
           validationReasons: parseReasons(route.validationReasons),
@@ -2262,6 +2379,7 @@ export class WorkerStorage {
   async deleteAllRoutesByUserId(userId: string): Promise<void> {
     await this.ensureSchemaUpgrades();
     await this.db.run(sql`DELETE FROM route_streams WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
+    await this.db.run(sql`DELETE FROM route_private_ends WHERE user_id = ${userId}`);
     await this.db.run(sql`DELETE FROM friend_activity_notified WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.run(sql`DELETE FROM pending_steal_notifications WHERE route_id IN (SELECT id FROM routes WHERE user_id = ${userId})`);
     await this.db.delete(routes).where(eq(routes.userId, userId));
