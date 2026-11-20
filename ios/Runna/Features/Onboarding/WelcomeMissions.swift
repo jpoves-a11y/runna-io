@@ -102,7 +102,7 @@ struct WelcomeMissionsCard: View {
                 withAnimation(.snappy) { model.isCollapsed.toggle() }
             } label: {
                 HStack(spacing: DS.Spacing.s) {
-                    ProgressRing(progress: Double(response.completed) / Double(max(response.total, 1)))
+                    MissionsProgressRing(progress: Double(response.completed) / Double(max(response.total, 1)))
                         .frame(width: 22, height: 22)
                     VStack(alignment: .leading, spacing: 0) {
                         Text("Primeros pasos · \(response.completed)/\(response.total)")
@@ -216,7 +216,7 @@ struct WelcomeMissionsCard: View {
     }
 }
 
-private struct ProgressRing: View {
+private struct MissionsProgressRing: View {
     let progress: Double
 
     var body: some View {

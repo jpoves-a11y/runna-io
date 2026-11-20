@@ -104,7 +104,7 @@ final class RunTracker {
     @ObservationIgnored private var ownerObserver: NSObjectProtocol?
     /// Lock screen / Dynamic Island tracker of the run.
     private let liveActivity = RunLiveActivity()
-    @ObservationIgnored private let voice = VoiceCoach()
+    private let voice = VoiceCoach()
     @ObservationIgnored private var cues = RunCueState()
 
     private let manager = CLLocationManager()

@@ -101,8 +101,8 @@ struct MainTabView: View {
                 Analytics.track("onboarding_done")
                 // Without a club, the Club tab shows the clubs of the user's city (and asks for it first)
                 if !clubModel.isMember {
-                    router.clubSection = .club
-                    router.selectedTab = .club
+                    self.router.clubSection = .club
+                    self.router.selectedTab = .club
                 }
             }
         }
@@ -131,7 +131,7 @@ struct MainTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: StartRunRequest.notification)) { _ in
             openRunIfRequested()
         }
-        .onChange(of: router.selectedTab) { _, tab in
+        .onChange(of: self.router.selectedTab) { _, tab in
             Analytics.track("tab_view", ["tab": String(describing: tab)])
         }
     }
