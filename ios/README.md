@@ -4,7 +4,14 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 
 ## Qué incluye
 
-- **Cuenta**: inicio de sesión, "He olvidado mi contraseña" (código por email), registro con código por email (la cuenta se crea al confirmar el email) (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez.
+- **Cuenta**: inicio de sesión, **Iniciar sesión con Apple** (una cuenta nueva elige usuario y acepta las condiciones), "He olvidado mi contraseña" (código por email), registro con código por email (la cuenta se crea al confirmar el email) (edad mínima 14 años), cerrar sesión y borrar cuenta (Apple exige poder borrarla desde la app). Presentación inicial de cinco pantallas la primera vez; al terminarla, sin club, se abre la pestaña Club con los clubs de tu ciudad.
+- **Primeros pasos**: durante las dos primeras semanas, una tarjeta en el mapa con cinco misiones (correr, conquistar, un amigo, un club, conectar el reloj) y un poder de regalo al completarlas. Después, sin amigos ni club, una tarjeta invita a buscarlos. Tras la primera carrera, sin amigos, se propone enviar una invitación.
+- **Avisos por voz** durante la carrera (activados por defecto; Perfil → Durante la carrera): cada kilómetro con tiempo y ritmo, al entrar en territorio que puedes robar, cofres a 500 m y dentro de su radio, pausa y final. Usan la voz en español del iPhone, bajan la música y funcionan con la pantalla bloqueada. Un botón de altavoz los silencia en la carrera actual.
+- **Zona privada** (Perfil → Privacidad): oculta los primeros y últimos 200 m de las carreras nuevas a los demás y no cuentan como territorio.
+- **Widget** de pantalla de inicio y de pantalla bloqueada: tu área, tu puesto en tu ciudad, el último robo y la competición.
+- **Empezar a correr con Siri** ("Empieza una carrera en Runna.io"), Atajos, el botón de Acción o el control "Correr" del Centro de control (iOS 18).
+- **Enlaces universales**: los enlaces de invitación (`https://…/invite/…`, `/club-invite/…`) abren la app directamente si está instalada.
+- **Valoración**: después de un buen resultado (y no más de una vez por versión ni cada 120 días) se pide valorar la app.
 - **Mapa** con un interruptor arriba:
   - **Global**: tu mapa del mundo, que nadie te puede quitar. Puedes superponer, a título informativo, el de tus amigos o tu club.
   - **Competición**: el mapa de la competición de tu club, con tus fortificaciones y los cofres de los días de descanso.
@@ -61,7 +68,8 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 
 Una sola vez:
 
-1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit** y **Push Notifications**.
+1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit**, **Push Notifications**, **Sign in with Apple**, **Associated Domains** y **WeatherKit**. Si el identificador ya existe, ábrelo y marca las que falten (las tres últimas son nuevas) y guarda.
+   - Para que el servidor pueda desvincular la app del Apple ID al borrar una cuenta: developer.apple.com → Keys → **+** → marca **Sign in with Apple** (configúrala con el App ID `com.jpoves.runnaio`), descarga el `.p8` y guárdalo en el Worker con `npx wrangler secret put APPLE_SIGNIN_KEY_ID -c wrangler.worker.toml` y `APPLE_SIGNIN_PRIVATE_KEY` (el contenido completo del `.p8`).
    - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
 2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Runna" ya existe).
 3. App Store Connect → Usuarios y acceso → Integraciones → **App Store Connect API** → nueva clave con rol **Admin**. Descarga el `.p8` (solo se puede una vez) y apunta **Key ID** e **Issuer ID**.
@@ -133,7 +141,10 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 
 - **Ubicación en segundo plano**: solo se usa mientras grabas una carrera que has empezado tú. Si lo preguntan, explícalo en las notas de la revisión.
 - **HealthKit**: solo lectura de entrenamientos de carrera y sus rutas, para crear territorio.
-- **Borrar cuenta**: Perfil → Borrar cuenta.
+- **Borrar cuenta**: Perfil → Borrar cuenta (si entró con Apple, el servidor revoca el token de Apple).
+- **Iniciar sesión con Apple** (guideline 4.8): la app la ofrece junto al email.
+- **Audio en segundo plano** (`UIBackgroundModes` → `audio`): solo para los avisos por voz durante una carrera que el usuario ha empezado. Explícalo en las notas de la revisión.
+- **Privacidad de la app** en App Store Connect: además de lo que ya había, marca **Interacción con el producto** (analítica propia, vinculada al usuario, sin rastreo).
 - **Cuenta de prueba**: crea una cuenta con email ya verificado para el revisor y ponla en App Store Connect → App Review Information.
 - **Nombre**: "Runna" ya existe en la App Store (es otra app de running). Puede que Apple pida un nombre distinto: piensa una alternativa.
 

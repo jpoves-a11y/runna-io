@@ -36,6 +36,9 @@ jobs:
           npm ci --legacy-peer-deps --no-audit --no-fund
           (cd worker && npm ci --no-audit --no-fund)
 
+      - name: Unit tests
+        run: npm test
+
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -46,3 +49,4 @@ jobs:
           sleep 5
           curl -sf https://runna-io-api.runna-io-api.workers.dev/api/health && echo
           curl -sf -o /dev/null -w "privacy page: %{http_code}\n" https://runna-io-api.runna-io-api.workers.dev/privacy
+          curl -sf -o /dev/null -w "apple-app-site-association: %{http_code}\n" https://runna-io-api.runna-io-api.workers.dev/.well-known/apple-app-site-association

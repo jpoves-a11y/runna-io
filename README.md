@@ -53,6 +53,10 @@ runna-io/
 │       ├── cron.ts         Tareas programadas (se ejecutan dentro del Worker)
 │       ├── pages.ts        Páginas públicas: /privacy, /terms, /support, /invite, /open
 │       ├── garmin.ts       Garmin Connect (OAuth2 PKCE + Activity API push)
+│       ├── appleAuth.ts    Iniciar sesión con Apple
+│       ├── admin.ts        Panel /admin: denuncias, suspensiones y estadísticas
+│       ├── launchRoutes.ts Analítica, resumen del widget y misiones de bienvenida
+│       ├── privacyZone.ts  Zona privada (oculta los 200 m del principio y del final)
 │       ├── auth.ts         Sesiones (Bearer token), admin, OAuth state, tareas
 │       ├── passwords.ts    Hash de contraseñas (PBKDF2)
 │       ├── pushHelper.ts   Notificaciones push APNs (iPhone)
@@ -90,6 +94,14 @@ node scripts/e2e/seed.mjs        # en otra terminal; imprime un token y un userI
 ```
 
 Con `E2E_RUN_CRON=1` (y opcionalmente `E2E_CRON_TIME`), `server.mjs` ejecuta una vez las tareas programadas al arrancar.
+
+Pruebas: `npm test` (unitarias del Worker) y los scripts de `scripts/e2e/`. `launch-features-test.mjs` prueba zona privada, Iniciar sesión con Apple (con claves de prueba), suspensiones, el panel, la analítica, el widget, las misiones y los enlaces universales:
+
+```bash
+rm -f scripts/e2e/.build/launch.db
+DATABASE_URL=file:scripts/e2e/.build/launch.db npx drizzle-kit push --force
+node scripts/e2e/launch-features-test.mjs
+```
 
 Para apuntar la app del simulador a esta API, ver [`ios/README.md`](ios/README.md). El workflow `.github/workflows/ios.yml` hace exactamente esto en un Mac de GitHub Actions y saca capturas de cada pantalla.
 
@@ -160,6 +172,7 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 | `GMAIL_APP_PASSWORD` | Para emails | Contraseña de aplicación de la cuenta de Gmail que envía los emails (`GMAIL_USER` en `[vars]`): códigos de verificación, "He olvidado mi contraseña", avisos y denuncias. Ver [Emails](#emails) |
 | `SENDGRID_API_KEY` / `RESEND_API_KEY` | No | Alternativas a Gmail (`EMAIL_PROVIDER` en `[vars]` elige el proveedor); las dos necesitan un dominio propio verificado |
 | `GARMIN_CLIENT_ID`, `GARMIN_CLIENT_SECRET` | Para Garmin | Consumer key y secret de la app en el portal de Garmin ([ver abajo](#garmin)) |
+| `APPLE_SIGNIN_KEY_ID`, `APPLE_SIGNIN_PRIVATE_KEY` | Para Apple | Clave con **Sign in with Apple** de developer.apple.com → Keys (Key ID y contenido del `.p8`). Sirve para desvincular la app del Apple ID al borrar una cuenta, como exige Apple. Sin ella se puede entrar con Apple, pero no se revoca. El equipo es `APNS_TEAM_ID` |
 | `GARMIN_WEBHOOK_SECRET` | No | Si está, la URL del webhook de Garmin debe llevar `?key=<secreto>` (Garmin no firma sus avisos) |
 | `WORKER_URL` | No | URL pública del Worker para enlaces de invitación y botones de los emails. Por defecto, el origen de la petición |
 | `APP_DOWNLOAD_URL` | No | Enlace de App Store / TestFlight; si está, las páginas `/invite` y `/open` muestran "Descargar la app" |
@@ -263,8 +276,20 @@ node scripts/e2e/garmin-test.mjs
 | `/invite/<token>` | Enlace de invitación de amistad: abre `runnaio://friends/accept/<token>` en la app |
 | `/club-invite/<token>` | Enlace de invitación a un club: abre `runnaio://clubs/join/<token>` en la app |
 | `/open?tab=<map\|rankings\|activity\|club\|friends\|profile>` | Abre la app en una pestaña (lo usan los botones de los emails) |
+| `/.well-known/apple-app-site-association` | Enlaces universales: `/invite/*`, `/club-invite/*` y `/open` abren la app si está instalada (`appIDs` sale de `APNS_TEAM_ID`) |
+| `/admin` | Panel de administración: denuncias y estadísticas ([ver abajo](#panel-de-administración)) |
 
 En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms` y `/support`.
+
+## Panel de administración
+
+`https://runna-io-api.runna-io-api.workers.dev/admin` (código en `worker/src/admin.ts`). Se entra con el secreto de administración (`UPSTASH_CRON_SECRET`); la sesión dura 12 horas.
+
+- **Denuncias**: las pendientes primero, con el contenido denunciado (comentario, publicación, mensaje del club o foto), quién denuncia y cuántas denuncias acumula esa persona. Acciones: **Borrar contenido**, **Borrar y suspender usuario** (cierra sus sesiones y ya no puede entrar: el login responde 403 `account_suspended`), **Descartar** y **Reabrir**. Apple exige revisarlas en 24 horas.
+- **Usuarios suspendidos**, con **Reactivar**.
+- **Estadísticas** (`/admin/stats`): usuarios, altas, activos por día, semana y mes, embudo de los nuevos (se registran → corren la primera semana → amigo o club → vuelven la segunda semana), carreras por origen, pestañas más vistas y eventos de la app.
+
+La analítica es propia: la app envía eventos de uso a `POST /api/events` (tabla `app_events`), que se borran a los 180 días (tarea `events-purge`, 04:15) y al borrar la cuenta.
 
 ## Seguridad de la API
 
@@ -296,7 +321,8 @@ En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms
 - Los endpoints `/api/admin/*` y `/api/tasks/*` exigen el secreto de administración (o la ejecución interna del cron).
 - Denuncias y bloqueos (requisito 1.2 de Apple): los usuarios bloqueados se filtran del feed, comentarios, búsquedas, solicitudes e invitaciones en ambos sentidos. Cada denuncia se guarda y se avisa por email.
 - Los tokens de push que Apple da por muertos (410, `BadDeviceToken`) se borran automáticamente.
-- Borrar la cuenta desde la app elimina todos los datos del usuario.
+- Borrar la cuenta desde la app elimina todos los datos del usuario (y desvincula la app del Apple ID si entró con Apple).
+- Zona privada (Perfil → Privacidad): con ella activada, `storage.createRoute` corta los primeros y últimos 200 m de cada carrera nueva antes de calcular nada, sea cual sea su origen (app, Garmin, Suunto, Polar, Salud, Strava). Los extremos se guardan aparte (`route_private_ends`) y solo los recibe su dueño.
 
 ## Licencia
 
