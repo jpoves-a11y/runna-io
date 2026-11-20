@@ -201,6 +201,18 @@ export class WorkerStorage {
     return user || undefined;
   }
 
+  async getUserByAppleSub(appleSub: string): Promise<User | undefined> {
+    const [user] = await this.db.select().from(users).where(eq(users.appleSub, appleSub));
+    return user || undefined;
+  }
+
+  /** Links an account to an Apple ID; the refresh token (when Apple gave one) revokes it on deletion. */
+  async setAppleIdentity(userId: string, appleSub: string, refreshToken?: string | null): Promise<void> {
+    const data: Partial<Pick<User, 'appleSub' | 'appleRefreshToken'>> = { appleSub };
+    if (refreshToken) data.appleRefreshToken = refreshToken;
+    await this.db.update(users).set(data).where(eq(users.id, userId));
+  }
+
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await this.db
       .insert(users)

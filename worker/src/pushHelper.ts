@@ -356,6 +356,19 @@ async function getApnsJwt(config: ApnsConfig): Promise<string> {
   return token;
 }
 
+/**
+ * An ES256 JWT signed with a .p8 key from developer.apple.com (the same kind of key as APNs). Used
+ * for the Sign in with Apple client secret.
+ */
+export async function signAppleEs256Jwt(privateKeyPem: string, keyId: string, claims: Record<string, unknown>): Promise<string> {
+  const header = { alg: 'ES256', kid: keyId };
+  const encode = (value: unknown) => uint8ArrayToBase64Url(new TextEncoder().encode(JSON.stringify(value)));
+  const unsignedToken = `${encode(header)}.${encode(claims)}`;
+  const key = await importApnsKey(privateKeyPem);
+  const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(unsignedToken));
+  return `${unsignedToken}.${uint8ArrayToBase64Url(derToRaw(new Uint8Array(signature)))}`;
+}
+
 /** True when the Worker has the four APNS_* secrets (without them no iPhone gets notifications). */
 export function isApnsConfigured(): boolean {
   return apnsConfig !== null;

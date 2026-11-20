@@ -32,6 +32,12 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { PRIVACY_ZONE_METERS } from './privacyZone';
+import { verifyAppleIdentityToken, exchangeAppleAuthorizationCode, revokeAppleToken, usernameCandidates, AppleTokenError } from './appleAuth';
+
+/** Shown when a suspended account tries to sign in (admin panel → Suspender usuario). */
+const SUSPENDED_MESSAGE = 'Tu cuenta está suspendida por incumplir las condiciones de uso. Si crees que es un error, escribe a runna.io.service@gmail.com.';
+/** Minimum age (Terms, "Elegibilidad"; same as the app's AppConfig.minimumAge). */
+const MINIMUM_AGE = 14;
 import { publicBaseUrl } from './pages';
 import { GameStorage, SEASON_INVENTORY, isBeforeSeason } from './gameStorage';
 import { AWARDS, type AwardId } from '../../shared/game';
@@ -1453,6 +1459,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ error: "Usuario, email o contraseña incorrectos" }, 401);
       }
       await clearAttempts(storage, accountKey!);
+      if (user.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
 
       if (needsRehash(user.password)) {
         try {
@@ -1466,6 +1473,103 @@ export function registerRoutes(app: Hono<AppEnv>) {
       return c.json({ ...toSelfUser(user), token });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
+    }
+  });
+
+  // Sign in with Apple. Body: identityToken, nonce (the raw nonce whose SHA-256 the app gave Apple),
+  // authorizationCode, and for a new account username, name and acceptedTerms (14+ and the terms).
+  // - Known Apple ID: signs in.
+  // - Email verified by Apple (not a relay address) that belongs to an account: links it and signs in.
+  // - Otherwise, without a username: { needsProfile: true, name, email } so the app asks for one;
+  //   with a username: creates the account (email already verified) and signs in.
+  app.post('/api/auth/apple', async (c) => {
+    try {
+      const storage = new WorkerStorage(getDb(c.env));
+      const body = await c.req.json().catch(() => ({}));
+      const ip = clientIp(c);
+      const ipKey = ip ? `apple:ip:${ip}` : null;
+      if (ipKey) {
+        const wait = await lockedForSeconds(storage, ipKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
+      }
+
+      let identity;
+      try {
+        identity = await verifyAppleIdentityToken(c.env, String(body?.identityToken ?? ''), { rawNonce: typeof body?.nonce === 'string' ? body.nonce : null });
+      } catch (err) {
+        if (ipKey) await recordAttempt(storage, ipKey, LIMITS.loginIp);
+        if (err instanceof AppleTokenError) return c.json({ error: err.message }, 401);
+        throw err;
+      }
+
+      // The refresh token lets account deletion unlink the app from the Apple ID (needs the code, once)
+      const authorizationCode = typeof body?.authorizationCode === 'string' ? body.authorizationCode : '';
+      const refreshTokenFor = async (user: { appleRefreshToken?: string | null }) =>
+        !user.appleRefreshToken && authorizationCode ? await exchangeAppleAuthorizationCode(c.env, authorizationCode).catch(() => null) : null;
+
+      let user = await storage.getUserByAppleSub(identity.sub);
+      if (!user && identity.email && identity.emailVerified && !identity.isPrivateEmail) {
+        const byEmail = await storage.getUserByEmail(identity.email);
+        if (byEmail && !byEmail.appleSub) {
+          await storage.setAppleIdentity(byEmail.id, identity.sub, await refreshTokenFor(byEmail));
+          user = byEmail;
+        }
+      } else if (user) {
+        const refreshToken = await refreshTokenFor(user);
+        if (refreshToken) await storage.setAppleIdentity(user.id, identity.sub, refreshToken);
+      }
+      if (user) {
+        if (user.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
+        const token = await createSession(storage, user.id);
+        return c.json({ ...toSelfUser(user), token });
+      }
+
+      // New account: the app asks for a username and the age / terms first
+      const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 60) : '';
+      const username = typeof body?.username === 'string' ? body.username.trim() : '';
+      if (!username) {
+        let suggestedUsername: string | null = null;
+        for (const candidate of usernameCandidates(name || identity.email?.split('@')[0] || 'runner')) {
+          if (!(await storage.isUsernameTaken(candidate))) { suggestedUsername = candidate; break; }
+        }
+        return c.json({ needsProfile: true, name: name || null, email: identity.isPrivateEmail ? null : identity.email, suggestedUsername });
+      }
+      if (body?.acceptedTerms !== true) return c.json({ error: `Tienes que tener al menos ${MINIMUM_AGE} años y aceptar las condiciones.` }, 400);
+      if (!name) return c.json({ error: 'Escribe tu nombre.' }, 400);
+      if (username.length < 3) return c.json({ error: 'El usuario debe tener al menos 3 caracteres.' }, 400);
+      if (username.length > 30) return c.json({ error: 'El usuario no puede tener más de 30 caracteres.' }, 400);
+      if (/\s/.test(username)) return c.json({ error: 'El usuario no puede contener espacios.' }, 400);
+      if (await storage.isUsernameTaken(username)) return c.json({ error: 'Ese nombre de usuario ya está en uso. Elige otro.' }, 409);
+      // Without an email from Apple (rare), a unique placeholder keeps the NOT NULL UNIQUE column happy
+      const email = identity.email ?? `apple-${identity.sub.replace(/[^a-zA-Z0-9]/g, '').slice(0, 40)}@appleid.invalid`;
+      if (await storage.isEmailTaken(email)) {
+        return c.json({ error: 'Ya hay una cuenta con el email de tu Apple ID. Inicia sesión con tu contraseña.' }, 409);
+      }
+      const color = typeof body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color)
+        ? body.color
+        : USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
+      let created;
+      try {
+        created = await storage.createUser(insertUserSchema.parse({ username, email, name, password: '', color, emailVerified: true }));
+      } catch (err) {
+        console.error('[AUTH] Apple sign-up create failed:', err);
+        return c.json({ error: 'Ese email o nombre de usuario ya está en uso.' }, 409);
+      }
+      await storage.setAppleIdentity(created.id, identity.sub, await refreshTokenFor({}));
+      await storage.createEmailPreferences(created.id);
+      if (identity.email && !identity.email.endsWith('@appleid.invalid')) {
+        try {
+          const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(identity.email, name);
+          try { c.executionCtx.waitUntil(welcome); } catch { /* runs on its own */ }
+        } catch (err) {
+          console.error('[EMAIL] Failed to send welcome email:', err);
+        }
+      }
+      const token = await createSession(storage, created.id);
+      return c.json({ ...toSelfUser({ ...created, appleSub: identity.sub }), token, created: true });
+    } catch (error: any) {
+      console.error('[AUTH] Apple sign-in failed:', error);
+      return c.json({ error: 'No se pudo iniciar sesión con Apple. Inténtalo de nuevo.' }, 500);
     }
   });
 
@@ -1955,6 +2059,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const user = await storage.getUser(id);
       if (!user) {
         return c.json({ error: 'User not found' }, 404);
+      }
+      // Apple requires unlinking the app from the Apple ID when an account made with it is deleted
+      if (user.appleRefreshToken) {
+        try {
+          await revokeAppleToken(c.env, user.appleRefreshToken);
+        } catch (err) {
+          console.error('[APPLE] Could not revoke the token on account deletion:', err);
+        }
       }
       // Garmin requires deleting the user's registration when they delete their account here
       const garminAccount = await storage.getGarminAccountByUserId(id);

@@ -63,6 +63,12 @@ export interface Env {
   APNS_TEAM_ID?: string;
   APNS_PRIVATE_KEY?: string;
   APNS_BUNDLE_ID?: string;
+  // Sign in with Apple (worker/src/appleAuth.ts): a .p8 key with "Sign in with Apple"
+  APPLE_SIGNIN_KEY_ID?: string;
+  APPLE_SIGNIN_PRIVATE_KEY?: string;
+  APPLE_TEAM_ID?: string;
+  APPLE_BUNDLE_ID?: string;
+  APPLE_JWKS_JSON?: string; // tests only (ignored in production)
   // Cloudflare Queue for async territory processing
   TERRITORY_QUEUE: Queue<TerritoryQueueMessage>;
   // Optional: local date (YYYY-MM-DD, a Friday) of the first competition; default in shared/game.ts
