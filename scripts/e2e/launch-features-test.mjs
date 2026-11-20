@@ -345,6 +345,24 @@ check('approve a flagged run', page.status === 303 && decodeURIComponent(page.he
 page = await raw('GET', '/admin/runs', { headers: { Cookie: cookie } });
 check('pages without a cookie go to the login', (await raw('GET', '/admin/users')).headers.get('location') === '/admin/login');
 
+// ---------- 6b. Sign in with Apple server-to-server notifications ----------
+res = await call('POST', '/api/auth/apple', { body: { identityToken: await appleToken({ sub: appleSub, nonce: nonceHash('n6') }), nonce: 'n6' } });
+const carlaToken = res.data.token;
+check('Apple user signs in again after reinstatement', res.status === 200 && carlaToken);
+const notify = async (type, sub = appleSub) => call('POST', '/api/auth/apple/notifications', { body: { payload: await appleToken({ events: JSON.stringify({ type, sub, event_time: Date.now() }) }) } });
+res = await call('POST', '/api/auth/apple/notifications', { body: { payload: 'not-a-jwt' } });
+check('forged notification is refused', res.status === 400);
+res = await notify('email-disabled');
+check('email-disabled is accepted', res.status === 200);
+res = await notify('consent-revoked');
+check('consent-revoked is accepted', res.status === 200);
+res = await call('GET', `/api/users/${carla.id}/stats`, { token: carlaToken });
+check('consent-revoked ends the sessions', res.status === 401, res.status);
+res = await notify('account-delete');
+check('account-delete deletes an Apple-only account', res.status === 200 && !(await one('select id from users where id = ?', [carla.id])));
+res = await notify('account-delete', `002.e2e.${stamp}`);
+check('account-delete only unlinks an account with a password', res.status === 200 && (await one('select apple_sub from users where id = ?', [ana.id]))?.apple_sub === null);
+
 // ---------- 7. Account deletion clears the new tables ----------
 res = await call('DELETE', `/api/users/${ana.id}`, { token: ana.token });
 check('account deleted', res.status === 200, res.data);

@@ -83,16 +83,9 @@ async function appleKeys(env: AppleEnv, refresh = false): Promise<Jwk[]> {
 
 const truthy = (value: unknown) => value === true || value === 'true';
 
-/**
- * Checks an identity token from the app. `rawNonce` is the nonce the app generated; the app sent its
- * SHA-256 (hex) to Apple, which puts it in the token. Throws AppleTokenError when the token is not valid.
- */
-export async function verifyAppleIdentityToken(
-  env: AppleEnv,
-  identityToken: string,
-  options: { rawNonce?: string | null; now?: number } = {},
-): Promise<AppleIdentity> {
-  const parts = typeof identityToken === 'string' ? identityToken.split('.') : [];
+/** Checks the signature (Apple's keys), issuer and audience of a JWT from Apple; returns its claims. */
+async function verifyAppleJwt(env: AppleEnv, token: string): Promise<any> {
+  const parts = typeof token === 'string' ? token.split('.') : [];
   if (parts.length !== 3) throw new AppleTokenError('Token de Apple no válido.');
   let header: any;
   let claims: any;
@@ -122,11 +115,23 @@ export async function verifyAppleIdentityToken(
   );
   if (!valid) throw new AppleTokenError('Token de Apple no válido.');
 
-  const now = Math.floor((options.now ?? Date.now()) / 1000);
-  const audience = appleBundleId(env);
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (claims.iss !== APPLE_ISSUER) throw new AppleTokenError('Token de Apple no válido.');
-  if (!audiences.includes(audience)) throw new AppleTokenError('Token de Apple para otra app.');
+  if (!audiences.includes(appleBundleId(env))) throw new AppleTokenError('Token de Apple para otra app.');
+  return claims;
+}
+
+/**
+ * Checks an identity token from the app. `rawNonce` is the nonce the app generated; the app sent its
+ * SHA-256 (hex) to Apple, which puts it in the token. Throws AppleTokenError when the token is not valid.
+ */
+export async function verifyAppleIdentityToken(
+  env: AppleEnv,
+  identityToken: string,
+  options: { rawNonce?: string | null; now?: number } = {},
+): Promise<AppleIdentity> {
+  const claims = await verifyAppleJwt(env, identityToken);
+  const now = Math.floor((options.now ?? Date.now()) / 1000);
   if (typeof claims.exp !== 'number' || claims.exp < now - 60) throw new AppleTokenError('El inicio de sesión con Apple ha caducado. Inténtalo de nuevo.');
   if (typeof claims.sub !== 'string' || !claims.sub) throw new AppleTokenError('Token de Apple no válido.');
   if (options.rawNonce) {
@@ -139,6 +144,41 @@ export async function verifyAppleIdentityToken(
     email,
     emailVerified: truthy(claims.email_verified),
     isPrivateEmail: truthy(claims.is_private_email) || Boolean(email?.endsWith('@privaterelay.appleid.com')),
+  };
+}
+
+/** One server-to-server notification from Apple (the "events" claim of the payload). */
+export interface AppleServerEvent {
+  type: 'email-disabled' | 'email-enabled' | 'consent-revoked' | 'account-delete' | string;
+  sub: string;
+  email: string | null;
+  eventTime: number | null;
+}
+
+/**
+ * Checks a Sign in with Apple server-to-server notification (body {"payload": "<JWT>"}) and returns its
+ * event. Apple sends one when a user stops using Sign in with Apple with the app, deletes their Apple
+ * Account, or turns their relay email off or on.
+ */
+export async function verifyAppleServerNotification(env: AppleEnv, payload: string, now = Date.now()): Promise<AppleServerEvent> {
+  const claims = await verifyAppleJwt(env, payload);
+  // Notifications older than a week (or from the future) are refused: replays of an old payload
+  if (typeof claims.iat === 'number') {
+    const ageSeconds = Math.floor(now / 1000) - claims.iat;
+    if (ageSeconds > 7 * 24 * 3600 || ageSeconds < -300) throw new AppleTokenError('Notificación de Apple caducada.');
+  }
+  let events: any = claims.events;
+  if (typeof events === 'string') {
+    try { events = JSON.parse(events); } catch { throw new AppleTokenError('Notificación de Apple no válida.'); }
+  }
+  if (!events || typeof events !== 'object' || typeof events.type !== 'string' || typeof events.sub !== 'string' || !events.sub) {
+    throw new AppleTokenError('Notificación de Apple no válida.');
+  }
+  return {
+    type: events.type,
+    sub: events.sub,
+    email: typeof events.email === 'string' ? events.email : null,
+    eventTime: typeof events.event_time === 'number' ? events.event_time : null,
   };
 }
 

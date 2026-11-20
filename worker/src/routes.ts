@@ -32,7 +32,28 @@ import {
 import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { PRIVACY_ZONE_METERS } from './privacyZone';
-import { verifyAppleIdentityToken, exchangeAppleAuthorizationCode, revokeAppleToken, usernameCandidates, AppleTokenError } from './appleAuth';
+import { verifyAppleIdentityToken, verifyAppleServerNotification, exchangeAppleAuthorizationCode, revokeAppleToken, usernameCandidates, AppleTokenError } from './appleAuth';
+
+/**
+ * Deletes an account and everything in it (Perfil → Borrar cuenta, or Apple telling us the Apple
+ * Account was deleted). Apple and Garmin are told first, as they require.
+ */
+async function deleteAccountCompletely(env: Env, storage: WorkerStorage, user: { id: string; appleRefreshToken?: string | null }, options: { revokeApple?: boolean } = {}): Promise<void> {
+  if (options.revokeApple !== false && user.appleRefreshToken) {
+    try {
+      await revokeAppleToken(env, user.appleRefreshToken);
+    } catch (err) {
+      console.error('[APPLE] Could not revoke the token on account deletion:', err);
+    }
+  }
+  const garminAccount = await storage.getGarminAccountByUserId(user.id);
+  if (garminAccount) {
+    const { deleteGarminRegistration } = await import('./garmin');
+    await deleteGarminRegistration(env, storage, garminAccount);
+  }
+  await storage.deleteUser(user.id);
+  forgetUserSessions(user.id);
+}
 
 /** Shown when a suspended account tries to sign in (admin panel → Suspender usuario). */
 const SUSPENDED_MESSAGE = 'Tu cuenta está suspendida por incumplir las condiciones de uso. Si crees que es un error, escribe a runna.io.service@gmail.com.';
@@ -1575,6 +1596,41 @@ export function registerRoutes(app: Hono<AppEnv>) {
     }
   });
 
+  // Sign in with Apple server-to-server notifications (developer.apple.com → Identifiers → the App ID →
+  // Sign in with Apple → Server-to-Server Notification Endpoint). Body: {"payload": "<JWT signed by Apple>"}.
+  // - consent-revoked: the user stopped using Sign in with Apple with Runna.io → their sessions end
+  // - account-delete: the Apple Account was deleted → an Apple-only account is deleted with all its
+  //   data; an account that also has a password is just unlinked from Apple
+  // - email-disabled / email-enabled: relay email turned off / on (nothing to do)
+  app.post('/api/auth/apple/notifications', async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const raw = body?.payload;
+    if (typeof raw !== 'string') return c.json({ error: 'payload' }, 400);
+    let event;
+    try {
+      event = await verifyAppleServerNotification(c.env, raw);
+    } catch (err) {
+      if (err instanceof AppleTokenError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+    const storage = new WorkerStorage(getDb(c.env));
+    const user = await storage.getUserByAppleSub(event.sub);
+    console.log(`[APPLE] Server notification ${event.type} for ${user ? user.id : 'an unknown Apple ID'}`);
+    if (!user) return c.json({ ok: true });
+    if (event.type === 'consent-revoked') {
+      await storage.database.run(sql`UPDATE users SET apple_refresh_token = NULL WHERE id = ${user.id}`);
+      await storage.deleteAuthSessionsByUserId(user.id);
+      forgetUserSessions(user.id);
+    } else if (event.type === 'account-delete') {
+      if (!user.password) {
+        await deleteAccountCompletely(c.env, storage, user, { revokeApple: false });
+      } else {
+        await storage.database.run(sql`UPDATE users SET apple_sub = NULL, apple_refresh_token = NULL WHERE id = ${user.id}`);
+      }
+    }
+    return c.json({ ok: true });
+  });
+
   // "Forgot password", step 1: emails a 6-digit code to the account's address.
   // The answer is the same whether or not the account exists.
   app.post('/api/auth/password-reset/request', async (c) => {
@@ -2063,22 +2119,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (!user) {
         return c.json({ error: 'User not found' }, 404);
       }
-      // Apple requires unlinking the app from the Apple ID when an account made with it is deleted
-      if (user.appleRefreshToken) {
-        try {
-          await revokeAppleToken(c.env, user.appleRefreshToken);
-        } catch (err) {
-          console.error('[APPLE] Could not revoke the token on account deletion:', err);
-        }
-      }
-      // Garmin requires deleting the user's registration when they delete their account here
-      const garminAccount = await storage.getGarminAccountByUserId(id);
-      if (garminAccount) {
-        const { deleteGarminRegistration } = await import('./garmin');
-        await deleteGarminRegistration(c.env, storage, garminAccount);
-      }
-      await storage.deleteUser(id);
-      forgetUserSessions(id);
+      await deleteAccountCompletely(c.env, storage, user);
       return c.json({ success: true });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
