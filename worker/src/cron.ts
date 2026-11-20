@@ -9,7 +9,7 @@
 
 export const CRON_TIME_ZONE = 'Europe/Madrid';
 
-export type CronTask = 'season-tick' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check' | 'steal-notifications';
+export type CronTask = 'season-tick' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check' | 'steal-notifications' | 'events-purge';
 
 /** The device poll (Polar's fallback) runs on the minutes divisible by this. */
 const DEVICE_POLL_MINUTES = 3;
@@ -59,6 +59,7 @@ export function madridTime(time: number): LocalTime {
  * - polar-auto-sync: every 3 minutes (fallback poll; Polar's webhook imports at once)
  * - inactivity-check: 10:00 and 19:00
  * - suunto-auto-sync: at minute 30 of every hour (fallback poll; Suunto's webhook is the primary path)
+ * - events-purge: 04:15 (app analytics events older than 180 days)
  * The old daily treasure spawn and weekly summary are replaced by the season engine.
  */
 export function tasksDue(scheduledTime: number): CronTask[] {
@@ -70,6 +71,7 @@ export function tasksDue(scheduledTime: number): CronTask[] {
   if (minute % SEASON_TICK_MINUTES === 0) tasks.push('season-tick');
   if (topOfHour && (hour === 10 || hour === 19)) tasks.push('inactivity-check');
   if (minute === 30) tasks.push('suunto-auto-sync');
+  if (hour === 4 && minute === 15) tasks.push('events-purge');
   // Last: it is the slowest (up to ~25 s)
   if (minute % DEVICE_POLL_MINUTES === 0) tasks.push('polar-auto-sync');
   return tasks;

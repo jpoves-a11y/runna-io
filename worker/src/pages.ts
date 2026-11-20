@@ -20,7 +20,7 @@ export function publicBaseUrl(c: Context<AppEnv>): string {
   }
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -108,6 +108,39 @@ ${body}
 </html>`;
 }
 
+const ADMIN_STYLES = `
+main { max-width: 900px; }
+.admin-nav { display: flex; gap: 16px; align-items: center; margin-bottom: 8px; }
+.admin-nav form { margin-left: auto; }
+.card { border: 1px solid var(--border, #8884); border-radius: 12px; padding: 12px 16px; margin: 12px 0; }
+.card.closed { opacity: .7; }
+.card header { margin-bottom: 4px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+button { font: inherit; padding: 8px 14px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+button.danger { background: #c62828; color: #fff; }
+button.link { background: none; color: var(--accent); padding: 0; text-decoration: underline; }
+input[type=password] { font: inherit; padding: 8px; width: 100%; max-width: 360px; margin: 6px 0 12px; }
+blockquote { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--accent); white-space: pre-wrap; word-break: break-word; }
+img.evidence { max-width: 240px; border-radius: 8px; display: block; margin: 8px 0; }
+.tag { display: inline-block; font-size: .85em; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; margin-left: 6px; }
+.tag.danger { color: #c62828; }
+.flash { padding: 8px 12px; border-radius: 10px; background: #2e7d3222; }
+.flash.error { background: #c6282822; }
+.muted { opacity: .7; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.tile { border: 1px solid #8884; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+.tile strong { font-size: 1.8em; }
+table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8883; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+`;
+
+/** Admin panel pages (worker/src/admin.ts): same look, a few extra styles, never indexed. */
+export function adminPage(title: string, body: string): string {
+  return page(title, `<style>${ADMIN_STYLES}</style>\n${body}`).replace('<head>', '<head>\n<meta name="robots" content="noindex">');
+}
+
 const FOOTER = `<footer>
 <p>© 2026 Javier Poves Ruiz · Runna.io</p>
 <p><a href="/privacy">Privacidad</a>·<a href="/terms">Términos</a>·<a href="/support">Soporte</a></p>
@@ -117,7 +150,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <header>
 <h1>🏃 Runna.io</h1>
 <h2>Política de Privacidad</h2>
-<p><strong>Última actualización:</strong> 16 de octubre de 2026</p>
+<p><strong>Última actualización:</strong> 20 de noviembre de 2026</p>
 <p><strong>Responsable:</strong> Javier Poves Ruiz</p>
 <p><strong>Contacto:</strong> <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a></p>
 </header>
@@ -175,7 +208,13 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <p>Si las permites, guardamos el <strong>token de dispositivo</strong> que da Apple para enviarte avisos (solicitudes de amistad, territorio robado, comentarios, tesoros…) a través del servicio Apple Push Notification service (APNs). Puedes desactivarlas en Ajustes del iPhone.</p>
 <h3>2.7. Contenido social</h3>
 <p>Comentarios y reacciones que publicas en el feed, tus amistades y, si los usas, las denuncias y bloqueos que haces.</p>
-<div class="note"><strong>Sin rastreo:</strong> la app no incluye SDK de publicidad, analítica ni seguimiento, y no rastrea tu actividad en otras apps o webs.</div>
+<h3>2.8. Iniciar sesión con Apple</h3>
+<p>Si entras con Apple, recibimos de Apple un identificador de tu Apple ID y el email que elijas compartir (puede ser una dirección privada de Apple que reenvía a la tuya). Al borrar tu cuenta pedimos a Apple que desvincule Runna.io de tu Apple ID.</p>
+<h3>2.9. Uso de la app</h3>
+<p>Para saber qué partes de la app se usan y mejorarlas, la app envía a nuestro servidor eventos de uso (por ejemplo, «ha abierto la pestaña Ranking» o «ha empezado una carrera»), con la versión de la app y un identificador de la instalación. Se guardan en nuestra base de datos, vinculados a tu cuenta, durante 180 días como máximo, y nunca se comparten con terceros ni se usan para publicidad.</p>
+<h3>2.10. Zona privada</h3>
+<p>Si activas la zona privada (Perfil → Privacidad), los primeros y últimos 200 metros de cada carrera nueva no se muestran a nadie más ni cuentan como territorio. Solo tú los ves.</p>
+<div class="note"><strong>Sin rastreo:</strong> la app no incluye SDK de publicidad, analítica de terceros ni seguimiento, y no rastrea tu actividad en otras apps o webs.</div>
 </section>
 
 <section id="uso">
@@ -188,6 +227,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <tr><td>Importar de Apple Health, Strava, Polar, Suunto o Garmin</td><td>Consentimiento (art. 6.1.a)</td></tr>
 <tr><td>Enviar notificaciones push y emails</td><td>Consentimiento (art. 6.1.a)</td></tr>
 <tr><td>Moderar denuncias y evitar abusos</td><td>Interés legítimo (art. 6.1.f)</td></tr>
+<tr><td>Medir el uso de la app para mejorarla</td><td>Interés legítimo (art. 6.1.f)</td></tr>
 </tbody>
 </table></div>
 <h3>Lo que NO hacemos</h3>
@@ -517,6 +557,27 @@ ${FOOTER}`), 404);
       text: 'Únete al club para competir con ellos cada dos semanas. Abre la invitación en la app para unirte.',
       appLink: `${APP_SCHEME}://clubs/join/${token}`,
     }));
+  });
+
+  // Universal links: https links to these paths open the app when it's installed (the page stays as
+  // the fallback). appIDs = <team id>.<bundle id>; the app lists this domain in its associated domains.
+  app.get('/.well-known/apple-app-site-association', (c) => {
+    const team = (c.env?.APPLE_TEAM_ID || c.env?.APNS_TEAM_ID || '').trim();
+    const bundle = (c.env?.APPLE_BUNDLE_ID || c.env?.APNS_BUNDLE_ID || 'com.jpoves.runnaio').trim();
+    const appIDs = team ? [`${team}.${bundle}`] : [];
+    c.header('Cache-Control', 'public, max-age=3600');
+    return c.json({
+      applinks: {
+        details: [{
+          appIDs,
+          components: [
+            { '/': '/invite/*', comment: 'Friend invites' },
+            { '/': '/club-invite/*', comment: 'Club invites' },
+            { '/': '/open', comment: 'Email buttons (?tab=)' },
+          ],
+        }],
+      },
+    });
   });
 
   app.get('/open', (c) => {

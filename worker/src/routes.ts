@@ -1675,6 +1675,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       const updated = (await storage.getUser(user.id)) ?? user;
+      if (updated.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
       const token = await createSession(storage, user.id);
       return c.json({ ...toSelfUser(updated), token });
     } catch (error: any) {

@@ -10,6 +10,8 @@ import { handleQueueBatch, type TerritoryQueueMessage } from './queue-consumer';
 import { configurePush } from './pushHelper';
 import { runScheduledTasks } from './cron';
 import { registerPublicPages } from './pages';
+import { registerAdminPanel } from './admin';
+import { registerLaunchRoutes } from './launchRoutes';
 import { createDb, startInvocation } from './db';
 import { WorkerStorage } from './storage';
 import { setSeasonAnchor } from './cycles';
@@ -105,7 +107,9 @@ registerRoutes(app);
 registerGameRoutes(app);
 registerSuuntoRoutes(app);
 registerGarminRoutes(app);
+registerLaunchRoutes(app);
 registerPublicPages(app);
+registerAdminPanel(app);
 
 app.get('/', (c) => {
   return c.json({ message: 'Runna.io API - Cloudflare Workers' });
