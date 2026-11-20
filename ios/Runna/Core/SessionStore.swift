@@ -228,6 +228,14 @@ final class SessionStore {
         await refreshUser()
     }
 
+    /// Privacy zone: hides the first and last 200 m of the user's new runs.
+    func setPrivacyZone(_ enabled: Bool) async throws {
+        guard let userId else { return }
+        let _: AppUser = try await api.request("PATCH", "/api/users/\(userId)", body: ["privacyZone": enabled])
+        Analytics.track("privacy_zone_toggled", ["on": enabled])
+        await refreshUser()
+    }
+
     func uploadAvatar(jpegData: Data) async throws {
         struct AvatarResponse: Decodable { let avatar: String? }
         let _: AvatarResponse = try await api.upload(

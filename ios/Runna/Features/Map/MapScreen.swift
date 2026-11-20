@@ -374,10 +374,12 @@ struct MapScreen: View {
         TabPrefetcher.prefetchOnce(userId: user.id)
     }
 
-    /// The run screen draws the territory of the current map; chests are collected by the server.
+    /// The run screen draws the territory of the current map and the competition chests (collected by
+    /// the server when the run passes within their radius; the voice announces them).
     private func syncTracker() {
         tracker.territoryShapes = model.visibleShapes
         tracker.activeTreasures = []
+        tracker.chests = model.liveChests
     }
 
     /// Chests and the competition map change during the day: refresh them every minute while visible.

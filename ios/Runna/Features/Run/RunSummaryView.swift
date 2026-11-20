@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import StoreKit
 
 /// Shown after finishing a run: upload progress, conquered territory and victims.
 struct RunSummaryView: View {
@@ -7,6 +8,7 @@ struct RunSummaryView: View {
     let onClose: () -> Void
 
     @Environment(SessionStore.self) private var session
+    @Environment(\.requestReview) private var requestReview
     /// The name given on this screen (empty: the default one)
     @State private var routeName = ""
     @State private var errorMessage: String?
@@ -136,7 +138,7 @@ struct RunSummaryView: View {
     }
 
     private var doneButton: some View {
-        Button(action: onClose) {
+        Button(action: close) {
             Text(isBlocking ? "Guardando…" : "Hecho")
         }
         .buttonStyle(PrimaryButtonStyle())
@@ -148,6 +150,18 @@ struct RunSummaryView: View {
         .overlay(alignment: .top) {
             HairlineDivider()
         }
+    }
+
+    /// Closing after a good result is the moment to ask for a rating (ReviewPrompter decides).
+    private func close() {
+        if case .done(let result) = submission.state {
+            Analytics.track("run_uploaded", ["newArea": Int(result?.globalGained ?? 0), "stole": (result?.totalStolen ?? 0) > 0])
+            if ReviewPrompter.shouldAsk(after: result) {
+                Analytics.track("review_prompt_shown")
+                requestReview()
+            }
+        }
+        onClose()
     }
 
     /// While uploading (or retrying) the screen can't be closed, so two uploads never overlap.

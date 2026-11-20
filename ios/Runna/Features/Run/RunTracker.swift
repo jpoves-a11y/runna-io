@@ -52,6 +52,20 @@ final class RunTracker {
     /// Friends' and rivals' territories drawn under the run (set by the map).
     var territoryShapes: [TerritoryShape] = []
 
+    /// Competition chests on the map (set by the map): drawn on the run screen and announced by voice.
+    var chests: [Chest] = []
+
+    /// Spoken cues are silenced for this run (speaker button on the run screen).
+    var isVoiceMuted: Bool {
+        get { voiceMuted }
+        set {
+            voiceMuted = newValue
+            voice.isMutedForRun = newValue
+            if newValue { voice.stop() }
+        }
+    }
+    private var voiceMuted = false
+
     /// Treasures still on the map (collected ones are removed).
     var visibleTreasures: [Treasure] {
         activeTreasures.filter { !collectedTreasureIds.contains($0.id) }
@@ -88,6 +102,8 @@ final class RunTracker {
     @ObservationIgnored private var ownerObserver: NSObjectProtocol?
     /// Lock screen / Dynamic Island tracker of the run.
     private let liveActivity = RunLiveActivity()
+    @ObservationIgnored private let voice = VoiceCoach()
+    @ObservationIgnored private var cues = RunCueState()
 
     private let manager = CLLocationManager()
     private let delegate = LocationDelegate()
@@ -222,6 +238,8 @@ final class RunTracker {
         hasRecoverableRun = false
         startDate = Date()
         phase = .running
+        cues = RunCueState()
+        isVoiceMuted = false
         beginBackgroundUpdates()
         UIApplication.shared.isIdleTimerDisabled = true
         startTreasureRefresh()
@@ -230,6 +248,8 @@ final class RunTracker {
             liveActivity.start(startedAt: startDate, state: liveActivityState())
             ActiveRunReporter.started(at: startDate)
         }
+        voice.say("Carrera iniciada. A conquistar.")
+        Analytics.track("run_started")
     }
 
     func pause() {
@@ -239,6 +259,7 @@ final class RunTracker {
         treasureRefreshTask?.cancel()
         persist()
         liveActivity.update(liveActivityState())
+        voice.say("Carrera en pausa.")
     }
 
     func resume() {
@@ -255,6 +276,7 @@ final class RunTracker {
         startTreasureRefresh()
         persist()
         liveActivity.update(liveActivityState())
+        voice.say("Seguimos.")
     }
 
     /// Restores a run that was interrupted (e.g. the app was closed by iOS) and keeps recording.
@@ -280,6 +302,8 @@ final class RunTracker {
             altitudes = Array(repeating: nil, count: coordinates.count)
         }
         distance = saved.distance
+        cues = RunCueState()
+        cues.announcedKilometres = Int(saved.distance / 1000)
         startDate = saved.startDate
         pausedTotal = saved.pausedTotal
         // Time while the app was closed counts as a pause
@@ -335,6 +359,8 @@ final class RunTracker {
             altitudes: altitudes.count == points.count ? altitudes : nil
         )
         liveActivity.end(finalState: liveActivityState(at: end, finished: true), discarded: false)
+        voice.say(VoiceCoach.finishPhrase(meters: distance, movingSeconds: Double(movingTime)))
+        Analytics.track("run_finished", ["km": (distance / 100).rounded() / 10, "minutes": movingTime / 60])
         let queued = PendingRuns.add(PendingRuns.Entry(run: run))
         // If the queue couldn't be written, keep the recovery file: the run can still be resumed and finished
         reset(clearSavedRun: queued)
@@ -343,6 +369,7 @@ final class RunTracker {
 
     /// Throws the current run away.
     func cancel() {
+        voice.stop()
         liveActivity.end(finalState: nil, discarded: true)
         reset(clearSavedRun: true)
         ActiveRunReporter.discarded()
@@ -437,6 +464,42 @@ final class RunTracker {
             persist()
         }
         checkTreasures(near: location)
+        speakCues(at: location)
+    }
+
+    // MARK: - Voice cues
+
+    private func speakCues(at location: CLLocation) {
+        // Every kilometre
+        let km = Int(distance / 1000)
+        if km > cues.announcedKilometres {
+            cues.announcedKilometres = km
+            voice.say(VoiceCoach.kilometrePhrase(km: km, movingSeconds: elapsed()))
+        }
+
+        // Entering a territory that can be stolen (once per zone, at most one cue a minute)
+        let point = location.coordinate
+        if let shape = territoryShapes.first(where: { $0.relation.isStealable && !cues.enteredShapeIds.contains($0.id) && Geo.contains($0.rings, point) }) {
+            cues.enteredShapeIds.insert(shape.id)
+            let now = Date()
+            if cues.lastTerritoryCueAt.map({ now.timeIntervalSince($0) >= RunCueState.territoryCueInterval }) ?? true {
+                cues.lastTerritoryCueAt = now
+                voice.say(VoiceCoach.territoryPhrase(ownerName: shape.ownerName))
+            }
+        }
+
+        // Chests: once when it gets close, once inside the pickup radius
+        for chest in chests where !chest.hidden {
+            let meters = location.distance(from: CLLocation(latitude: chest.lat, longitude: chest.lng))
+            if meters <= RunCueState.chestRadiusMeters, !cues.chestsAnnouncedNear.contains(chest.id) {
+                cues.chestsAnnouncedNear.insert(chest.id)
+                cues.chestsAnnouncedFar.insert(chest.id)
+                voice.say(VoiceCoach.chestInRangePhrase(rarity: chest.rarity))
+            } else if meters <= RunCueState.chestAnnounceMeters, !cues.chestsAnnouncedFar.contains(chest.id) {
+                cues.chestsAnnouncedFar.insert(chest.id)
+                voice.say(VoiceCoach.chestPhrase(rarity: chest.rarity, meters: meters))
+            }
+        }
     }
 
     // MARK: - Treasures

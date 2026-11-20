@@ -32,6 +32,10 @@ struct ProfileView: View {
     @State private var errorMessage: String?
     @State private var avatarUploads = 0
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
+    @AppStorage(VoiceCoach.enabledKey) private var voiceCues = true
+    @State private var voiceSample = VoiceCoach()
+    @State private var privacyZone = false
+    @State private var isSavingPrivacyZone = false
 
     private var conquest: ConquestStats? { model.conquest }
 
@@ -120,6 +124,7 @@ struct ProfileView: View {
                 rivalriesSection
             }
             IntegrationsSection()
+            runSection
             notificationsSection
             appearanceSection
             privacySection
@@ -287,8 +292,47 @@ struct ProfileView: View {
         .listRowBackground(Color.surface)
     }
 
+    private var runSection: some View {
+        Section {
+            Toggle(isOn: $voiceCues) {
+                SocialSettingsLabel(title: "Avisos por voz", systemImage: "speaker.wave.2")
+            }
+            .tint(Color.brand)
+            .onChange(of: voiceCues) { _, enabled in
+                Analytics.track("voice_toggled", ["on": enabled])
+            }
+            if voiceCues {
+                Button {
+                    voiceSample.sample()
+                } label: {
+                    SocialSettingsLabel(title: "Probar voz", systemImage: "play.circle")
+                }
+            }
+        } header: {
+            SocialSectionHeader(title: "Durante la carrera")
+        } footer: {
+            Text("Te avisa de cada kilómetro, de cuándo entras en territorio que puedes robar y de los cofres cercanos, también con la pantalla bloqueada. La música baja mientras habla. Para una voz más natural, descarga una voz mejorada en Ajustes → Accesibilidad → Contenido leído → Voces → Español.")
+        }
+        .listRowBackground(Color.surface)
+    }
+
     private var privacySection: some View {
         Section {
+            Toggle(isOn: Binding(
+                get: { privacyZone },
+                set: { enabled in
+                    privacyZone = enabled
+                    savePrivacyZone(enabled)
+                }
+            )) {
+                SocialSettingsLabel(title: "Ocultar el inicio y el final de mis carreras", systemImage: "house.circle")
+            }
+            .tint(Color.brand)
+            .disabled(isSavingPrivacyZone || session.user == nil)
+            .onAppear { privacyZone = session.user?.hasPrivacyZone ?? false }
+            .onChange(of: session.user?.privacyZoneM) { _, _ in
+                if !isSavingPrivacyZone { privacyZone = session.user?.hasPrivacyZone ?? false }
+            }
             NavigationLink {
                 BlockedUsersView()
             } label: {
@@ -297,9 +341,22 @@ struct ProfileView: View {
         } header: {
             SocialSectionHeader(title: "Privacidad y seguridad")
         } footer: {
-            Text("Las personas que bloquees no podrán ver tu actividad ni comentarte, y tú no verás la suya.")
+            Text("Zona privada: los primeros y últimos 200 m de tus carreras nuevas no los ve nadie más ni cuentan como territorio, para que no se sepa dónde vives. Tú sigues viendo la ruta entera.\n\nLas personas que bloquees no podrán ver tu actividad ni comentarte, y tú no verás la suya.")
         }
         .listRowBackground(Color.surface)
+    }
+
+    private func savePrivacyZone(_ enabled: Bool) {
+        isSavingPrivacyZone = true
+        Task {
+            defer { isSavingPrivacyZone = false }
+            do {
+                try await session.setPrivacyZone(enabled)
+            } catch {
+                privacyZone = !enabled
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private var aboutSection: some View {

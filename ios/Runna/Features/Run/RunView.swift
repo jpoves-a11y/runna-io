@@ -127,6 +127,13 @@ struct RunView: View {
                     RunTreasurePin(treasure: treasure)
                 }
             }
+            // Competition chests: passing within their radius opens them when the run is uploaded
+            ForEach(tracker.chests) { chest in
+                Annotation(chest.name, coordinate: chest.coordinate) {
+                    ChestMarker(chest: chest)
+                        .scaleEffect(0.8)
+                }
+            }
         }
         .mapControls {
             MapCompass()
@@ -207,6 +214,20 @@ struct RunView: View {
                 treasureCount
             }
             Spacer(minLength: DS.Spacing.s)
+            if VoiceCoach.isEnabled {
+                Button {
+                    Haptics.tap()
+                    tracker.isVoiceMuted.toggle()
+                } label: {
+                    Image(systemName: tracker.isVoiceMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(tracker.isVoiceMuted ? Color.secondary : Color.brand)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tracker.isVoiceMuted ? "Activar avisos por voz" : "Silenciar avisos por voz")
+            }
             GPSSignalView(accuracy: tracker.gpsAccuracy)
         }
     }

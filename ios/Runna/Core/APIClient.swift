@@ -211,7 +211,7 @@ final class APIClient {
     }
 
     /// Requests that don't change anything the screens show (device registration, reports, invite links).
-    private static let nonInvalidatingPrefixes = ["/api/push/", "/api/reports", "/api/friends/invite"]
+    private static let nonInvalidatingPrefixes = ["/api/push/", "/api/reports", "/api/friends/invite", "/api/events"]
 
     /// A request that changes data succeeded: cached GETs must be revalidated on the next visit.
     private func noteMutation(_ method: String, path: String) {

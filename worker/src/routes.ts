@@ -1406,14 +1406,16 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (!user) {
         return c.json({ error: "User not found" }, 404);
       }
+      // The account's own settings (privacy zone, Apple sign-in) come from the user row
+      const own = { ...user, signedInWithApple: Boolean(user.appleSub) };
       const userWithStats = friendsLeaderboard.find(u => u.id === userId);
       if (!userWithStats) {
         // Fallback to global stats if somehow not in friends list
         const allUsers = await storage.getAllUsersWithStats();
         const globalUser = allUsers.find(u => u.id === userId);
-        return c.json(toSelfUser(globalUser || user));
+        return c.json(toSelfUser({ ...own, ...(globalUser ?? {}) }));
       }
-      return c.json(toSelfUser(userWithStats));
+      return c.json(toSelfUser({ ...own, ...userWithStats }));
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }

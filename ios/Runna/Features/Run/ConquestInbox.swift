@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import StoreKit
 import MapKit
 import CoreLocation
 import Observation
@@ -228,6 +229,7 @@ private struct ConquestInboxView: View {
     let onDone: () -> Void
 
     @Environment(SessionStore.self) private var session
+    @Environment(\.requestReview) private var requestReview
     @State private var route: RunRoute?
     @State private var result: ConquestResult?
     @State private var isLoading = true
@@ -321,7 +323,13 @@ private struct ConquestInboxView: View {
     }
 
     private var doneButton: some View {
-        Button("Hecho", action: onDone)
+        Button("Hecho") {
+            if ReviewPrompter.shouldAsk(after: result) {
+                Analytics.track("review_prompt_shown")
+                requestReview()
+            }
+            onDone()
+        }
             .buttonStyle(PrimaryButtonStyle())
             .padding(.horizontal, DS.Spacing.screen)
             .padding(.top, DS.Spacing.m)

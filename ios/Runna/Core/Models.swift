@@ -22,10 +22,15 @@ struct AppUser: Codable, Identifiable, Hashable {
     var nickname: String?
     var createdAt: String?
     var token: String?
+    /// Metres hidden at each end of new runs (0 = privacy zone off). Only in the user's own account.
+    var privacyZoneM: Int?
+    var signedInWithApple: Bool?
+
+    var hasPrivacyZone: Bool { (privacyZoneM ?? 0) > 0 }
 
     enum CodingKeys: String, CodingKey {
         case id, username, name, color, avatar, totalArea, globalArea, email, emailVerified, rank, friendCount
-        case nickname, createdAt, token
+        case nickname, createdAt, token, privacyZoneM, signedInWithApple
     }
 
     init(from decoder: Decoder) throws {
@@ -44,6 +49,8 @@ struct AppUser: Codable, Identifiable, Hashable {
         nickname = c.string(.nickname)
         createdAt = c.string(.createdAt)
         token = c.string(.token)
+        privacyZoneM = c.int(.privacyZoneM)
+        signedInWithApple = c.bool(.signedInWithApple)
     }
 
     var displayName: String { nickname.map { "\($0) (\(name))" } ?? name }
