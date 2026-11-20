@@ -22,7 +22,11 @@ final class VoiceCoach {
 
     private let synthesizer = AVSpeechSynthesizer()
     private let delegate = SpeechDelegate()
-    private lazy var voice: AVSpeechSynthesisVoice? = Self.bestSpanishVoice()
+    /// UserDefaults key of the voice picked in Perfil → Durante la carrera → Voz (nil: the best one).
+    static let voiceIdentifierKey = "voiceIdentifier"
+
+    /// Read when speaking, so a voice picked (or downloaded) meanwhile is used at once
+    private var voice: AVSpeechSynthesisVoice? { Self.selectedVoice() }
 
     init() {
         synthesizer.delegate = delegate
@@ -66,7 +70,36 @@ final class VoiceCoach {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    private static func bestSpanishVoice() -> AVSpeechSynthesisVoice? {
+    /// The voice chosen in the profile when it's still installed, else the best Spanish voice.
+    static func selectedVoice() -> AVSpeechSynthesisVoice? {
+        if let id = UserDefaults.standard.string(forKey: voiceIdentifierKey), let chosen = AVSpeechSynthesisVoice(identifier: id) {
+            return chosen
+        }
+        return bestSpanishVoice()
+    }
+
+    /// Spanish voices installed on this iPhone, best quality first (Premium, Mejorada, Estándar).
+    static func spanishVoices() -> [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("es") }
+            .sorted { lhs, rhs in
+                if lhs.quality.rawValue != rhs.quality.rawValue { return lhs.quality.rawValue > rhs.quality.rawValue }
+                if (lhs.language == "es-ES") != (rhs.language == "es-ES") { return lhs.language == "es-ES" }
+                return lhs.name < rhs.name
+            }
+    }
+
+    /// Speaks the sample with a given voice (voice picker).
+    func sample(with voice: AVSpeechSynthesisVoice) {
+        synthesizer.stopSpeaking(at: .immediate)
+        activateAudio()
+        let utterance = AVSpeechUtterance(string: "Kilómetro 1. 5 minutos 30. Entras en territorio de Marta.")
+        utterance.voice = voice
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        synthesizer.speak(utterance)
+    }
+
+    static func bestSpanishVoice() -> AVSpeechSynthesisVoice? {
         let spanish = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("es") }
         let preferred = spanish.filter { $0.language == "es-ES" }
         let pool = preferred.isEmpty ? spanish : preferred

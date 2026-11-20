@@ -302,6 +302,11 @@ struct ProfileView: View {
                 Analytics.track("voice_toggled", ["on": enabled])
             }
             if voiceCues {
+                NavigationLink {
+                    VoicePickerView()
+                } label: {
+                    SocialSettingsLabel(title: "Voz", systemImage: "waveform", value: VoiceCoach.selectedVoice().map { "\($0.name) · \(VoicePickerView.qualityName($0.quality))" })
+                }
                 Button {
                     voiceSample.sample()
                 } label: {
@@ -311,7 +316,7 @@ struct ProfileView: View {
         } header: {
             SocialSectionHeader(title: "Durante la carrera")
         } footer: {
-            Text("Te avisa de cada kilómetro, de cuándo entras en territorio que puedes robar y de los cofres cercanos, también con la pantalla bloqueada. La música baja mientras habla. Para una voz más natural, descarga una voz mejorada en Ajustes → Accesibilidad → Contenido leído → Voces → Español.")
+            Text("Te avisa de cada kilómetro, de cuándo entras en territorio que puedes robar y de los cofres cercanos, también con la pantalla bloqueada. La música baja mientras habla. En «Voz» puedes elegir otra y descargar una más natural.")
         }
         .listRowBackground(Color.surface)
     }
