@@ -32,11 +32,11 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 
   Los logros se acumulan en el perfil.
 - **Correr**: GPS nativo que sigue grabando con la pantalla bloqueada, **Live Activity** en la pantalla bloqueada y la Dynamic Island (tiempo que corre solo, distancia, ritmo y aviso de pausa), pausa/reanudar, aviso si la ubicación no es exacta, recuperación si iOS cierra la app a mitad de carrera, y cola sin conexión: la carrera se guarda en el móvil y se sube después (sin duplicados).
-- **Después de correr**: área nueva en el mapa global, territorio conquistado y robado en la competición, retos completados, cofres recogidos, si la carrera no cuenta o está en revisión (y por qué), **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Strava, Polar o Apple Salud muestran el mismo resumen al abrir la app.
+- **Después de correr**: área nueva en el mapa global, territorio conquistado y robado en la competición, retos completados, cofres recogidos, si la carrera no cuenta o está en revisión (y por qué), **animación de la ruta**, enviar una foto que solo puede verse una vez, renombrar la carrera. Las carreras que llegan de Garmin, Suunto, Polar o Apple Salud muestran el mismo resumen al abrir la app.
 - **Actividad**: feed de tus amigos (carreras, robos, cofres, apodos, récords) con "me gusta"/"no me gusta" y comentarios con respuestas y @menciones; tus carreras con mapa, renombrar y borrar.
 - **Amigos** (dentro de la pestaña Club): solicitudes, búsqueda, perfiles con sus amigos y actividades, enlace de invitación para compartir (`/invite/<token>` abre la app y pide confirmar).
 - **Seguridad**: denunciar publicaciones, comentarios y usuarios; bloquear y desbloquear (Perfil → Usuarios bloqueados).
-- **Perfil**: foto, nombre, color del territorio, estadísticas de robos, apariencia clara/oscura, Strava, Polar y **Apple Salud** (importa las carreras del Apple Watch) en "Conectar dispositivos", notificaciones, soporte y enlaces legales.
+- **Perfil**: foto, nombre, color del territorio, estadísticas de robos, apariencia clara/oscura, Garmin, Suunto, Polar y **Apple Salud** (importa las carreras del Apple Watch) en "Servicios conectados", notificaciones, soporte y enlaces legales.
 - **Notificaciones push** nativas (APNs): robos de territorio, solicitudes de amistad, comentarios, cofres, resumen semanal, importaciones automáticas, etc.
 
 ## Abrir y ejecutar (Mac)
@@ -114,6 +114,8 @@ Mientras grabas una carrera, la app muestra una Live Activity con el tiempo (cue
 - El usuario puede desactivarlas en Ajustes → Runna.io → Actividades en directo; entonces la app simplemente no la muestra.
 
 ## Strava y Polar
+
+**Strava está oculto en la app** hasta que Strava apruebe la integración (mientras tanto su API solo admite al atleta del desarrollador). Para mostrarlo, pon `AppConfig.stravaEnabled = true` en `Runna/Core/AppConfig.swift`. Quien ya lo tenga conectado sigue viendo la fila para poder desconectarlo. El servidor no cambia: las importaciones de cuentas ya conectadas siguen funcionando.
 
 La app abre el login de Strava/Polar en una ventana segura del sistema. Al terminar, el servidor la devuelve a la app con `runnaio://oauth/...`. No hace falta cambiar nada en Strava ni en Polar: la URL de callback sigue siendo la del Worker.
 

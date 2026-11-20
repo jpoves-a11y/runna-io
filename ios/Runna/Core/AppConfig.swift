@@ -26,6 +26,11 @@ enum AppConfig {
         URL(string: "mailto:\(supportEmail)?subject=Soporte%20Runna.io")
     }
 
+    /// Strava connection offered in Perfil → Servicios conectados. Off until Strava approves the app
+    /// (until then its API admits only the developer's own athlete). A user who is already connected
+    /// still sees the row, to disconnect.
+    static let stravaEnabled = false
+
     /// Minimum age to use the app (Terms, "Elegibilidad").
     static let minimumAge = 14
 

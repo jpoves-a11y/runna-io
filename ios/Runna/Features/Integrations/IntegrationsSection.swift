@@ -29,7 +29,9 @@ struct IntegrationsSection: View {
                 providerRows
             } else {
                 // Greyed rows with a spinner while the server checks each connection
-                loadingRow(name: "Strava", mark: .strava)
+                if AppConfig.stravaEnabled {
+                    loadingRow(name: "Strava", mark: .strava)
+                }
                 loadingRow(name: "Polar", mark: .polar)
                 loadingRow(name: "Suunto", mark: .suunto)
                 loadingRow(name: "Garmin", mark: .garmin)
@@ -42,7 +44,7 @@ struct IntegrationsSection: View {
         } footer: {
             VStack(alignment: .leading, spacing: 8) {
                 Text(footerText)
-                if let url = URL(string: "https://www.strava.com") {
+                if showStrava, let url = URL(string: "https://www.strava.com") {
                     // Official "Powered by Strava" artwork (developers.strava.com/guidelines), unaltered
                     Link(destination: url) {
                         Image("StravaPoweredBy")
@@ -95,8 +97,10 @@ struct IntegrationsSection: View {
     /// Strava, Polar, Suunto and Garmin with their "Actividades importadas" links, once the status is known.
     @ViewBuilder
     private var providerRows: some View {
-        stravaRow
-        if strava?.connected == true {
+        if showStrava {
+            stravaRow
+        }
+        if showStrava, strava?.connected == true {
             NavigationLink {
                 ImportedActivitiesView(provider: "strava")
             } label: {
@@ -279,11 +283,16 @@ struct IntegrationsSection: View {
     }
 
     private var footerText: String {
-        var names = ["Strava", "Polar"]
+        var names = showStrava ? ["Strava", "Polar"] : ["Polar"]
         if showSuunto { names.append("Suunto") }
         if showGarmin { names.append("Garmin") }
         let services = names.joined(separator: ", ")
         return "Las carreras que registres en \(services) o en el Apple Watch (Apple Salud) se convierten en territorio."
+    }
+
+    /// Hidden until Strava approves the app (AppConfig.stravaEnabled), except for someone already connected.
+    private var showStrava: Bool {
+        AppConfig.stravaEnabled || strava?.connected == true
     }
 
     private var showSuunto: Bool {

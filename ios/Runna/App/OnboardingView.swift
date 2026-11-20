@@ -30,7 +30,7 @@ struct OnboardingView: View {
             id: 0,
             systemImage: "globe.europe.africa",
             title: "Conquista el mapa",
-            text: "Cada carrera suma a tu mapa global el área nueva que encierra. Es tuya para siempre: nadie te la puede quitar. También puedes importar actividades de Apple Salud, Strava, Polar, Garmin o Suunto."
+            text: "Cada carrera suma a tu mapa global el área nueva que encierra. Es tuya para siempre: nadie te la puede quitar. También puedes importar actividades de Apple Salud, Polar, Garmin o Suunto."
         ),
         Step(
             id: 1,

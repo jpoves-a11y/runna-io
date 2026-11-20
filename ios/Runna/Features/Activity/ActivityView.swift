@@ -608,7 +608,7 @@ private struct MyRoutesList: View {
             EmptyStateView(
                 systemImage: "figure.run",
                 title: "Aún no tienes carreras",
-                message: "Sal a correr desde el mapa, conecta Strava o Polar, o importa tus entrenamientos de Apple Salud desde el perfil.",
+                message: "Sal a correr desde el mapa, conecta Garmin, Polar o Suunto, o importa tus entrenamientos de Apple Salud desde el perfil.",
                 actionTitle: "Ir al mapa",
                 action: { router.selectedTab = .map }
             )
