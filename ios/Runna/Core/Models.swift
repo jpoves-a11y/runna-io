@@ -25,12 +25,14 @@ struct AppUser: Codable, Identifiable, Hashable {
     /// Metres hidden at each end of new runs (0 = privacy zone off). Only in the user's own account.
     var privacyZoneM: Int?
     var signedInWithApple: Bool?
+    /// When the first-login tour was completed (nil: not yet, on any device)
+    var tourDoneAt: String?
 
     var hasPrivacyZone: Bool { (privacyZoneM ?? 0) > 0 }
 
     enum CodingKeys: String, CodingKey {
         case id, username, name, color, avatar, totalArea, globalArea, email, emailVerified, rank, friendCount
-        case nickname, createdAt, token, privacyZoneM, signedInWithApple
+        case nickname, createdAt, token, privacyZoneM, signedInWithApple, tourDoneAt
     }
 
     init(from decoder: Decoder) throws {
@@ -51,6 +53,7 @@ struct AppUser: Codable, Identifiable, Hashable {
         token = c.string(.token)
         privacyZoneM = c.int(.privacyZoneM)
         signedInWithApple = c.bool(.signedInWithApple)
+        tourDoneAt = c.string(.tourDoneAt)
     }
 
     var displayName: String { nickname.map { "\($0) (\(name))" } ?? name }

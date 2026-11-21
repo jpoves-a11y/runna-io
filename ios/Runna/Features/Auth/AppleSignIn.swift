@@ -107,14 +107,25 @@ struct PendingAppleProfile: Identifiable {
 }
 
 /// New account with Apple: name, username and the age / terms check (the email comes from Apple).
+/// Or, for someone who already has an account (Apple may hide the email, so it can't be matched),
+/// their user and password link Apple to it.
 private struct AppleProfileSheet: View {
     let profile: PendingAppleProfile
 
+    private enum Mode: String, CaseIterable, Identifiable {
+        case new = "Soy nuevo"
+        case existing = "Ya tengo cuenta"
+        var id: String { rawValue }
+    }
+
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @State private var mode: Mode = .new
     @State private var name = ""
     @State private var username = ""
     @State private var acceptedTerms = false
+    @State private var linkIdentifier = ""
+    @State private var linkPassword = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -130,26 +141,20 @@ private struct AppleProfileSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Nombre", text: $name)
-                        .textContentType(.name)
-                    TextField("Usuario", text: $username)
-                        .textContentType(.username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } footer: {
-                    Text("Tus amigos te verán con este nombre y te encontrarán por tu usuario.")
-                }
-                Section {
-                    Toggle(isOn: $acceptedTerms) {
-                        Text(termsText)
-                            .font(.footnote)
+                    Picker("¿Tienes cuenta?", selection: $mode.animation(.snappy)) {
+                        ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    .tint(Color.brand)
-                } footer: {
-                    Text("Necesitas tener al menos \(AppConfig.minimumAge) años para usar Runna.io.")
+                    .pickerStyle(.segmented)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+                }
+                if mode == .existing {
+                    existingAccountSections
+                } else {
+                    newAccountSections
                 }
             }
-            .navigationTitle("Completa tu perfil")
+            .navigationTitle(mode == .new ? "Completa tu perfil" : "Vincula tu cuenta")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -159,7 +164,7 @@ private struct AppleProfileSheet: View {
                     if isLoading {
                         ProgressView()
                     } else {
-                        Button("Crear cuenta", action: submit)
+                        Button(mode == .new ? "Crear cuenta" : "Vincular", action: mode == .new ? submit : link)
                             .bold()
                     }
                 }
@@ -171,6 +176,62 @@ private struct AppleProfileSheet: View {
             }
         }
         .interactiveDismissDisabled(isLoading)
+    }
+
+    @ViewBuilder
+    private var existingAccountSections: some View {
+        Section {
+            TextField("Usuario o email", text: $linkIdentifier)
+                .textContentType(.username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.emailAddress)
+            SecureField("Contraseña", text: $linkPassword)
+                .textContentType(.password)
+        } footer: {
+            Text("Entra con tu cuenta de Runna.io y la vincularemos a tu Apple ID. Desde entonces podrás entrar con Apple o con tu contraseña, y conservarás todo tu territorio.")
+        }
+    }
+
+    private func link() {
+        guard !linkIdentifier.trimmingCharacters(in: .whitespaces).isEmpty, !linkPassword.isEmpty else {
+            errorMessage = "Escribe tu usuario o email y tu contraseña."
+            return
+        }
+        isLoading = true
+        Task {
+            defer { isLoading = false }
+            do {
+                _ = try await session.signInWithApple(profile.credential, link: (linkIdentifier, linkPassword))
+                Analytics.track("apple_linked")
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var newAccountSections: some View {
+        Section {
+            TextField("Nombre", text: $name)
+                .textContentType(.name)
+            TextField("Usuario", text: $username)
+                .textContentType(.username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+        } footer: {
+            Text("Tus amigos te verán con este nombre y te encontrarán por tu usuario.")
+        }
+        Section {
+            Toggle(isOn: $acceptedTerms) {
+                Text(termsText)
+                    .font(.footnote)
+            }
+            .tint(Color.brand)
+        } footer: {
+            Text("Necesitas tener al menos \(AppConfig.minimumAge) años para usar Runna.io.")
+        }
     }
 
     private var termsText: AttributedString {

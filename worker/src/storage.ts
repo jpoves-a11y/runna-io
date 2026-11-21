@@ -406,6 +406,7 @@ export class WorkerStorage {
       sql`ALTER TABLE users ADD COLUMN banned_at TEXT`,
       sql`ALTER TABLE users ADD COLUMN ban_reason TEXT`,
       sql`ALTER TABLE users ADD COLUMN welcome_reward_at TEXT`,
+      sql`ALTER TABLE users ADD COLUMN tour_done_at TEXT`,
       sql`ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'open'`,
       sql`ALTER TABLE reports ADD COLUMN resolved_at TEXT`,
       sql`ALTER TABLE reports ADD COLUMN action TEXT`,

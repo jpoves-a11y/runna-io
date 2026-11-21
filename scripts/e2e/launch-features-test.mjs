@@ -214,6 +214,26 @@ res = await call('POST', '/api/auth/apple', { body: { identityToken: await apple
 check('Apple-verified email links the existing account', res.status === 200 && res.data.id === ana.id);
 check('the link is stored', (await one('select apple_sub from users where id = ?', [ana.id]))?.apple_sub === `002.e2e.${stamp}`);
 
+// "Ya tengo cuenta": an Apple ID with a hidden email is linked to an existing account by its password
+const dora = await register('dora');
+const doraSub = `003.e2e.${stamp}`;
+const relayToken = async (nonce) => appleToken({ sub: doraSub, nonce: nonceHash(nonce), email: `x${stamp}@privaterelay.appleid.com`, email_verified: true, is_private_email: true });
+res = await call('POST', '/api/auth/apple', { body: { identityToken: await relayToken('l1'), nonce: 'l1' } });
+check('hidden email asks for a profile', res.status === 200 && res.data.needsProfile === true, res.data);
+res = await call('POST', '/api/auth/apple', { body: { identityToken: await relayToken('l2'), nonce: 'l2', linkIdentifier: dora.username, linkPassword: 'wrong-password' } });
+check('linking with a wrong password is refused', res.status === 401, res.data);
+res = await call('POST', '/api/auth/apple', { body: { identityToken: await relayToken('l3'), nonce: 'l3', linkIdentifier: dora.username, linkPassword: 'e2e-password' } });
+check('linking with the password signs into the existing account', res.status === 200 && res.data.id === dora.id && res.data.linked === true && res.data.token, res.data);
+res = await call('POST', '/api/auth/apple', { body: { identityToken: await relayToken('l4'), nonce: 'l4' } });
+check('the linked Apple ID signs in directly afterwards', res.status === 200 && res.data.id === dora.id);
+
+// The tour is shown once per account
+res = await call('GET', `/api/current-user/${dora.id}`, { token: dora.token });
+check('a new account has not seen the tour', res.status === 200 && (res.data.tourDoneAt ?? null) === null, res.data);
+res = await call('POST', '/api/users/me/tour-done', { token: dora.token });
+res = await call('GET', `/api/current-user/${dora.id}`, { token: dora.token });
+check('tour-done is remembered for the account', typeof res.data.tourDoneAt === 'string', res.data);
+
 // ---------- 3. Analytics events ----------
 res = await call('POST', '/api/events', { token: bea.token, body: {
   installId: 'install-bea', appVersion: '1.0 (1100)',

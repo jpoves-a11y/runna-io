@@ -100,7 +100,21 @@ final class TourController {
     private func finish() {
         Analytics.track("tour_completed")
         UserDefaults.standard.set(true, forKey: Self.doneKey)
+        if let userId = RunOwner.currentUserId {
+            UserDefaults.standard.set(true, forKey: Self.doneKey(for: userId))
+        }
+        // Remembered for the account, so another device doesn't show it again
+        Task { try? await APIClient.shared.send("POST", "/api/users/me/tour-done", body: [:]) }
         end()
+    }
+
+    /// Per-account flag on this device (the server's tourDoneAt is the one that counts).
+    static func doneKey(for userId: String) -> String { "tourDone.\(userId)" }
+
+    /// The tour is shown once per account: the first time it signs in, on whichever device.
+    static func shouldShow(for user: AppUser?) -> Bool {
+        guard let user, user.tourDoneAt == nil else { return false }
+        return !UserDefaults.standard.bool(forKey: doneKey(for: user.id))
     }
 
     private func end() {

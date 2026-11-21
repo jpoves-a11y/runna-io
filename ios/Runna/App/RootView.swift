@@ -128,6 +128,8 @@ struct MainTabView: View {
         .onChange(of: tracker.isPresented) { _, presented in
             if !presented { startTourIfNeeded() }
         }
+        // Another account signed in on this device, or the account was refreshed from the server
+        .onChange(of: session.user?.id) { _, _ in startTourIfNeeded() }
         .onReceive(NotificationCenter.default.publisher(for: StartRunRequest.notification)) { _ in
             openRunIfRequested()
         }
@@ -138,7 +140,7 @@ struct MainTabView: View {
 
     /// Once per device, after the first login: never on top of a run being recorded.
     private func startTourIfNeeded() {
-        guard !onboardingDone, !TourController.isDisabledForTests, !tracker.isPresented, !tour.isActive else { return }
+        guard TourController.shouldShow(for: session.user), !TourController.isDisabledForTests, !tracker.isPresented, !tour.isActive else { return }
         let firstName = session.user?.name.split(separator: " ").first.map(String.init)
         tour.start(firstName: firstName, replay: false)
     }

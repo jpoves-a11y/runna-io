@@ -1547,6 +1547,42 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return c.json({ ...toSelfUser(user), token });
       }
 
+      // "Ya tengo cuenta": an Apple ID with a hidden (relay) email can't be matched by email, so the
+      // user proves the existing account with its password and Apple is linked to it
+      const linkIdentifier = typeof body?.linkIdentifier === 'string' ? body.linkIdentifier.trim() : '';
+      const linkPassword = typeof body?.linkPassword === 'string' ? body.linkPassword : '';
+      if (linkIdentifier && linkPassword) {
+        const ipKey = ip ? `login:ip:${ip}` : null;
+        if (ipKey) {
+          const wait = await lockedForSeconds(storage, ipKey);
+          if (wait > 0) return tooManyAttempts(c, wait);
+        }
+        const existing = await findUserByIdentifier(storage, linkIdentifier);
+        const accountKey = existing ? `login:account:${existing.id}` : null;
+        if (accountKey) {
+          const wait = await lockedForSeconds(storage, accountKey);
+          if (wait > 0) return tooManyAttempts(c, wait);
+        }
+        const valid = existing && existing.password
+          ? await verifyPassword(linkPassword, existing.password)
+          : (await verifyPassword(linkPassword, await dummyPasswordHash()), false);
+        if (!existing || !valid) {
+          await Promise.all([
+            ipKey ? recordAttempt(storage, ipKey, LIMITS.loginIp) : null,
+            accountKey ? recordAttempt(storage, accountKey, LIMITS.loginAccount) : null,
+          ]);
+          return c.json({ error: 'Usuario, email o contraseña incorrectos' }, 401);
+        }
+        await clearAttempts(storage, accountKey!);
+        if (existing.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
+        if (existing.appleSub && existing.appleSub !== identity.sub) {
+          return c.json({ error: 'Esa cuenta ya está vinculada a otro Apple ID.' }, 409);
+        }
+        await storage.setAppleIdentity(existing.id, identity.sub, await refreshTokenFor(existing));
+        const token = await createSession(storage, existing.id);
+        return c.json({ ...toSelfUser(existing), token, linked: true });
+      }
+
       // New account: the app asks for a username and the age / terms first
       const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 60) : '';
       const username = typeof body?.username === 'string' ? body.username.trim() : '';
@@ -1594,6 +1630,13 @@ export function registerRoutes(app: Hono<AppEnv>) {
       console.error('[AUTH] Apple sign-in failed:', error);
       return c.json({ error: 'No se pudo iniciar sesión con Apple. Inténtalo de nuevo.' }, 500);
     }
+  });
+
+  // The first-login tour was completed (once per account, whatever the device)
+  app.post('/api/users/me/tour-done', requireAuth, async (c) => {
+    const storage = new WorkerStorage(getDb(c.env));
+    await storage.database.run(sql`UPDATE users SET tour_done_at = coalesce(tour_done_at, ${new Date().toISOString()}) WHERE id = ${c.get('authUserId')}`);
+    return c.json({ ok: true });
   });
 
   // Sign in with Apple server-to-server notifications (developer.apple.com → Identifiers → the App ID →

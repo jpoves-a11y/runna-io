@@ -40,6 +40,8 @@ export const users = sqliteTable("users", {
   banReason: text("ban_reason"),
   // When the welcome missions' gift was given (once)
   welcomeRewardAt: text("welcome_reward_at"),
+  // When the first-login tour of the app was completed (shown once per account)
+  tourDoneAt: text("tour_done_at"),
 });
 
 export const routes = sqliteTable("routes", {

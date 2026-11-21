@@ -204,6 +204,7 @@ private struct ConquestInboxModifier: ViewModifier {
         // Never on top of a run being recorded or of the first-launch tour
         guard session.state == .loggedIn, !tracker.isPresented else { return nil }
         guard onboardingDone || OnboardingView.isDisabledForTests else { return nil }
+        guard !TourController.shared.isActive else { return nil }
         return inbox.current
     }
 

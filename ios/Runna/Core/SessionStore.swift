@@ -154,8 +154,9 @@ final class SessionStore {
         }
     }
 
-    /// Signs in with Apple; with `username` (and the accepted terms) it creates the account.
-    func signInWithApple(_ credential: AppleCredential, username: String? = nil, name: String? = nil, acceptedTerms: Bool = false) async throws -> AppleSignInOutcome {
+    /// Signs in with Apple; with `username` (and the accepted terms) it creates the account; with
+    /// `link` (the user and password of an existing account) it links Apple to that account.
+    func signInWithApple(_ credential: AppleCredential, username: String? = nil, name: String? = nil, acceptedTerms: Bool = false, link: (identifier: String, password: String)? = nil) async throws -> AppleSignInOutcome {
         var body: [String: Any] = [
             "identityToken": credential.identityToken,
             "nonce": credential.rawNonce,
@@ -166,6 +167,10 @@ final class SessionStore {
         if let username {
             body["username"] = username.trimmingCharacters(in: .whitespaces)
             body["acceptedTerms"] = acceptedTerms
+        }
+        if let link {
+            body["linkIdentifier"] = link.identifier.trimmingCharacters(in: .whitespaces)
+            body["linkPassword"] = link.password
         }
         let response: AppleAuthResponse = try await api.request("POST", "/api/auth/apple", body: body)
         if response.needsProfile {
