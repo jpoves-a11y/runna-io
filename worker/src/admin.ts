@@ -15,6 +15,9 @@ import { createDb } from './db';
 import { adminPage, escapeHtml } from './pages';
 import { clientIp, lockedForSeconds, recordAttempt, clearAttempts, LIMITS } from './rateLimit';
 import { dashboardBody, competitionsBody, competitionDetailBody, usersBody, userDetailBody, runsBody } from './adminViews';
+import { emailServiceFromEnv, SUPPORT_EMAIL } from './email';
+import { sampleEmail, SAMPLE_KINDS, SAMPLE_NAMES, type SampleKind } from './emailTemplates';
+import { publicBaseUrl } from './pages';
 
 type AdminContext = Context<AppEnv>;
 
@@ -79,6 +82,7 @@ const NAV_ITEMS: Array<[string, string]> = [
   ['/admin/users', 'Usuarios'],
   ['/admin/runs', 'Carreras'],
   ['/admin/stats', 'Estadísticas'],
+  ['/admin/emails', 'Correos'],
 ];
 
 /** Top navigation; `active` is the path of the current section. */
@@ -460,6 +464,43 @@ export function registerAdminPanel(app: Hono<AppEnv>): void {
   app.get('/admin/users', section('/admin/users', 'Usuarios', (storage, _csrf, c) => usersBody(storage, c.req.query('q') ?? '')));
   app.get('/admin/users/:id', section('/admin/users', 'Usuario', (storage, csrf, c) => userDetailBody(storage, c.req.param('id') ?? '', csrf)));
   app.get('/admin/runs', section('/admin/runs', 'Carreras', (storage, csrf) => runsBody(storage, csrf)));
+
+  // Every email as users receive it, with made-up data, and a button to get one in an inbox
+  app.get('/admin/emails', section('/admin/emails', 'Correos', async (_storage, csrf, c) => {
+    const ctx = { baseUrl: publicBaseUrl(c), supportEmail: SUPPORT_EMAIL };
+    const options = SAMPLE_KINDS.map((kind) => `<option value="${kind}">${escapeHtml(SAMPLE_NAMES[kind])}</option>`).join('');
+    const previews = SAMPLE_KINDS.map((kind) => {
+      const email = sampleEmail(ctx, kind, `${ctx.baseUrl}/email/unsubscribe?u=ejemplo&t=ejemplo`);
+      return `<h2>${escapeHtml(SAMPLE_NAMES[kind])}</h2>
+<p class="muted">Asunto: <strong>${escapeHtml(email.subject)}</strong></p>
+<iframe title="${escapeHtml(SAMPLE_NAMES[kind])}" srcdoc="${escapeHtml(email.html)}" style="width:100%;max-width:420px;height:640px;border:1px solid #8884;border-radius:14px;background:#fff;"></iframe>`;
+    }).join('');
+    return `<h1>Correos</h1>
+<p class="muted">Así los reciben los usuarios. Cada uno se adapta solo al modo oscuro del móvil. Mándate uno de prueba para verlo en tu bandeja de entrada.</p>
+<form method="post" action="/admin/emails/send" class="inline-form card">
+<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+<input type="text" name="to" placeholder="tu@email.com" required inputmode="email" autocomplete="email">
+<select name="kind" style="font:inherit;padding:8px;border-radius:10px;">${options}</select>
+<button>Enviarme una prueba</button>
+</form>
+${previews}`;
+  }));
+
+  app.post('/admin/emails/send', async (c) => {
+    const form = await c.req.parseBody();
+    if (!(await checkCsrf(c, form))) return c.redirect('/admin/login', 303);
+    const to = String(form.to ?? '').trim();
+    const kind = String(form.kind ?? 'welcome') as SampleKind;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) || !SAMPLE_KINDS.includes(kind)) {
+      return c.redirect('/admin/emails?ok=' + encodeURIComponent('Escribe un correo válido.'), 303);
+    }
+    try {
+      await emailServiceFromEnv(c.env, publicBaseUrl(c)).sendSample(to, kind);
+      return c.redirect('/admin/emails?ok=' + encodeURIComponent(`Enviado «${SAMPLE_NAMES[kind]}» a ${to}. Mira también en spam.`), 303);
+    } catch (err: any) {
+      return c.redirect('/admin/emails?ok=' + encodeURIComponent(`No se pudo enviar: ${String(err?.message ?? err).slice(0, 200)}`), 303);
+    }
+  });
 
   app.get('/admin/reports', async (c) => {
     const session = await adminSession(c);

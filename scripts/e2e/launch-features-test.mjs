@@ -323,6 +323,9 @@ if (comment) {
 page = await raw('GET', '/admin/stats', { headers: { Cookie: cookie } });
 const stats = await page.text();
 check('stats page renders', page.status === 200 && stats.includes('Embudo') && stats.includes('rankings'), stats.slice(0, 300));
+page = await raw('GET', '/admin/emails', { headers: { Cookie: cookie } });
+const emailsHtml = await page.text();
+check('emails page previews every email', page.status === 200 && (emailsHtml.match(/<iframe/g) ?? []).length === 7 && emailsHtml.includes('Bienvenido a Runna.io, Lucía'), emailsHtml.slice(0, 300));
 
 // Competitions: calendar and a club competition of the current cycle (inserted by hand)
 page = await raw('GET', '/admin/competitions', { headers: { Cookie: cookie } });
@@ -382,6 +385,22 @@ res = await notify('account-delete');
 check('account-delete deletes an Apple-only account', res.status === 200 && !(await one('select id from users where id = ?', [carla.id])));
 res = await notify('account-delete', `002.e2e.${stamp}`);
 check('account-delete only unlinks an account with a password', res.status === 200 && (await one('select apple_sub from users where id = ?', [ana.id]))?.apple_sub === null);
+
+// ---------- 6c. One-click unsubscribe from the emails ----------
+{
+  const { createHmac } = await import('node:crypto');
+  const token = createHmac('sha256', 'e2e-cron-secret').update(`email-unsubscribe:${bea.id}`).digest('base64url');
+  let page2 = await raw('GET', `/email/unsubscribe?u=${bea.id}&t=${token}`);
+  check('unsubscribe page asks first', page2.status === 200 && (await page2.text()).includes('Darme de baja'));
+  page2 = await raw('GET', `/email/unsubscribe?u=${bea.id}&t=forged`);
+  check('forged unsubscribe link is refused', page2.status === 400);
+  page2 = await raw('POST', `/email/unsubscribe?u=${bea.id}&t=${token}`, { form: { 'List-Unsubscribe': 'One-Click' } });
+  const prefs = await one('select friend_request_notifications as fr, friend_accepted_notifications as fa from email_preferences where user_id = ?', [bea.id]);
+  check('one-click unsubscribe turns the emails off', page2.status === 200 && Number(prefs?.fr) === 0 && Number(prefs?.fa) === 0, prefs);
+  page2 = await raw('POST', `/email/unsubscribe?u=${bea.id}&t=${token}`, { form: { resubscribe: '1' } });
+  const again = await one('select friend_request_notifications as fr from email_preferences where user_id = ?', [bea.id]);
+  check('they can be turned on again', Number(again?.fr) === 1, again);
+}
 
 // ---------- 7. Account deletion clears the new tables ----------
 res = await call('DELETE', `/api/users/${ana.id}`, { token: ana.token });

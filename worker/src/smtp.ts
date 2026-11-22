@@ -1,72 +1,17 @@
 /**
  * Minimal SMTP client over Cloudflare's TCP sockets, for sending through Gmail with an app
  * password (free, no own domain needed: Gmail signs the messages of its own addresses).
- * Implicit TLS on port 465, AUTH LOGIN, one HTML message per connection.
+ * Implicit TLS on port 465, AUTH LOGIN, one message per connection (plain text + HTML).
  */
 import { connect } from 'cloudflare:sockets';
 
-export interface SmtpMessage {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  fromEmail: string;
-  fromName: string;
-  to: string;
-  subject: string;
-  html: string;
-}
+import { buildMessage, type SmtpMessage } from './mime';
+
+export type { SmtpMessage };
 
 const TIMEOUT_MS = 15_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-function base64Utf8(text: string): string {
-  let binary = '';
-  for (const byte of encoder.encode(text)) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-/**
- * RFC 2047 encoded header value, so accents and emoji survive. Each encoded word holds at most
- * 45 bytes (60 base64 characters) and the words go on folded lines, as the RFC requires.
- */
-function encodeHeader(text: string): string {
-  if (/^[\x20-\x7e]*$/.test(text) && text.length <= 70) return text;
-  const words: string[] = [];
-  let chunk = '';
-  for (const ch of text) {
-    if (encoder.encode(chunk + ch).length > 45) {
-      words.push(chunk);
-      chunk = '';
-    }
-    chunk += ch;
-  }
-  if (chunk) words.push(chunk);
-  return words.map((word) => `=?UTF-8?B?${base64Utf8(word)}?=`).join('\r\n ');
-}
-
-/** Display name as an RFC 5322 quoted string ("Runna.io": a bare dot isn't allowed). */
-function quoteDisplayName(name: string): string {
-  if (!/^[\x20-\x7e]*$/.test(name)) return encodeHeader(name);
-  return `"${name.replace(/(["\\])/g, '\\$1')}"`;
-}
-
-function buildMessage(msg: SmtpMessage): string {
-  const body = base64Utf8(msg.html).replace(/.{1,76}/g, (line) => `${line}\r\n`);
-  // No Message-ID: Gmail adds its own before signing (one made up here would claim its domain)
-  return [
-    `From: ${quoteDisplayName(msg.fromName)} <${msg.fromEmail}>`,
-    `To: ${msg.to}`,
-    `Subject: ${encodeHeader(msg.subject)}`,
-    `Date: ${new Date().toUTCString().replace('GMT', '+0000')}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    body,
-  ].join('\r\n');
-}
 
 /** Sends one message; throws with the server's reply when any step fails. */
 export async function sendSmtp(msg: SmtpMessage): Promise<void> {

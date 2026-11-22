@@ -1618,7 +1618,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       await storage.createEmailPreferences(created.id);
       if (identity.email && !identity.email.endsWith('@appleid.invalid')) {
         try {
-          const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(identity.email, name);
+          const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(identity.email, name, created.id);
           try { c.executionCtx.waitUntil(welcome); } catch { /* runs on its own */ }
         } catch (err) {
           console.error('[EMAIL] Failed to send welcome email:', err);
@@ -1968,7 +1968,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       try {
         // sendWelcomeEmail never rejects; the response doesn't wait for it
-        const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(user.email, user.name);
+        const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(user.email, user.name, user.id);
         try { c.executionCtx.waitUntil(welcome); } catch { /* no execution context: it runs on its own */ }
       } catch (err) {
         console.error('[EMAIL] Failed to send welcome email:', err);
@@ -2037,7 +2037,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Enviar email de bienvenida ahora que está verificado
       try {
         const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
-        await emailService.sendWelcomeEmail(user.email, user.name);
+        await emailService.sendWelcomeEmail(user.email, user.name, user.id);
       } catch (err) {
         console.error('[EMAIL] Failed to send welcome email:', err);
       }
@@ -3703,7 +3703,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
               await emailService.sendFriendRequestEmail(
                 recipient.email,
                 sender.name,
-                sender.username
+                sender.username,
+                recipient.id
               );
             
               await emailService.recordNotification(
@@ -3867,7 +3868,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
               await emailService.sendFriendAcceptedEmail(
                 sender.email,
                 recipient.name,
-                recipient.username
+                recipient.username,
+                sender.id
               );
             
               await emailService.recordNotification(

@@ -11,6 +11,8 @@ import { requireAuth, isCronRequest, type AppEnv } from './auth';
 import { cycleAt, monthPeriod } from './cycles';
 import { competitionStandings, seededRandom } from './season';
 import { pickRewardItem } from '../../shared/game';
+import { isValidUnsubscribeToken } from './email';
+import { page, escapeHtml } from './pages';
 
 type Ctx = Context<AppEnv>;
 
@@ -54,7 +56,70 @@ export function parseEvents(body: any): Array<{ name: string; props: string | nu
   return events;
 }
 
+/** Page of the unsubscribe link (plain, readable in light and dark). */
+function unsubscribePage(title: string, text: string, form?: { action: string; label: string; secondary?: boolean; resubscribe?: boolean }): string {
+  const button = form
+    ? `<form method="post" action="${escapeHtml(form.action)}">${form.resubscribe ? '<input type="hidden" name="resubscribe" value="1">' : ''}<button class="button${form.secondary ? ' secondary' : ''}" style="font:inherit;cursor:pointer;">${escapeHtml(form.label)}</button></form>`
+    : '';
+  return page(`${title} · Runna.io`, `
+<div class="landing">
+<h1>${escapeHtml(title)}</h1>
+<p>${escapeHtml(text)}</p>
+${button}
+</div>`);
+}
+
 export function registerLaunchRoutes(app: Hono<AppEnv>): void {
+  // Unsubscribe link of the emails (List-Unsubscribe). GET asks (link scanners open links on their
+  // own); POST applies it, which is also what Gmail's one-click button sends. Signed with HMAC.
+  // Account emails (codes, password) aren't affected.
+  app.get('/email/unsubscribe', async (c) => {
+    const userId = c.req.query('u') ?? '';
+    const token = c.req.query('t') ?? '';
+    c.header('Cache-Control', 'no-store');
+    c.header('X-Robots-Tag', 'noindex');
+    if (!(await isValidUnsubscribeToken(c.env.UPSTASH_CRON_SECRET ?? '', userId, token))) {
+      return c.html(unsubscribePage('Enlace no válido', 'Este enlace para darte de baja no es correcto. Escríbenos a runna.io.service@gmail.com y lo hacemos por ti.'), 400);
+    }
+    const action = `/email/unsubscribe?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`;
+    return c.html(unsubscribePage('¿Dejar de recibir correos?', 'Ya no te escribiremos para avisarte de amigos ni de territorio. Los correos de tu cuenta (códigos, contraseña) te seguirán llegando.', { action, label: 'Darme de baja' }));
+  });
+
+  app.post('/email/unsubscribe', async (c) => {
+    const userId = c.req.query('u') ?? '';
+    const token = c.req.query('t') ?? '';
+    c.header('Cache-Control', 'no-store');
+    if (!(await isValidUnsubscribeToken(c.env.UPSTASH_CRON_SECRET ?? '', userId, token))) {
+      return c.html(unsubscribePage('Enlace no válido', 'Este enlace para darte de baja no es correcto.'), 400);
+    }
+    const form = await c.req.parseBody().catch(() => ({} as Record<string, unknown>));
+    const resubscribe = form.resubscribe === '1';
+    const { storage } = stores(c);
+    const value = resubscribe ? 1 : 0;
+    const prefs = await storage.getEmailPreferences(userId);
+    if (prefs) {
+      await storage.updateEmailPreferences(userId, {
+        friendRequestNotifications: value,
+        friendAcceptedNotifications: value,
+        territoryConqueredNotifications: value,
+      } as any);
+    } else if (await storage.getUser(userId)) {
+      await storage.createEmailPreferences(userId);
+      if (!resubscribe) {
+        await storage.updateEmailPreferences(userId, {
+          friendRequestNotifications: 0,
+          friendAcceptedNotifications: 0,
+          territoryConqueredNotifications: 0,
+        } as any);
+      }
+    }
+    const back = `/email/unsubscribe?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`;
+    if (resubscribe) {
+      return c.html(unsubscribePage('Vuelves a recibirlos', 'Te avisaremos otra vez por correo de amigos y territorio.'));
+    }
+    return c.html(unsubscribePage('Listo, te has dado de baja', 'No te enviaremos más correos de avisos. Si cambias de idea:', { action: back, label: 'Volver a recibirlos', secondary: true, resubscribe: true }));
+  });
+
   // Cron (04:15): analytics events are kept 180 days at most (privacy policy, 2.9)
   app.post('/api/tasks/events-purge', async (c) => {
     if (!(await isCronRequest(c))) return c.json({ error: 'Unauthorized' }, 401);

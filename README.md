@@ -242,6 +242,19 @@ Nunca subas credenciales al repositorio: `.env*` y `.dev.vars` están en `.gitig
   node scripts/e2e/modes-test.mjs
   ```
 
+### Cómo son los correos
+
+Todos usan la misma plantilla (`worker/src/emailTemplates.ts`): texto plano y HTML en el mismo mensaje (los filtros de spam desconfían de los correos solo HTML), sin emojis en el asunto ni imágenes, maquetada con tablas para que Gmail la respete y con versión para el modo oscuro del móvil. Los avisos (bienvenida, amistad, territorio) llevan `List-Unsubscribe` con baja en un clic (`/email/unsubscribe`, firmada con el secreto de administración); los de la cuenta (códigos, contraseña) no. En el panel, pestaña **Correos**, se ven todos y puedes mandarte uno de prueba.
+
+### Usar un dominio propio (recomendado para no caer en spam)
+
+Enviar desde una cuenta de Gmail con enlaces a `workers.dev` es lo que más hace que Gmail y Outlook los traten como spam. Con un dominio propio (por ejemplo, `runna.app`):
+
+1. Cómpralo en Cloudflare (Domain Registration): sus DNS quedan ya en Cloudflare.
+2. En [Resend](https://resend.com) → Domains → Add domain. Resend da los registros SPF, DKIM y DMARC; con «Sign in to Cloudflare» los añade solo.
+3. En el Worker: `EMAIL_PROVIDER=resend`, `RESEND_FROM=hola@tudominio` (variables) y `RESEND_API_KEY` (secreto).
+4. Opcional: ruta del Worker en tu dominio (`api.tudominio`) y `WORKER_URL=https://api.tudominio` para que los enlaces de los correos también sean tuyos.
+
 ## Garmin
 
 Integración con el Garmin Connect Developer Program (Activity API), en `worker/src/garmin.ts`. Garmin **empuja** cada actividad (resumen + puntos GPS) al Worker unos minutos después de que el usuario sincronice el reloj con Garmin Connect; no hay sondeo. Con acceso Starter no hay histórico: solo llegan las actividades posteriores a la conexión.

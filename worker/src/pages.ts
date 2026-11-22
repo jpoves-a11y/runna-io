@@ -90,7 +90,7 @@ footer a { margin: 0 6px; }
 .button.secondary { background: transparent; color: var(--accent); border: 2px solid var(--accent); }
 `;
 
-function page(title: string, body: string): string {
+export function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="es">
 <head>
