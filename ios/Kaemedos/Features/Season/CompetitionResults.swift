@@ -451,7 +451,7 @@ struct CompetitionResultsView: View {
             }
         }
         .onAppear {
-            if !summary.rewards.isEmpty { ChestOpeningView.prewarm() }
+            if !summary.rewards.isEmpty { ChestOpening3DView.prewarm() }
         }
     }
 
@@ -512,7 +512,7 @@ private struct ChestOpeningOverlay: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ChestOpeningView(rarity: item.rarity) {
+            ChestOpening3DView(rarity: item.rarity) {
                 withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { revealed = true }
             }
             .ignoresSafeArea()

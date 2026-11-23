@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Cut each chest illustration into the layers the opening animation moves.
+"""Cut each chest illustration into the pieces the 3D opening is textured with.
 
-The opening (ios/Kaemedos/Components/ChestOpening.swift) is drawn with the very same artwork
-as the closed chest, so the chest that opens is exactly the one in the picture. This script cuts
-every `chest_<rarity>.png` into four layers on the same 420 x 420 canvas:
+The opening (ios/Kaemedos/Components/ChestOpening3D.swift) builds the chest in 3D seen from the
+same angle the illustration is drawn from, and paints the picture onto it from that viewpoint
+(camera projection mapping): at rest the chest is exactly the picture, and when the lid swings
+open on its hinge the picture moves with it. This script cuts every `chest_<rarity>.png` into
+the pieces that move separately, on the same 420 x 420 canvas:
 
     chest_<rarity>_lid     the domed lid and the hasp hanging from it
     chest_<rarity>_base    the body, with the padlock and hasp removed and the wood behind them
                            painted back in
     chest_<rarity>_lock    the padlock (body and shackle)
-    chest_<rarity>_under   the inside of the lid, seen once it has swung past upright
-    chest_<rarity>_inside  the inside of the chest, seen through the opening once the lid lifts
+    chest_<rarity>_wood    planks (crystal for the legendary) from the lid, without its shading,
+                           for the inside of the chest and of the lid, which the picture doesn't show
 
-The outlines below were traced by hand on each picture; `ChestArt` in ChestOpening.swift uses the
-same numbers (front edge of the opening, hinge, depth), so keep them in sync if the art changes.
+The outlines below were traced by hand on each picture; `ChestArt` in ChestOpening3D.swift uses
+the front-left corner of the top and the size of the hasp and padlock, so keep them in sync if
+the art changes.
 
 Usage (from the repo root, needs Pillow and NumPy):
     python3 scripts/maintenance/split-chests.py
@@ -33,6 +36,7 @@ CANVAS = 420
 #   front   x range of the plain front planks either side of the padlock, used to paint the wood
 #           back in behind it
 #   opening front-left, front-right and back-right corners of the top of the body
+#   wood    a box of plain planks (crystal) on the lid
 CHESTS = {
     "common": dict(
         cut=[(0, 171), (82, 171), (84, 177), (234, 184), (236, 189), (318, 190), (320, 185), (362, 168), (364, 165), (420, 165)],
@@ -40,6 +44,7 @@ CHESTS = {
         lock=dict(shackle=(126, 188, 191), body=(111, 207, 234, 288, 152, 313)),
         front=((86, 110), (209, 233)),
         opening=((32, 172), (306, 190), (392, 165)),
+        wood=(112, 110, 232, 158),
     ),
     "rare": dict(
         cut=[(0, 170), (80, 170), (82, 176), (230, 182), (232, 186), (318, 188), (320, 183), (362, 166), (364, 162), (420, 162)],
@@ -47,6 +52,7 @@ CHESTS = {
         lock=dict(shackle=(121, 189, 188), body=(107, 205, 230, 285, 150, 310)),
         front=((84, 106), (207, 229)),
         opening=((30, 171), (304, 188), (391, 162)),
+        wood=(112, 110, 232, 158),
     ),
     "epic": dict(
         cut=[(0, 171), (82, 171), (84, 177), (234, 184), (236, 188), (318, 190), (320, 185), (362, 170), (364, 166), (420, 166)],
@@ -54,6 +60,7 @@ CHESTS = {
         lock=dict(shackle=(125, 188, 190), body=(111, 207, 236, 285, 152, 314)),
         front=((86, 110), (209, 233)),
         opening=((30, 172), (306, 190), (392, 166)),
+        wood=(112, 110, 232, 158),
     ),
     "legendary": dict(
         cut=[(0, 178), (82, 178), (84, 184), (241, 190), (243, 193), (318, 194), (320, 190), (362, 175), (364, 171), (420, 171)],
@@ -61,6 +68,7 @@ CHESTS = {
         lock=dict(shackle=(128, 195, 194), body=(114, 210, 234, 290, 156, 316)),
         front=((86, 113), (212, 240)),
         opening=((34, 179), (308, 194), (392, 171)),
+        wood=(196, 122, 262, 168),
     ),
 }
 
@@ -152,74 +160,14 @@ def average_color(image: Image.Image, mask: Image.Image):
     return pixels[selected][:, :3].mean(axis=0)
 
 
-def inside_layer(image: Image.Image, chest) -> Image.Image:
-    """The inside of the body: the top of the walls (lit like the band) around a dark hollow."""
-    (flx, fly), (frx, fry), (brx, bry) = chest["opening"]
-    depth = np.array([brx - frx, bry - fry], dtype=np.float32)
-    fl, fr = np.array([flx, fly], np.float32), np.array([frx, fry], np.float32)
-    bl, br = fl + depth, fr + depth
-    band = polygon_mask([(flx, fly + 2), (frx, fry + 2), (frx, fry + 14), (flx, fly + 14)])
-    rim = average_color(image, band)
-    scale = 4
-    size = CANVAS * scale
-    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-
-    def s(p):
-        return tuple(float(v) * scale for v in p)
-
-    # Wall tops (the rim), as a slightly lit version of the metal band
-    rim_light = tuple(int(min(255, c * 0.95)) for c in rim)
-    draw.polygon([s(fl), s(fr), s(br), s(bl)], fill=rim_light + (255,))
-    # Hollow: inset by the thickness of the walls (thicker at the front, which is closer)
-    across = (fr - fl) / np.linalg.norm(fr - fl)
-    back = depth / np.linalg.norm(depth)
-    wall = 9.0
-    ifl = fl + across * wall + back * wall * 0.6
-    ifr = fr - across * wall + back * wall * 0.6
-    ibl = bl + across * wall - back * wall * 0.5
-    ibr = br - across * wall - back * wall * 0.5
-    dark = tuple(int(c * 0.16) for c in rim)
-    draw.polygon([s(ifl), s(ifr), s(ibr), s(ibl)], fill=dark + (255,))
-    # Inner faces of the back and left walls, a little lighter than the floor
-    wall_color = tuple(int(c * 0.3) for c in rim)
-    drop = np.array([0, 26], np.float32)
-    draw.polygon([s(ibl), s(ibr), s(ibr + drop * 0.55), s(ibl + drop)], fill=wall_color + (255,))
-    draw.polygon([s(ifl), s(ibl), s(ibl + drop), s(ifl + drop * 0.4)], fill=tuple(int(c * 0.24) for c in rim) + (255,))
-    # Clip everything below the top of the hollow back to the hollow itself (the floor is deeper)
-    hollow = polygon_mask([s(ifl), s(ifr), s(ibr), s(ibl)], (size, size))
-    rim_mask = polygon_mask([s(fl), s(fr), s(br), s(bl)], (size, size))
-    inner = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    inner.paste(layer, (0, 0), hollow)
-    outer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    outer.paste(rim_light + (255,), (0, 0, size, size), rim_mask)
-    outer.paste((0, 0, 0, 0), (0, 0, size, size), hollow)
-    # A dark edge where the rim meets the hollow, and a soft shade on the hollow
-    edge = ImageDraw.Draw(outer)
-    edge.line([s(ifl), s(ifr), s(ibr), s(ibl), s(ifl)], fill=tuple(int(c * 0.35) for c in rim) + (255,), width=scale)
-    result = Image.alpha_composite(inner, outer)
-    return result.resize((CANVAS, CANVAS), Image.LANCZOS)
-
-
-def under_layer(image: Image.Image, above: Image.Image) -> Image.Image:
-    """The inside of the lid: the lid (without the hasp) upside down, in shadow.
-
-    Flipped so the front edge is on top, as when the lid stands open behind the chest; the
-    opening animation pins its bottom edge (the lid's top in the picture) to the hinge.
-    """
-    lid = Image.composite(image, Image.new("RGBA", image.size, (0, 0, 0, 0)), above)
-    box = lid.getchannel("A").getbbox()
-    flipped = lid.transpose(Image.FLIP_TOP_BOTTOM)
-    # Keep the same box: what was at the top of the lid is now at its bottom
-    top, bottom = box[1], box[3]
-    flipped = flipped.transform(flipped.size, Image.AFFINE, (1, 0, 0, 0, 1, (CANVAS - bottom) - top))
-    pixels = np.asarray(flipped).astype(np.float32)
-    # In shadow, darker towards the front edge (top), which the light from inside reaches least
-    rows = np.linspace(0, 1, CANVAS)[:, None]
-    reach = np.clip((rows * CANVAS - top) / max(1, bottom - top), 0, 1)
-    shade = 0.2 + 0.2 * reach
-    pixels[..., :3] *= shade[..., None]
-    return Image.fromarray(pixels.clip(0, 255).astype(np.uint8), "RGBA")
+def wood_texture(image: Image.Image, chest) -> Image.Image:
+    """A strip of the lid's planks with the light and shade of the dome taken out."""
+    strip = image.crop(chest["wood"]).convert("RGB")
+    pixels = np.asarray(strip).astype(np.float32)
+    shading = np.asarray(strip.filter(ImageFilter.GaussianBlur(10))).astype(np.float32)
+    flat = pixels - shading + pixels.reshape(-1, 3).mean(axis=0)
+    texture = Image.fromarray(flat.clip(0, 255).astype(np.uint8), "RGB")
+    return texture.resize((256, round(256 * texture.height / texture.width)), Image.LANCZOS)
 
 
 def save(image: Image.Image, name: str) -> None:
@@ -248,7 +196,8 @@ def split(rarity: str) -> None:
     lid_layer = Image.composite(image, transparent, lid.filter(ImageFilter.GaussianBlur(0.4)))
 
     # The body: everything below the cut, with the padlock and the hasp painted over with wood
-    body = ImageChops.invert(above)
+    # A couple of pixels under the lid too, so no gap shows along the seam (the lid covers them)
+    body = ImageChops.invert(above).filter(ImageFilter.MaxFilter(5))
     # Repaint the whole front between the plain strips, so no shadow of the padlock is left
     (_, l1), (r0, _) = chest["front"]
     (fx0, fy0), (fx1, fy1) = chest["opening"][0], chest["opening"][1]
@@ -263,8 +212,11 @@ def split(rarity: str) -> None:
     save(lid_layer, f"chest_{rarity}_lid")
     save(base_layer, f"chest_{rarity}_base")
     save(lock_layer, f"chest_{rarity}_lock")
-    save(inside_layer(image, chest), f"chest_{rarity}_inside")
-    save(under_layer(image, above), f"chest_{rarity}_under")
+    save(wood_texture(image, chest), f"chest_{rarity}_wood")
+    # The metal of the bands, for the rims the picture doesn't show
+    band = polygon_mask([(chest["opening"][0][0], chest["opening"][0][1] + 3), (chest["opening"][1][0] - 70, chest["opening"][1][1] - 2),
+                         (chest["opening"][1][0] - 70, chest["opening"][1][1] + 8), (chest["opening"][0][0], chest["opening"][0][1] + 12)])
+    print(rarity, "band colour", tuple(round(c / 255, 2) for c in average_color(image, band)))
     print(f"{rarity}: layers written")
 
 
