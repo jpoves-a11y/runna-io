@@ -643,36 +643,7 @@ struct EditProfileView: View {
     }
 
     private var colorGrid: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6), spacing: 14) {
-            ForEach(AppConfig.userColors, id: \.self) { option in
-                colorSwatch(option)
-            }
-        }
-    }
-
-    private func colorSwatch(_ option: String) -> some View {
-        let selected = option.uppercased() == color.uppercased()
-        return Button {
-            color = option
-        } label: {
-            ZStack {
-                Circle().fill(Color(hex: option))
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(Color.white)
-                }
-            }
-            .frame(height: 40)
-            .padding(3)
-            .overlay {
-                Circle().strokeBorder(Color(hex: option), lineWidth: selected ? 2.5 : 0)
-            }
-            .animation(.snappy, value: selected)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(AppConfig.userColorNames[option] ?? option)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        TerritoryColorPicker(selection: $color)
     }
 
     private func load() async {
@@ -759,5 +730,45 @@ final class ProfileModel {
         if let loaded = try? await statsResource.fetch() {
             awards = loaded.awards
         }
+    }
+}
+
+/// The territory colours to choose from (Editar perfil, and the "Completa tu perfil" step of the tour).
+struct TerritoryColorPicker: View {
+    @Binding var selection: String
+    var swatchSize: CGFloat = 40
+    var spacing: CGFloat = 14
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: 6), spacing: spacing) {
+            ForEach(AppConfig.userColors, id: \.self) { option in
+                swatch(option)
+            }
+        }
+    }
+
+    private func swatch(_ option: String) -> some View {
+        let selected = option.uppercased() == selection.uppercased()
+        return Button {
+            selection = option
+        } label: {
+            ZStack {
+                Circle().fill(Color(hex: option))
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: swatchSize * 0.36, weight: .bold))
+                        .foregroundStyle(Color.white)
+                }
+            }
+            .frame(height: swatchSize)
+            .padding(3)
+            .overlay {
+                Circle().strokeBorder(Color(hex: option), lineWidth: selected ? 2.5 : 0)
+            }
+            .animation(.snappy, value: selected)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(AppConfig.userColorNames[option] ?? option)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

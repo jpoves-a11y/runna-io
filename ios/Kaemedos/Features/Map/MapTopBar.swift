@@ -22,7 +22,6 @@ struct MapTopBar: View {
     var body: some View {
         HStack(spacing: DS.Spacing.m) {
             avatar
-                .tourAnchor(.mapAvatar)
             Button(action: onTapStats) {
                 HStack(spacing: DS.Spacing.s) {
                     value

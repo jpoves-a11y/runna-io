@@ -5,10 +5,11 @@ import CoreLocation
 struct GameProfileSection: View {
     @State private var season = SeasonStore.shared
     @State private var detected: DetectedCity?
-    @State private var isLocating = false
     @State private var errorMessage: String?
     @State private var showInventory = false
-    @State private var locator: OneShotLocation?
+    @State private var locator = BaseCityLocator()
+
+    private var isLocating: Bool { locator.isBusy }
 
     var body: some View {
         Section {
@@ -124,58 +125,126 @@ struct GameProfileSection: View {
     }
 
     private func locate() {
-        isLocating = true
         Task {
-            defer { isLocating = false }
-            do {
-                let finder = OneShotLocation()
-                locator = finder
-                let location = try await finder.current()
-                locator = nil
-                let placemarks = try await CLGeocoder().reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "es_ES"))
-                guard let placemark = placemarks.first,
-                      let city = placemark.locality ?? placemark.subAdministrativeArea,
-                      let code = placemark.isoCountryCode else {
-                    errorMessage = "No hemos podido saber en qué ciudad estás. Inténtalo con mejor cobertura."
-                    return
-                }
-                detected = DetectedCity(
-                    city: city,
-                    countryCode: code,
-                    countryName: placemark.country ?? code,
-                    latitude: location.coordinate.latitude,
-                    longitude: location.coordinate.longitude
-                )
-            } catch let error as OneShotLocation.Failure {
-                locator = nil
-                errorMessage = error.message
-            } catch {
-                locator = nil
-                errorMessage = "No hemos podido obtener tu ubicación. \(error.localizedDescription)"
+            await locator.locate()
+            switch locator.phase {
+            case .confirm(let city):
+                detected = city
+                locator.reset()
+            case .denied:
+                errorMessage = BaseCityLocator.deniedMessage
+                locator.reset()
+            case .failed(let message):
+                errorMessage = message
+                locator.reset()
+            default:
+                break
             }
         }
     }
 
     private func save(_ city: DetectedCity) {
         Task {
-            do {
-                try await APIClient.shared.send("PATCH", "/api/users/me/location", body: [
-                    "city": city.city,
-                    "countryCode": city.countryCode,
-                    "countryName": city.countryName,
-                    "lat": city.latitude,
-                    "lng": city.longitude,
-                ])
-                Haptics.success()
-                await season.load(force: true)
-            } catch {
-                errorMessage = error.localizedDescription
+            if !(await locator.save(city)), case .failed(let message) = locator.phase {
+                errorMessage = message
+                locator.reset()
             }
         }
     }
 }
 
-private struct DetectedCity {
+/// Finds the user's city with one location fix and saves it as their base city (Perfil → Juego, and
+/// the "Completa tu perfil" step of the tour).
+@MainActor
+@Observable
+final class BaseCityLocator {
+    enum Phase: Equatable {
+        case idle
+        case locating
+        /// Found: waiting for the user to confirm it.
+        case confirm(DetectedCity)
+        case saving
+        /// No permission to use the location.
+        case denied
+        case failed(String)
+    }
+
+    static let deniedMessage = "KM2 no tiene permiso para usar tu ubicación. Actívalo en Ajustes."
+
+    private(set) var phase: Phase = .idle
+    private var finder: OneShotLocation?
+
+    var isBusy: Bool { phase == .locating || phase == .saving }
+
+    /// Location permission refused (or restricted by parental controls).
+    static var isDenied: Bool {
+        let status = CLLocationManager().authorizationStatus
+        return status == .denied || status == .restricted
+    }
+
+    func reset() {
+        phase = .idle
+    }
+
+    func locate() async {
+        guard !isBusy else { return }
+        if Self.isDenied {
+            phase = .denied
+            return
+        }
+        phase = .locating
+        do {
+            let finder = OneShotLocation()
+            self.finder = finder
+            let location = try await finder.current()
+            self.finder = nil
+            let placemarks = try await CLGeocoder().reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "es_ES"))
+            guard let placemark = placemarks.first,
+                  let city = placemark.locality ?? placemark.subAdministrativeArea,
+                  let code = placemark.isoCountryCode else {
+                phase = .failed("No hemos podido saber en qué ciudad estás. Inténtalo con mejor cobertura.")
+                return
+            }
+            phase = .confirm(DetectedCity(
+                city: city,
+                countryCode: code,
+                countryName: placemark.country ?? code,
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude
+            ))
+        } catch let error as OneShotLocation.Failure {
+            finder = nil
+            phase = Self.isDenied ? .denied : .failed(error.message)
+        } catch {
+            finder = nil
+            phase = Self.isDenied ? .denied : .failed("No hemos podido obtener tu ubicación. \(error.localizedDescription)")
+        }
+    }
+
+    /// Saves it as the base city. false (and `.failed`) if it couldn't.
+    @discardableResult
+    func save(_ city: DetectedCity) async -> Bool {
+        phase = .saving
+        do {
+            try await APIClient.shared.send("PATCH", "/api/users/me/location", body: [
+                "city": city.city,
+                "countryCode": city.countryCode,
+                "countryName": city.countryName,
+                "lat": city.latitude,
+                "lng": city.longitude,
+            ])
+            Haptics.success()
+            await SeasonStore.shared.load(force: true)
+            phase = .idle
+            return true
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return false
+        }
+    }
+}
+
+struct DetectedCity: Equatable {
     let city: String
     let countryCode: String
     let countryName: String

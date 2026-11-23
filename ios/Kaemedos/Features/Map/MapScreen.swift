@@ -116,7 +116,10 @@ struct MapScreen: View {
             .onMapCameraChange(frequency: .onEnd) { context in
                 lastCamera = context.camera
                 visibleRegion = context.region
-                withAnimation(.snappy) { heading = context.camera.heading }
+            }
+            // The compass follows the rotation live
+            .onMapCameraChange(frequency: .continuous) { context in
+                heading = context.camera.heading
             }
             .onTapGesture { location in
                 if let chest = chestNear(location, proxy: proxy) {
@@ -530,19 +533,27 @@ struct MapScreen: View {
 
     // MARK: - Floating controls
 
+    private var isRotated: Bool { abs(heading) > 2 && abs(heading) < 358 }
+
     private var controlsColumn: some View {
+        VStack(spacing: DS.Spacing.m) {
+            // Outside the glass group (its glass would melt into the buttons next to it), on top: the
+            // column grows upwards and the other buttons don't move
+            if isRotated {
+                MapCompassButton(heading: heading) { resetNorth() }
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
+            controlButtons
+        }
+        .animation(.snappy, value: isRotated)
+    }
+
+    private var controlButtons: some View {
         GlassGroup(spacing: DS.Spacing.s) {
             VStack(spacing: DS.Spacing.s) {
                 inventoryButton
                     .tourAnchor(.powers)
                 layersMenu
-                if abs(heading) > 2 && abs(heading) < 358 {
-                    GlassCircleButton(systemImage: "location.north.line", accessibilityLabel: "Orientar al norte", tint: .steal) {
-                        resetNorth()
-                    }
-                    .rotationEffect(.degrees(-heading))
-                    .transition(.scale.combined(with: .opacity))
-                }
                 if !model.visibleShapes.isEmpty {
                     GlassCircleButton(systemImage: "arrow.up.left.and.arrow.down.right", accessibilityLabel: "Ver todo el territorio") {
                         fitTerritories()
@@ -557,7 +568,6 @@ struct MapScreen: View {
                 }
             }
         }
-        .tourAnchor(.mapControls)
     }
 
     /// Powers, global boosts and cosmetics won in chests, challenges and competitions.
@@ -727,3 +737,49 @@ private struct SelectedUser: Identifiable {
     let id: String
 }
 
+// MARK: - Compass
+
+/// Shown while the map is rotated: a still glass circle with a needle (red north) that turns with the
+/// map; tap to face north again.
+private struct MapCompassButton: View {
+    let heading: Double
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                VStack(spacing: 0) {
+                    NeedleHalf()
+                        .fill(Color.steal)
+                        .frame(width: 8, height: 12)
+                    NeedleHalf()
+                        .fill(Color.secondary.opacity(0.6))
+                        .frame(width: 8, height: 12)
+                        .rotationEffect(.degrees(180))
+                }
+                Text("N")
+                    .font(.system(size: 8, weight: .heavy))
+                    .foregroundStyle(Color.steal)
+                    .offset(y: -17)
+            }
+            .rotationEffect(.degrees(-heading))
+            .frame(width: DS.Size.mapControl, height: DS.Size.mapControl)
+            .glassSurface(Circle(), interactive: true)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.pressable)
+        .accessibilityLabel("Orientar al norte")
+    }
+}
+
+/// One half of the compass needle: a slim triangle pointing up.
+private struct NeedleHalf: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}

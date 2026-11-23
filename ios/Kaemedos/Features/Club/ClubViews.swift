@@ -655,6 +655,10 @@ struct ClubDiscoverView: View {
     @State private var selectedClub: ClubSummary?
     @State private var message: String?
     @State private var errorMessage: String?
+    @State private var showCityAlert = false
+
+    /// Without a base city you can't create or join a club: ask for it first.
+    private var cityMissing: Bool { needsCity || BaseCityGate.isMissing }
 
     var body: some View {
         List {
@@ -666,7 +670,9 @@ struct ClubDiscoverView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("Crear un club") { showCreate = true }
+                    Button("Crear un club") {
+                        if cityMissing { showCityAlert = true } else { showCreate = true }
+                    }
                         .buttonStyle(PrimaryButtonStyle())
                         .padding(.top, DS.Spacing.s)
                 }
@@ -780,6 +786,7 @@ struct ClubDiscoverView: View {
             Text(message ?? "")
         }
         .errorAlert($errorMessage)
+        .baseCityRequiredAlert($showCityAlert)
     }
 
     private func search() async {
@@ -798,6 +805,10 @@ struct ClubDiscoverView: View {
     }
 
     private func joinWithCode() {
+        if cityMissing {
+            showCityAlert = true
+            return
+        }
         let value = code.trimmingCharacters(in: .whitespaces).uppercased()
         Task {
             do {
@@ -811,6 +822,10 @@ struct ClubDiscoverView: View {
     }
 
     private func respond(_ invite: ClubInvite, accept: Bool) {
+        if accept && cityMissing {
+            showCityAlert = true
+            return
+        }
         Task {
             do {
                 if let response = try await model.respond(toInvite: invite, accept: accept) {
@@ -819,6 +834,35 @@ struct ClubDiscoverView: View {
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+/// A club belongs to a city and only takes runners whose base city it is.
+enum BaseCityGate {
+    /// The base city isn't set (known once the game profile has loaded; otherwise the server says so).
+    @MainActor static var isMissing: Bool {
+        guard let me = SeasonStore.shared.globalMe else { return false }
+        return me.city == nil
+    }
+}
+
+extension View {
+    /// "Define tu ciudad base" alert, with a button to the profile (where it's chosen). From a sheet,
+    /// `beforeOpeningProfile` closes it first.
+    func baseCityRequiredAlert(_ isPresented: Binding<Bool>, beforeOpeningProfile: (() -> Void)? = nil) -> some View {
+        alert("Define tu ciudad base", isPresented: isPresented) {
+            Button("Ir a mi perfil") {
+                if let beforeOpeningProfile {
+                    beforeOpeningProfile()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { AppRouter.shared.showProfile = true }
+                } else {
+                    AppRouter.shared.showProfile = true
+                }
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Es necesario definir tu ciudad base en tu perfil para crear un club o unirte a uno.")
         }
     }
 }
@@ -895,6 +939,7 @@ struct ClubDetailSheet: View {
     @State private var errorMessage: String?
     @State private var message: String?
     @State private var isJoining = false
+    @State private var showCityAlert = false
 
     var body: some View {
         NavigationStack {
@@ -953,6 +998,7 @@ struct ClubDetailSheet: View {
                 }
             }
             .task { await load() }
+            .baseCityRequiredAlert($showCityAlert, beforeOpeningProfile: { dismiss() })
             .alert("Club", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
                 Button("OK", role: .cancel) { dismiss() }
             } message: {
@@ -1013,6 +1059,10 @@ struct ClubDetailSheet: View {
     }
 
     private func join() {
+        if BaseCityGate.isMissing {
+            showCityAlert = true
+            return
+        }
         isJoining = true
         Task {
             defer { isJoining = false }
@@ -1483,6 +1533,7 @@ struct ClubJoinConfirmationSheet: View {
     @State private var errorMessage: String?
     @State private var message: String?
     @State private var isJoining = false
+    @State private var showCityAlert = false
 
     var body: some View {
         VStack(spacing: DS.Spacing.l) {
@@ -1536,6 +1587,7 @@ struct ClubJoinConfirmationSheet: View {
                 errorMessage = error.localizedDescription
             }
         }
+        .baseCityRequiredAlert($showCityAlert, beforeOpeningProfile: { dismiss() })
         .alert("Club", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil; dismiss() } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -1550,6 +1602,10 @@ struct ClubJoinConfirmationSheet: View {
     }
 
     private func join() {
+        if BaseCityGate.isMissing {
+            showCityAlert = true
+            return
+        }
         isJoining = true
         Task {
             defer { isJoining = false }

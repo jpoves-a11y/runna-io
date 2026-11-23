@@ -27,7 +27,6 @@ struct RankingsView: View {
             ScrollView {
                 VStack(spacing: DS.Spacing.l) {
                     RankingTabs(options: Board.allCases, selection: $board) { $0.title }
-                        .tourAnchor(.rankingTabs)
                     switch board {
                     case .global: globalBoard
                     case .competition: competitionBoard
