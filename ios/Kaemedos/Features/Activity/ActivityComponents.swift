@@ -1,0 +1,613 @@
+import SwiftUI
+import MapKit
+import UIKit
+
+// MARK: - Event kinds
+
+/// Identity of each feed event type (icon and label shown quietly in the card's meta line).
+enum ActivityEventKind {
+    case run, steal, together, treasureFound, treasureSpawned, nickname, sentinel, record
+
+    init(_ eventType: String) {
+        switch eventType {
+        case "territory_stolen": self = .steal
+        case "ran_together": self = .together
+        case "treasure_found": self = .treasureFound
+        case "treasure_spawned": self = .treasureSpawned
+        case "nickname_changed": self = .nickname
+        case "sentinel_alert": self = .sentinel
+        case "personal_record": self = .record
+        default: self = .run
+        }
+    }
+
+    /// Restrained accent: coral for losses, neutral for everything else.
+    var tint: Color {
+        switch self {
+        case .steal, .sentinel: return Color.steal
+        default: return Color.secondary
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .run: return "figure.run"
+        case .steal: return "bolt"
+        case .together: return "person.2"
+        case .treasureFound, .treasureSpawned: return "shippingbox"
+        case .nickname: return "textformat"
+        case .sentinel: return "shield.lefthalf.filled"
+        case .record: return "medal"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .run: return "Carrera"
+        case .steal: return "Robo"
+        case .together: return "En grupo"
+        case .treasureFound: return "Tesoro"
+        case .treasureSpawned: return "Nuevo tesoro"
+        case .nickname: return "Apodo"
+        case .sentinel: return "Alerta"
+        case .record: return "Récord"
+        }
+    }
+
+    /// Events that aren't a plain run (shown as a quiet variant of the same card).
+    var isSpecial: Bool {
+        switch self {
+        case .run, .together: return false
+        default: return true
+        }
+    }
+}
+
+// MARK: - Card background
+
+/// Feed card surface: the flat `.card()` surface. `tint` is kept for API compatibility and ignored
+/// (special events are a typographic variant, not a coloured block).
+struct ActivityCardBackground: ViewModifier {
+    var tint: Color? = nil
+    var padding: CGFloat = DS.Spacing.l
+
+    func body(content: Content) -> some View {
+        content.card(padding: padding)
+    }
+}
+
+extension View {
+    func activityCard(tint: Color? = nil, padding: CGFloat = DS.Spacing.l) -> some View {
+        modifier(ActivityCardBackground(tint: tint, padding: padding))
+    }
+}
+
+/// Splits formatted values ("2,38 km", "5:32 /km") into number and unit for `StatValue`.
+enum ActivityFormat {
+    static func distanceParts(_ meters: Double) -> (value: String, unit: String) {
+        split(Format.distance(meters))
+    }
+
+    static func areaParts(_ squareMeters: Double) -> (value: String, unit: String) {
+        let parts = Format.areaParts(squareMeters)
+        return (parts.value, parts.unit)
+    }
+
+    /// "5:32" (min/km) or nil when the pace isn't meaningful.
+    static func paceValue(distanceMeters: Double, seconds: Int) -> String? {
+        let text: String = Format.pace(distanceMeters: distanceMeters, seconds: seconds)
+        guard text != "--" else { return nil }
+        return text.replacingOccurrences(of: " /km", with: "")
+    }
+
+    private static func split(_ text: String) -> (value: String, unit: String) {
+        guard let space = text.lastIndex(of: " ") else { return (text, "") }
+        let value = String(text[..<space])
+        let unit = String(text[text.index(after: space)...])
+        return (value, unit)
+    }
+}
+
+// MARK: - Map snapshots
+
+/// Limits how many MapKit snapshots render at the same time.
+@MainActor
+final class ActivitySnapshotGate {
+    static let shared = ActivitySnapshotGate()
+    private let limit = 2
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if running < limit {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            running = max(0, running - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
+/// Renders (and caches) static map images of a route with the polyline drawn in the runner's colour.
+enum ActivityMapSnapshots {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 48 * 1024 * 1024
+        return cache
+    }()
+
+    /// Rendered snapshots are also kept in Caches/RouteSnapshots, so the feed and your runs don't
+    /// render them again after a relaunch (a route never changes; the key includes size, colour and theme).
+    private static let directory: URL? = {
+        guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let url = caches.appendingPathComponent("RouteSnapshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+    private static let ioQueue = DispatchQueue(label: "com.jpoves.kaemedos.route-snapshots", qos: .utility)
+
+    static func cached(_ key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    /// Logout: the snapshots show the account's routes.
+    static func removeAll() {
+        cache.removeAllObjects()
+        guard let directory else { return }
+        ioQueue.async {
+            let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+            for file in files {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
+    private static func fileURL(for key: String, color: UIColor, lineWidth: CGFloat) -> URL? {
+        guard let directory else { return nil }
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        let colorKey = String(format: "%02x%02x%02x%02x", Int(red * 255), Int(green * 255), Int(blue * 255), Int(alpha * 255))
+        let name = "\(key)-\(colorKey)-\(Int(lineWidth * 10))"
+        let safe = String(name.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "_" })
+        return directory.appendingPathComponent(safe + ".png", isDirectory: false)
+    }
+
+    private static func store(_ image: UIImage, key: String) {
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        cache.setObject(image, forKey: key as NSString, cost: cost)
+    }
+
+    @MainActor
+    static func render(
+        coordinates: [[Double]],
+        color: UIColor,
+        lineWidth: CGFloat,
+        size: CGSize,
+        scale: CGFloat,
+        dark: Bool,
+        key: String
+    ) async -> UIImage? {
+        if let hit = cached(key) { return hit }
+        let file = fileURL(for: key, color: color, lineWidth: lineWidth)
+        if let file {
+            let fromDisk: UIImage? = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+                guard let data = try? Data(contentsOf: file), let image = UIImage(data: data, scale: max(scale, 1)) else { return nil }
+                return image.preparingForDisplay() ?? image
+            }.value
+            if let fromDisk {
+                store(fromDisk, key: key)
+                return fromDisk
+            }
+        }
+        // At most two MapKit snapshots at a time (a long list otherwise starts dozens at once)
+        await ActivitySnapshotGate.shared.acquire()
+        defer { ActivitySnapshotGate.shared.release() }
+        if let hit = cached(key) { return hit }
+        let points: [CLLocationCoordinate2D] = RouteShape.thinned(coordinates, maxPoints: 400).compactMap { pair in
+            guard pair.count >= 2 else { return nil }
+            return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
+        }
+        guard points.count >= 2, size.width > 1, size.height > 1 else { return nil }
+        let lats: [Double] = points.map { $0.latitude }
+        let lngs: [Double] = points.map { $0.longitude }
+        guard let minLat = lats.min(), let maxLat = lats.max(),
+              let minLng = lngs.min(), let maxLng = lngs.max() else { return nil }
+
+        let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLng + maxLng) / 2)
+        let latDelta = min(max((maxLat - minLat) * 1.6, 0.004), 120)
+        let lngDelta = min(max((maxLng - minLng) * 1.6, 0.004), 120)
+
+        let options = MKMapSnapshotter.Options()
+        options.region = MKCoordinateRegion(center: center, span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lngDelta))
+        options.size = size
+        options.scale = max(scale, 1)
+        options.mapType = .mutedStandard
+        options.pointOfInterestFilter = .excludingAll
+        options.showsBuildings = false
+        options.traitCollection = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
+
+        let snapshotter = MKMapSnapshotter(options: options)
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        let image: UIImage? = await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
+            snapshotter.start(with: queue) { snapshot, _ in
+                guard let snapshot else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let result = draw(route: points, on: snapshot, color: color, lineWidth: lineWidth)
+                continuation.resume(returning: result)
+            }
+        }
+        withExtendedLifetime(snapshotter) {}
+        if let image {
+            store(image, key: key)
+            if let file {
+                ioQueue.async {
+                    if let data = image.pngData() {
+                        try? data.write(to: file, options: [.atomic])
+                    }
+                }
+            }
+        }
+        return image
+    }
+
+    private static func draw(route points: [CLLocationCoordinate2D], on snapshot: MKMapSnapshotter.Snapshot, color: UIColor, lineWidth: CGFloat) -> UIImage {
+        let base = snapshot.image
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = base.scale
+        let renderer = UIGraphicsImageRenderer(size: base.size, format: format)
+        return renderer.image { _ in
+            base.draw(at: .zero)
+
+            let path = UIBezierPath()
+            for (index, coordinate) in points.enumerated() {
+                let point = snapshot.point(for: coordinate)
+                if index == 0 {
+                    path.move(to: point)
+                } else {
+                    path.addLine(to: point)
+                }
+            }
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+
+            // Thin light casing under the route keeps it legible on any map
+            UIColor.white.withAlphaComponent(0.7).setStroke()
+            path.lineWidth = lineWidth + 2.5
+            path.stroke()
+
+            color.setStroke()
+            path.lineWidth = lineWidth
+            path.stroke()
+
+            if let first = points.first {
+                dot(at: snapshot.point(for: first), fill: UIColor.white, stroke: color, radius: lineWidth + 1.5)
+            }
+            if let last = points.last {
+                dot(at: snapshot.point(for: last), fill: color, stroke: UIColor.white, radius: lineWidth + 2.5)
+            }
+        }
+    }
+
+    private static func dot(at point: CGPoint, fill: UIColor, stroke: UIColor, radius: CGFloat) {
+        let rect = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+        let circle = UIBezierPath(ovalIn: rect)
+        fill.setFill()
+        circle.fill()
+        stroke.setStroke()
+        circle.lineWidth = 2
+        circle.stroke()
+    }
+}
+
+/// Non-interactive map preview of a route (MapKit snapshot), with a drawn-shape placeholder while it loads.
+struct ActivityRouteMap: View {
+    let cacheKey: String
+    let coordinates: [[Double]]
+    let color: Color
+    var cornerRadius: CGFloat = DS.Radius.tile
+    var lineWidth: CGFloat = 3.5
+    /// Hairline outline (off when the map sits edge to edge inside a card).
+    var bordered: Bool = true
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: UIImage?
+
+    var body: some View {
+        GeometryReader { proxy in
+            content(size: proxy.size)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .overlay {
+            if bordered {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.hairline, lineWidth: DS.Stroke.hairline)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func content(size: CGSize) -> some View {
+        let key = snapshotKey(for: size)
+        let shown: UIImage? = image ?? ActivityMapSnapshots.cached(key)
+        return ZStack {
+            placeholder
+            if let shown {
+                Image(uiImage: shown)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size.width, height: size.height)
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .task(id: key) { await load(size: size, key: key) }
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.surfaceRaised
+            RouteShape(coordinates: coordinates)
+                .stroke(color.opacity(0.5), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                .padding(24)
+        }
+    }
+
+    private func snapshotKey(for size: CGSize) -> String {
+        "\(cacheKey)-\(Int(size.width))x\(Int(size.height))-\(colorScheme == .dark ? "d" : "l")"
+    }
+
+    private func load(size: CGSize, key: String) async {
+        if let hit = ActivityMapSnapshots.cached(key) {
+            image = hit
+            return
+        }
+        image = nil
+        guard size.width > 1, size.height > 1 else { return }
+        let rendered = await ActivityMapSnapshots.render(
+            coordinates: coordinates,
+            color: UIColor(color),
+            lineWidth: lineWidth,
+            size: size,
+            scale: displayScale,
+            dark: colorScheme == .dark,
+            key: key
+        )
+        guard !Task.isCancelled else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            image = rendered
+        }
+    }
+}
+
+// MARK: - Stats
+
+/// One figure of a stats row: condensed value (+ unit) over an uppercase label.
+/// `systemImage` and `tint` are kept for API compatibility; the value uses `tint` only for brand / steal.
+struct ActivityStatItem: View {
+    let systemImage: String
+    let value: String
+    let label: String
+    let tint: Color
+    var unit: String? = nil
+
+    private var valueTint: Color {
+        (tint == Color.brand || tint == Color.steal) ? tint : Color.primary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            StatValue(value: value, unit: unit, font: Font.stat(22, weight: .semibold), tint: valueTint)
+            Text(label)
+                .statLabelStyle()
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct ActivityStat: Identifiable {
+    let systemImage: String
+    let value: String
+    let label: String
+    let tint: Color
+    var unit: String? = nil
+    var id: String { label }
+}
+
+/// Row of condensed figures separated by hairline dividers (no background).
+struct ActivityStatsStrip: View {
+    let stats: [ActivityStat]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: DS.Spacing.m) {
+            ForEach(Array(stats.enumerated()), id: \.element.id) { index, stat in
+                if index > 0 {
+                    StatDivider(height: 30)
+                }
+                ActivityStatItem(systemImage: stat.systemImage, value: stat.value, label: stat.label, tint: stat.tint, unit: stat.unit)
+            }
+        }
+    }
+}
+
+// MARK: - Reactions
+
+/// Quiet action button: icon + count, no fill. Active state colours the icon only.
+struct ActivityReactionPill: View {
+    let systemImage: String
+    let activeImage: String
+    let count: Int
+    let isActive: Bool
+    let tint: Color
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    @State private var taps = 0
+
+    var body: some View {
+        Button {
+            taps += 1
+            action()
+        } label: {
+            label
+        }
+        .buttonStyle(.pressable)
+        .sensoryFeedback(.impact(weight: .light), trigger: taps)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isActive ? activeImage : systemImage)
+                .font(.system(size: 17, weight: .regular))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(isActive ? tint : Color.secondary)
+            Text("\(count)")
+                .font(.subheadline.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .contentTransition(.numericText(value: Double(count)))
+        }
+        .frame(minWidth: 44, minHeight: 36, alignment: .leading)
+        .contentShape(Rectangle())
+        .animation(.snappy, value: count)
+        .animation(.snappy, value: isActive)
+    }
+}
+
+// MARK: - Small pieces
+
+/// Glyph + text line for the extra achievements of a run. Only brand / steal / gold keep their colour.
+struct ActivityEmblemRow: View {
+    let systemImage: String
+    let text: String
+    let tint: Color
+
+    private var iconColor: Color {
+        (tint == Color.brand || tint == Color.steal) ? tint : Color.secondary
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.footnote.weight(.medium))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(iconColor)
+                .frame(width: 18)
+            Text(text)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// Event type as quiet meta text (glyph + label).
+struct ActivityKindBadge: View {
+    let kind: ActivityEventKind
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: kind.icon)
+                .font(.caption2.weight(.medium))
+            Text(kind.label)
+                .font(Font.meta)
+                .lineLimit(1)
+        }
+        .foregroundStyle(kind.tint)
+        .accessibilityHidden(true)
+    }
+}
+
+/// "No cuenta" / "En revisión" on a run the anti-cheat rejected or flagged (quiet meta text: glyph + label).
+/// Shows nothing for an accepted run.
+struct RunValidationBadge: View {
+    let route: RunRoute
+
+    var body: some View {
+        if route.isRejected {
+            badge("No cuenta", icon: "xmark.circle", tint: Color.steal)
+        } else if route.isUnderReview {
+            badge("En revisión", icon: "hourglass", tint: Color.secondary)
+        }
+    }
+
+    private func badge(_ text: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.caption2.weight(.medium))
+            Text(text)
+                .font(Font.meta)
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Segmented switch between the friends feed and your runs.
+struct ActivitySectionPicker: View {
+    @Binding var selection: AppRouter.ActivitySection
+
+    var body: some View {
+        Picker("Sección", selection: $selection) {
+            Text("Amigos").tag(AppRouter.ActivitySection.feed)
+            Text("Mis carreras").tag(AppRouter.ActivitySection.mine)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .sensoryFeedback(.selection, trigger: selection)
+    }
+}
+
+/// Static placeholder card while the feed loads for the first time.
+struct ActivitySkeletonCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Circle().fill(Color.surfaceRaised).frame(width: 40, height: 40)
+                VStack(alignment: .leading, spacing: 6) {
+                    bar(width: 120, height: 11)
+                    bar(width: 80, height: 9)
+                }
+                Spacer()
+            }
+            bar(width: 210, height: 13)
+            Rectangle()
+                .fill(Color.surfaceRaised)
+                .frame(height: 180)
+                .padding(.horizontal, -DS.Spacing.l)
+            HStack(spacing: DS.Spacing.l) {
+                bar(width: 60, height: 22)
+                bar(width: 60, height: 22)
+                bar(width: 60, height: 22)
+            }
+        }
+        .activityCard()
+        .accessibilityHidden(true)
+    }
+
+    private func bar(width: CGFloat, height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .fill(Color.surfaceRaised)
+            .frame(width: width, height: height)
+    }
+}

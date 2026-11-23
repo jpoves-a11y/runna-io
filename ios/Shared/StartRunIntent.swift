@@ -19,7 +19,7 @@ struct StartRunIntent: AppIntent {
 /// A request to open the run screen and start recording, picked up by the app's main screen
 /// (works when the app was closed: the request waits a minute for it).
 enum StartRunRequest {
-    static let notification = Notification.Name("runna.startRunRequested")
+    static let notification = Notification.Name("kaemedos.startRunRequested")
     private static let timeKey = "startRunRequest.at"
     private static let sourceKey = "startRunRequest.source"
 

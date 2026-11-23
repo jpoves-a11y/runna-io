@@ -51,15 +51,15 @@ const env = {
     send: async (body) => {
       // Like a real queue: processed after the request returns
       setTimeout(() => {
-        const stats = globalThis.__runnaDbStats;
+        const stats = globalThis.__kaemedosDbStats;
         const run = () => {
           const before = stats?.statements ?? 0;
-          if (process.env.E2E_SQL_TRACE) globalThis.__runnaDbTrace = [];
+          if (process.env.E2E_SQL_TRACE) globalThis.__kaemedosDbTrace = [];
           return worker
             .queue({ messages: [{ body, ack() {}, retry() { console.error('[e2e queue] retry requested for', body.type); } }] }, env)
             .then(() => {
               if (process.env.E2E_SUBREQUEST_LOG && stats) console.log(`[subrequests] ${stats.statements - before} QUEUE ${body.type}`);
-              if (process.env.E2E_SQL_TRACE) { for (const line of globalThis.__runnaDbTrace) console.log(`[sql] ${line}`); globalThis.__runnaDbTrace = null; }
+              if (process.env.E2E_SQL_TRACE) { for (const line of globalThis.__kaemedosDbTrace) console.log(`[sql] ${line}`); globalThis.__kaemedosDbTrace = null; }
             })
             .catch((error) => console.error('[e2e queue] failed:', error));
         };
@@ -74,7 +74,7 @@ const ctx = { waitUntil: (promise) => { Promise.resolve(promise).catch(() => {})
 // Database round trips per request (Cloudflare counts each one as a subrequest: 50 on the free plan).
 // E2E_SUBREQUEST_LOG=1 prints them; requests run one at a time so the counts don't mix.
 const measured = async (request) => {
-  const stats = globalThis.__runnaDbStats;
+  const stats = globalThis.__kaemedosDbStats;
   if (!process.env.E2E_SUBREQUEST_LOG || !stats) return worker.fetch(request, env, ctx);
   const run = chain.then(async () => {
     const before = stats.statements;

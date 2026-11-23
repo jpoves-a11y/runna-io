@@ -150,7 +150,7 @@ const baseEnv = {
   APNS_KEY_ID: 'TESTKEY123',
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-  APNS_BUNDLE_ID: 'io.runna.app',
+  APNS_BUNDLE_ID: 'com.jpoves.kaemedos.app',
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
 // Padded like secrets pasted in the Cloudflare dashboard: the Worker must trim them
@@ -240,11 +240,11 @@ check('connect returns Garmin consent URL with PKCE', authUrl.origin + authUrl.p
 const forged = await call('GET', `/api/garmin/callback?code=good-code&state=${encodeURIComponent(state.slice(0, -2) + 'xx')}`);
 check('callback with forged state: invalid_state', forged.status === 302 && forged.location.includes('garmin_error=invalid_state'), forged.location);
 const denied = await call('GET', `/api/garmin/callback?error=access_denied&state=${encodeURIComponent(state)}`);
-check('callback denied (app flow): runnaio://oauth/garmin?garmin_error=denied', denied.location === 'runnaio://oauth/garmin?garmin_error=denied', denied.location);
+check('callback denied (app flow): kaemedos://oauth/garmin?garmin_error=denied', denied.location === 'kaemedos://oauth/garmin?garmin_error=denied', denied.location);
 const badCode = await call('GET', `/api/garmin/callback?code=bad-code&state=${encodeURIComponent(state)}`);
 check('callback with rejected code: token_exchange', badCode.location?.includes('garmin_error=token_exchange'), badCode.location);
 const callback = await call('GET', `/api/garmin/callback?code=good-code&state=${encodeURIComponent(state)}`);
-check('callback success redirects to the app', callback.status === 302 && callback.location === 'runnaio://oauth/garmin?garmin_connected=true', callback);
+check('callback success redirects to the app', callback.status === 302 && callback.location === 'kaemedos://oauth/garmin?garmin_connected=true', callback);
 const tokenCall = calls.token.at(-1);
 check('token exchange sent code_verifier matching the challenge', tokenCall.grant_type === 'authorization_code' && /^[A-Za-z0-9_-]{43}$/.test(tokenCall.code_verifier)
   && !JSON.stringify(connectRes.data).includes(tokenCall.code_verifier), tokenCall);
@@ -252,10 +252,10 @@ const account = await one('select * from garmin_accounts where user_id = ?', [us
 check('account stored with the Garmin user ID', account?.garmin_user_id === GARMIN_USER && account.access_token === 'access-1' && account.refresh_token === 'refresh-1'
   && Date.parse(account.expires_at) > Date.now() + 23 * 3600 * 1000 && JSON.parse(account.permissions).includes('ACTIVITY_EXPORT'), account);
 
-// Same Garmin account from another Runna.io user
+// Same Garmin account from another Kaemedos.io user
 const { state: otherState } = await connect(other);
 const linked = await call('GET', `/api/garmin/callback?code=good-code&state=${encodeURIComponent(otherState)}`);
-check('second user with the same Garmin account: already_linked', linked.location === 'runnaio://oauth/garmin?garmin_error=already_linked', linked.location);
+check('second user with the same Garmin account: already_linked', linked.location === 'kaemedos://oauth/garmin?garmin_error=already_linked', linked.location);
 
 const status1 = await call('GET', `/api/garmin/status/${user.id}`, { token: user.token });
 check('status connected', status1.data.connected === true && status1.data.activityExport === true && status1.data.totalActivities === 0, status1.data);
@@ -345,7 +345,7 @@ check('routes stay after disconnect', Number((await one('select count(*) n from 
 permissions = ['HEALTH_EXPORT'];
 const { state: state3 } = await connect(user);
 const noPerm = await call('GET', `/api/garmin/callback?code=good-code&state=${encodeURIComponent(state3)}`);
-check('consent without Activities: no_activity_permission', noPerm.location === 'runnaio://oauth/garmin?garmin_error=no_activity_permission', noPerm.location);
+check('consent without Activities: no_activity_permission', noPerm.location === 'kaemedos://oauth/garmin?garmin_error=no_activity_permission', noPerm.location);
 permissions = ['ACTIVITY_EXPORT'];
 
 // Account deletion deletes the Garmin registration too

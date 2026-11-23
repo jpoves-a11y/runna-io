@@ -69,7 +69,7 @@ export function buildMessage(msg: SmtpMessage): string {
   if (!msg.text) {
     return [...headers, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', base64Lines(msg.html)].join('\r\n');
   }
-  const boundary = `runna-${crypto.randomUUID().replace(/-/g, '')}`;
+  const boundary = `kaemedos-${crypto.randomUUID().replace(/-/g, '')}`;
   return [
     ...headers,
     `Content-Type: multipart/alternative; boundary="${boundary}"`,

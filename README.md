@@ -1,6 +1,6 @@
 # KM2 (KAEMEDOS)
 
-Antes Runna.io. El bundle ID, los dominios y el esquema `runnaio://` conservan el nombre antiguo para no romper la app publicada ni los enlaces.
+Se escribe KM2 y se pronuncia «kaemedos». App iOS `com.jpoves.kaemedos`, enlaces `kaemedos://` y API en `https://api.kaemedos.workers.dev`.
 
 Corre y conquista el mapa. KM2 tiene dos modos a la vez:
 
@@ -39,7 +39,7 @@ Las reglas y catálogos (poderes, caducidades, modos, retos, piezas de escudo, u
 ## Estructura
 
 ```
-runna-io/
+kaemedos/
 ├── ios/                    App nativa de iPhone (Xcode, SwiftUI)
 ├── worker/                 API en Cloudflare Workers (Hono)
 │   └── src/
@@ -158,7 +158,7 @@ Prueba e2e: `scripts/e2e/activity-profile-test.mjs`.
 
 ### Compartir el recorrido en vídeo
 
-Desde el detalle de una actividad (Compartir → Vídeo del recorrido), el resumen al terminar una carrera y el aviso de actividad importada se abre un editor (`ios/Runna/Features/Run/RouteShare.swift`): formato (historia 9:16, post 4:5, cuadrado), 3D/2D, satélite/mapa, velocidad, color de la ruta, título y qué datos se ven (título, fecha, distancia, tiempo, ritmo, territorio, resumen final, marca KM2). La vista previa es exactamente lo que se graba. «Grabar vídeo» reproduce la animación entera a pantalla completa y la graba con ReplayKit (iOS pide permiso para grabar la pantalla de la app), recortada y escalada a 1080 px de ancho en MP4; después se puede ver, compartir o guardar en Fotos.
+Desde el detalle de una actividad (Compartir → Vídeo del recorrido), el resumen al terminar una carrera y el aviso de actividad importada se abre un editor (`ios/Kaemedos/Features/Run/RouteShare.swift`): formato (historia 9:16, post 4:5, cuadrado), 3D/2D, satélite/mapa, velocidad, color de la ruta, título y qué datos se ven (título, fecha, distancia, tiempo, ritmo, territorio, resumen final, marca KM2). La vista previa es exactamente lo que se graba. «Grabar vídeo» reproduce la animación entera a pantalla completa y la graba con ReplayKit (iOS pide permiso para grabar la pantalla de la app), recortada y escalada a 1080 px de ancho en MP4; después se puede ver, compartir o guardar en Fotos.
 
 ### Secretos y variables del Worker
 
@@ -183,16 +183,16 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 
 ### Emails
 
-Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`runna.io.service@gmail.com`). Es gratis, no necesita dominio propio y Gmail los firma, así que no acaban en spam. El límite es de unos 500 emails al día.
+Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`kaeme2.support@gmail.com`). Es gratis, no necesita dominio propio y Gmail los firma, así que no acaban en spam. El límite es de unos 500 emails al día.
 
 1. Entra en esa cuenta de Google y activa la **verificación en dos pasos** (myaccount.google.com → Seguridad). Sin ella, Google no deja crear contraseñas de aplicación.
-2. Abre [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), crea una con el nombre "Runna Worker" y copia las 16 letras.
+2. Abre [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), crea una con el nombre "Kaemedos Worker" y copia las 16 letras.
 3. `npx wrangler secret put GMAIL_APP_PASSWORD -c wrangler.worker.toml` y pega las 16 letras (con o sin espacios).
 4. Comprueba que funciona:
 
    ```bash
    curl -X POST -H "Authorization: Bearer $UPSTASH_CRON_SECRET" -H "Content-Type: application/json" \
-     -d '{"to":"tu-email@ejemplo.com"}' https://runna-io-api.runna-io-api.workers.dev/api/admin/email/test
+     -d '{"to":"tu-email@ejemplo.com"}' https://api.kaemedos.workers.dev/api/admin/email/test
    ```
 
    Responde con el proveedor, el remitente, los problemas de configuración que vea (`problems`) y, si se pudo enviar, `"sent": true`. Si no, `error` trae la respuesta del servidor de correo (por ejemplo `535 ... Username and Password not accepted` si la contraseña de aplicación está mal).
@@ -250,7 +250,7 @@ Todos usan la misma plantilla (`worker/src/emailTemplates.ts`): texto plano y HT
 
 ### Usar un dominio propio (recomendado para no caer en spam)
 
-Enviar desde una cuenta de Gmail con enlaces a `workers.dev` es lo que más hace que Gmail y Outlook los traten como spam. Con un dominio propio (por ejemplo, `runna.app`):
+Enviar desde una cuenta de Gmail con enlaces a `workers.dev` es lo que más hace que Gmail y Outlook los traten como spam. Con un dominio propio (por ejemplo, `kaemedos.app`):
 
 1. Cómpralo en Cloudflare (Domain Registration): sus DNS quedan ya en Cloudflare.
 2. En [Resend](https://resend.com) → Domains → Add domain. Resend da los registros SPF, DKIM y DMARC; con «Sign in to Cloudflare» los añade solo.
@@ -269,8 +269,8 @@ Integración con el Garmin Connect Developer Program (Activity API), en `worker/
    npx wrangler secret put GARMIN_WEBHOOK_SECRET -c wrangler.worker.toml   # una cadena aleatoria larga
    ```
 
-2. Redirect URL de OAuth: `https://runna-io-api.runna-io-api.workers.dev/api/garmin/callback`.
-3. En **Endpoint Configuration** (`https://apis.garmin.com/tools/endpoints`) apunta a `https://runna-io-api.runna-io-api.workers.dev/api/garmin/webhook?key=<GARMIN_WEBHOOK_SECRET>`, en modo **push** (también acepta ping), estos tipos: **Activity Details**, **Deregistrations** y **User Permissions Change**. Deja desactivados los demás.
+2. Redirect URL de OAuth: `https://api.kaemedos.workers.dev/api/garmin/callback`.
+3. En **Endpoint Configuration** (`https://apis.garmin.com/tools/endpoints`) apunta a `https://api.kaemedos.workers.dev/api/garmin/webhook?key=<GARMIN_WEBHOOK_SECRET>`, en modo **push** (también acepta ping), estos tipos: **Activity Details**, **Deregistrations** y **User Permissions Change**. Deja desactivados los demás.
 4. La fila Garmin aparece en la app (Perfil → Servicios conectados) en cuanto `/api/garmin/status` dice `configured: true`.
 
 Prueba end-to-end con Garmin simulado: compila el Worker como en "API en local" y ejecuta
@@ -288,17 +288,17 @@ node scripts/e2e/garmin-test.mjs
 | `/privacy` | Política de privacidad (URL para App Store Connect) |
 | `/terms` | Condiciones de uso |
 | `/support` | Soporte (URL para App Store Connect) |
-| `/invite/<token>` | Enlace de invitación de amistad: abre `runnaio://friends/accept/<token>` en la app |
-| `/club-invite/<token>` | Enlace de invitación a un club: abre `runnaio://clubs/join/<token>` en la app |
+| `/invite/<token>` | Enlace de invitación de amistad: abre `kaemedos://friends/accept/<token>` en la app |
+| `/club-invite/<token>` | Enlace de invitación a un club: abre `kaemedos://clubs/join/<token>` en la app |
 | `/open?tab=<map\|rankings\|activity\|club\|friends\|profile>` | Abre la app en una pestaña (lo usan los botones de los emails) |
 | `/.well-known/apple-app-site-association` | Enlaces universales: `/invite/*`, `/club-invite/*` y `/open` abren la app si está instalada (`appIDs` sale de `APNS_TEAM_ID`) |
 | `/admin` | Panel de administración: denuncias y estadísticas ([ver abajo](#panel-de-administración)) |
 
-En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms` y `/support`.
+En producción: `https://api.kaemedos.workers.dev/privacy`, `/terms` y `/support`.
 
 ## Panel de administración
 
-`https://runna-io-api.runna-io-api.workers.dev/admin` (código en `worker/src/admin.ts`). Se entra con el secreto de administración (`UPSTASH_CRON_SECRET`); la sesión dura 12 horas.
+`https://api.kaemedos.workers.dev/admin` (código en `worker/src/admin.ts`). Se entra con el secreto de administración (`UPSTASH_CRON_SECRET`); la sesión dura 12 horas.
 
 - **Resumen** (`/admin`): lo que necesita atención (denuncias pendientes y su antigüedad, carreras en revisión, si la competición termina o empieza en menos de 2 días), usuarios, gente que abre la app y corre hoy, carreras, competiciones y clubs, y la fase de la temporada con su cuenta atrás.
 - **Competiciones** (`/admin/competitions`): calendario con los ciclos anteriores, el actual y los 8 siguientes (modo, inicio, fin y descanso en hora de Madrid), las competiciones de clubs del ciclo actual y del anterior (participantes, carreras, área, líder, rival), premios del último ciclo, cofres en el mapa y recogidos, y los clubs con si tienen miembros para el próximo modo. Cada competición tiene su página con la clasificación, las banderas y las carreras por día.

@@ -40,8 +40,8 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -project Runna.xcodeproj \
-            -scheme Runna \
+            -project Kaemedos.xcodeproj \
+            -scheme Kaemedos \
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
@@ -52,20 +52,20 @@ jobs:
           echo "--- warnings ---"
           grep -E "warning:" build-debug.log | grep -v "^ld: warning" | sort -u | head -100 || true
           echo "--- app bundle ---"
-          ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
+          ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app
 
       - name: Check Info.plist
         working-directory: ios
         run: |
-          PLIST=build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app/Info.plist
+          PLIST=build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app/Info.plist
           plutil -p "$PLIST"
           for key in NSLocationWhenInUseUsageDescription NSHealthShareUsageDescription NSCameraUsageDescription UIBackgroundModes CFBundleURLTypes CFBundleDisplayName; do
             plutil -extract "$key" raw "$PLIST" > /dev/null 2>&1 || plutil -extract "$key" xml1 -o - "$PLIST" > /dev/null || { echo "Missing $key"; exit 1; }
           done
           [ "$(plutil -extract NSSupportsLiveActivities raw "$PLIST")" = "true" ] || { echo "NSSupportsLiveActivities is not YES"; exit 1; }
           # Live Activity widget extension embedded in the app, with the same version and build as the app
-          EXT=build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app/PlugIns/RunnaLive.appex
-          [ -d "$EXT" ] || { echo "RunnaLive.appex is not embedded in Runna.app/PlugIns"; ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app; exit 1; }
+          EXT=build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app/PlugIns/KaemedosLive.appex
+          [ -d "$EXT" ] || { echo "KaemedosLive.appex is not embedded in Kaemedos.app/PlugIns"; ls -la build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app; exit 1; }
           plutil -p "$EXT/Info.plist"
           [ "$(plutil -extract NSExtension.NSExtensionPointIdentifier raw "$EXT/Info.plist")" = "com.apple.widgetkit-extension" ] || { echo "Wrong NSExtensionPointIdentifier"; exit 1; }
           for key in CFBundleVersion CFBundleShortVersionString; do
@@ -85,8 +85,8 @@ jobs:
           echo "Simulator: $DEVICE"
           xcrun simctl boot "$DEVICE"
           xcrun simctl bootstatus "$DEVICE" -b
-          xcrun simctl install "$DEVICE" build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
-          BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app/Info.plist)
+          xcrun simctl install "$DEVICE" build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app
+          BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app/Info.plist)
           xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
           sleep 20
           xcrun simctl io "$DEVICE" screenshot screenshot-launch.png
@@ -94,7 +94,7 @@ jobs:
             echo "App is still running after 20 s"
           else
             echo "App is not running (crashed?)"
-            ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i runna || true
+            ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i kaemedos || true
             exit 1
           fi
 
@@ -118,7 +118,7 @@ jobs:
         working-directory: ios
         run: |
           set -e
-          APP=build/DerivedData/Build/Products/Debug-iphonesimulator/Runna.app
+          APP=build/DerivedData/Build/Products/Debug-iphonesimulator/Kaemedos.app
           BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw "$APP/Info.plist")
           DEVICE=$(xcrun simctl list devices booted -j | python3 -c "import json,sys; print(next(d['udid'] for v in json.load(sys.stdin)['devices'].values() for d in v))")
           # The test API is plain http on localhost (test copy of the app only)
@@ -127,16 +127,16 @@ jobs:
           xcrun simctl install "$DEVICE" "$APP"
           xcrun simctl privacy "$DEVICE" grant location "$BUNDLE_ID" || true
           xcrun simctl location "$DEVICE" set 41.6488,-0.8891 || true
-          export SIMCTL_CHILD_RUNNA_API_BASE_URL=http://127.0.0.1:8787
-          export SIMCTL_CHILD_RUNNA_TEST_TOKEN=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['token'])")
-          export SIMCTL_CHILD_RUNNA_TEST_USER_ID=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['userId'])")
+          export SIMCTL_CHILD_KAEMEDOS_API_BASE_URL=http://127.0.0.1:8787
+          export SIMCTL_CHILD_KAEMEDOS_TEST_TOKEN=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['token'])")
+          export SIMCTL_CHILD_KAEMEDOS_TEST_USER_ID=$(python3 -c "import json; print(json.load(open('../scripts/e2e/.build/session.json'))['userId'])")
           # First launch after installing is slow; let it settle before taking screenshots
           xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
           sleep 20
           # Relaunch on each screen (simctl openurl would show an "Open in app?" prompt)
           shoot() {
             xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" || true
-            SIMCTL_CHILD_RUNNA_TEST_DEEP_LINK="runnaio://$1" xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+            SIMCTL_CHILD_KAEMEDOS_TEST_DEEP_LINK="kaemedos://$1" xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
             sleep 12
             xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
           }
@@ -210,8 +210,8 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild \
-            -project Runna.xcodeproj \
-            -scheme Runna \
+            -project Kaemedos.xcodeproj \
+            -scheme Kaemedos \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \

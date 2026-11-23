@@ -107,7 +107,7 @@ const apnsEnv = {
   APNS_KEY_ID: 'TESTKEY123',
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-  APNS_BUNDLE_ID: 'com.jpoves.runnaio',
+  APNS_BUNDLE_ID: 'com.jpoves.kaemedos',
 };
 const baseEnv = {
   DATABASE_URL: databaseUrl,
@@ -222,7 +222,7 @@ check('feed event created', feed?.user_id === user.id, feed);
 const territory = await one('select count(*) n from territories where user_id = ?', [user.id]);
 check('territory processed by the queue', Number(territory.n) > 0, territory);
 const push = await checkActivityReadyPush('polar', 'polar_auto_import', route?.id, () => calls.apns.slice(apnsBefore));
-check('APNs push polar_auto_import to the registered device', !!push && push.path === `/3/device/${deviceToken}` && push.topic === 'com.jpoves.runnaio', calls.apns.slice(apnsBefore));
+check('APNs push polar_auto_import to the registered device', !!push && push.path === `/3/device/${deviceToken}` && push.topic === 'com.jpoves.kaemedos', calls.apns.slice(apnsBefore));
 
 const routesAfterFirst = await one('select count(*) n from routes where user_id = ?', [user.id]);
 const dup = await hook(payload);
@@ -272,7 +272,7 @@ check('rename missing route: 404', (await call('PATCH', '/api/routes/nope/name',
 // ---------- Push diagnostics ----------
 
 const status1 = await call('GET', '/api/push/status', { token: user.token });
-check('status: configured, one sandbox device', status1.status === 200 && status1.data.apnsConfigured === true && status1.data.devices.length === 1 && status1.data.devices[0].environment === 'sandbox' && !!status1.data.devices[0].registeredAt && status1.data.apnsTopic === 'com.jpoves.runnaio', status1.data);
+check('status: configured, one sandbox device', status1.status === 200 && status1.data.apnsConfigured === true && status1.data.devices.length === 1 && status1.data.devices[0].environment === 'sandbox' && !!status1.data.devices[0].registeredAt && status1.data.apnsTopic === 'com.jpoves.kaemedos', status1.data);
 check('status has no secrets', !JSON.stringify(status1.data).includes('BEGIN PRIVATE KEY') && !JSON.stringify(status1.data).includes(deviceToken), status1.data);
 check('status without session: 401', (await call('GET', '/api/push/status')).status === 401);
 

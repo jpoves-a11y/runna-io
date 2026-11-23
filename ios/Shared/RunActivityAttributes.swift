@@ -2,7 +2,7 @@ import ActivityKit
 import Foundation
 
 /// Live Activity of a run being recorded (lock screen and Dynamic Island).
-/// Compiled into both the app (which starts/updates/ends it) and the RunnaLive widget extension (which draws it):
+/// Compiled into both the app (which starts/updates/ends it) and the KaemedosLive widget extension (which draws it):
 /// the `ios/Shared` folder is a synchronized group that belongs to both targets.
 struct RunActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {

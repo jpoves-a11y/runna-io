@@ -84,13 +84,13 @@ app.use('*', cors({
   origin: (origin) => {
     // Allow requests from any Cloudflare Pages subdomain, proxy worker, or localhost
     const allowedOrigins = [
-      'https://runna-io.pages.dev',
-      'https://runna-io-web.runna-io-api.workers.dev',
+      'https://kaemedos.pages.dev',
+      'https://web.kaemedos.workers.dev',
       'http://localhost:5000',
       'http://localhost:3000',
     ];
-    // Also allow any *.runna-io.pages.dev subdomain (preview deployments)
-    if (origin && (allowedOrigins.includes(origin) || origin.endsWith('.runna-io.pages.dev') || origin.endsWith('.workers.dev'))) {
+    // Also allow any *.kaemedos.pages.dev subdomain (preview deployments)
+    if (origin && (allowedOrigins.includes(origin) || origin.endsWith('.kaemedos.pages.dev') || origin.endsWith('.workers.dev'))) {
       return origin;
     }
     // For other origins, return the first allowed origin

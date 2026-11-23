@@ -21,7 +21,7 @@ import { publicBaseUrl } from './pages';
 
 type AdminContext = Context<AppEnv>;
 
-const COOKIE = 'runna_admin';
+const COOKIE = 'kaemedos_admin';
 const SESSION_SECONDS = 12 * 60 * 60;
 
 function adminSecret(c: AdminContext): string | null {

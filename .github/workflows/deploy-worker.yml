@@ -47,6 +47,6 @@ jobs:
       - name: Check the API answers
         run: |
           sleep 5
-          curl -sf https://runna-io-api.runna-io-api.workers.dev/api/health && echo
-          curl -sf -o /dev/null -w "privacy page: %{http_code}\n" https://runna-io-api.runna-io-api.workers.dev/privacy
-          curl -sf -o /dev/null -w "apple-app-site-association: %{http_code}\n" https://runna-io-api.runna-io-api.workers.dev/.well-known/apple-app-site-association
+          curl -sf https://api.kaemedos.workers.dev/api/health && echo
+          curl -sf -o /dev/null -w "privacy page: %{http_code}\n" https://api.kaemedos.workers.dev/privacy
+          curl -sf -o /dev/null -w "apple-app-site-association: %{http_code}\n" https://api.kaemedos.workers.dev/.well-known/apple-app-site-association

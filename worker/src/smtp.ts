@@ -51,7 +51,7 @@ export async function sendSmtp(msg: SmtpMessage): Promise<void> {
 
   try {
     await reply(220);
-    await command('EHLO runna-io', 250);
+    await command('EHLO kaemedos', 250);
     await command('AUTH LOGIN', 334);
     await command(btoa(msg.username), 334);
     await command(btoa(msg.password), 235);

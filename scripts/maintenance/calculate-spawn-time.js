@@ -51,7 +51,7 @@ const today = new Date('2026-03-03T00:00:00Z');
 // Puedes reemplazar esto con el ID real
 const exampleCompetitionId = 'la-primera-conquista-del-ebro-comp-id';
 
-console.log('\n🗺️  CALCULADORA DE SPAWN DE COFRES - RUNNA.IO');
+console.log('\n🗺️  CALCULADORA DE SPAWN DE COFRES - KAEMEDOS');
 console.log('═'.repeat(50));
 
 // Si se pasa un argumento, usarlo

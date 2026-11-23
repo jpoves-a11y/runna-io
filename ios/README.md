@@ -48,17 +48,17 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de KM2: habla co
 
 ## Abrir y ejecutar (Mac)
 
-1. Descarga el repositorio y abre `ios/Runna.xcodeproj` con Xcode 16 o superior.
-2. Selecciona el target **Runna** → pestaña **Signing & Capabilities**:
+1. Descarga el repositorio y abre `ios/Kaemedos.xcodeproj` con Xcode 16 o superior.
+2. Selecciona el target **Kaemedos** → pestaña **Signing & Capabilities**:
    - En **Team** elige tu equipo de Apple Developer.
-   - Cambia **Bundle Identifier** si quieres (ahora es `com.jpoves.runnaio`). Tiene que ser único en tu cuenta.
+   - Cambia **Bundle Identifier** si quieres (ahora es `com.jpoves.kaemedos`). Tiene que ser único en tu cuenta.
    - Xcode creará el App ID con las capacidades que ya trae el proyecto: Push Notifications, HealthKit y Background Modes (Location updates).
-   - Haz lo mismo con el target **RunnaLive** (la extensión de la Live Activity): mismo Team. Su Bundle Identifier tiene que ser el de la app seguido de `.RunnaLive` (ahora `com.jpoves.runnaio.RunnaLive`).
+   - Haz lo mismo con el target **KaemedosLive** (la extensión de la Live Activity): mismo Team. Su Bundle Identifier tiene que ser el de la app seguido de `.KaemedosLive` (ahora `com.jpoves.kaemedos.KaemedosLive`).
 3. Elige tu iPhone y pulsa ▶︎.
 
-La app habla con la API de producción (`AppConfig.apiBaseURL` en `Runna/Core/AppConfig.swift`).
+La app habla con la API de producción (`AppConfig.apiBaseURL` en `Kaemedos/Core/AppConfig.swift`).
 
-Para probarla en el simulador contra una API local con datos de prueba (ver el [README principal](../README.md#api-en-local)), pasa en el esquema de Xcode las variables de entorno `RUNNA_API_BASE_URL=http://127.0.0.1:8787`, `RUNNA_TEST_TOKEN` y `RUNNA_TEST_USER_ID` (los imprime `scripts/e2e/seed.mjs`).
+Para probarla en el simulador contra una API local con datos de prueba (ver el [README principal](../README.md#api-en-local)), pasa en el esquema de Xcode las variables de entorno `KAEMEDOS_API_BASE_URL=http://127.0.0.1:8787`, `KAEMEDOS_TEST_TOKEN` y `KAEMEDOS_TEST_USER_ID` (los imprime `scripts/e2e/seed.mjs`).
 
 ## Subir a TestFlight
 
@@ -68,11 +68,11 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 
 Una sola vez:
 
-1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit**, **Push Notifications**, **Sign in with Apple**, **Associated Domains** y **WeatherKit**. Si el identificador ya existe, ábrelo y marca las que falten (las tres últimas son nuevas) y guarda.
-   - Al marcar **Sign in with Apple** → **Configure** → **Server-to-Server Notification Endpoint**: `https://runna-io-api.runna-io-api.workers.dev/api/auth/apple/notifications`. Apple avisa ahí cuando alguien deja de usar Iniciar sesión con Apple con la app (se cierran sus sesiones) o borra su Apple ID (se borra su cuenta si solo entraba con Apple).
-   - Para que el servidor pueda desvincular la app del Apple ID al borrar una cuenta: developer.apple.com → Keys → **+** → marca **Sign in with Apple** (configúrala con el App ID `com.jpoves.runnaio`), descarga el `.p8` y guárdalo en el Worker con `npx wrangler secret put APPLE_SIGNIN_KEY_ID -c wrangler.worker.toml` y `APPLE_SIGNIN_PRIVATE_KEY` (el contenido completo del `.p8`).
-   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
-2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Runna" ya existe).
+1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.kaemedos`, con **HealthKit**, **Push Notifications**, **Sign in with Apple**, **Associated Domains** y **WeatherKit**. Si el identificador ya existe, ábrelo y marca las que falten (las tres últimas son nuevas) y guarda.
+   - Al marcar **Sign in with Apple** → **Configure** → **Server-to-Server Notification Endpoint**: `https://api.kaemedos.workers.dev/api/auth/apple/notifications`. Apple avisa ahí cuando alguien deja de usar Iniciar sesión con Apple con la app (se cierran sus sesiones) o borra su Apple ID (se borra su cuenta si solo entraba con Apple).
+   - Para que el servidor pueda desvincular la app del Apple ID al borrar una cuenta: developer.apple.com → Keys → **+** → marca **Sign in with Apple** (configúrala con el App ID `com.jpoves.kaemedos`), descarga el `.p8` y guárdalo en el Worker con `npx wrangler secret put APPLE_SIGNIN_KEY_ID -c wrangler.worker.toml` y `APPLE_SIGNIN_PRIVATE_KEY` (el contenido completo del `.p8`).
+   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.kaemedos.KaemedosLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.kaemedos.KaemedosLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
+2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Kaemedos" ya existe).
 3. App Store Connect → Usuarios y acceso → Integraciones → **App Store Connect API** → nueva clave con rol **Admin**. Descarga el `.p8` (solo se puede una vez) y apunta **Key ID** e **Issuer ID**.
 4. Tu **Team ID**: developer.apple.com → Membership.
 5. GitHub → el repositorio → Settings → Secrets and variables → Actions → crea `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` (el contenido completo del `.p8`) y `APPLE_TEAM_ID`.
@@ -81,9 +81,9 @@ Cada build: GitHub → **Actions → TestFlight → Run workflow**. Tarda unos 1
 
 Cómo firma el workflow (no crea certificados):
 
-- Archiva **sin firmar** y después añade las capacidades (Push Notifications y HealthKit, de `Config/Runna.entitlements`) con una firma *ad-hoc*, que no necesita certificado.
-- Al exportar, Xcode firma la app y la extensión RunnaLive con el certificado de distribución **gestionado por Apple en la nube** (gracias a la clave de API con rol Admin). En el Mac de GitHub no hay ni hace falta ningún certificado.
-- Antes de subir comprueba que el IPA está firmado con *Apple Distribution*, que incluye RunnaLive y que mantiene `aps-environment = production` y HealthKit. Si falta algo, la ejecución falla sin subir nada.
+- Archiva **sin firmar** y después añade las capacidades (Push Notifications y HealthKit, de `Config/Kaemedos.entitlements`) con una firma *ad-hoc*, que no necesita certificado.
+- Al exportar, Xcode firma la app y la extensión KaemedosLive con el certificado de distribución **gestionado por Apple en la nube** (gracias a la clave de API con rol Admin). En el Mac de GitHub no hay ni hace falta ningún certificado.
+- Antes de subir comprueba que el IPA está firmado con *Apple Distribution*, que incluye KaemedosLive y que mantiene `aps-environment = production` y HealthKit. Si falta algo, la ejecución falla sin subir nada.
 - El último paso, **List signing certificates**, muestra los certificados de la cuenta. El número de `DEVELOPMENT` no debe crecer entre ejecuciones.
 
 Antes el workflow firmaba el archivo en modo desarrollo y cada ejecución creaba un certificado *Apple Development* nuevo, hasta llegar al límite de Apple ("Your account has reached the maximum number of certificates"). Esos certificados no sirven para nada (su clave privada se borró con el Mac de GitHub): revócalos en [developer.apple.com → Certificates](https://developer.apple.com/account/resources/certificates/list) (los de tipo *Apple Development* que se crearon en las fechas de las ejecuciones del workflow). No revoques el que usas en tu propio Mac.
@@ -92,7 +92,7 @@ Antes el workflow firmaba el archivo en modo desarrollo y cada ejecución creaba
 
 1. **Product → Archive** (con "Any iOS Device" como destino).
 2. En el Organizer: **Distribute App → App Store Connect → Upload**.
-3. Antes de cada subida, incrementa **Build** (`CURRENT_PROJECT_VERSION`). Está definido a nivel de proyecto (igual que la versión, `MARKETING_VERSION`) para que la app y la extensión RunnaLive tengan siempre el mismo número, como exige Apple: cámbialo en el proyecto, no en un solo target. Usa números por debajo de 1000 o por encima de los del workflow para no repetir.
+3. Antes de cada subida, incrementa **Build** (`CURRENT_PROJECT_VERSION`). Está definido a nivel de proyecto (igual que la versión, `MARKETING_VERSION`) para que la app y la extensión KaemedosLive tengan siempre el mismo número, como exige Apple: cámbialo en el proyecto, no en un solo target. Usa números por debajo de 1000 o por encima de los del workflow para no repetir.
 
 La app ya declara `ITSAppUsesNonExemptEncryption = NO`, así que TestFlight no te preguntará por cifrado.
 
@@ -118,22 +118,22 @@ Las builds de Xcode (Debug) se registran en el entorno *sandbox* de APNs. Las de
 
 Mientras grabas una carrera, la app muestra una Live Activity con el tiempo (cuenta solo, sin gastar batería en actualizaciones), la distancia, el ritmo medio, los tesoros recogidos y una etiqueta **PAUSA** cuando está en pausa. La distancia se actualiza cada 10 s si has avanzado al menos 20 m. Al terminar se queda unos minutos con los datos finales; al descartar la carrera desaparece al momento.
 
-- La dibuja la extensión **RunnaLive** (`ios/RunnaLive/`). El tipo compartido `RunActivityAttributes` está en `ios/Shared/`, una carpeta que pertenece a los dos targets.
-- La controla `Runna/Features/Run/RunLiveActivity.swift`, desde `RunTracker`.
+- La dibuja la extensión **KaemedosLive** (`ios/KaemedosLive/`). El tipo compartido `RunActivityAttributes` está en `ios/Shared/`, una carpeta que pertenece a los dos targets.
+- La controla `Kaemedos/Features/Run/RunLiveActivity.swift`, desde `RunTracker`.
 - El usuario puede desactivarlas en Ajustes → KM2 → Actividades en directo; entonces la app simplemente no la muestra.
 
 ## Strava y Polar
 
-**Strava está oculto en la app** hasta que Strava apruebe la integración (mientras tanto su API solo admite al atleta del desarrollador). Para mostrarlo, pon `AppConfig.stravaEnabled = true` en `Runna/Core/AppConfig.swift`. Quien ya lo tenga conectado sigue viendo la fila para poder desconectarlo. El servidor no cambia: las importaciones de cuentas ya conectadas siguen funcionando.
+**Strava está oculto en la app** hasta que Strava apruebe la integración (mientras tanto su API solo admite al atleta del desarrollador). Para mostrarlo, pon `AppConfig.stravaEnabled = true` en `Kaemedos/Core/AppConfig.swift`. Quien ya lo tenga conectado sigue viendo la fila para poder desconectarlo. El servidor no cambia: las importaciones de cuentas ya conectadas siguen funcionando.
 
-La app abre el login de Strava/Polar en una ventana segura del sistema. Al terminar, el servidor la devuelve a la app con `runnaio://oauth/...`. No hace falta cambiar nada en Strava ni en Polar: la URL de callback sigue siendo la del Worker.
+La app abre el login de Strava/Polar en una ventana segura del sistema. Al terminar, el servidor la devuelve a la app con `kaemedos://oauth/...`. No hace falta cambiar nada en Strava ni en Polar: la URL de callback sigue siendo la del Worker.
 
 ## Revisión de Apple: notas útiles
 
 - **URLs para App Store Connect**:
-  - Política de privacidad: `https://runna-io-api.runna-io-api.workers.dev/privacy`
-  - Soporte: `https://runna-io-api.runna-io-api.workers.dev/support`
-  - Condiciones de uso (opcional, como EULA o en la descripción): `https://runna-io-api.runna-io-api.workers.dev/terms`
+  - Política de privacidad: `https://api.kaemedos.workers.dev/privacy`
+  - Soporte: `https://api.kaemedos.workers.dev/support`
+  - Condiciones de uso (opcional, como EULA o en la descripción): `https://api.kaemedos.workers.dev/terms`
 - **Contenido generado por usuarios** (guideline 1.2):
   - Se puede denunciar y bloquear desde el perfil de un usuario, un comentario, una publicación o un mensaje del chat del club.
   - Los mensajes de usuarios bloqueados no se ven.
@@ -147,7 +147,7 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 - **Audio en segundo plano** (`UIBackgroundModes` → `audio`): solo para los avisos por voz durante una carrera que el usuario ha empezado. Explícalo en las notas de la revisión.
 - **Privacidad de la app** en App Store Connect: además de lo que ya había, marca **Interacción con el producto** (analítica propia, vinculada al usuario, sin rastreo).
 - **Cuenta de prueba**: crea una cuenta con email ya verificado para el revisor y ponla en App Store Connect → App Review Information.
-- **Nombre**: "Runna" ya existe en la App Store (es otra app de running). Puede que Apple pida un nombre distinto: piensa una alternativa.
+- **Nombre**: "Kaemedos" ya existe en la App Store (es otra app de running). Puede que Apple pida un nombre distinto: piensa una alternativa.
 
 ## Compilación automática
 
@@ -156,4 +156,4 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 - La abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`).
 - Hace una captura de cada pestaña, del chat del club, del inventario y de la ventana de fin de competición (páginas del club, logros y cofres).
 
-Las capturas se descargan desde la ejecución, en "Artifacts", y también se publican en la rama `ci-screenshots`. En las pruebas, la ventana de fin de competición solo se abre con su enlace de depuración `runnaio://season/results`, para no tapar el resto de capturas.
+Las capturas se descargan desde la ejecución, en "Artifacts", y también se publican en la rama `ci-screenshots`. En las pruebas, la ventana de fin de competición solo se abre con su enlace de depuración `kaemedos://season/results`, para no tapar el resto de capturas.

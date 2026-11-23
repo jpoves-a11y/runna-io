@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PIL import Image
 
-ASSETS = Path(__file__).resolve().parents[2] / "ios" / "Runna" / "Assets.xcassets"
+ASSETS = Path(__file__).resolve().parents[2] / "ios" / "Kaemedos" / "Assets.xcassets"
 RARITIES = ["common", "rare", "epic", "legendary"]
 # Close to the art's native width (364–383 px), so resampling stays minimal.
 CHEST_WIDTH = 368

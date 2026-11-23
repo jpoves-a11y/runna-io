@@ -1410,7 +1410,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     return c.json({ 
       status: 'ok',
       timestamp: new Date().toISOString(),
-      service: 'runna-io-api'
+      service: 'kaemedos-api'
     });
   });
 
@@ -4124,7 +4124,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const userId = c.get('authUserId');
 
       const invite = await storage.createFriendInvite(userId);
-      // Landing page served by this Worker (pages.ts) that opens runnaio://friends/accept/<token>
+      // Landing page served by this Worker (pages.ts) that opens kaemedos://friends/accept/<token>
       const inviteUrl = `${publicBaseUrl(c)}/invite/${invite.token}`;
       
       return c.json({ token: invite.token, url: inviteUrl });
@@ -4617,7 +4617,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
       const STRAVA_CLIENT_ID = c.env.STRAVA_CLIENT_ID;
-      const STRAVA_REDIRECT_URI = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/strava/callback`;
+      const STRAVA_REDIRECT_URI = `${c.env.WORKER_URL || 'https://api.kaemedos.workers.dev'}/api/strava/callback`;
 
       
       if (!STRAVA_CLIENT_ID || !c.env.STRAVA_CLIENT_SECRET) {
@@ -4636,7 +4636,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
   });
 
   app.get('/api/strava/callback', async (c) => {
-    const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
+    const FRONTEND_URL = c.env.FRONTEND_URL || 'https://kaemedos.pages.dev';
     // Flows started in the iOS app go back to it instead of the website
     let appFlow = false;
     const finish = (webUrl: string) => oauthFinish(c, appFlow, 'strava', webUrl);
@@ -5409,7 +5409,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       const state = await createOAuthState(userId, c.env.POLAR_CLIENT_SECRET, { app: c.req.query('client') === 'ios' });
-      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
+      const redirectUri = `${c.env.WORKER_URL || 'https://api.kaemedos.workers.dev'}/api/polar/callback`;
       const authUrl = `https://flow.polar.com/oauth2/authorization?response_type=code&client_id=${POLAR_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
       
       console.log('Generated authUrl:', authUrl);
@@ -5430,7 +5430,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const authError = c.req.query('error');
       const POLAR_CLIENT_ID = c.env.POLAR_CLIENT_ID;
       const POLAR_CLIENT_SECRET = c.env.POLAR_CLIENT_SECRET;
-      const FRONTEND_URL = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
+      const FRONTEND_URL = c.env.FRONTEND_URL || 'https://kaemedos.pages.dev';
       const verifiedState = state && POLAR_CLIENT_SECRET ? await verifyOAuthState(state, POLAR_CLIENT_SECRET) : null;
       appFlow = verifiedState?.app === true;
       
@@ -5453,7 +5453,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
       console.log('State verified - userId:', userId);
 
-      const redirectUri = `${c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev'}/api/polar/callback`;
+      const redirectUri = `${c.env.WORKER_URL || 'https://api.kaemedos.workers.dev'}/api/polar/callback`;
       const authHeader = btoa(`${POLAR_CLIENT_ID}:${POLAR_CLIENT_SECRET}`);
       
       console.log('Exchanging code for token...');
@@ -5536,7 +5536,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Only trigger one sync (sync-full and sync are identical), wrapped in waitUntil to prevent
       // the promise being dropped when the response is sent.
       console.log('[BACKFILL] Triggering initial Polar sync via waitUntil...');
-      const baseUrl = c.env.WORKER_URL || 'https://runna-io-api.runna-io-api.workers.dev';
+      const baseUrl = c.env.WORKER_URL || 'https://api.kaemedos.workers.dev';
       c.executionCtx.waitUntil(
         new Promise<void>(resolve => setTimeout(resolve, 2000)).then(() =>
           fetch(`${baseUrl}/api/polar/sync/${userId}`, {
@@ -5552,7 +5552,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       return finish(`${FRONTEND_URL}/profile?polar_connected=true`);
     } catch (error: any) {
       console.error('Polar callback error:', error);
-      return finish(`${c.env.FRONTEND_URL || 'https://runna-io.pages.dev'}/profile?polar_error=server`);
+      return finish(`${c.env.FRONTEND_URL || 'https://kaemedos.pages.dev'}/profile?polar_error=server`);
     }
   });
 

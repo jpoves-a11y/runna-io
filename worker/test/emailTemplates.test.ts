@@ -68,7 +68,7 @@ test('MIME message: multipart/alternative with plain text first, Reply-To and Li
     to: 'ana@example.test', subject: email.subject, html: email.html, text: email.text, replyTo: 'soporte@example.test',
     headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click', 'Bad Header': 'x', 'X-Injected': 'a\r\nBcc: evil' },
   });
-  assert.match(raw, /Content-Type: multipart\/alternative; boundary="runna-/);
+  assert.match(raw, /Content-Type: multipart\/alternative; boundary="kaemedos-/);
   assert.ok(raw.indexOf('text/plain') < raw.indexOf('text/html'));
   assert.match(raw, /\r\nReply-To: soporte@example\.test\r\n/);
   assert.match(raw, /\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n/);

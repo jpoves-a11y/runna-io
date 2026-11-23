@@ -7,7 +7,7 @@ import * as schema from '../../shared/schema';
  * those per invocation (50 on the free plan). Tests and the admin stats read this counter.
  */
 export const dbStats = { statements: 0 };
-(globalThis as any).__runnaDbStats = dbStats;
+(globalThis as any).__kaemedosDbStats = dbStats;
 
 /**
  * Subrequests left in this invocation. Cloudflare allows 50 per invocation on the free plan
@@ -110,8 +110,8 @@ export function createDb(databaseUrl: string, authToken?: string) {
         readCache.clear();
       }
       dbStats.statements++;
-      // Tests can record what is sent (globalThis.__runnaDbTrace = [])
-      const trace = (globalThis as any).__runnaDbTrace;
+      // Tests can record what is sent (globalThis.__kaemedosDbTrace = [])
+      const trace = (globalThis as any).__kaemedosDbTrace;
       if (Array.isArray(trace)) {
         const first = args[0];
         const text = typeof first === 'string' ? first : Array.isArray(first) ? `BATCH(${first.length}) ${String(first[0]?.sql ?? first[0]).slice(0, 60)}` : String(first?.sql ?? '');

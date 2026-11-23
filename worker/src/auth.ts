@@ -248,11 +248,11 @@ export async function verifyOAuthState(state: string, signingKey: string): Promi
 }
 
 /** URL scheme the iOS app registers to receive the end of OAuth flows. */
-export const IOS_APP_URL_SCHEME = 'runnaio';
+export const IOS_APP_URL_SCHEME = 'kaemedos';
 
 /**
  * Ends an OAuth callback: redirects to `webUrl`, or for flows started in the iOS app,
- * to runnaio://oauth/<provider> with the same query string (e.g. ?strava_connected=true).
+ * to kaemedos://oauth/<provider> with the same query string (e.g. ?strava_connected=true).
  */
 export function oauthFinish(c: AppContext, appFlow: boolean, provider: string, webUrl: string) {
   if (!appFlow) return c.redirect(webUrl);

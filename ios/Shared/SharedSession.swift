@@ -11,26 +11,26 @@ enum SharedSession {
         let apiBaseURL: String
     }
 
-    private static let service = "io.runna.shared-session"
+    private static let service = "com.jpoves.kaemedos.shared-session"
     private static let account = "session"
-    static let defaultAPIBaseURL = "https://runna-io-api.runna-io-api.workers.dev"
+    static let defaultAPIBaseURL = "https://api.kaemedos.workers.dev"
 
-    /// "<team id>.com.jpoves.runnaio.shared". The team id comes from Info.plist ($(AppIdentifierPrefix),
+    /// "<team id>.com.jpoves.kaemedos.shared". The team id comes from Info.plist ($(AppIdentifierPrefix),
     /// filled in when Xcode signs the build) or, in builds signed later (the TestFlight workflow archives
     /// unsigned), from the access group the keychain gives a probe item.
     static let accessGroup: String? = {
         if let prefix = Bundle.main.object(forInfoDictionaryKey: "AppIdentifierPrefix") as? String,
            prefix.count > 2, !prefix.contains("$(") {
-            return "\(prefix)com.jpoves.runnaio.shared"
+            return "\(prefix)com.jpoves.kaemedos.shared"
         }
         guard let team = teamIdFromKeychain() else { return nil }
-        return "\(team).com.jpoves.runnaio.shared"
+        return "\(team).com.jpoves.kaemedos.shared"
     }()
 
     private static func teamIdFromKeychain() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "io.runna.team-probe",
+            kSecAttrService as String: "com.jpoves.kaemedos.team-probe",
             kSecAttrAccount as String: "probe",
             kSecReturnAttributes as String: true,
         ]

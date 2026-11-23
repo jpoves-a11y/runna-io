@@ -52,9 +52,9 @@ const env = {
   SEASON_ANCHOR_DATE: friday(2),
   TERRITORY_QUEUE: {
     send: async (body) => {
-      const before = globalThis.__runnaDbStats?.statements ?? 0;
+      const before = globalThis.__kaemedosDbStats?.statements ?? 0;
       await worker.queue({ messages: [{ body, ack() {}, retry() { throw new Error(`queue retry for ${body.type}`); } }] }, env);
-      const used = (globalThis.__runnaDbStats?.statements ?? 0) - before;
+      const used = (globalThis.__kaemedosDbStats?.statements ?? 0) - before;
       queueUsed += used;
       if (process.env.E2E_SUBREQUEST_LOG) console.log(`[subrequests] ${used} QUEUE ${body.type}`);
     },
@@ -66,13 +66,13 @@ async function call(method, route, { token, body } = {}) {
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const before = globalThis.__runnaDbStats?.statements ?? 0;
+  const before = globalThis.__kaemedosDbStats?.statements ?? 0;
   const queuedBefore = queueUsed;
   const res = await worker.fetch(new Request(`http://127.0.0.1:8787${route}`, {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body),
   }), env, ctx);
   if (process.env.E2E_SUBREQUEST_LOG) {
-    const used = (globalThis.__runnaDbStats?.statements ?? 0) - before - (queueUsed - queuedBefore);
+    const used = (globalThis.__kaemedosDbStats?.statements ?? 0) - before - (queueUsed - queuedBefore);
     console.log(`[subrequests] ${used} ${method} ${route.split('?')[0]}`);
   }
   const text = await res.text();

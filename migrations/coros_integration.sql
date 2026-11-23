@@ -2,7 +2,7 @@
 -- Created: March 3, 2026
 -- Purpose: Support COROS watch workout synchronization
 
--- COROS accounts table (links Runna user to COROS account)
+-- COROS accounts table (links Kaemedos user to COROS account)
 CREATE TABLE IF NOT EXISTS coros_accounts (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
   user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,

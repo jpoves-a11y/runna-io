@@ -37,7 +37,7 @@ const b64url = (data) => Buffer.from(data).toString('base64url');
 async function appleToken(claims) {
   const head = b64url(JSON.stringify({ alg: 'RS256', kid: 'e2e' }));
   const body = b64url(JSON.stringify({
-    iss: 'https://appleid.apple.com', aud: 'com.jpoves.runnaio', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, ...claims,
+    iss: 'https://appleid.apple.com', aud: 'com.jpoves.kaemedos', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, ...claims,
   }));
   const signature = await webcrypto.subtle.sign('RSASSA-PKCS1-v1_5', appleKeys.privateKey, new TextEncoder().encode(`${head}.${body}`));
   return `${head}.${body}.${b64url(new Uint8Array(signature))}`;
@@ -57,7 +57,7 @@ const env = {
   APNS_KEY_ID: 'TESTKEY123',
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-  APNS_BUNDLE_ID: 'com.jpoves.runnaio',
+  APNS_BUNDLE_ID: 'com.jpoves.kaemedos',
   APPLE_JWKS_JSON: JSON.stringify({ keys: [{ ...appleJwk, kid: 'e2e', alg: 'RS256', use: 'sig' }] }),
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
@@ -271,7 +271,7 @@ if (inventory) check('the gift is in the inventory', Number(inventory.n) === 1, 
 
 // ---------- 5. apple-app-site-association ----------
 res = await call('GET', '/.well-known/apple-app-site-association');
-check('AASA lists the app and the paths', res.status === 200 && res.data.applinks.details[0].appIDs[0] === 'TEAM123456.com.jpoves.runnaio'
+check('AASA lists the app and the paths', res.status === 200 && res.data.applinks.details[0].appIDs[0] === 'TEAM123456.com.jpoves.kaemedos'
   && res.data.applinks.details[0].components.some((c) => c['/'] === '/invite/*'), res.data);
 
 // ---------- 6. Admin panel: reports, suspension, stats ----------
@@ -286,7 +286,7 @@ page = await raw('POST', '/admin/login', { form: { secret: 'wrong' } });
 check('wrong admin secret is refused', page.status === 401);
 page = await raw('POST', '/admin/login', { form: { secret: 'e2e-cron-secret' } });
 const cookie = (page.headers.get('set-cookie') ?? '').split(';')[0];
-check('admin login sets a secure cookie', page.status === 303 && cookie.startsWith('runna_admin=') && /HttpOnly/.test(page.headers.get('set-cookie')) && /SameSite=Strict/.test(page.headers.get('set-cookie')));
+check('admin login sets a secure cookie', page.status === 303 && cookie.startsWith('kaemedos_admin=') && /HttpOnly/.test(page.headers.get('set-cookie')) && /SameSite=Strict/.test(page.headers.get('set-cookie')));
 page = await raw('GET', '/admin', { headers: { Cookie: cookie } });
 const dashboard = await page.text();
 check('dashboard warns about the open report', page.status === 200 && dashboard.includes('Resumen') && dashboard.includes('1 denuncia pendiente'), dashboard.slice(0, 400));
@@ -325,7 +325,7 @@ const stats = await page.text();
 check('stats page renders', page.status === 200 && stats.includes('Embudo') && stats.includes('rankings'), stats.slice(0, 300));
 page = await raw('GET', '/admin/emails', { headers: { Cookie: cookie } });
 const emailsHtml = await page.text();
-check('emails page previews every email', page.status === 200 && (emailsHtml.match(/<iframe/g) ?? []).length === 7 && emailsHtml.includes('Bienvenido a Runna.io, Lucía'), emailsHtml.slice(0, 300));
+check('emails page previews every email', page.status === 200 && (emailsHtml.match(/<iframe/g) ?? []).length === 7 && emailsHtml.includes('Bienvenido a Kaemedos.io, Lucía'), emailsHtml.slice(0, 300));
 
 // Competitions: calendar and a club competition of the current cycle (inserted by hand)
 page = await raw('GET', '/admin/competitions', { headers: { Cookie: cookie } });
