@@ -629,26 +629,68 @@ export const MODELS = {
     return g;
   },
 
-  // The Poderes button: a round potion flask full of glowing KM2-green liquid
+  // The Poderes button: a round glass potion flask, two-thirds full of glowing KM2-green liquid
   powers_icon: (r) => {
-    const glass = new THREE.MeshPhysicalMaterial({ color: 0xe8fff0, transmission: 1, roughness: 0.02, thickness: 0.3, ior: 1.5, clearcoat: 1, transparent: true, opacity: 0.45 });
-    const liquid = new THREE.MeshPhysicalMaterial({ color: 0x00d41c, emissive: 0x00b018, emissiveIntensity: 0.4, roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.05 });
+    const R = 0.86;
+    // Glass you can see: tinted, glossy, with its inner wall drawn too (thickness)
+    const glass = new THREE.MeshPhysicalMaterial({
+      color: 0xd8fbe8, metalness: 0, roughness: 0.03, clearcoat: 1, clearcoatRoughness: 0.02,
+      transparent: true, opacity: 0.3, envMapIntensity: 2.4, side: THREE.FrontSide, depthWrite: false,
+    });
+    const glassInside = glass.clone();
+    glassInside.side = THREE.BackSide;
+    glassInside.opacity = 0.22;
+    const liquid = new THREE.MeshPhysicalMaterial({ color: 0x00c81a, emissive: 0x00c01a, emissiveIntensity: 0.7, roughness: 0.1, clearcoat: 1, clearcoatRoughness: 0.05 });
     const gold = metal(r.metal, 0.16);
-    const g = group(mesh(sphere(0.86), glass, { pos: [0, -0.28, 0] }));
-    g.add(mesh(sphere(0.78, 48, 32), liquid, { pos: [0, -0.32, 0], scale: [1, 0.88, 1] }));
-    // Surface of the liquid, brighter
-    g.add(mesh(cyl(0.62, 0.62, 0.02, 48), glow(0x7dff8f, 1.6), { pos: [0, 0.08, 0] }));
-    g.add(mesh(cyl(0.24, 0.3, 0.42, 32), glass, { pos: [0, 0.72, 0] }));
-    g.add(mesh(cyl(0.24, 0.22, 0.26, 24), wood(0xb07a45), { pos: [0, 1.02, 0] }));
-    g.add(mesh(torus(0.29, 0.07), gold, { pos: [0, 0.56, 0], rot: [PI / 2, 0, 0] }));
-    g.add(mesh(torus(0.25, 0.04), gold, { pos: [0, 0.9, 0], rot: [PI / 2, 0, 0] }));
-    // Bubbles rising in the liquid
-    [[0.18, -0.15, 0.6, 0.07], [-0.28, -0.42, 0.58, 0.06], [0.34, -0.55, 0.5, 0.05], [-0.05, -0.62, 0.68, 0.045]].forEach(([x, y, z, k]) =>
-      g.add(mesh(sphere(k, 24, 16), glow(0xc6ffcd, 1.8), { pos: [x, y, z] })));
-    // A highlight streak on the glass
-    g.add(mesh(torus(0.8, 0.025, PI * 0.35, 8, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }), { pos: [0, -0.28, 0.32], rot: [0, -0.3, PI * 0.55] }));
-    g.rotation.z = -0.08;
-    return g;
+
+    // Body outline: round bottom, shoulders into the neck
+    const body = [];
+    for (let i = 0; i <= 28; i++) {
+      const a = -PI / 2 + (i / 28) * (PI / 2 + 1.25);
+      body.push([Math.cos(a) * R, Math.sin(a) * R]);
+    }
+    body.push([0.26, 0.92], [0.26, 1.28], [0.32, 1.34], [0.32, 1.4], [0.22, 1.4]);
+    const g = new THREE.Group();
+    g.add(mesh(lathe(body, 72), glassInside));
+    g.add(mesh(lathe(body, 72), glass));
+
+    // Liquid: the bottom two thirds, with a flat glowing surface
+    const fill = 0.18;
+    const level = [];
+    const r0 = R - 0.05;
+    for (let i = 0; i <= 24; i++) {
+      const a = -PI / 2 + (i / 24) * (PI / 2 + Math.asin(fill / r0));
+      level.push([Math.cos(a) * r0, Math.sin(a) * r0]);
+    }
+    level.push([0, fill]);
+    // Drawn after the glass so the glass doesn't wash it out (the highlights go on top again)
+    // (transparent, so it's sorted with the glass by renderOrder instead of drawn before it)
+    liquid.transparent = true;
+    const liquidMesh = mesh(lathe(level, 72), liquid);
+    liquidMesh.renderOrder = 2;
+    g.add(liquidMesh);
+    const surfaceR = Math.sqrt(r0 * r0 - fill * fill);
+    const surface = mesh(cyl(surfaceR, surfaceR, 0.012, 64), glow(0x8dff9c, 1.4), { pos: [0, fill, 0] });
+    surface.renderOrder = 2;
+    g.add(surface);
+    // Bubbles
+    [[0.2, -0.2, 0.55, 0.07], [-0.3, -0.42, 0.5, 0.06], [0.36, -0.52, 0.42, 0.05], [-0.06, -0.6, 0.6, 0.045], [0.05, 0.05, 0.5, 0.04]].forEach(([x, y, z, k]) =>
+      { const b = mesh(sphere(k, 24, 16), glow(0xc6ffcd, 1.6), { pos: [x, y, z] }); b.renderOrder = 3; g.add(b); });
+
+    // Gold collar, cork and a glass lip
+    g.add(mesh(torus(0.3, 0.07), gold, { pos: [0, 0.98, 0], rot: [PI / 2, 0, 0] }));
+    g.add(mesh(cyl(0.25, 0.22, 0.3, 32), wood(0xb07a45), { pos: [0, 1.5, 0] }));
+    g.add(mesh(torus(0.235, 0.03), gold, { pos: [0, 1.42, 0], rot: [PI / 2, 0, 0] }));
+
+    // Highlights on the glass
+    const white = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 });
+    [mesh(torus(R + 0.005, 0.03, PI * 0.32, 8, 40), white, { rot: [0, -0.5, PI * 0.58] }),
+     mesh(sphere(0.05, 16, 12), white, { pos: [-0.42, 0.5, 0.58] }),
+     mesh(torus(R + 0.005, 0.018, PI * 0.18, 8, 24), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4 }), { rot: [0, 0.6, -PI * 0.32] })]
+      .forEach(h => { h.renderOrder = 4; g.add(h); });
+    g.position.y = -0.1;
+    g.rotation.z = -0.06;
+    return group(g);
   },
 
   // Rest days
