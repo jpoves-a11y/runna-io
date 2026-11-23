@@ -340,9 +340,9 @@ final class ChestOpeningDirector {
         padlock.position = art.padlockHang
         chestRoot.addChildNode(padlock)
         padlockShape = builder.buildPadlock(into: padlock)
-        let glowPlane = SCNPlane(width: 0.55, height: 0.55)
-        glowPlane.materials = [ChestScene.decal(textures.glow, add: true, intensity: 1.6, tint: tier.sparkColor, readsDepth: false)]
-        padlockGlow.geometry = glowPlane
+        let lockGlowPlane = SCNPlane(width: 0.55, height: 0.55)
+        lockGlowPlane.materials = [ChestScene.decal(textures.glow, add: true, intensity: 1.6, tint: tier.sparkColor, readsDepth: false)]
+        padlockGlow.geometry = lockGlowPlane
         padlockGlow.simdOrientation = ChestArt.facing
         let lockCenter = art.point(at: CGPoint(x: art.lock.midX, y: art.lock.midY), z: art.padlockZ + 0.02)
         padlockGlow.simdPosition = lockCenter
