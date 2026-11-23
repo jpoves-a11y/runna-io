@@ -21,7 +21,7 @@ enum AppConfig {
     static var supportURL: URL { apiBaseURL.appendingPathComponent("support") }
 
     /// Support contact (same address as the support page).
-    static let supportEmail = "runna.io.service@gmail.com"
+    static let supportEmail = "kaeme2.support@gmail.com"
     static var supportMailURL: URL? {
         URL(string: "mailto:\(supportEmail)?subject=Soporte%20KM2")
     }

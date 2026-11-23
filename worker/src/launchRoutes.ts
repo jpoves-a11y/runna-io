@@ -79,7 +79,7 @@ export function registerLaunchRoutes(app: Hono<AppEnv>): void {
     c.header('Cache-Control', 'no-store');
     c.header('X-Robots-Tag', 'noindex');
     if (!(await isValidUnsubscribeToken(c.env.UPSTASH_CRON_SECRET ?? '', userId, token))) {
-      return c.html(unsubscribePage('Enlace no válido', 'Este enlace para darte de baja no es correcto. Escríbenos a runna.io.service@gmail.com y lo hacemos por ti.'), 400);
+      return c.html(unsubscribePage('Enlace no válido', 'Este enlace para darte de baja no es correcto. Escríbenos a kaeme2.support@gmail.com y lo hacemos por ti.'), 400);
     }
     const action = `/email/unsubscribe?u=${encodeURIComponent(userId)}&t=${encodeURIComponent(token)}`;
     return c.html(unsubscribePage('¿Dejar de recibir correos?', 'Ya no te escribiremos para avisarte de amigos ni de territorio. Los correos de tu cuenta (códigos, contraseña) te seguirán llegando.', { action, label: 'Darme de baja' }));

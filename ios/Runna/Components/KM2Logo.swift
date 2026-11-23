@@ -42,7 +42,8 @@ struct KM2Logo: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("KM2")
+        // Written KM2, said "Kaemedos"
+        .accessibilityLabel("Kaemedos")
     }
 }
 

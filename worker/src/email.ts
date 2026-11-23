@@ -13,7 +13,7 @@ type EmailProvider = 'resend' | 'sendgrid' | 'gmail';
 export const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 /** Support address: Reply-To of every email and the footer's "Soporte". */
-export const SUPPORT_EMAIL = 'runna.io.service@gmail.com';
+export const SUPPORT_EMAIL = 'kaeme2.support@gmail.com';
 
 /** Signature of a one-click unsubscribe link (HMAC-SHA256 of the user id with the admin secret). */
 export async function unsubscribeToken(secret: string, userId: string): Promise<string> {

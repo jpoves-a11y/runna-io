@@ -56,7 +56,7 @@ async function deleteAccountCompletely(env: Env, storage: WorkerStorage, user: {
 }
 
 /** Shown when a suspended account tries to sign in (admin panel → Suspender usuario). */
-const SUSPENDED_MESSAGE = 'Tu cuenta está suspendida por incumplir las condiciones de uso. Si crees que es un error, escribe a runna.io.service@gmail.com.';
+const SUSPENDED_MESSAGE = 'Tu cuenta está suspendida por incumplir las condiciones de uso. Si crees que es un error, escribe a kaeme2.support@gmail.com.';
 /** Minimum age (Terms, "Elegibilidad"; same as the app's AppConfig.minimumAge). */
 const MINIMUM_AGE = 14;
 import { publicBaseUrl } from './pages';
@@ -3446,7 +3446,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 },
                 c.env.VAPID_PUBLIC_KEY || '',
                 c.env.VAPID_PRIVATE_KEY || '',
-                c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                c.env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com'
               );
             }
           }
@@ -3468,7 +3468,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                   },
                   c.env.VAPID_PUBLIC_KEY || '',
                   c.env.VAPID_PRIVATE_KEY || '',
-                  c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                  c.env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com'
                 );
               }
             }
@@ -3505,7 +3505,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                     },
                     c.env.VAPID_PUBLIC_KEY || '',
                     c.env.VAPID_PRIVATE_KEY || '',
-                    c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+                    c.env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com'
                   );
                 }
               }
@@ -4254,7 +4254,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           return u ? `${u.name} (@${u.username}, ${u.id})` : id;
         };
         const emailService = emailServiceFromEnv(c.env, publicBaseUrl(c));
-        await emailService.sendReportNotification((c.env as any).REPORTS_EMAIL || 'runna.io.service@gmail.com', {
+        await emailService.sendReportNotification((c.env as any).REPORTS_EMAIL || 'kaeme2.support@gmail.com', {
           reporter: await describe(reporterId),
           reported: await describe(reportedUserId || null),
           targetType,
@@ -4483,7 +4483,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           payload,
           c.env.VAPID_PUBLIC_KEY || '',
           c.env.VAPID_PRIVATE_KEY || '',
-          c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+          c.env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com'
         );
         results.push({
           endpoint: sub.endpoint.slice(0, 60),
@@ -6716,7 +6716,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
               },
               c.env.VAPID_PUBLIC_KEY || '',
               c.env.VAPID_PRIVATE_KEY || '',
-              c.env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+              c.env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com'
             );
           }
         }
@@ -7029,7 +7029,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       let sent = 0;
       for (const [_, userSubs] of subsByUser) {
         try {
-          await sendPushToUser(userSubs, payload, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!, 'mailto:runna.io.service@gmail.com');
+          await sendPushToUser(userSubs, payload, env.VAPID_PUBLIC_KEY!, env.VAPID_PRIVATE_KEY!, 'mailto:kaeme2.support@gmail.com');
           sent++;
         } catch (_) {}
       }
@@ -7085,7 +7085,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         };
         for (const [_, userSubs] of subsByUser) {
           try {
-            await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:runna.io.service@gmail.com');
+            await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:kaeme2.support@gmail.com');
             totalSent++;
           } catch (_) {}
         }
@@ -7400,7 +7400,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       let failed = 0;
       for (const [_, userSubs] of subsByUser) {
         try {
-          await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:runna.io.service@gmail.com');
+          await sendPushToUser(userSubs, payload, c.env.VAPID_PUBLIC_KEY || '', c.env.VAPID_PRIVATE_KEY || '', 'mailto:kaeme2.support@gmail.com');
           sent++;
         } catch (_) { failed++; }
       }

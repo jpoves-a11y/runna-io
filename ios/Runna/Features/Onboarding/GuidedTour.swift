@@ -178,7 +178,7 @@ final class TourController {
                      placement: .above, optional: true),
             TourStep(id: "run", tab: .map, anchor: .runButton, symbol: "figure.run",
                      title: "A correr",
-                     text: "Toca aquí cuando salgas a correr. Te avisaré **por voz** de cada kilómetro y de cuándo pisas territorio que puedes robar. También vale decir «Oye Siri, empieza una carrera en KM2».",
+                     text: "Toca aquí cuando salgas a correr. Te avisaré **por voz** de cada kilómetro y de cuándo pisas territorio que puedes robar. También vale decir «Oye Siri, empieza una carrera en Kaemedos».",
                      cornerRadius: 22, placement: .above),
             TourStep(id: "rankings", tab: .rankings, anchor: .rankingTabs, symbol: "trophy",
                      title: "Ranking",

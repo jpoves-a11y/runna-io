@@ -664,7 +664,7 @@ async function sendRunNotifications(storage: WorkerStorage, env: any, userId: st
         await sendPushToUser(
           subs.map((s) => ({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } })),
           { title: '🏅 ¡Reto completado!', body: `${names}. La recompensa ya está en tu inventario.`, tag: 'challenge-completed', data: { type: 'challenge_completed' } },
-          env.VAPID_PUBLIC_KEY || '', env.VAPID_PRIVATE_KEY || '', env.VAPID_SUBJECT || 'mailto:notifications@runna.io',
+          env.VAPID_PUBLIC_KEY || '', env.VAPID_PRIVATE_KEY || '', env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com',
         );
       }
     }

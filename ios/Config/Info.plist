@@ -50,5 +50,20 @@
 		<key>UIColorName</key>
 		<string>LaunchBackground</string>
 	</dict>
+	<key>CFBundleSpokenName</key>
+	<string>Kaemedos</string>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Kaemedos</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>ka e me dos</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Kaeme dos</string>
+		</dict>
+	</array>
 </dict>
 </plist>

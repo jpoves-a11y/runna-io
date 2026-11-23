@@ -130,7 +130,7 @@ export async function checkAndSendInactivityReminders(
           payload,
           env.VAPID_PUBLIC_KEY || '',
           env.VAPID_PRIVATE_KEY || '',
-          env.VAPID_SUBJECT || 'mailto:notifications@runna.io'
+          env.VAPID_SUBJECT || 'mailto:kaeme2.support@gmail.com'
         );
 
         // 7. Record the reminder in the database
