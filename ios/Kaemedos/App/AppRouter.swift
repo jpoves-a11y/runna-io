@@ -122,7 +122,7 @@ final class AppRouter {
     }
 
     /// Domains whose links open the app (com.apple.developer.associated-domains in the entitlements).
-    static let universalLinkHosts: Set<String> = [AppConfig.apiBaseURL.host ?? "", "api.kaemedos.workers.dev"]
+    static let universalLinkHosts: Set<String> = [AppConfig.apiBaseURL.host ?? "", "runna-io-api.runna-io-api.workers.dev"]
 
     /// The runnaio:// link of a web page of the Worker (pages.ts), or nil when it isn't one.
     static func appLink(forWeb url: URL) -> URL? {

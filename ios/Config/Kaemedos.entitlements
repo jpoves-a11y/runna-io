@@ -16,7 +16,7 @@
 	</array>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>applinks:api.kaemedos.workers.dev</string>
+		<string>applinks:runna-io-api.runna-io-api.workers.dev</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>

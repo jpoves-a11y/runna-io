@@ -10,7 +10,7 @@ type EmailProvider = 'resend' | 'sendgrid' | 'gmail';
 
 // Public URL of the Worker: email buttons open its /open landing page, which launches the iOS app
 // (email clients don't reliably open custom URL schemes such as runnaio://).
-export const DEFAULT_WORKER_URL = 'https://api.kaemedos.workers.dev';
+export const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 /** Support address: Reply-To of every email and the footer's "Soporte". */
 export const SUPPORT_EMAIL = 'kaeme2.support@gmail.com';

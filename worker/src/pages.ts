@@ -4,7 +4,7 @@
 import type { Context, Hono } from 'hono';
 import type { AppEnv } from './auth';
 
-const DEFAULT_WORKER_URL = 'https://api.kaemedos.workers.dev';
+const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 const CONTACT_EMAIL = 'kaeme2.support@gmail.com';
 const APP_SCHEME = 'runnaio';
 const APP_TABS = ['map', 'rankings', 'activity', 'club', 'friends', 'profile'] as const;

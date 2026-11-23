@@ -42,7 +42,7 @@ const GARMIN_TOKEN_URL = 'https://connectapi.garmin.com/di-oauth2-service/oauth/
 const GARMIN_API_BASE = 'https://apis.garmin.com/wellness-api/rest';
 /** Ping notifications are only followed to this host (the URL comes from the request body). */
 const GARMIN_API_HOST = 'apis.garmin.com';
-const DEFAULT_WORKER_URL = 'https://api.kaemedos.workers.dev';
+const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 /** Same competition start as the Polar / Strava / Suunto imports. */
 /** Garmin recommends refreshing at least 600 s before the access token expires. */
@@ -719,7 +719,7 @@ export function registerGarminRoutes(app: Hono<AppEnv>): void {
     const state = c.req.query('state');
     const secret = clientSecret(c.env);
     const verified = state && secret ? await verifyOAuthState(state, secret) : null;
-    const frontend = c.env.FRONTEND_URL || 'https://kaemedos.pages.dev';
+    const frontend = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
     const finish = (query: string) => oauthFinish(c, verified?.app === true, 'garmin', `${frontend}/profile?${query}`);
     try {
       const code = c.req.query('code');

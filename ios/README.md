@@ -69,7 +69,7 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 Una sola vez:
 
 1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit**, **Push Notifications**, **Sign in with Apple**, **Associated Domains** y **WeatherKit**. Si el identificador ya existe, ábrelo y marca las que falten (las tres últimas son nuevas) y guarda.
-   - Al marcar **Sign in with Apple** → **Configure** → **Server-to-Server Notification Endpoint**: `https://api.kaemedos.workers.dev/api/auth/apple/notifications`. Apple avisa ahí cuando alguien deja de usar Iniciar sesión con Apple con la app (se cierran sus sesiones) o borra su Apple ID (se borra su cuenta si solo entraba con Apple).
+   - Al marcar **Sign in with Apple** → **Configure** → **Server-to-Server Notification Endpoint**: `https://runna-io-api.runna-io-api.workers.dev/api/auth/apple/notifications`. Apple avisa ahí cuando alguien deja de usar Iniciar sesión con Apple con la app (se cierran sus sesiones) o borra su Apple ID (se borra su cuenta si solo entraba con Apple).
    - Para que el servidor pueda desvincular la app del Apple ID al borrar una cuenta: developer.apple.com → Keys → **+** → marca **Sign in with Apple** (configúrala con el App ID `com.jpoves.runnaio`), descarga el `.p8` y guárdalo en el Worker con `npx wrangler secret put APPLE_SIGNIN_KEY_ID -c wrangler.worker.toml` y `APPLE_SIGNIN_PRIVATE_KEY` (el contenido completo del `.p8`).
    - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
 2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Kaemedos" ya existe).
@@ -131,9 +131,9 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 ## Revisión de Apple: notas útiles
 
 - **URLs para App Store Connect**:
-  - Política de privacidad: `https://api.kaemedos.workers.dev/privacy`
-  - Soporte: `https://api.kaemedos.workers.dev/support`
-  - Condiciones de uso (opcional, como EULA o en la descripción): `https://api.kaemedos.workers.dev/terms`
+  - Política de privacidad: `https://runna-io-api.runna-io-api.workers.dev/privacy`
+  - Soporte: `https://runna-io-api.runna-io-api.workers.dev/support`
+  - Condiciones de uso (opcional, como EULA o en la descripción): `https://runna-io-api.runna-io-api.workers.dev/terms`
 - **Contenido generado por usuarios** (guideline 1.2):
   - Se puede denunciar y bloquear desde el perfil de un usuario, un comentario, una publicación o un mensaje del chat del club.
   - Los mensajes de usuarios bloqueados no se ven.

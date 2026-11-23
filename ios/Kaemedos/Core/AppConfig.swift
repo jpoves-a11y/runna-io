@@ -9,7 +9,7 @@ enum AppConfig {
             return url
         }
         #endif
-        return URL(string: "https://api.kaemedos.workers.dev")!
+        return URL(string: "https://runna-io-api.runna-io-api.workers.dev")!
     }()
 
     /// Custom URL scheme registered in Info.plist (OAuth returns and friend invites).

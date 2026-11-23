@@ -1,6 +1,6 @@
 # KM2 (KAEMEDOS)
 
-Se escribe KM2 y se pronuncia «kaemedos». API en `https://api.kaemedos.workers.dev`. Lo que no ve el público conserva el nombre antiguo: bundle `com.jpoves.runnaio`, enlaces `runnaio://`.
+Se escribe KM2 y se pronuncia «kaemedos». Lo que no ve el público conserva de momento el nombre antiguo: la API en `https://runna-io-api.runna-io-api.workers.dev`, el bundle `com.jpoves.runnaio`, enlaces `runnaio://`.
 
 Corre y conquista el mapa. KM2 tiene dos modos a la vez:
 
@@ -183,7 +183,7 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 
 ### Emails
 
-Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`kaeme2.support@gmail.com`). Es gratis, no necesita dominio propio y Gmail los firma, así que no acaban en spam. El límite es de unos 500 emails al día.
+Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`runna.io.service@gmail.com` de momento; el contacto que se muestra es `kaeme2.support@gmail.com`). Es gratis, no necesita dominio propio y Gmail los firma, así que no acaban en spam. El límite es de unos 500 emails al día.
 
 1. Entra en esa cuenta de Google y activa la **verificación en dos pasos** (myaccount.google.com → Seguridad). Sin ella, Google no deja crear contraseñas de aplicación.
 2. Abre [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), crea una con el nombre "Kaemedos Worker" y copia las 16 letras.
@@ -192,7 +192,7 @@ Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`ka
 
    ```bash
    curl -X POST -H "Authorization: Bearer $UPSTASH_CRON_SECRET" -H "Content-Type: application/json" \
-     -d '{"to":"tu-email@ejemplo.com"}' https://api.kaemedos.workers.dev/api/admin/email/test
+     -d '{"to":"tu-email@ejemplo.com"}' https://runna-io-api.runna-io-api.workers.dev/api/admin/email/test
    ```
 
    Responde con el proveedor, el remitente, los problemas de configuración que vea (`problems`) y, si se pudo enviar, `"sent": true`. Si no, `error` trae la respuesta del servidor de correo (por ejemplo `535 ... Username and Password not accepted` si la contraseña de aplicación está mal).
@@ -269,8 +269,8 @@ Integración con el Garmin Connect Developer Program (Activity API), en `worker/
    npx wrangler secret put GARMIN_WEBHOOK_SECRET -c wrangler.worker.toml   # una cadena aleatoria larga
    ```
 
-2. Redirect URL de OAuth: `https://api.kaemedos.workers.dev/api/garmin/callback`.
-3. En **Endpoint Configuration** (`https://apis.garmin.com/tools/endpoints`) apunta a `https://api.kaemedos.workers.dev/api/garmin/webhook?key=<GARMIN_WEBHOOK_SECRET>`, en modo **push** (también acepta ping), estos tipos: **Activity Details**, **Deregistrations** y **User Permissions Change**. Deja desactivados los demás.
+2. Redirect URL de OAuth: `https://runna-io-api.runna-io-api.workers.dev/api/garmin/callback`.
+3. En **Endpoint Configuration** (`https://apis.garmin.com/tools/endpoints`) apunta a `https://runna-io-api.runna-io-api.workers.dev/api/garmin/webhook?key=<GARMIN_WEBHOOK_SECRET>`, en modo **push** (también acepta ping), estos tipos: **Activity Details**, **Deregistrations** y **User Permissions Change**. Deja desactivados los demás.
 4. La fila Garmin aparece en la app (Perfil → Servicios conectados) en cuanto `/api/garmin/status` dice `configured: true`.
 
 Prueba end-to-end con Garmin simulado: compila el Worker como en "API en local" y ejecuta
@@ -294,11 +294,11 @@ node scripts/e2e/garmin-test.mjs
 | `/.well-known/apple-app-site-association` | Enlaces universales: `/invite/*`, `/club-invite/*` y `/open` abren la app si está instalada (`appIDs` sale de `APNS_TEAM_ID`) |
 | `/admin` | Panel de administración: denuncias y estadísticas ([ver abajo](#panel-de-administración)) |
 
-En producción: `https://api.kaemedos.workers.dev/privacy`, `/terms` y `/support`.
+En producción: `https://runna-io-api.runna-io-api.workers.dev/privacy`, `/terms` y `/support`.
 
 ## Panel de administración
 
-`https://api.kaemedos.workers.dev/admin` (código en `worker/src/admin.ts`). Se entra con el secreto de administración (`UPSTASH_CRON_SECRET`); la sesión dura 12 horas.
+`https://runna-io-api.runna-io-api.workers.dev/admin` (código en `worker/src/admin.ts`). Se entra con el secreto de administración (`UPSTASH_CRON_SECRET`); la sesión dura 12 horas.
 
 - **Resumen** (`/admin`): lo que necesita atención (denuncias pendientes y su antigüedad, carreras en revisión, si la competición termina o empieza en menos de 2 días), usuarios, gente que abre la app y corre hoy, carreras, competiciones y clubs, y la fase de la temporada con su cuenta atrás.
 - **Competiciones** (`/admin/competitions`): calendario con los ciclos anteriores, el actual y los 8 siguientes (modo, inicio, fin y descanso en hora de Madrid), las competiciones de clubs del ciclo actual y del anterior (participantes, carreras, área, líder, rival), premios del último ciclo, cofres en el mapa y recogidos, y los clubs con si tienen miembros para el próximo modo. Cada competición tiene su página con la clasificación, las banderas y las carreras por día.

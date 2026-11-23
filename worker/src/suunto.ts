@@ -40,7 +40,7 @@ type AppContext = Context<AppEnv>;
 
 const SUUNTO_OAUTH_BASE = 'https://cloudapi-oauth.suunto.com/oauth';
 const SUUNTO_API_BASE = 'https://cloudapi.suunto.com';
-const DEFAULT_WORKER_URL = 'https://api.kaemedos.workers.dev';
+const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 
 /** Same competition start as the Polar / Strava imports. */
 const SYNC_DAYS = 30;
@@ -802,7 +802,7 @@ export function registerSuuntoRoutes(app: Hono<AppEnv>): void {
     const state = c.req.query('state');
     const secret = clientSecret(c.env);
     const verified = state && secret ? await verifyOAuthState(state, secret) : null;
-    const frontend = c.env.FRONTEND_URL || 'https://kaemedos.pages.dev';
+    const frontend = c.env.FRONTEND_URL || 'https://runna-io.pages.dev';
     const finish = (query: string) => oauthFinish(c, verified?.app === true, 'suunto', `${frontend}/profile?${query}`);
     try {
       const code = c.req.query('code');

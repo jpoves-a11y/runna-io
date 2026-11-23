@@ -4,7 +4,7 @@
 # Este archivo configura tu backend API para Cloudflare Workers
 # Usa: cd worker && npm install && cd .. && wrangler deploy -c wrangler.worker.toml
 
-name = "api"
+name = "runna-io-api"
 account_id = "5b173ee18f2de458cbc95ab4a55ab8ba"
 main = "worker/src/index.ts"
 compatibility_date = "2024-01-01"
@@ -26,8 +26,10 @@ ENVIRONMENT = "production"
 # account's SMTP server, free and without an own domain. Needs the secret GMAIL_APP_PASSWORD:
 # an app password of that Google account (README → "Emails").
 EMAIL_PROVIDER = "gmail"
-GMAIL_USER = "kaeme2.support@gmail.com"
-SENDGRID_FROM = "kaeme2.support@gmail.com"
+# Sender for now; to send from kaeme2.support@gmail.com, put that account's app password in
+# GMAIL_APP_PASSWORD and change these two
+GMAIL_USER = "runna.io.service@gmail.com"
+SENDGRID_FROM = "runna.io.service@gmail.com"
 RESEND_FROM = "onboarding@resend.dev"
 
 # NOTA: Las API keys deben configurarse como secretos:

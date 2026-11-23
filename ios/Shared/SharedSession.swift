@@ -13,7 +13,7 @@ enum SharedSession {
 
     private static let service = "io.runna.shared-session"
     private static let account = "session"
-    static let defaultAPIBaseURL = "https://api.kaemedos.workers.dev"
+    static let defaultAPIBaseURL = "https://runna-io-api.runna-io-api.workers.dev"
 
     /// "<team id>.com.jpoves.runnaio.shared". The team id comes from Info.plist ($(AppIdentifierPrefix),
     /// filled in when Xcode signs the build) or, in builds signed later (the TestFlight workflow archives
