@@ -826,7 +826,9 @@ private struct ChartCallout: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // A solid background: a material inside a chart's annotation renders black in light mode
+        .background(Color.surfaceRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.hairline, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.12), radius: 4, y: 1)
     }
 }
