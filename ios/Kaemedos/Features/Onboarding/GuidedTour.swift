@@ -11,7 +11,8 @@ import UserNotifications
 
 /// The parts of the app the tour points at.
 enum TourAnchor: Hashable {
-    case mapStats, mapModeSwitch, powers, missions, runButton, clubPicker
+    case mapStats, mapModeSwitch, mapAvatar, powers, missions, runButton
+    case rankingTabs, clubPicker
 }
 
 struct TourStep: Identifiable {
@@ -165,16 +166,13 @@ final class TourController {
             TourStep(id: "welcome", tab: .map, anchor: nil, symbol: "figure.run",
                      title: welcome,
                      text: "¿Listo para conquistar tu ciudad? Te enseño lo más importante en un momento."),
-            TourStep(id: Self.profileStepId, tab: .map, anchor: nil, symbol: "person.crop.circle.badge.checkmark",
-                     title: "Completa tu perfil",
-                     text: "Tu **ciudad base** decide tus rankings y los clubes a los que puedes unirte. Y elige el **color** con el que pintarás el mapa."),
             TourStep(id: "stats", tab: .map, anchor: .mapStats, symbol: "square.dashed.inset.filled",
                      title: "Tu territorio",
                      text: "Aquí ves cuánto mapa es tuyo y en qué puesto vas. Cada vez que acabes una carrera, el área que encierra tu recorrido pasa a ser **tuya**.",
                      cornerRadius: 29),
             TourStep(id: "modes", tab: .map, anchor: .mapModeSwitch, symbol: "map",
                      title: "Dos mapas",
-                     text: "**Global**: en este mapa vas sumando conquistas sin que nadie te robe.\n\n**Competición**: tu club contra los demás. Cada **dos semanas** empieza una nueva, con un modo de juego distinto, y entre una y otra hay unos días de descanso con cofres.",
+                     text: "**Global**: en este mapa vas sumando conquistas sin que nadie te robe.\n\n**Competición**: tu club contra los demás.",
                      padding: 6, cornerRadius: 24),
             TourStep(id: "powers", tab: .map, anchor: .powers, symbol: "bolt.fill",
                      title: "Poderes",
@@ -184,14 +182,24 @@ final class TourController {
                      title: "Primeros pasos",
                      text: "Cinco retos para arrancar con buen pie. Complétalos y te regalamos un **poder**.",
                      placement: .above, optional: true),
-            TourStep(id: "run", tab: .map, anchor: .runButton, symbol: "figure.run",
-                     title: "A correr",
-                     text: "Toca aquí cuando salgas a correr. Te avisaré **por voz** de cada kilómetro y de cuándo pisas territorio que puedes robar. También vale decir «Oye Siri, empieza una carrera en Kaemedos».",
-                     cornerRadius: 22, placement: .above),
+            TourStep(id: "rankings", tab: .rankings, anchor: .rankingTabs, symbol: "trophy",
+                     title: "Ranking",
+                     text: "Compárate con tus **amigos**, con tu **ciudad** o con **todo el mundo**, y mira cómo va tu club.",
+                     cornerRadius: 14),
             TourStep(id: "club", tab: .club, anchor: .clubPicker, symbol: "shield.lefthalf.filled",
                      title: "Tu club",
                      text: "Únete a un club de tu **ciudad base**, o crea el tuyo, para competir juntos. Aquí también están su **chat** y tus **amigos**.",
                      cornerRadius: 12),
+            TourStep(id: "competition", tab: .club, anchor: nil, symbol: "flag.checkered",
+                     title: "La competición",
+                     text: "Cada **14 días**: **10 de competición** y **4 de descanso**. Cada competición trae un modo de juego distinto."),
+            TourStep(id: "avatar", tab: .map, anchor: .mapAvatar, symbol: "person.crop.circle",
+                     title: "Tu perfil",
+                     text: "Desde aquí personalizas tu **perfil** y tus **ajustes**. Empecemos por lo imprescindible.",
+                     padding: 6, cornerRadius: 26),
+            TourStep(id: Self.profileStepId, tab: .map, anchor: nil, symbol: "person.crop.circle.badge.checkmark",
+                     title: "Completa tu perfil",
+                     text: "Tu **ciudad base** decide tus rankings y los clubes a los que puedes unirte. Y elige el **color** con el que pintarás el mapa."),
             TourStep(id: "done", tab: .map, anchor: nil, symbol: "flag.fill",
                      title: "¡Listo para conquistar!",
                      text: "Activa las **notificaciones** para saber cuándo te roban territorio o te reta un amigo. Lo demás lo irás descubriendo corriendo."),
@@ -329,7 +337,8 @@ struct GuidedTourOverlay: View {
 
     private func card(step: TourStep) -> some View {
         let isProfile = step.id == TourController.profileStepId
-        let isHero = step.anchor == nil && !isProfile
+        // Cards with extra content (calendar, profile form) use the compact header
+        let isHero = step.anchor == nil && !isProfile && step.id != "competition"
         return VStack(alignment: isHero ? .center : .leading, spacing: DS.Spacing.l) {
             header(step: step, isHero: isHero)
             VStack(alignment: isHero ? .center : .leading, spacing: DS.Spacing.s) {
@@ -349,6 +358,9 @@ struct GuidedTourOverlay: View {
             .frame(maxWidth: .infinity, alignment: isHero ? .center : .leading)
             if step.id == "done" {
                 notificationButton
+            }
+            if step.id == "competition" {
+                TourCompetitionCalendar()
             }
             if isProfile {
                 TourProfileStep()
