@@ -4,8 +4,8 @@ import SwiftUI
 import UIKit
 
 /// A chest opening in real 3D (SceneKit), for every rarity. The chest drops in, the lid strains
-/// against the padlock, the padlock gives way and falls to the floor and the lid swings open on its
-/// hinge; light pours out of the treasure inside.
+/// against the padlock, the padlock shakes harder and harder and bursts into light, and the lid swings
+/// open on its hinge; light pours out of the treasure inside.
 ///
 /// The chest is the illustration itself: it's modelled in 3D seen from the angle the picture is
 /// drawn from, with the picture painted onto it from there (see `ChestArt`), so at rest it looks
@@ -187,8 +187,6 @@ private enum Dim {
     static let plank: CGFloat = 0.045
     /// Lid angle once open (radians, around the back hinge).
     static let openAngle: Float = -1.92
-    /// How far back the padlock lies tilted on the floor (radians; flat would be π/2).
-    static let padlockTilt: Float = 1.25
     /// Light leaking around the seam: a glow this much wider than the chest on each side.
     static let seamMargin: CGFloat = 0.14
     /// Glow of the legendary crystals before and after charging.
@@ -209,6 +207,10 @@ final class ChestOpeningDirector {
     /// The inside of the lid: hidden until it opens.
     private var lidInside = SCNNode()
     private let padlock = SCNNode()
+    /// Light on the padlock as it shakes, before it bursts.
+    private let padlockGlow = SCNNode()
+    /// The padlock's solid, which its burst of light comes from.
+    private var padlockShape: SCNGeometry?
     private let innerLight = SCNNode()
     private let seamLight = SCNNode()
     private let seam = SCNNode()
@@ -337,7 +339,16 @@ final class ChestOpeningDirector {
         lidInside.opacity = 0
         padlock.position = art.padlockHang
         chestRoot.addChildNode(padlock)
-        builder.buildPadlock(into: padlock)
+        padlockShape = builder.buildPadlock(into: padlock)
+        let glowPlane = SCNPlane(width: 0.55, height: 0.55)
+        glowPlane.materials = [ChestScene.decal(textures.glow, add: true, intensity: 1.6, tint: tier.sparkColor, readsDepth: false)]
+        padlockGlow.geometry = glowPlane
+        padlockGlow.simdOrientation = ChestArt.facing
+        let lockCenter = art.point(at: CGPoint(x: art.lock.midX, y: art.lock.midY), z: art.padlockZ + 0.02)
+        padlockGlow.simdPosition = lockCenter
+        padlockGlow.opacity = 0
+        padlockGlow.renderingOrder = 19
+        chestRoot.addChildNode(padlockGlow)
         glowing = builder.glowing
 
         // Light from inside: an omni light, a glow over the treasure and a beam of light
@@ -357,25 +368,31 @@ final class ChestOpeningDirector {
         // The light coming out, drawn on planes facing the camera (which never turns), from the
         // opening up: a soft column of light and, the rarer, more and longer rays fanning out,
         // each swaying and shimmering at its own pace; a halo behind the chest; a lens streak.
+        // (from a little under the rim, so the light comes out of the chest: the front wall hides
+        // where it starts)
         facing.simdOrientation = ChestArt.facing
-        facing.position = SCNVector3(0, Float(Dim.height) - 0.02, 0)
+        facing.position = SCNVector3(0, Float(Dim.height) - 0.1, 0)
         chestRoot.addChildNode(facing)
         beam.opacity = 0
         facing.addChildNode(beam)
         let columnWidth = 0.95 * CGFloat(tier.beamWidth)
         // (soft, so the open lid behind it still shows clearly)
-        beam.addChildNode(Self.lightPlane(textures.column, width: columnWidth, height: 1.4, bottom: 0, intensity: 0.75, tint: tier.lightColor))
+        beam.addChildNode(Self.lightPlane(textures.column, width: columnWidth, height: 1.5, bottom: 0, intensity: 0.75, tint: tier.lightColor))
         if tier.level >= 2 {
             // A narrower, brighter core
-            beam.addChildNode(Self.lightPlane(textures.column, width: columnWidth * 0.4, height: 1.8, bottom: 0, intensity: 0.8, tint: .white))
+            beam.addChildNode(Self.lightPlane(textures.column, width: columnWidth * 0.4, height: 1.9, bottom: 0, intensity: 0.8, tint: .white))
         }
+        // Rays rise from all along the opening (not from one point), leaning outwards the further
+        // from the middle they start, the longest in the middle
         var random = SeededRandom(seed: 5)
         for index in 0..<tier.rays {
             let holder = SCNNode()
             let spread = (Float(index) + 0.5) / Float(tier.rays) - 0.5
-            holder.eulerAngles.z = spread * 2.1 + random.next(in: -0.08...0.08)
-            let length = CGFloat(tier.rayLength * random.next(in: 0.6...1))
-            let ray = Self.lightPlane(textures.ray, width: CGFloat(random.next(in: 0.07...0.17)), height: length, bottom: 0, intensity: 1.5, tint: tier.lightColor)
+            holder.position.x = spread * 0.8 + random.next(in: -0.03...0.03)
+            holder.eulerAngles.z = -spread * 1.1 + random.next(in: -0.1...0.1)
+            let middle = 1 - abs(spread) * 0.8
+            let length = CGFloat(tier.rayLength * middle * random.next(in: 0.75...1))
+            let ray = Self.lightPlane(textures.ray, width: CGFloat(random.next(in: 0.06...0.15)), height: length, bottom: 0, intensity: 1.5, tint: tier.lightColor)
             holder.addChildNode(ray)
             beam.addChildNode(holder)
             let sway = CGFloat(random.next(in: 0.05...0.12))
@@ -478,7 +495,7 @@ final class ChestOpeningDirector {
         let knocksEnd = strain + Double(tier.knocks.count - 1) * knockGap + 0.15
         let chargeStart = knocksEnd + 0.05
         let unlock = chargeStart + tier.charge + 0.1
-        let fall = unlock + 0.12
+        let dissolve = unlock + 0.12
         let open = unlock + 0.27
         let done = open + (tier.level >= 3 ? 1.15 : 0.95)
 
@@ -525,31 +542,37 @@ final class ChestOpeningDirector {
             playCharge(from: chargeStart, duration: tier.charge, unlock: unlock)
         }
 
-        // 4. The padlock gives way with a jolt and falls to the floor
-        event(at: unlock) { [weak self] in self?.haptics.impact(.rigid, 1) }
+        // 4. The padlock gives way: it shakes harder and harder, glowing, and bursts into light
         let hang = art.padlockHang
-        let landing = art.padlockRest
-        padlock.runAction(.sequence([
-            .wait(duration: unlock),
-            .move(to: SCNVector3(hang.x, hang.y + 0.025, hang.z + 0.01), duration: 0.07).timed(Ease.outQuad),
-            .wait(duration: fall - unlock - 0.07),
-            .group([
-                .move(to: landing, duration: 0.3).timed(Ease.inQuad),
-                .rotateTo(x: -CGFloat(Dim.padlockTilt), y: 0, z: 0.12, duration: 0.3).timed(Ease.inQuad)
-            ]),
-            .group([
-                .moveBy(x: 0, y: 0.022, z: 0.02, duration: 0.07).timed(Ease.outQuad),
-                .rotateBy(x: 0.18, y: 0, z: 0, duration: 0.07)
-            ]),
-            .group([
-                .moveBy(x: 0, y: -0.022, z: 0.008, duration: 0.07).timed(Ease.inQuad),
-                .rotateBy(x: -0.18, y: 0, z: 0, duration: 0.07)
-            ])
+        let shakeStart = max(0, unlock - 0.2)
+        var shaking: [SCNAction] = [.wait(duration: shakeStart)]
+        let steps = Int((dissolve - shakeStart) / 0.03)
+        for step in 0..<steps {
+            let amount = CGFloat(0.03 + 0.09 * Double(step) / Double(max(1, steps - 1)))
+            let side: CGFloat = step.isMultiple(of: 2) ? 1 : -1
+            shaking.append(.group([
+                .rotateTo(x: 0, y: 0, z: side * amount, duration: 0.03),
+                .move(to: SCNVector3(hang.x + Float(side * amount) * 0.04, hang.y + 0.008, hang.z), duration: 0.03)
+            ]))
+        }
+        shaking.append(.group([
+            .fadeOut(duration: 0.12),
+            .scale(to: 1.12, duration: 0.12).timed(Ease.outQuad)
         ]))
-        event(at: fall + 0.3) { [weak self] in
+        padlock.runAction(.sequence(shaking))
+        padlockGlow.runAction(.sequence([
+            .wait(duration: shakeStart),
+            .fadeOpacity(to: 0.9, duration: dissolve - shakeStart).timed(Ease.inQuad),
+            .group([.scale(to: 2.2, duration: 0.3).timed(Ease.outCubic), .fadeOut(duration: 0.3)])
+        ]))
+        event(at: shakeStart) { [weak self] in
+            self?.haptics.rumble(duration: dissolve - shakeStart, from: 0.3, to: 0.9, sharpness: 0.8)
+        }
+        event(at: unlock) { [weak self] in self?.haptics.impact(.rigid, 1) }
+        event(at: dissolve) { [weak self] in
             guard let self else { return }
-            self.haptics.impact(.light, 0.8)
-            self.puffDust(at: landing, spread: SCNVector3(0.18, 0.01, 0.22), amount: 0.35)
+            self.haptics.impact(.light, 0.9)
+            self.burstPadlock()
         }
 
         // 5. The lid swings open (faster the rarer), falls back past vertical, hits its stop, settles
@@ -721,7 +744,7 @@ final class ChestOpeningDirector {
     /// Jumps to the open chest.
     func skip() {
         guard built, !finished else { return }
-        var nodes = [events, chestRoot, lidPivot, lidInside, padlock, innerLight, seamLight, seam, glow, beam, halo, streak, flashNode, cameraRig, cameraShake, cameraNode]
+        var nodes = [events, chestRoot, lidPivot, lidInside, padlock, padlockGlow, innerLight, seamLight, seam, glow, beam, halo, streak, flashNode, cameraRig, cameraShake, cameraNode]
         nodes.append(contentsOf: rings)
         for node in nodes {
             node.removeAllActions()
@@ -734,9 +757,8 @@ final class ChestOpeningDirector {
         chestRoot.opacity = 1
         lidPivot.eulerAngles = SCNVector3(Dim.openAngle, 0, 0)
         lidInside.opacity = 1
-        padlock.position = art.padlockRest
-        padlock.eulerAngles = SCNVector3(-Dim.padlockTilt, 0, 0.12)
-        padlock.opacity = calm ? 0 : 1
+        padlock.opacity = 0
+        padlockGlow.opacity = 0
         innerLight.light?.intensity = tier.lightIntensity
         seamLight.light?.intensity = 0
         seam.opacity = 0
@@ -850,6 +872,17 @@ final class ChestOpeningDirector {
 
     private func burstSparks() {
         motes.addParticleSystem(ChestParticles.sparks(tier))
+    }
+
+    /// The padlock bursting into specks of light, from all over its shape.
+    private func burstPadlock() {
+        guard let shape = padlockShape else { return }
+        let node = SCNNode()
+        node.position = padlock.position
+        node.eulerAngles = padlock.eulerAngles
+        chestRoot.addChildNode(node)
+        node.addParticleSystem(ChestParticles.padlockBurst(tier, shape: shape))
+        node.runAction(.sequence([.wait(duration: 2.5), .removeFromParentNode()]))
     }
 
     private func fountainSparks() {
@@ -1066,8 +1099,12 @@ private struct ChestArt {
     let name: String
     /// Pixel of the scene origin (the floor under the middle of the chest).
     let origin: SIMD2<Float>
-    /// Pixels: the top of the lid (diamond included), the hasp and the padlock.
+    /// Pixels: the top of the lid (its arched bands, and the diamond), the top of the planks
+    /// between the bands, the hasp and the padlock.
     let lidTop: Float
+    let planksTop: Float
+    /// What stands above the planks between the bands (pixels), if anything: the legendary's diamond.
+    let crown: CGRect?
     let hasp: CGRect
     let lock: CGRect
     /// The metal of the bands, for the rims the picture doesn't show.
@@ -1082,28 +1119,29 @@ private struct ChestArt {
         switch rarity {
         case "rare":
             name = "chest_rare"
-            frontLeft = SIMD2(30, 171); lidTop = 79
+            frontLeft = SIMD2(30, 171); lidTop = 79; planksTop = 96; crown = nil
             hasp = CGRect(x: 120, y: 162, width: 81, height: 33)
             lock = CGRect(x: 107, y: 186, width: 99, height: 126)
             band = UIColor(red: 0.56, green: 0.58, blue: 0.66, alpha: 1)
             shackle = (121, 189, 188); lockBody = (107, 205, 230, 285, 150, 310)
         case "epic":
             name = "chest_epic"
-            frontLeft = SIMD2(30, 172); lidTop = 79
+            frontLeft = SIMD2(30, 172); lidTop = 79; planksTop = 99; crown = nil
             hasp = CGRect(x: 123, y: 165, width: 79, height: 32)
             lock = CGRect(x: 111, y: 188, width: 97, height: 128)
             band = UIColor(red: 0.86, green: 0.67, blue: 0.14, alpha: 1)
             shackle = (125, 188, 190); lockBody = (111, 207, 236, 285, 152, 314)
         case "legendary":
             name = "chest_legendary"
-            frontLeft = SIMD2(34, 179); lidTop = 76
+            frontLeft = SIMD2(34, 179); lidTop = 96; planksTop = 112
+            crown = CGRect(x: 146, y: 72, width: 112, height: 53)
             hasp = CGRect(x: 126, y: 170, width: 76, height: 28)
             lock = CGRect(x: 114, y: 192, width: 97, height: 126)
             band = UIColor(red: 0.64, green: 0.67, blue: 0.75, alpha: 1)
             shackle = (128, 195, 194); lockBody = (114, 210, 234, 290, 156, 316)
         default:
             name = "chest_common"
-            frontLeft = SIMD2(32, 172); lidTop = 77
+            frontLeft = SIMD2(32, 172); lidTop = 77; planksTop = 98; crown = nil
             hasp = CGRect(x: 123, y: 162, width: 79, height: 35)
             lock = CGRect(x: 111, y: 189, width: 97, height: 126)
             band = UIColor(red: 0.64, green: 0.31, blue: 0.13, alpha: 1)
@@ -1144,9 +1182,14 @@ private struct ChestArt {
         return SIMD3(x, y, z)
     }
 
-    /// Height of the domed lid above the body, so its top reaches the top of the picture.
+    /// Height of the lid's arched bands above the body, so their top reaches the top of the picture.
     var lidHeight: Float {
         (origin.y - (lidTop - 2)) / (Self.pixelsPerUnit * Self.up.y) - Float(Dim.height)
+    }
+
+    /// Height of the dome of planks between the bands.
+    var domeHeight: Float {
+        (origin.y - planksTop) / (Self.pixelsPerUnit * Self.up.y) - Float(Dim.height)
     }
 
     /// The padlock's outline: the shackle's arch from left to right, then the body down the right,
@@ -1168,20 +1211,10 @@ private struct ChestArt {
         return points
     }
 
-    /// Where the padlock hangs from (the top of its shackle) and where it ends up on the floor.
+    /// Where the padlock hangs from (the top of its shackle).
     var padlockZ: Float { Float(Dim.depth) / 2 + 0.035 }
     var padlockHang: SCNVector3 {
         SCNVector3(point(at: CGPoint(x: lock.midX, y: lock.minY + 4), z: padlockZ))
-    }
-    /// How far the padlock reaches below where it hangs.
-    var padlockLength: Float {
-        simd_length(point(at: CGPoint(x: lock.midX, y: lock.maxY), z: padlockZ) - point(at: CGPoint(x: lock.midX, y: lock.minY + 4), z: padlockZ))
-    }
-    /// Lying on the floor, tilted back on its shackle (`Dim.padlockTilt`), in front of the chest.
-    var padlockRest: SCNVector3 {
-        let hang = padlockHang
-        // (its back, 0.05 thick, rests on the floor)
-        return SCNVector3(hang.x + 0.02, padlockLength * cos(Dim.padlockTilt) + 0.05, hang.z + 0.08)
     }
 }
 
@@ -1261,6 +1294,10 @@ private struct ChestBuilder {
         self.art = art
         materials = ChestMaterials(tier, art: art)
     }
+
+    /// Where the arched bands on the lid end (left) and start (right), measured on the pictures.
+    static let leftBandEnd: Float = -0.29
+    static let rightBandStart: Float = 0.27
 
     /// Category of the inside of the chest and of the lid, lit only by the light inside.
     static let insideCategory = 2
@@ -1425,22 +1462,53 @@ private struct ChestBuilder {
         // A little larger than the body: the bands on the ends stick out
         let halfWidth = Float(Dim.width) / 2 + 0.012
         let radiusZ = Float(Dim.depth) / 2 + 0.004
-        let radiusY = art.lidHeight
+        // The dome is as high as the planks; the arched bands at the ends stand out above it, as
+        // high as the top of the picture, and a little proud of its front and back
+        let radiusY = art.domeHeight
+        let bandY = art.lidHeight
+        let bandZ = radiusZ + 0.03
         let thickness: Float = 0.035
 
-        // Outside: the dome and its right end (the left end never faces the camera)
+        // Outside: the dome, the two bands, the inner side of the left band (the right one's faces
+        // away), the right end (the left end never faces the camera)
         lid.addChildNode(pictured(art.lid) { texture in
             Mesh.surface(columns: 24, rows: 32, offset: at, point: { u, v in
                 let angle = Float.pi * v
                 return SIMD3(-halfWidth + 2 * halfWidth * u, height + radiusY * sin(angle), radiusZ * cos(angle))
             }, texture: texture)
         })
+        for (x0, x1) in [(-halfWidth, Self.leftBandEnd), (Self.rightBandStart, halfWidth)] {
+            lid.addChildNode(pictured(art.lid) { texture in
+                Mesh.surface(columns: 6, rows: 32, offset: at, point: { u, v in
+                    let angle = Float.pi * v
+                    return SIMD3(x0 + (x1 - x0) * u, height + bandY * sin(angle), bandZ * cos(angle))
+                }, texture: texture)
+            })
+        }
+        lid.addChildNode(pictured(art.lid) { texture in
+            Mesh.surface(columns: 2, rows: 32, flipped: true, offset: at, point: { u, v in
+                let angle = Float.pi * v
+                let y = radiusY + (bandY - radiusY) * u, z = radiusZ + (bandZ - radiusZ) * u
+                return SIMD3(Self.leftBandEnd, height + y * sin(angle), z * cos(angle))
+            }, texture: texture)
+        })
         lid.addChildNode(pictured(art.lid) { texture in
             Mesh.surface(columns: 6, rows: 24, flipped: true, offset: at, point: { u, v in
                 let angle = Float.pi * v
-                return SIMD3(halfWidth, height + radiusY * u * sin(angle), radiusZ * u * cos(angle))
+                return SIMD3(halfWidth, height + bandY * u * sin(angle), bandZ * u * cos(angle))
             }, texture: texture)
         })
+        // Whatever stands above the planks between the bands (the legendary's diamond), on a card
+        if let crown = art.crown {
+            let crownZ: Float = 0.08
+            let topLeft = art.point(at: CGPoint(x: crown.minX, y: crown.minY), z: crownZ)
+            let bottomRight = art.point(at: CGPoint(x: crown.maxX, y: crown.maxY), z: crownZ)
+            lid.addChildNode(pictured(art.lid) { texture in
+                Mesh.surface(columns: 2, rows: 2, offset: at, point: { u, v in
+                    SIMD3(topLeft.x + (bottomRight.x - topLeft.x) * u, bottomRight.y + (topLeft.y - bottomRight.y) * v, crownZ)
+                }, texture: texture)
+            })
+        }
         // The hasp, hanging from the front of the lid over the band
         let haspZ = Float(Dim.depth) / 2 + 0.006
         let haspTop = art.point(at: CGPoint(x: art.hasp.minX - 2, y: art.hasp.minY - 2), z: haspZ)
@@ -1471,10 +1539,11 @@ private struct ChestBuilder {
         return underside
     }
 
-    /// The padlock: a solid in the padlock's outline (so it has thickness when it falls and lies on
-    /// the floor), with the picture on its face. The node's origin is where it hangs from (the top
-    /// of the shackle).
-    func buildPadlock(into node: SCNNode) {
+    /// The padlock: a solid in the padlock's outline (it has thickness as it shakes, and its burst of
+    /// light comes from all over it), with the picture on its face. The node's origin is where it
+    /// hangs from (the top of the shackle). Returns the solid's geometry.
+    @discardableResult
+    func buildPadlock(into node: SCNNode) -> SCNGeometry? {
         let z = art.padlockZ
         let topLeft = art.point(at: CGPoint(x: art.lock.minX - 3, y: art.lock.minY - 3), z: z)
         let bottomRight = art.point(at: CGPoint(x: art.lock.maxX + 3, y: art.lock.maxY + 3), z: z)
@@ -1492,7 +1561,7 @@ private struct ChestBuilder {
             let point = art.point(at: pixel, z: z) - offset
             return CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))
         }
-        guard outline.count > 2 else { return }
+        guard outline.count > 2 else { return nil }
         let center = CGPoint(
             x: outline.map(\.x).reduce(0, +) / CGFloat(outline.count),
             y: outline.map(\.y).reduce(0, +) / CGFloat(outline.count)
@@ -1518,6 +1587,7 @@ private struct ChestBuilder {
         let body = SCNNode(geometry: shape)
         body.position.z = -Float(depth / 2) - 0.004
         node.addChildNode(body)
+        return shape
     }
 }
 
@@ -1681,6 +1751,34 @@ private enum ChestParticles {
         system.particleIntensity = 3
         system.stretchFactor = tier.level >= 2 ? 0.03 : 0
         system.propertyControllers = [.opacity: fade(peak: 0.05)]
+        return system
+    }
+
+    /// The padlock dissolving: specks of light from all over its shape, drifting out and up.
+    static func padlockBurst(_ tier: ChestTier, shape: SCNGeometry) -> SCNParticleSystem {
+        let system = SCNParticleSystem()
+        system.particleImage = ChestTextures.shared.dot
+        system.emitterShape = shape
+        system.birthLocation = .surface
+        system.loops = false
+        system.birthRate = 2500 + 1000 * CGFloat(tier.level)
+        system.emissionDuration = 0.12
+        system.particleLifeSpan = 0.9
+        system.particleLifeSpanVariation = 0.4
+        system.emittingDirection = SCNVector3(0, 1, 0)
+        system.spreadingAngle = 180
+        system.particleVelocity = 0.35
+        system.particleVelocityVariation = 0.25
+        system.dampingFactor = 2
+        system.acceleration = SCNVector3(0, 0.25, 0)
+        system.particleSize = 0.009
+        system.particleSizeVariation = 0.005
+        system.particleColor = tier.sparkColor
+        system.particleColorVariation = SCNVector4(0.02, 0.1, 0.1, 0)
+        system.particleIntensity = 2.5
+        system.blendMode = .additive
+        system.isLightingEnabled = false
+        system.propertyControllers = [.opacity: fade(peak: 0.08)]
         return system
     }
 

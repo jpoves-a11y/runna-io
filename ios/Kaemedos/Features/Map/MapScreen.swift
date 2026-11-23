@@ -5,7 +5,8 @@ import MapKit
 /// a column of small round controls on the right and the solid "Correr" button at the bottom.
 ///   - Global: my world map (nobody can take it), optionally with friends' / club mates' maps drawn
 ///     lighter for information.
-///   - Competición: the map of my running club competition, with chests in the rest days.
+///   - Competición: the map of my running club competition.
+///   The rest days' chests show on both.
 struct MapScreen: View {
     @Environment(SessionStore.self) private var session
     @Environment(RunTracker.self) private var tracker
@@ -413,12 +414,14 @@ struct MapScreen: View {
         tracker.chests = model.liveChests
     }
 
-    /// Chests and the competition map change during the day: refresh them every minute while visible.
+    /// Chests (on both maps) and the competition map change during the day: refresh them every
+    /// minute while visible.
     private func refreshOverlaysPeriodically() async {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 60_000_000_000)
             if Task.isCancelled { return }
-            guard model.mode == .competition, !tracker.isPresented else { continue }
+            // (chests show on both maps)
+            guard !tracker.isPresented else { continue }
             await model.refreshCompetitionOverlays()
             syncTracker()
         }

@@ -181,9 +181,8 @@ final class MapModel {
     var visibleCastles: [CastleZone] { mode == .competition ? castles : [] }
     var visibleRouteLines: [RouteLine] { routeLines }
 
-    /// Chests that haven't expired yet (competition map only).
+    /// Chests that haven't expired yet (the rest days' chests, on both maps).
     var liveChests: [Chest] {
-        guard mode == .competition else { return [] }
         let now = Date()
         return chests.filter { chest in
             guard let expires = chest.expiresDate else { return true }
