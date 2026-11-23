@@ -629,8 +629,8 @@ export const MODELS = {
     return g;
   },
 
-  // The Poderes button: a round glass potion flask, two-thirds full of glowing KM2-green liquid
-  powers_icon: (r) => {
+  // Earlier Poderes button: a round glass potion flask, two-thirds full of glowing KM2-green liquid
+  powers_icon_potion: (r) => {
     const R = 0.86;
     // Glass you can see: tinted, glossy, with its inner wall drawn too (thickness)
     const glass = new THREE.MeshPhysicalMaterial({
@@ -693,6 +693,89 @@ export const MODELS = {
     return group(g);
   },
 
+  // The Poderes button: an open treasure chest (wood and gold, like the game's chests) with green
+  // power pouring out of it: glowing gems, coins, a beam of light and sparks
+  powers_icon: (r) => {
+    const W = 1.7, H = 0.82, D = 1.1, R = D / 2;
+    const woodM = new THREE.MeshPhysicalMaterial({ color: 0x8a4a22, roughness: 0.55, clearcoat: 0.35, clearcoatRoughness: 0.35 });
+    const woodDark = new THREE.MeshPhysicalMaterial({ color: 0x5a2c12, roughness: 0.7 });
+    const gold = metal(0xf2b43a, 0.16);
+    const goldBright = metal(0xffd36a, 0.12);
+    const g = new THREE.Group();
+
+    // Body: three planks, gold corners and rims
+    for (let i = 0; i < 3; i++) {
+      const plank = woodM.clone();
+      plank.color.multiplyScalar(0.9 + i * 0.07);
+      g.add(mesh(rbox(W, H / 3 - 0.02, D, 0.05), plank, { pos: [0, -H + (i + 0.5) * (H / 3), 0] }));
+    }
+    [-1, 1].forEach(sx => [-1, 1].forEach(sz => g.add(mesh(rbox(0.16, H + 0.04, 0.16, 0.04), gold, { pos: [sx * (W / 2 - 0.06), -H / 2, sz * (D / 2 - 0.06)] }))));
+    g.add(mesh(rbox(W + 0.04, 0.1, D + 0.04, 0.04), gold, { pos: [0, -0.02, 0] }));
+    g.add(mesh(rbox(W + 0.04, 0.1, D + 0.04, 0.04), gold, { pos: [0, -H + 0.03, 0] }));
+    // Rivets
+    [-1, 1].forEach(sx => [-0.15, -0.65].forEach(y => g.add(mesh(sphere(0.035, 16, 12), goldBright, { pos: [sx * (W / 2 - 0.06), y, D / 2 + 0.02] }))));
+    // Lock plate with keyhole, and the hasp hanging open
+    g.add(mesh(rbox(0.36, 0.42, 0.06, 0.05), gold, { pos: [0, -0.3, D / 2 + 0.02] }));
+    g.add(mesh(cyl(0.05, 0.05, 0.08, 20), matte(0x1a1a1a), { pos: [0, -0.27, D / 2 + 0.05], rot: [PI / 2, 0, 0] }));
+    g.add(mesh(rbox(0.035, 0.1, 0.06, 0.01), matte(0x1a1a1a), { pos: [0, -0.35, D / 2 + 0.05] }));
+
+    // Glowing contents: a mound of green light, gems and coins
+    g.add(mesh(sphere(1, 48, 24), glow(0x1dff3c, 1.3), { pos: [0, -0.06, 0], scale: [W / 2 - 0.12, 0.2, D / 2 - 0.12] }));
+    const gemM = new THREE.MeshPhysicalMaterial({ color: 0x00e01e, emissive: 0x00c81a, emissiveIntensity: 0.8, roughness: 0.05, clearcoat: 1, flatShading: true });
+    [[-0.45, 0.12, 0.1, 0.17, 0.4], [0.2, 0.16, -0.12, 0.2, -0.3], [0.55, 0.08, 0.2, 0.14, 0.8], [-0.1, 0.1, 0.28, 0.12, 0.2]].forEach(([x, y, z, k, rot]) =>
+      g.add(mesh(new THREE.OctahedronGeometry(k, 0), gemM, { pos: [x, y, z], rot: [0.3, rot, 0.2], scale: [1, 1.3, 1] })));
+    [[-0.2, 0.06, -0.2, 0.4], [0.42, 0.05, -0.25, -0.5], [-0.62, 0.04, -0.15, 0.2], [0.05, 0.07, 0.05, 0.9]].forEach(([x, y, z, rz]) => {
+      g.add(mesh(cyl(0.12, 0.12, 0.035, 32), goldBright, { pos: [x, y, z], rot: [0.5, 0, rz] }));
+    });
+
+    // Domed lid, open backwards on its hinge
+    const half = new THREE.Shape();
+    half.moveTo(R, 0);
+    half.absarc(0, 0, R, 0, PI, false);
+    half.lineTo(R, 0);
+    const lid = new THREE.Group();
+    const dome = mesh(extrude(half, W - 0.08, 0.04), woodM);
+    dome.rotation.y = PI / 2;
+    lid.add(dome);
+    lid.add(mesh(rbox(W - 0.06, 0.04, D - 0.1, 0.02), woodDark, { pos: [0, 0.02, 0] }));
+    [-1, 0, 1].forEach(k => {
+      const band = new THREE.Shape();
+      band.moveTo(R + 0.05, 0);
+      band.absarc(0, 0, R + 0.05, 0, PI, false);
+      band.lineTo(-R + 0.02, 0);
+      band.absarc(0, 0, R - 0.02, PI, 0, true);
+      const b = mesh(extrude(band, 0.12, 0.02), gold);
+      b.rotation.y = PI / 2;
+      b.position.x = k * (W / 2 - 0.1);
+      lid.add(b);
+    });
+    // Pivot on the back top edge; open to about 105°
+    lid.position.set(0, 0, R);
+    const hinge = new THREE.Group();
+    hinge.add(lid);
+    hinge.position.set(0, 0.03, -D / 2);
+    hinge.rotation.x = -1.85;
+    g.add(hinge);
+
+    // Light pouring out
+    const beamTex = canvasTexture((ctx, n) => {
+      const grd = ctx.createLinearGradient(0, n, 0, 0);
+      grd.addColorStop(0, 'rgba(40,255,80,0.55)');
+      grd.addColorStop(1, 'rgba(40,255,80,0)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, n, n);
+    });
+    g.add(mesh(new THREE.CylinderGeometry(0.95, 0.62, 1.0, 40, 1, true), new THREE.MeshBasicMaterial({ map: beamTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }), { pos: [0, 0.55, 0], scale: [1.1, 1, 0.75] }));
+    [[0.35, 0.75, 0.2, 0.12], [-0.45, 0.95, 0.1, 0.1], [0.05, 1.15, 0.0, 0.08], [0.7, 0.4, 0.3, 0.07]].forEach(([x, y, z, k]) => {
+      const sp = spark(0x8dff9a, k);
+      sp.position.set(x, y, z);
+      g.add(sp);
+    });
+
+    g.rotation.set(0.42, -0.55, 0);
+    return g;
+  },
+
   // Rest days
   master_key: (r) => {
     const steel = metal(r.metal, 0.18);
@@ -749,5 +832,5 @@ export const RARITIES = {
   revenge: 'epic', ambush: 'rare', bastion: 'rare', club_wall: 'legendary', radar: 'epic', double_or_nothing: 'epic',
   plunder: 'rare', explorer: 'epic', wide_trail: 'rare', streak_saver: 'common', compass: 'rare', tourist: 'epic',
   expedition: 'rare', dawn: 'common', cartographer: 'legendary', master_key: 'rare', double_loot: 'epic', treasure_map: 'common',
-  powers_icon: 'brand',
+  powers_icon: 'brand', powers_icon_potion: 'brand',
 };
