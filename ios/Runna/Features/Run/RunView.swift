@@ -292,7 +292,7 @@ struct RunView: View {
         RunNoticeCard(
             systemImage: "location.slash",
             title: "Ubicación desactivada",
-            message: "Runna.io necesita tu ubicación para grabar la carrera."
+            message: "KM2 necesita tu ubicación para grabar la carrera."
         ) {
             Button("Abrir Ajustes") { openSettings() }
                 .buttonStyle(SecondaryButtonStyle(tint: Color.brand))

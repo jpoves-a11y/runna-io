@@ -12,6 +12,6 @@ struct StartRunControl: ControlWidget {
             }
         }
         .displayName("Empezar a correr")
-        .description("Abre Runna.io y empieza a grabar una carrera.")
+        .description("Abre KM2 y empieza a grabar una carrera.")
     }
 }

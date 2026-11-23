@@ -225,9 +225,15 @@ export class WorkerStorage {
   static readonly SYSTEM_USER_ID = '__system_runna__';
   async ensureSystemUser(): Promise<string> {
     const existing = await this.db.select().from(users).where(eq(users.id, WorkerStorage.SYSTEM_USER_ID)).limit(1);
-    if (existing.length > 0) return WorkerStorage.SYSTEM_USER_ID;
+    if (existing.length > 0) {
+      // Renamed with the KM2 rebrand
+      if (existing[0].name === 'Runna') {
+        await this.db.update(users).set({ name: 'KM2' }).where(eq(users.id, WorkerStorage.SYSTEM_USER_ID));
+      }
+      return WorkerStorage.SYSTEM_USER_ID;
+    }
     try {
-      await this.db.run(sql`INSERT OR IGNORE INTO users (id, username, email, name, password, color) VALUES (${WorkerStorage.SYSTEM_USER_ID}, '_runna_system', 'system@runna.io', 'Runna', '', '#16a34a')`);
+      await this.db.run(sql`INSERT OR IGNORE INTO users (id, username, email, name, password, color) VALUES (${WorkerStorage.SYSTEM_USER_ID}, '_runna_system', 'system@runna.io', 'KM2', '', '#16a34a')`);
     } catch (_) { /* already exists from race */ }
     return WorkerStorage.SYSTEM_USER_ID;
   }

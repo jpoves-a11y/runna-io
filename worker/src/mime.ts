@@ -45,7 +45,7 @@ function encodeHeader(text: string): string {
   return words.map((word) => `=?UTF-8?B?${base64Utf8(word)}?=`).join('\r\n ');
 }
 
-/** Display name as an RFC 5322 quoted string ("Runna.io": a bare dot isn't allowed). */
+/** Display name as an RFC 5322 quoted string (e.g. "KM2"; a bare dot or other specials would need it). */
 function quoteDisplayName(name: string): string {
   if (!/^[\x20-\x7e]*$/.test(name)) return encodeHeader(name);
   return `"${name.replace(/(["\\])/g, '\\$1')}"`;

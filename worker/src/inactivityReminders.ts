@@ -33,7 +33,7 @@ export const INACTIVITY_REMINDER_MESSAGES = [
   "Cuando corriste por última vez, la IA aún no sabía qué era un 'vago'... ahora ya lo sabe 🤖",
   "Noticia de último momento: Usuario desaparece sin dejar rastro 🚨",
   "Tu cuerpo te da 2 días para descansar, no 2 semanas. ¡A mover! 🔥",
-  "Diccionario: Runna - sustantivo. Sinónimo de aventura. Tú: no has tenido una en 2 días 📖",
+  "Diccionario: KM2 - sustantivo. Sinónimo de aventura. Tú: no has tenido una en 2 días 📖",
 
   // 26-27: Extras
   "Hace 2 días que no corres. En ese tiempo surgieron 47 nuevas modas de TikTok que ya se fueron 📱",

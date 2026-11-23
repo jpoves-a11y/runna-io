@@ -240,7 +240,7 @@ struct FriendsView: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
-                    Text("Buscar en Runna.io")
+                    Text("Buscar en KM2")
                         .font(.footnote)
                         .foregroundStyle(Color.brand)
                 }
@@ -525,8 +525,8 @@ private struct FriendsInviteCard: View {
         if let inviteURL {
             ShareLink(
                 item: inviteURL,
-                subject: Text("Únete a Runna.io"),
-                message: Text("Compite conmigo en Runna.io. Corre y conquista la ciudad:")
+                subject: Text("Únete a KM2"),
+                message: Text("Compite conmigo en KM2. Corre y conquista la ciudad:")
             ) {
                 SocialPillLabel(title: "Compartir enlace", systemImage: "square.and.arrow.up", tint: .brand, kind: .filled, expand: true)
             }
@@ -725,7 +725,7 @@ private struct InviteConfirmationSheet: View {
                 Button("Cerrar") { dismiss() }
                     .buttonStyle(PrimaryButtonStyle())
             } else {
-                message("\(preview.inviter.name) te invita a ser su amigo en Runna.io. Veréis vuestras carreras y competiréis por el territorio.")
+                message("\(preview.inviter.name) te invita a ser su amigo en KM2. Veréis vuestras carreras y competiréis por el territorio.")
                 Button {
                     accept()
                 } label: {

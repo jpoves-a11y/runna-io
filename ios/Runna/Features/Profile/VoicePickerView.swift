@@ -96,7 +96,7 @@ struct VoicePickerView: View {
                     }
                 }
             }
-            Text("Cuando vuelvas a Runna.io, la verás aquí para elegirla.")
+            Text("Cuando vuelvas a KM2, la verás aquí para elegirla.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

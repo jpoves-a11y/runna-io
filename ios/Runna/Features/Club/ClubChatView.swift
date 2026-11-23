@@ -419,7 +419,7 @@ struct ClubChatView: View {
                 .fill(Color.brand)
                 .frame(width: 2)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Respondiendo a \(message.user?.name ?? "Runna")")
+                Text("Respondiendo a \(message.user?.name ?? "KM2")")
                     .font(.caption.weight(.semibold))
                 Text(message.body ?? "Mensaje eliminado")
                     .font(.caption)

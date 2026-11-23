@@ -6,7 +6,7 @@ import Foundation
 /// Compiled in the app and in the widget extension; with openAppWhenRun the system runs it in the app.
 struct StartRunIntent: AppIntent {
     static let title: LocalizedStringResource = "Empezar una carrera"
-    static let description = IntentDescription("Abre Runna.io y empieza a grabar una carrera.")
+    static let description = IntentDescription("Abre KM2 y empieza a grabar una carrera.")
     static let openAppWhenRun: Bool = true
 
     @MainActor

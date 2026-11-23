@@ -429,8 +429,8 @@ struct ProfileView: View {
             SocialSectionHeader(title: "Cuenta")
         } footer: {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Borrar la cuenta elimina todos tus datos de Runna.io de forma permanente.")
-                Text("Runna.io · Corre. Conquista. Repite.")
+                Text("Borrar la cuenta elimina todos tus datos de KM2 de forma permanente.")
+                Text("KM2 · Corre. Conquista. Repite.")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity)

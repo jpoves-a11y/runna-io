@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppConfig {
-    /// Cloudflare Worker that serves the Runna.io API.
+    /// Cloudflare Worker that serves the KM2 API.
     /// Debug builds can point elsewhere with the RUNNA_API_BASE_URL environment variable (used by the e2e tests).
     static let apiBaseURL: URL = {
         #if DEBUG
@@ -23,7 +23,7 @@ enum AppConfig {
     /// Support contact (same address as the support page).
     static let supportEmail = "runna.io.service@gmail.com"
     static var supportMailURL: URL? {
-        URL(string: "mailto:\(supportEmail)?subject=Soporte%20Runna.io")
+        URL(string: "mailto:\(supportEmail)?subject=Soporte%20KM2")
     }
 
     /// Strava connection offered in Perfil → Servicios conectados. Off until Strava approves the app

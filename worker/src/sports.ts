@@ -1,5 +1,5 @@
 /**
- * Runna.io only counts runs: running and trail running outdoors. Walks, hikes and every other
+ * KM2 only counts runs: running and trail running outdoors. Walks, hikes and every other
  * sport (cycling, swimming, skiing...) are not imported, and neither are treadmill or virtual runs.
  *
  * Works with the type names of every source: Strava ("Run", "TrailRun", "VirtualRun"),

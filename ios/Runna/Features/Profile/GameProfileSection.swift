@@ -206,7 +206,7 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
             case .notDetermined:
                 manager.requestWhenInUseAuthorization()
             case .denied, .restricted:
-                finish(.failure(Failure(message: "Runna no tiene permiso para usar tu ubicación. Actívalo en Ajustes.")))
+                finish(.failure(Failure(message: "KM2 no tiene permiso para usar tu ubicación. Actívalo en Ajustes.")))
             default:
                 manager.requestLocation()
             }
@@ -225,7 +225,7 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
         case .authorizedWhenInUse, .authorizedAlways:
             manager.requestLocation()
         case .denied, .restricted:
-            finish(.failure(Failure(message: "Runna no tiene permiso para usar tu ubicación. Actívalo en Ajustes.")))
+            finish(.failure(Failure(message: "KM2 no tiene permiso para usar tu ubicación. Actívalo en Ajustes.")))
         default:
             break
         }

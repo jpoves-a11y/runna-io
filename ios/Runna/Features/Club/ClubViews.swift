@@ -1380,7 +1380,7 @@ struct ClubInviteSheet: View {
             List {
                 Section {
                     if let link, let url = URL(string: link.url) {
-                        ShareLink(item: url, subject: Text("Únete a \(model.club?.name ?? "mi club")"), message: Text("Únete a mi club en Runna")) {
+                        ShareLink(item: url, subject: Text("Únete a \(model.club?.name ?? "mi club")"), message: Text("Únete a mi club en KM2")) {
                             Label("Compartir enlace de invitación", systemImage: "square.and.arrow.up")
                         }
                     } else {

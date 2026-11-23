@@ -127,7 +127,7 @@ struct WidgetSummary: Codable, Equatable {
     }
 
     static let placeholder = WidgetSummary(
-        name: "Runna", color: "#0E8A5F", area: 1_250_000, city: "Zaragoza", cityRank: 12, streakDays: 4,
+        name: "KM2", color: "#008A10", area: 1_250_000, city: "Zaragoza", cityRank: 12, streakDays: 4,
         lastSteal: Steal(by: "Marta", area: 32_000, at: ISO8601DateFormatter().string(from: Date().addingTimeInterval(-7200))),
         phase: "competition", nextChangeAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(2 * 86_400)),
         competition: Competition(rank: 3, participants: 18, endsAt: nil)

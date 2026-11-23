@@ -191,14 +191,17 @@ extension Color {
         })
     }
 
-    /// Deep, slightly desaturated emerald — the single brand accent.
-    static let brand = Color.adaptive(light: 0x0E8A5F, dark: 0x3CC98E)
+    /// KM2 green — the single brand accent. Neon (#00FF1E, as in the logo) in dark mode; a deeper
+    /// green in light mode, where neon on white can't be read (4.5:1 on white).
+    static let brand = Color.adaptive(light: 0x008A10, dark: 0x00FF1E)
     /// Text / icons placed on a brand fill.
-    static let onBrand = Color.adaptive(light: 0xFFFFFF, dark: 0x05170F)
-    /// Darker emerald (pressed states, text on light tints).
-    static let brandDeep = Color.adaptive(light: 0x0A6B4A, dark: 0x2AA874)
-    /// Legacy highlight; now a quiet lighter emerald.
-    static let brandLime = Color.adaptive(light: 0x3A9C76, dark: 0x6AD6A8)
+    static let onBrand = Color.adaptive(light: 0xFFFFFF, dark: 0x021A05)
+    /// Darker green (pressed states, text on light tints).
+    static let brandDeep = Color.adaptive(light: 0x006E0C, dark: 0x00CC18)
+    /// Legacy highlight; a lighter green.
+    static let brandLime = Color.adaptive(light: 0x2EA83C, dark: 0x6BFF7A)
+    /// The logo's neon green, the same in both modes (on black: intro, logo, share watermark).
+    static let brandNeon = Color(uiColor: UIColor(rgb: 0x00FF1E))
     /// Coral red: stolen / lost / destructive — as text colour.
     static let steal = Color.adaptive(light: 0xD64531, dark: 0xFF7A66)
     /// Muted gold: rank #1 details only.

@@ -21,7 +21,8 @@ struct AuthView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxxl) {
                     AuthHeader(
-                        title: "Runna.io",
+                        title: "KM2",
+                        logo: true,
                         subtitle: "Corre por tu ciudad y conquista el mapa."
                     )
                     VStack(spacing: DS.Spacing.xl) {
@@ -69,14 +70,21 @@ struct AuthView: View {
 /// Wordmark (or screen title) with a one-line subtitle, left aligned.
 private struct AuthHeader: View {
     let title: String
+    /// Shows the KM² logo instead of the title (the title stays as its accessibility label).
+    var logo = false
     let subtitle: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            Text(title)
-                .font(Font.screenTitle)
-                .tracking(DS.Tracking.title)
-                .foregroundStyle(.primary)
+            if logo {
+                KM2Logo(size: 48)
+                    .accessibilityLabel(title)
+            } else {
+                Text(title)
+                    .font(Font.screenTitle)
+                    .tracking(DS.Tracking.title)
+                    .foregroundStyle(.primary)
+            }
             Text(subtitle)
                 .font(.body)
                 .foregroundStyle(.secondary)
@@ -261,7 +269,7 @@ private struct RegisterForm: View {
             }
             .toggleStyle(.switch)
             .tint(Color.brand)
-            Text("Necesitas tener al menos \(AppConfig.minimumAge) años para usar Runna.io.")
+            Text("Necesitas tener al menos \(AppConfig.minimumAge) años para usar KM2.")
                 .font(Font.meta)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

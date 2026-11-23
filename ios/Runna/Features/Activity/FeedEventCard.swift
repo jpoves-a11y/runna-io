@@ -107,7 +107,7 @@ struct FeedEventCard: View {
     @ViewBuilder
     private var authorName: some View {
         if isSystemEvent {
-            Text("Runna")
+            Text("KM2")
                 .font(.subheadline.weight(.semibold))
         } else {
             Button { onOpenUser(event.user.id) } label: {

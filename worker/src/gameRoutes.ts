@@ -1590,7 +1590,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
         deletedByModerator: deleted && m.deletedBy !== m.userId,
         replyTo: reply ? {
           id: reply.id,
-          userName: reply.userId ? users.get(reply.userId)?.name ?? 'Corredor' : 'Runna',
+          userName: reply.userId ? users.get(reply.userId)?.name ?? 'Corredor' : 'KM2',
           body: reply.deletedAt || (reply.userId && hidden.has(reply.userId)) ? null : reply.body.slice(0, 140),
           deleted: reply.deletedAt !== null,
         } : null,

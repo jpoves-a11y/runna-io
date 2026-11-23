@@ -28,7 +28,7 @@ test('every email has a subject without emoji, HTML and plain text', () => {
     assert.match(email.html, /<!doctype html>/i);
     assert.ok(email.text.length > 40);
     assert.doesNotMatch(email.text, /<[a-z]/i, 'plain text has no tags');
-    assert.match(email.text, /El equipo de Runna\.io/);
+    assert.match(email.text, /El equipo de KM2/);
   }
 });
 
@@ -49,9 +49,9 @@ test('codes are in both versions; links are written out in the text', () => {
   assert.match(signup.html, />123456</);
   assert.match(signup.text, /123456/);
   const welcome = all[0];
-  assert.match(welcome.text, /Abrir Runna\.io: https:\/\/api\.example\.test\/open\?tab=map/);
+  assert.match(welcome.text, /Abrir KM2: https:\/\/api\.example\.test\/open\?tab=map/);
   assert.match(welcome.text, /Darte de baja: https:\/\/api\.example\.test\/email\/unsubscribe/);
-  assert.match(welcome.subject, /^Bienvenido a Runna\.io, Ana$/);
+  assert.match(welcome.subject, /^Bienvenido a KM2, Ana$/);
 });
 
 test('account emails have no unsubscribe link; user text is escaped', () => {
@@ -64,7 +64,7 @@ test('account emails have no unsubscribe link; user text is escaped', () => {
 test('MIME message: multipart/alternative with plain text first, Reply-To and List-Unsubscribe', () => {
   const email = all[0];
   const raw = buildMessage({
-    host: 'h', port: 465, username: 'u', password: 'p', fromEmail: 'from@example.test', fromName: 'Runna.io',
+    host: 'h', port: 465, username: 'u', password: 'p', fromEmail: 'from@example.test', fromName: 'KM2',
     to: 'ana@example.test', subject: email.subject, html: email.html, text: email.text, replyTo: 'soporte@example.test',
     headers: { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click', 'Bad Header': 'x', 'X-Injected': 'a\r\nBcc: evil' },
   });

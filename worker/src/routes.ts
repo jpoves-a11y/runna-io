@@ -1641,7 +1641,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // Sign in with Apple server-to-server notifications (developer.apple.com → Identifiers → the App ID →
   // Sign in with Apple → Server-to-Server Notification Endpoint). Body: {"payload": "<JWT signed by Apple>"}.
-  // - consent-revoked: the user stopped using Sign in with Apple with Runna.io → their sessions end
+  // - consent-revoked: the user stopped using Sign in with Apple with KM2 → their sessions end
   // - account-delete: the Apple Account was deleted → an Apple-only account is deleted with all its
   //   data; an account that also has a password is just unlinked from Apple
   // - email-disabled / email-enabled: relay email turned off / on (nothing to do)
@@ -2344,7 +2344,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
       // Runs from before the new season belong to the old game (they were reset)
       if (isBeforeSeason(routeData.startedAt)) {
-        return c.json({ error: 'before_season', message: 'Esta carrera es anterior a la nueva temporada de Runna, así que no cuenta.' }, 409);
+        return c.json({ error: 'before_season', message: 'Esta carrera es anterior a la nueva temporada de KM2, así que no cuenta.' }, 409);
       }
 
       const parsedPoints: [number, number][] = JSON.parse(routeData.coordinates);
@@ -3713,7 +3713,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 'friend_request',
                 userId,
                 `¡${sender.name} te envió una solicitud de amistad!`,
-                `${sender.name} (@${sender.username}) te ha enviado una solicitud de amistad en Runna.io.`
+                `${sender.name} (@${sender.username}) te ha enviado una solicitud de amistad en KM2.`
               );
             }
           }
@@ -3878,7 +3878,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 'friend_accepted',
                 userId,
                 `¡${recipient.name} aceptó tu solicitud de amistad!`,
-                `${recipient.name} (@${recipient.username}) aceptó tu solicitud de amistad. Ahora son amigos en Runna.io!`
+                `${recipient.name} (@${recipient.username}) aceptó tu solicitud de amistad. Ahora son amigos en KM2!`
               );
             }
           }
@@ -4470,7 +4470,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       const payload = {
-        title: '🏃 Runna.io',
+        title: 'KM2',
         body: '¡Las notificaciones funcionan correctamente!',
         tag: 'test-notification',
         data: { url: '/', type: 'test' },
@@ -5121,7 +5121,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Get valid access token
       const validToken = await getValidStravaToken(stravaAccount, storage, c.env);
       if (!validToken) {
-        // Not 401: clients treat that as an expired Runna.io session and log out
+        // Not 401: clients treat that as an expired KM2 session and log out
         return c.json({ error: 'La conexión con Strava ha caducado. Vuelve a conectar Strava.' }, 409);
       }
 

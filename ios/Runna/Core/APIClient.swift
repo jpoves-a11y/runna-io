@@ -13,7 +13,7 @@ struct APIError: LocalizedError {
 /// Response body we don't need to read.
 struct EmptyResponse: Decodable {}
 
-/// HTTP client for the Runna.io API. Sends the session token as "Authorization: Bearer <token>".
+/// HTTP client for the KM2 API. Sends the session token as "Authorization: Bearer <token>".
 final class APIClient {
     static let shared = APIClient()
 

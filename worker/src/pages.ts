@@ -44,12 +44,12 @@ const STYLES = `
 :root {
   color-scheme: light dark;
   --bg: #f7f8fa; --card: #ffffff; --text: #111827; --muted: #5b6472; --border: #e3e6eb;
-  --accent: #2563eb; --accent-text: #ffffff; --soft: #eef2ff;
+  --accent: #008A10; --accent-text: #ffffff; --soft: #eaf6ec;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117; --card: #161b22; --text: #e6edf3; --muted: #9aa4b2; --border: #2b323c;
-    --accent: #3b82f6; --accent-text: #ffffff; --soft: #1b2333;
+    --accent: #00FF1E; --accent-text: #000000; --soft: #10241a;
   }
 }
 * { box-sizing: border-box; }
@@ -62,6 +62,7 @@ body {
 main { max-width: 760px; margin: 0 auto; }
 header { text-align: center; padding: 16px 0 20px; border-bottom: 2px solid var(--accent); margin-bottom: 24px; }
 header h1 { font-size: 1.6rem; margin: 0 0 4px; }
+.brandmark { font-weight: 900; letter-spacing: -0.03em; }
 header h2 { font-size: 1.3rem; margin: 0 0 12px; font-weight: 600; }
 header p { margin: 2px 0; color: var(--muted); font-size: .95rem; }
 section { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
@@ -165,13 +166,13 @@ export function adminPage(title: string, body: string): string {
 }
 
 const FOOTER = `<footer>
-<p>© 2026 Javier Poves Ruiz · Runna.io</p>
+<p>© 2026 Javier Poves Ruiz · KM2</p>
 <p><a href="/privacy">Privacidad</a>·<a href="/terms">Términos</a>·<a href="/support">Soporte</a></p>
 </footer>`;
 
-const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
+const PRIVACY_HTML = page('Política de Privacidad · KM2', `
 <header>
-<h1>🏃 Runna.io</h1>
+<h1 class="brandmark">KM<span style="color:var(--accent)">2</span></h1>
 <h2>Política de Privacidad</h2>
 <p><strong>Última actualización:</strong> 20 de noviembre de 2026</p>
 <p><strong>Responsable:</strong> Javier Poves Ruiz</p>
@@ -179,7 +180,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 </header>
 
 <section>
-<p>Runna.io es una app para iPhone en la que sales a correr y conquistas territorio en el mapa; tus amigos pueden robártelo y competir contigo. Esta política explica qué datos tratamos, para qué y cuáles son tus derechos.</p>
+<p>KM2 es una app para iPhone en la que sales a correr y conquistas territorio en el mapa; tus amigos pueden robártelo y competir contigo. Esta política explica qué datos tratamos, para qué y cuáles son tus derechos.</p>
 </section>
 
 <section id="responsable">
@@ -210,17 +211,17 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <ul>
 <li>Solo si tú lo activas, la app lee de Apple Health tus <strong>entrenamientos de carrera y sus rutas</strong> para importarlos como carreras. El acceso es de <strong>solo lectura</strong>: no escribimos nada en Apple Health.</li>
 <li>Los datos de HealthKit <strong>nunca se usan para publicidad</strong> ni se comparten con terceros, salvo el proveedor de alojamiento que guarda las carreras importadas.</li>
-<li>Puedes retirar el permiso cuando quieras en Ajustes del iPhone → Salud → Acceso a datos y dispositivos → Runna.io.</li>
+<li>Puedes retirar el permiso cuando quieras en Ajustes del iPhone → Salud → Acceso a datos y dispositivos → KM2.</li>
 </ul>
 <h3>2.4. Strava, Polar, Suunto y Garmin (opcional)</h3>
 <p>Si conectas tu cuenta de Strava, Polar Flow, Suunto o Garmin Connect, importamos tus actividades de carrera y trail running (identificador, distancia, duración, fecha y ruta GPS, con la altitud y la hora de cada punto) y guardamos los tokens de acceso que esos servicios nos dan. De Suunto guardamos además tu nombre de usuario de Suunto, que usamos solo para saber a quién pertenece cada aviso de entrenamiento nuevo que nos envía Suunto. De Garmin guardamos tu identificador de usuario de la API de Garmin, que usamos solo para saber a quién pertenece cada actividad que nos envía Garmin. Puedes desconectarlas desde tu perfil o desde Garmin Connect; al desconectar Garmin o borrar tu cuenta avisamos a Garmin para que deje de enviarnos tus datos.</p>
 <h4>Datos de Garmin</h4>
 <ul>
-<li><strong>Qué recibimos y para qué:</strong> solo tus actividades de carrera y trail running (tipo, fecha, distancia, duración, modelo de reloj y ruta GPS, con la altitud y la hora de cada punto). Las usamos únicamente para crear tus carreras en Runna.io, calcular tu territorio y rankings y mostrarlas a tus amigos. No recibimos datos de salud (sueño, frecuencia cardiaca diaria, etc.).</li>
+<li><strong>Qué recibimos y para qué:</strong> solo tus actividades de carrera y trail running (tipo, fecha, distancia, duración, modelo de reloj y ruta GPS, con la altitud y la hora de cada punto). Las usamos únicamente para crear tus carreras en KM2, calcular tu territorio y rankings y mostrarlas a tus amigos. No recibimos datos de salud (sueño, frecuencia cardiaca diaria, etc.).</li>
 <li><strong>Quién los trata:</strong> solo los proveedores de la sección 5 que alojan el servicio: Cloudflare (servidor), Turso (base de datos) y Apple APNs (el aviso de «carrera registrada», sin la ruta). Ningún otro tercero recibe datos de Garmin.</li>
 <li><strong>No los vendemos</strong> ni los compartimos con terceros para fines propios de ellos.</li>
 <li><strong>Sin inteligencia artificial:</strong> ningún sistema de IA procesa tus datos de Garmin, y no se usan para entrenar, evaluar ni mejorar modelos de IA.</li>
-<li><strong>Tu control:</strong> puedes ver y borrar cada actividad importada en Perfil → Servicios conectados → Garmin → Actividades importadas; pedir una copia (JSON) o la corrección de tus datos escribiendo a <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>; y retirar tu consentimiento desconectando Garmin en la app o quitando Runna.io en Garmin Connect (Ajustes → Aplicaciones conectadas). Al borrar tu cuenta se eliminan todos tus datos de Garmin.</li>
+<li><strong>Tu control:</strong> puedes ver y borrar cada actividad importada en Perfil → Servicios conectados → Garmin → Actividades importadas; pedir una copia (JSON) o la corrección de tus datos escribiendo a <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>; y retirar tu consentimiento desconectando Garmin en la app o quitando KM2 en Garmin Connect (Ajustes → Aplicaciones conectadas). Al borrar tu cuenta se eliminan todos tus datos de Garmin.</li>
 </ul>
 <h3>2.5. Fotos y cámara</h3>
 <ul>
@@ -232,7 +233,7 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 <h3>2.7. Contenido social</h3>
 <p>Comentarios y reacciones que publicas en el feed, tus amistades y, si los usas, las denuncias y bloqueos que haces.</p>
 <h3>2.8. Iniciar sesión con Apple</h3>
-<p>Si entras con Apple, recibimos de Apple un identificador de tu Apple ID y el email que elijas compartir (puede ser una dirección privada de Apple que reenvía a la tuya). Al borrar tu cuenta pedimos a Apple que desvincule Runna.io de tu Apple ID.</p>
+<p>Si entras con Apple, recibimos de Apple un identificador de tu Apple ID y el email que elijas compartir (puede ser una dirección privada de Apple que reenvía a la tuya). Al borrar tu cuenta pedimos a Apple que desvincule KM2 de tu Apple ID.</p>
 <h3>2.9. Uso de la app</h3>
 <p>Para saber qué partes de la app se usan y mejorarlas, la app envía a nuestro servidor eventos de uso (por ejemplo, «ha abierto la pestaña Ranking» o «ha empezado una carrera»), con la versión de la app y un identificador de la instalación. Se guardan en nuestra base de datos, vinculados a tu cuenta, durante 180 días como máximo, y nunca se comparten con terceros ni se usan para publicidad.</p>
 <h3>2.10. Zona privada</h3>
@@ -340,9 +341,9 @@ const PRIVACY_HTML = page('Política de Privacidad · Runna.io', `
 </section>
 ${FOOTER}`);
 
-const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
+const TERMS_HTML = page('Términos y Condiciones · KM2', `
 <header>
-<h1>🏃 Runna.io</h1>
+<h1 class="brandmark">KM<span style="color:var(--accent)">2</span></h1>
 <h2>Términos y Condiciones</h2>
 <p><strong>Última actualización:</strong> 16 de octubre de 2026</p>
 <p><strong>Responsable:</strong> Javier Poves Ruiz</p>
@@ -351,12 +352,12 @@ const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
 
 <section>
 <h2>1. Aceptación</h2>
-<p>Al crear una cuenta o usar Runna.io aceptas estos Términos y la <a href="/privacy">Política de Privacidad</a>. Si no estás de acuerdo, no uses la app.</p>
+<p>Al crear una cuenta o usar KM2 aceptas estos Términos y la <a href="/privacy">Política de Privacidad</a>. Si no estás de acuerdo, no uses la app.</p>
 </section>
 
 <section>
 <h2>2. El servicio</h2>
-<p>Runna.io es una app para iPhone que permite:</p>
+<p>KM2 es una app para iPhone que permite:</p>
 <ul>
 <li>Grabar tus carreras con el GPS del iPhone o importarlas desde Apple Health, Strava, Polar Flow, Suunto o Garmin Connect.</li>
 <li>Conquistar territorio virtual en el mapa a partir de tus rutas.</li>
@@ -403,7 +404,7 @@ const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
 <section>
 <h2>6. Propiedad intelectual</h2>
 <ul>
-<li>El código, el diseño, los logotipos y la marca Runna.io son de Javier Poves Ruiz.</li>
+<li>El código, el diseño, los logotipos y la marca KM2 son de Javier Poves Ruiz.</li>
 <li>Tus datos y tus carreras son tuyos. Nos das permiso para tratarlos como explica la Política de Privacidad.</li>
 </ul>
 </section>
@@ -451,9 +452,9 @@ const TERMS_HTML = page('Términos y Condiciones · Runna.io', `
 </section>
 ${FOOTER}`);
 
-const SUPPORT_HTML = page('Soporte · Runna.io', `
+const SUPPORT_HTML = page('Soporte · KM2', `
 <header>
-<h1>🏃 Runna.io</h1>
+<h1 class="brandmark">KM<span style="color:var(--accent)">2</span></h1>
 <h2>Centro de soporte</h2>
 <p>¿Necesitas ayuda? Estamos aquí para ti.</p>
 </header>
@@ -499,7 +500,7 @@ const SUPPORT_HTML = page('Soporte · Runna.io', `
 <h3>¿Cómo borro mi cuenta?</h3>
 <p>En <strong>Perfil → Borrar cuenta</strong>. Se eliminan todos tus datos de forma inmediata e irreversible.</p>
 <h3>¿Cuesta algo?</h3>
-<p>No. Runna.io es gratuita, sin suscripciones ni pagos.</p>
+<p>No. KM2 es gratuita, sin suscripciones ni pagos.</p>
 </section>
 
 <section>
@@ -521,7 +522,7 @@ function landing(c: Context<AppEnv>, options: { title: string; heading: string; 
 <p>${escapeHtml(options.text)}</p>
 <a class="button" id="open-app" href="${appLink}">Abrir en la app</a>
 ${download ? `<a class="button secondary" href="${escapeHtml(download)}">Descargar la app</a>` : ''}
-<p class="muted">Si no se abre nada, instala primero Runna.io en tu iPhone${download ? '' : ' (pide el enlace de descarga a quien te invitó)'} y vuelve a pulsar «Abrir en la app».</p>
+<p class="muted">Si no se abre nada, instala primero KM2 en tu iPhone${download ? '' : ' (pide el enlace de descarga a quien te invitó)'} y vuelve a pulsar «Abrir en la app».</p>
 </div>
 ${FOOTER}`);
 }
@@ -544,7 +545,7 @@ export function registerPublicPages(app: Hono<AppEnv>): void {
   app.get('/invite/:token', (c) => {
     const token = c.req.param('token');
     if (!TOKEN_PATTERN.test(token)) {
-      return html(c, page('Invitación no válida · Runna.io', `
+      return html(c, page('Invitación no válida · KM2', `
 <div class="landing">
 <div class="logo">🏃</div>
 <h1>Invitación no válida</h1>
@@ -554,9 +555,9 @@ ${FOOTER}`), 404);
     }
     c.header('Cache-Control', 'no-store');
     return c.html(landing(c, {
-      title: 'Invitación a Runna.io',
-      heading: 'Te han invitado a Runna.io',
-      text: 'Un amigo quiere seguirte en Runna.io y ver tu territorio. Abre la invitación en la app para aceptarla.',
+      title: 'Invitación a KM2',
+      heading: 'Te han invitado a KM2',
+      text: 'Un amigo quiere seguirte en KM2 y ver tu territorio. Abre la invitación en la app para aceptarla.',
       appLink: `${APP_SCHEME}://friends/accept/${token}`,
     }));
   });
@@ -565,7 +566,7 @@ ${FOOTER}`), 404);
   app.get('/club-invite/:token', (c) => {
     const token = c.req.param('token');
     if (!TOKEN_PATTERN.test(token)) {
-      return html(c, page('Invitación no válida · Runna.io', `
+      return html(c, page('Invitación no válida · KM2', `
 <div class="landing">
 <div class="logo">🛡️</div>
 <h1>Invitación no válida</h1>
@@ -575,7 +576,7 @@ ${FOOTER}`), 404);
     }
     c.header('Cache-Control', 'no-store');
     return c.html(landing(c, {
-      title: 'Invitación a un club · Runna.io',
+      title: 'Invitación a un club · KM2',
       heading: 'Te han invitado a un club',
       text: 'Únete al club para competir con ellos cada dos semanas. Abre la invitación en la app para unirte.',
       appLink: `${APP_SCHEME}://clubs/join/${token}`,
@@ -607,8 +608,8 @@ ${FOOTER}`), 404);
     const requested = c.req.query('tab') ?? 'map';
     const tab = (APP_TABS as readonly string[]).includes(requested) ? requested : 'map';
     return html(c, landing(c, {
-      title: 'Abrir Runna.io',
-      heading: 'Abre Runna.io',
+      title: 'Abrir KM2',
+      heading: 'Abre KM2',
       text: 'Sal a correr, conquista el mapa y compite con tu club.',
       appLink: `${APP_SCHEME}://tab/${tab}`,
     }));

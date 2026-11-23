@@ -358,7 +358,7 @@ struct RouteDetailView: View {
         if !route.isRejected, let area = route.globalAreaGained, area > 0 {
             text += " y +\(Format.area(area)) de mapa nuevo"
         }
-        return text + " con Runna.io"
+        return text + " con KM2"
     }
 
     // MARK: Requests

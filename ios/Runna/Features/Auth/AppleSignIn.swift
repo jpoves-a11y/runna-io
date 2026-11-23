@@ -189,7 +189,7 @@ private struct AppleProfileSheet: View {
             SecureField("Contraseña", text: $linkPassword)
                 .textContentType(.password)
         } footer: {
-            Text("Entra con tu cuenta de Runna.io y la vincularemos a tu Apple ID. Desde entonces podrás entrar con Apple o con tu contraseña, y conservarás todo tu territorio.")
+            Text("Entra con tu cuenta de KM2 y la vincularemos a tu Apple ID. Desde entonces podrás entrar con Apple o con tu contraseña, y conservarás todo tu territorio.")
         }
     }
 
@@ -230,7 +230,7 @@ private struct AppleProfileSheet: View {
             }
             .tint(Color.brand)
         } footer: {
-            Text("Necesitas tener al menos \(AppConfig.minimumAge) años para usar Runna.io.")
+            Text("Necesitas tener al menos \(AppConfig.minimumAge) años para usar KM2.")
         }
     }
 

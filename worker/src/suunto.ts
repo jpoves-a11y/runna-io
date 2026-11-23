@@ -61,7 +61,7 @@ const PERMANENT_SKIP_REASONS = new Set(['before_competition', 'excluded_type', '
  * 0 walking, 2 cycling, 10 mountain biking, 11 hiking, 21 swimming, 24 nordic walking.
  */
 const NON_FOOT_ACTIVITY_IDS = new Set([0, 2, 10, 11, 21, 24]);
-/** Suunto App activity IDs Runna.io imports (1 running, 22 trail running), when the FIT file has no sport. */
+/** Suunto App activity IDs KM2 imports (1 running, 22 trail running), when the FIT file has no sport. */
 const FOOT_ACTIVITY_IDS = new Set([1, 22]);
 
 function getStorage(env: Env): WorkerStorage {
@@ -535,7 +535,7 @@ export async function processSuuntoActivity(env: Env, storage: WorkerStorage, ac
   const startedAt = startDate.toISOString();
   const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
 
-  // Same run already on Runna.io (Strava / Polar / Apple Health / an earlier import): link it, don't duplicate
+  // Same run already on KM2 (Strava / Polar / Apple Health / an earlier import): link it, don't duplicate
   let route: Route | null = activity.routeId ? await storage.getRouteById(activity.routeId) : null;
   const ownRoute = !!route;
   if (!route) {

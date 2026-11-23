@@ -166,7 +166,7 @@ export async function notifyFriendRequest(
     // Prepare notification payload
     const payload = {
       title: '👋 Nueva solicitud de amistad',
-      body: `${senderName} quiere conectar contigo en Runna`,
+      body: `${senderName} quiere conectar contigo en KM2`,
       tag: 'friend-request',
       data: {
         url: '/friends',

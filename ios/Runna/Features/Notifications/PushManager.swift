@@ -85,7 +85,7 @@ final class PushManager {
         case .notDetermined:
             await requestPermissionAndRegister()
         default:
-            registrationError = "Las notificaciones están desactivadas para Runna.io en Ajustes."
+            registrationError = "Las notificaciones están desactivadas para KM2 en Ajustes."
             return false
         }
         guard let token = deviceToken else { return false }

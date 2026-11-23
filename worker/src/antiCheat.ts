@@ -42,7 +42,7 @@ export const REASON_MESSAGES: Record<ValidationReason, string> = {
   large_area: 'Esta carrera conquista muchísima área de una vez. Cuenta, pero queda en revisión.',
   daily_area: 'Hoy llevas muchísima área conquistada. Cuenta, pero queda en revisión.',
   reviewed_reverted: 'Tras revisarla, esta carrera ya no cuenta.',
-  before_season: 'Esta carrera es anterior a la nueva temporada de Runna, así que no cuenta.',
+  before_season: 'Esta carrera es anterior a la nueva temporada de KM2, así que no cuenta.',
 };
 
 export interface RunInput {

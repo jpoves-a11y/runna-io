@@ -71,7 +71,7 @@ struct IntegrationsSection: View {
         } message: {
             Text("""
             Al conectar Strava:
-            • Importaremos tus carreras de Strava a Runna.io.
+            • Importaremos tus carreras de Strava a KM2.
             • Tus rutas se convertirán en territorio visible para tus amigos en el mapa.
             • Tu nombre de usuario aparecerá en el feed y en los rankings.
             • Puedes desconectar Strava cuando quieras desde tu perfil.
@@ -588,7 +588,7 @@ struct IntegrationsSection: View {
         let name = displayName(provider)
         switch error {
         case "denied": return "Has cancelado la conexión con \(name)."
-        case "already_linked": return "Esa cuenta de \(name) ya está conectada a otro usuario de Runna.io."
+        case "already_linked": return "Esa cuenta de \(name) ya está conectada a otro usuario de KM2."
         case "invalid_state": return "La conexión ha caducado. Inténtalo de nuevo."
         case "registration": return "Error al registrar tu usuario en Polar AccessLink. Inténtalo de nuevo."
         case "token_exchange": return "\(name) no ha aceptado la autorización. Inténtalo de nuevo."

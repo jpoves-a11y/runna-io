@@ -262,8 +262,8 @@ struct InviteFriendSheet: View {
                 if let inviteURL {
                     ShareLink(
                         item: inviteURL,
-                        subject: Text("Corre conmigo en Runna.io"),
-                        message: Text("Te reto en Runna.io: corre y conquista la ciudad. Acepta mi invitación:")
+                        subject: Text("Corre conmigo en KM2"),
+                        message: Text("Te reto en KM2: corre y conquista la ciudad. Acepta mi invitación:")
                     ) {
                         Label("Enviar invitación", systemImage: "square.and.arrow.up")
                             .frame(maxWidth: .infinity)

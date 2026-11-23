@@ -130,7 +130,7 @@ struct HomeSummaryView: View {
             Image(systemName: "figure.run")
                 .font(.title2)
                 .foregroundStyle(brand)
-            Text("Abre Runna.io e inicia sesión para ver tu territorio.")
+            Text("Abre KM2 e inicia sesión para ver tu territorio.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -231,7 +231,7 @@ struct HomeSummaryView: View {
 
     private func rectangular(_ summary: WidgetSummary) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text("Runna.io")
+            Text("KM2")
                 .font(.caption2.weight(.semibold))
             Text("\(WidgetFormat.area(summary.area))\(summary.cityRank.map { " · #\($0)" } ?? "")")
                 .font(.headline)

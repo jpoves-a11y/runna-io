@@ -113,7 +113,7 @@ struct ReportSheet: View {
                     EmptyStateView(
                         systemImage: "checkmark.shield.fill",
                         title: "Gracias, lo revisaremos",
-                        message: "Nuestro equipo revisará la denuncia y tomará medidas si incumple las normas de Runna.io. Si no quieres ver más a esta persona, también puedes bloquearla desde su perfil.",
+                        message: "Nuestro equipo revisará la denuncia y tomará medidas si incumple las normas de KM2. Si no quieres ver más a esta persona, también puedes bloquearla desde su perfil.",
                         actionTitle: "Cerrar",
                         action: { dismiss() }
                     )

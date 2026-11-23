@@ -12,10 +12,10 @@ private extension Color {
         })
     }
 
-    /// Brand emerald (same as `Color.brand` in the app).
-    static let liveBrand = Color.liveAdaptive(light: 0x0E8A5F, dark: 0x3CC98E)
+    /// KM2 brand green (same as `Color.brand` in the app).
+    static let liveBrand = Color.liveAdaptive(light: 0x008A10, dark: 0x00FF1E)
     /// Always the dark-mode variant: the Dynamic Island is black in both modes.
-    static let liveBrandBright = Color(uiColor: UIColor(liveRGB: 0x3CC98E))
+    static let liveBrandBright = Color(uiColor: UIColor(liveRGB: 0x00FF1E))
     /// Lock screen background: plain white / near black.
     static let liveBackground = Color.liveAdaptive(light: 0xFFFFFF, dark: 0x111113)
     /// Hairline separators.
@@ -55,7 +55,7 @@ struct RunLiveActivityWidget: Widget {
             let state = context.state
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Text("Runna.io")
+                    Text("KM2")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.leading, 6)
@@ -180,13 +180,13 @@ private struct RunLockScreenView: View {
     let isStale: Bool
 
     private var hint: String? {
-        state.conqueredHint ?? (isStale && !state.isFinished ? "Abre Runna.io para actualizar" : nil)
+        state.conqueredHint ?? (isStale && !state.isFinished ? "Abre KM2 para actualizar" : nil)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Runna.io")
+                Text("KM2")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()

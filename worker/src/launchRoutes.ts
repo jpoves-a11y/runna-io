@@ -61,7 +61,7 @@ function unsubscribePage(title: string, text: string, form?: { action: string; l
   const button = form
     ? `<form method="post" action="${escapeHtml(form.action)}">${form.resubscribe ? '<input type="hidden" name="resubscribe" value="1">' : ''}<button class="button${form.secondary ? ' secondary' : ''}" style="font:inherit;cursor:pointer;">${escapeHtml(form.label)}</button></form>`
     : '';
-  return page(`${title} · Runna.io`, `
+  return page(`${title} · KM2`, `
 <div class="landing">
 <h1>${escapeHtml(title)}</h1>
 <p>${escapeHtml(text)}</p>

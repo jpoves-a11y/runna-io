@@ -424,7 +424,7 @@ final class RouteVideoMapContainer: UIView {
 
 // MARK: - Photos
 
-/// Saving videos to the photo library (add-only access: Runna.io can't see the library).
+/// Saving videos to the photo library (add-only access: KM2 can't see the library).
 enum VideoLibrary {
     /// Asks for permission the first time; whether videos can be saved.
     static func requestAccess() async -> Bool {

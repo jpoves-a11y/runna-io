@@ -1,6 +1,8 @@
-# Runna.io
+# KM2 (KAEMEDOS)
 
-Corre y conquista el mapa. Runna tiene dos modos a la vez:
+Antes Runna.io. El bundle ID, los dominios y el esquema `runnaio://` conservan el nombre antiguo para no romper la app publicada ni los enlaces.
+
+Corre y conquista el mapa. KM2 tiene dos modos a la vez:
 
 - **Modo global**: cada carrera suma al mapa del mundo el área nueva que encierra. Nadie te la puede quitar. Hay rankings mundial, de tu país, de tu ciudad, de tus amigos y de tu club, de siempre y del mes. Los rankings solo muestran el área total, nunca recorridos.
 - **Modo competición**: para quien está en un club. Ciclos de 14 días (hora de Madrid):
@@ -156,7 +158,7 @@ Prueba e2e: `scripts/e2e/activity-profile-test.mjs`.
 
 ### Compartir el recorrido en vídeo
 
-Desde el detalle de una actividad (Compartir → Vídeo del recorrido), el resumen al terminar una carrera y el aviso de actividad importada se abre un editor (`ios/Runna/Features/Run/RouteShare.swift`): formato (historia 9:16, post 4:5, cuadrado), 3D/2D, satélite/mapa, velocidad, color de la ruta, título y qué datos se ven (título, fecha, distancia, tiempo, ritmo, territorio, resumen final, marca Runna.io). La vista previa es exactamente lo que se graba. «Grabar vídeo» reproduce la animación entera a pantalla completa y la graba con ReplayKit (iOS pide permiso para grabar la pantalla de la app), recortada y escalada a 1080 px de ancho en MP4; después se puede ver, compartir o guardar en Fotos.
+Desde el detalle de una actividad (Compartir → Vídeo del recorrido), el resumen al terminar una carrera y el aviso de actividad importada se abre un editor (`ios/Runna/Features/Run/RouteShare.swift`): formato (historia 9:16, post 4:5, cuadrado), 3D/2D, satélite/mapa, velocidad, color de la ruta, título y qué datos se ven (título, fecha, distancia, tiempo, ritmo, territorio, resumen final, marca KM2). La vista previa es exactamente lo que se graba. «Grabar vídeo» reproduce la animación entera a pantalla completa y la graba con ReplayKit (iOS pide permiso para grabar la pantalla de la app), recortada y escalada a 1080 px de ancho en MP4; después se puede ver, compartir o guardar en Fotos.
 
 ### Secretos y variables del Worker
 

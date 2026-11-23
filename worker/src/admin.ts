@@ -93,8 +93,8 @@ function nav(active: string): string {
 const NAV = nav('/admin/reports');
 
 function loginPage(message = ''): string {
-  return adminPage('Panel · Runna.io', `
-<h1>Panel de Runna.io</h1>
+  return adminPage('Panel · KM2', `
+<h1>Panel de KM2</h1>
 ${message ? `<p class="flash error">${escapeHtml(message)}</p>` : ''}
 <form method="post" action="/admin/login" class="card">
 <label>Secreto de administración<br><input type="password" name="secret" autocomplete="current-password" required autofocus></label>
@@ -301,7 +301,7 @@ ${actions}
   const bannedRows = banned.map((user) => `<tr><td>${who(user.name, user.username, user.id)}</td><td>${formatDate(user.banned_at)}</td><td>${escapeHtml(user.ban_reason ?? '')}</td>
 <td><form method="post" action="/admin/users/unban">${hidden({ csrf, user: user.id })}<button class="link">Reactivar</button></form></td></tr>`).join('');
 
-  return adminPage('Denuncias · Runna.io', `${NAV}
+  return adminPage('Denuncias · KM2', `${NAV}
 <h1>Denuncias</h1>
 ${flash ? `<p class="flash">${escapeHtml(flash)}</p>` : ''}
 <p class="muted">Apple exige revisar cada denuncia en 24 horas. «Suspender» borra también el contenido, cierra sus sesiones y le impide volver a entrar.</p>
@@ -378,7 +378,7 @@ async function statsPage(c: AdminContext): Promise<string> {
   const step = (label: string, value: number, total: number, note = '') =>
     `<tr><td>${label}</td><td class="num">${number(value)}</td><td class="num">${percent(value, total)}</td><td class="muted">${note}</td></tr>`;
 
-  return adminPage('Estadísticas · Runna.io', `${nav('/admin/stats')}
+  return adminPage('Estadísticas · KM2', `${nav('/admin/stats')}
 <h1>Estadísticas</h1>
 <div class="tiles">
 <div class="tile"><span>Usuarios</span><strong>${number(users.total)}</strong><small>+${number(users.d7)} en 7 días · +${number(users.d30)} en 30</small></div>
@@ -453,9 +453,9 @@ export function registerAdminPanel(app: Hono<AppEnv>): void {
       const session = await adminSession(c);
       if (!session) return c.redirect('/admin/login', 303);
       const body = await render(await storageOf(c), session.csrf, c);
-      if (body === null) return html(c, adminPage('No encontrado · Runna.io', `${nav(path)}<h1>No encontrado</h1>`), 404);
+      if (body === null) return html(c, adminPage('No encontrado · KM2', `${nav(path)}<h1>No encontrado</h1>`), 404);
       const flash = c.req.query('ok');
-      return html(c, adminPage(`${title} · Runna.io`, `${nav(path)}${flash ? `<p class="flash">${escapeHtml(flash)}</p>` : ''}${body}`));
+      return html(c, adminPage(`${title} · KM2`, `${nav(path)}${flash ? `<p class="flash">${escapeHtml(flash)}</p>` : ''}${body}`));
     };
 
   app.get('/admin', section('/admin', 'Resumen', (storage) => dashboardBody(storage)));

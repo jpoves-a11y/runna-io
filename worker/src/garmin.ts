@@ -316,7 +316,7 @@ export function parseActivityDetail(raw: unknown): GarminActivityDetail | null {
   };
 }
 
-/** Running and trail running outdoors only (Runna.io's import filter): no walks, hikes or treadmill runs. */
+/** Running and trail running outdoors only (KM2's import filter): no walks, hikes or treadmill runs. */
 export function isGarminFootActivity(activityType: string): boolean {
   return isRunningActivityType(activityType);
 }
@@ -428,7 +428,7 @@ export async function processGarminActivity(env: Env, storage: WorkerStorage, ac
   const startedAt = startDate.toISOString();
   const completedAt = new Date(startDate.getTime() + activity.duration * 1000).toISOString();
 
-  // Same run already on Runna.io (Strava / Polar / Suunto / Apple Health): link it, don't duplicate
+  // Same run already on KM2 (Strava / Polar / Suunto / Apple Health): link it, don't duplicate
   let route: Route | null = activity.routeId ? await storage.getRouteById(activity.routeId) : null;
   if (!route) {
     const similar = await storage.findSimilarRoute(userId, startedAt, activity.distance);
@@ -520,7 +520,7 @@ export interface GarminNotification {
   permissionChanges: Array<{ garminUserId: string; permissions: string[] }>;
 }
 
-/** Everything Runna.io uses from a notification body; other summary types are ignored. */
+/** Everything KM2 uses from a notification body; other summary types are ignored. */
 export function parseGarminNotification(body: unknown): GarminNotification {
   const result: GarminNotification = { details: [], pings: [], deregistrations: [], permissionChanges: [] };
   const obj = asObject(body);
@@ -584,7 +584,7 @@ async function handleNotification(env: Env, notification: GarminNotification): P
   const storage = getStorage(env);
 
   for (const garminUserId of notification.deregistrations) {
-    // The user removed Runna.io in Garmin Connect: forget the tokens (routes and territory stay)
+    // The user removed KM2 in Garmin Connect: forget the tokens (routes and territory stay)
     const account = await storage.getGarminAccountByGarminUserId(garminUserId);
     if (!account) continue;
     await storage.deleteGarminAccount(account.userId);

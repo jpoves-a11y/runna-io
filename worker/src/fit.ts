@@ -1,5 +1,5 @@
 // Minimal, dependency-free decoder for Garmin FIT activity files (as exported by the Suunto Cloud API:
-// GET /v2/workout/exportFit/{workoutKey}). It reads only what Runna.io needs:
+// GET /v2/workout/exportFit/{workoutKey}). It reads only what KM2 needs:
 //   - record messages: position_lat / position_long (semicircles), timestamp, distance
 //   - session messages: sport, sub_sport, start_time, timestamp, total_timer_time, total_elapsed_time, total_distance
 //   - sport messages: sport, sub_sport (fallback when there is no session)
@@ -14,7 +14,7 @@ const MESG_SESSION = 18;
 const MESG_RECORD = 20;
 const MESG_SPORT = 12;
 
-/** FIT `sport` enum values relevant to Runna.io. */
+/** FIT `sport` enum values relevant to KM2. */
 export const FIT_SPORT = {
   generic: 0,
   running: 1,
@@ -348,7 +348,7 @@ export function parseFit(input: ArrayBuffer | Uint8Array): FitActivity {
   };
 }
 
-/** True for FIT sports Runna.io imports: running and trail running outdoors (no walks, hikes, treadmill). */
+/** True for FIT sports KM2 imports: running and trail running outdoors (no walks, hikes, treadmill). */
 export function isRunningSport(sport: number | null, subSport: number | null): boolean {
   if (sport !== FIT_SPORT.running) return false;
   return subSport !== FIT_SUB_SPORT.treadmill

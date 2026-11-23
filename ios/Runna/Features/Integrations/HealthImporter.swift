@@ -19,7 +19,7 @@ final class HealthImporter {
         var message: String {
             var parts: [String] = []
             if imported > 0 { parts.append("\(imported) carrera(s) importada(s)") }
-            if duplicates > 0 { parts.append("\(duplicates) ya estaba(n) en Runna.io") }
+            if duplicates > 0 { parts.append("\(duplicates) ya estaba(n) en KM2") }
             if beforeSeason > 0 { parts.append("\(beforeSeason) anterior(es) a la nueva temporada (no cuentan)") }
             if withoutRoute > 0 { parts.append("\(withoutRoute) sin ruta GPS") }
             if failed > 0 { parts.append("\(failed) no se pudieron subir") }

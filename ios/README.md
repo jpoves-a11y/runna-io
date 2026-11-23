@@ -1,6 +1,6 @@
-# Runna.io para iPhone
+# KM2 para iPhone
 
-App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: habla con la API del Cloudflare Worker (`worker/`).
+App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de KM2: habla con la API del Cloudflare Worker (`worker/`).
 
 ## Qué incluye
 
@@ -9,7 +9,7 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de Runna.io: hab
 - **Avisos por voz** durante la carrera (activados por defecto; Perfil → Durante la carrera): cada kilómetro con tiempo y ritmo, al entrar en territorio que puedes robar, cofres a 500 m y dentro de su radio, pausa y final. Usan la voz en español del iPhone, bajan la música y funcionan con la pantalla bloqueada. Un botón de altavoz los silencia en la carrera actual.
 - **Zona privada** (Perfil → Privacidad): oculta los primeros y últimos 200 m de las carreras nuevas a los demás y no cuentan como territorio.
 - **Widget** de pantalla de inicio y de pantalla bloqueada: tu área, tu puesto en tu ciudad, el último robo y la competición.
-- **Empezar a correr con Siri** ("Empieza una carrera en Runna.io"), Atajos, el botón de Acción o el control "Correr" del Centro de control (iOS 18).
+- **Empezar a correr con Siri** ("Empieza una carrera en KM2"), Atajos, el botón de Acción o el control "Correr" del Centro de control (iOS 18).
 - **Enlaces universales**: los enlaces de invitación (`https://…/invite/…`, `/club-invite/…`) abren la app directamente si está instalada.
 - **Valoración**: después de un buen resultado (y no más de una vez por versión ni cada 120 días) se pide valorar la app.
 - **Mapa** con un interruptor arriba:
@@ -120,7 +120,7 @@ Mientras grabas una carrera, la app muestra una Live Activity con el tiempo (cue
 
 - La dibuja la extensión **RunnaLive** (`ios/RunnaLive/`). El tipo compartido `RunActivityAttributes` está en `ios/Shared/`, una carpeta que pertenece a los dos targets.
 - La controla `Runna/Features/Run/RunLiveActivity.swift`, desde `RunTracker`.
-- El usuario puede desactivarlas en Ajustes → Runna.io → Actividades en directo; entonces la app simplemente no la muestra.
+- El usuario puede desactivarlas en Ajustes → KM2 → Actividades en directo; entonces la app simplemente no la muestra.
 
 ## Strava y Polar
 

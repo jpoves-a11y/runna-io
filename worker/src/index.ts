@@ -112,7 +112,7 @@ registerPublicPages(app);
 registerAdminPanel(app);
 
 app.get('/', (c) => {
-  return c.json({ message: 'Runna.io API - Cloudflare Workers' });
+  return c.json({ message: 'KM2 API - Cloudflare Workers' });
 });
 
 /** Adds columns/tables newer than the database (once per isolate; errors are logged, not thrown). */

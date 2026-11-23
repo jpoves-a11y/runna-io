@@ -43,7 +43,7 @@ export class EmailService {
   private provider: EmailProvider = 'resend';
   private apiKey: string;
   private fromEmail = 'onboarding@resend.dev';
-  private fromName = 'Runna.io';
+  private fromName = 'KM2';
   private baseUrl: string;
   private unsubscribeSecret?: string;
 

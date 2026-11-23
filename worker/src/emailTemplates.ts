@@ -1,4 +1,4 @@
-// Emails of Runna.io: one minimal layout for all of them, in HTML and plain text.
+// Emails of KM2: one minimal layout for all of them, in HTML and plain text.
 //
 // The HTML is built for email clients, not browsers: tables and inline styles (Gmail ignores grid
 // and gradients), every block sets both its background and its text colour, and a dark version is
@@ -44,9 +44,9 @@ const LIGHT = {
   muted: '#5B6470',
   faint: '#8A929C',
   line: '#E5E7EB',
-  brand: '#0E8A5F',
+  brand: '#008A10',
   buttonText: '#FFFFFF',
-  codeBg: '#F3F7F5',
+  codeBg: '#F1F8F2',
 };
 
 const DARK = {
@@ -56,9 +56,9 @@ const DARK = {
   muted: '#A3ABB5',
   faint: '#7D858F',
   line: '#2A2F35',
-  brand: '#3CC98E',
-  buttonText: '#04241A',
-  codeBg: '#1D2622',
+  brand: '#00FF1E',
+  buttonText: '#021A05',
+  codeBg: '#14241A',
 };
 
 const FONT = `-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif`;
@@ -176,12 +176,12 @@ export function renderEmail(subject: string, layout: EmailLayout): EmailContent 
   <tr><td align="center" style="padding:32px 16px;">
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;">
       <tr><td style="padding:0 4px 18px;font-family:${FONT};font-size:20px;font-weight:700;letter-spacing:-0.3px;">
-        <span class="txt" style="color:${LIGHT.text};">Runna</span><span class="brand" style="color:${LIGHT.brand};">.io</span>
+        <span class="txt" style="color:${LIGHT.text};font-weight:900;">KM</span><span class="brand" style="color:${LIGHT.brand};font-weight:900;">2</span>
       </td></tr>
       <tr><td class="card card-pad" style="background:${LIGHT.card};border:1px solid ${LIGHT.line};border-radius:20px;padding:36px 32px;">
         <h1 class="txt h1" style="margin:0 0 16px;font-family:${FONT};font-size:26px;line-height:1.25;font-weight:700;letter-spacing:-0.4px;color:${LIGHT.text};">${escapeEmail(layout.heading)}</h1>
         ${paragraphs}${steps}${code}${details}${cta}${closing}
-        <p class="txt" style="margin:8px 0 0;font-family:${FONT};font-size:16px;line-height:1.6;color:${LIGHT.text};">El equipo de Runna.io</p>
+        <p class="txt" style="margin:8px 0 0;font-family:${FONT};font-size:16px;line-height:1.6;color:${LIGHT.text};">El equipo de KM2</p>
       </td></tr>
       <tr><td style="padding:20px 8px 0;font-family:${FONT};font-size:12px;line-height:1.6;color:${LIGHT.faint};" class="faint">
         ${escapeEmail(layout.reason)}<br>${footerLinks}
@@ -209,7 +209,7 @@ export function renderEmail(subject: string, layout: EmailLayout): EmailContent 
   }
   if (layout.cta) lines.push(`${layout.cta.label}: ${layout.cta.url}`, '');
   if (layout.closing) lines.push(plain(layout.closing), '');
-  lines.push('El equipo de Runna.io', '', '--', layout.reason);
+  lines.push('El equipo de KM2', '', '--', layout.reason);
   if (layout.unsubscribeUrl) lines.push(`Darte de baja: ${layout.unsubscribeUrl}`);
   lines.push(`Privacidad: ${privacyUrl}`, `Soporte: ${layout.supportEmail}`);
 
@@ -227,7 +227,7 @@ const openUrl = (ctx: TemplateContext, tab?: string) => `${ctx.baseUrl}/open${ta
 
 export function welcomeEmail(ctx: TemplateContext, name: string, unsubscribeUrl?: string): EmailContent {
   const first = name.trim().split(/\s+/)[0] || name;
-  return renderEmail(`Bienvenido a Runna.io, ${first}`, {
+  return renderEmail(`Bienvenido a KM2, ${first}`, {
     ...ctx,
     preheader: 'Cada carrera que acabes convierte en tuyo un trozo de tu ciudad.',
     heading: `Bienvenido, ${first}`,
@@ -240,16 +240,16 @@ export function welcomeEmail(ctx: TemplateContext, name: string, unsubscribeUrl?
       '**Invita a un amigo.** Así podréis robaros territorio.',
       '**Únete a un club** de tu ciudad y compite con él cada dos semanas.',
     ],
-    cta: { label: 'Abrir Runna.io', url: openUrl(ctx, 'map') },
+    cta: { label: 'Abrir KM2', url: openUrl(ctx, 'map') },
     closing: 'Nos vemos en el mapa.',
-    reason: 'Te escribimos porque acabas de crear tu cuenta en Runna.io.',
+    reason: 'Te escribimos porque acabas de crear tu cuenta en KM2.',
     unsubscribeUrl,
   });
 }
 
 export function signupCodeEmail(ctx: TemplateContext, name: string, code: string, minutes: number): EmailContent {
   const first = name.trim().split(/\s+/)[0] || name;
-  return renderEmail(`Tu código de Runna.io: ${code}`, {
+  return renderEmail(`Tu código de KM2: ${code}`, {
     ...ctx,
     preheader: `Escríbelo en la app para terminar de crear tu cuenta. Caduca en ${minutes} minutos.`,
     heading: `Hola, ${first}`,
@@ -257,7 +257,7 @@ export function signupCodeEmail(ctx: TemplateContext, name: string, code: string
     code,
     codeNote: `Caduca en ${minutes} minutos.`,
     closing: 'Si no has sido tú, ignora este correo: no se creará ninguna cuenta.',
-    reason: 'Te escribimos porque alguien ha empezado a crear una cuenta de Runna.io con este correo.',
+    reason: 'Te escribimos porque alguien ha empezado a crear una cuenta de KM2 con este correo.',
   });
 }
 
@@ -271,13 +271,13 @@ export function passwordResetEmail(ctx: TemplateContext, name: string, code: str
     code,
     codeNote: `Caduca en ${minutes} minutos.`,
     closing: 'Si no lo has pedido tú, ignora este correo: tu contraseña sigue siendo la misma.',
-    reason: 'Te escribimos porque se ha pedido cambiar la contraseña de tu cuenta de Runna.io.',
+    reason: 'Te escribimos porque se ha pedido cambiar la contraseña de tu cuenta de KM2.',
   });
 }
 
 export function verificationCodeEmail(ctx: TemplateContext, name: string, code: string): EmailContent {
   const first = name.trim().split(/\s+/)[0] || name;
-  return renderEmail(`Tu código de Runna.io: ${code}`, {
+  return renderEmail(`Tu código de KM2: ${code}`, {
     ...ctx,
     preheader: 'Escríbelo en la app para confirmar tu correo.',
     heading: `Hola, ${first}`,
@@ -285,18 +285,18 @@ export function verificationCodeEmail(ctx: TemplateContext, name: string, code: 
     code,
     codeNote: 'Caduca en 10 minutos.',
     closing: 'Si no has sido tú, ignora este correo.',
-    reason: 'Te escribimos porque se ha pedido confirmar este correo en Runna.io.',
+    reason: 'Te escribimos porque se ha pedido confirmar este correo en KM2.',
   });
 }
 
 export function friendRequestEmail(ctx: TemplateContext, senderName: string, senderUsername: string, unsubscribeUrl?: string): EmailContent {
-  return renderEmail(`${senderName} quiere ser tu amigo en Runna.io`, {
+  return renderEmail(`${senderName} quiere ser tu amigo en KM2`, {
     ...ctx,
     preheader: 'Acepta y podréis ver el territorio del otro y robároslo.',
     heading: `${senderName} quiere ser tu amigo`,
     paragraphs: [`**${senderName}** (@${senderUsername}) te ha enviado una solicitud de amistad. Si la aceptas, veréis el territorio del otro y podréis robároslo.`],
     cta: { label: 'Ver solicitud', url: openUrl(ctx, 'friends') },
-    reason: 'Te escribimos porque alguien te ha enviado una solicitud de amistad en Runna.io.',
+    reason: 'Te escribimos porque alguien te ha enviado una solicitud de amistad en KM2.',
     unsubscribeUrl,
   });
 }
@@ -304,11 +304,11 @@ export function friendRequestEmail(ctx: TemplateContext, senderName: string, sen
 export function friendAcceptedEmail(ctx: TemplateContext, acceptorName: string, acceptorUsername: string, unsubscribeUrl?: string): EmailContent {
   return renderEmail(`${acceptorName} ha aceptado tu solicitud`, {
     ...ctx,
-    preheader: 'Ya sois amigos en Runna.io. Que empiece la batalla por la ciudad.',
+    preheader: 'Ya sois amigos en KM2. Que empiece la batalla por la ciudad.',
     heading: 'Ya sois amigos',
     paragraphs: [`**${acceptorName}** (@${acceptorUsername}) ha aceptado tu solicitud. Ya podéis ver el territorio del otro y robároslo.`],
     cta: { label: 'Ver su perfil', url: openUrl(ctx, 'friends') },
-    reason: 'Te escribimos porque alguien ha aceptado tu solicitud de amistad en Runna.io.',
+    reason: 'Te escribimos porque alguien ha aceptado tu solicitud de amistad en KM2.',
     unsubscribeUrl,
   });
 }
@@ -321,13 +321,13 @@ export function territoryStolenEmail(ctx: TemplateContext, thiefName: string, th
     heading: 'Te han robado territorio',
     paragraphs: [`**${thiefName}** (@${thiefUsername}) te ha robado **${km2} km²**. Sal a correr por esa zona para recuperarlo.`],
     cta: { label: 'Ver el mapa', url: openUrl(ctx, 'map') },
-    reason: 'Te escribimos porque alguien te ha robado territorio en Runna.io.',
+    reason: 'Te escribimos porque alguien te ha robado territorio en KM2.',
     unsubscribeUrl,
   });
 }
 
 export function reportEmail(ctx: TemplateContext, report: { reporter: string; reported: string; targetType: string; targetId: string; reason: string }): EmailContent {
-  return renderEmail(`Nueva denuncia en Runna.io: ${report.targetType}`, {
+  return renderEmail(`Nueva denuncia en KM2: ${report.targetType}`, {
     ...ctx,
     preheader: `${report.reporter} ha denunciado a ${report.reported}.`,
     heading: 'Nueva denuncia',
@@ -340,17 +340,17 @@ export function reportEmail(ctx: TemplateContext, report: { reporter: string; re
       ['ID', report.targetId],
     ],
     cta: { label: 'Revisar en el panel', url: `${ctx.baseUrl}/admin/reports` },
-    reason: 'Te llega porque eres el administrador de Runna.io.',
+    reason: 'Te llega porque eres el administrador de KM2.',
   });
 }
 
 export function testEmail(ctx: TemplateContext): EmailContent {
-  return renderEmail('Prueba de correo de Runna.io', {
+  return renderEmail('Prueba de correo de KM2', {
     ...ctx,
     preheader: 'Si lees esto, los correos funcionan.',
     heading: 'Todo funciona',
-    paragraphs: ['Si lees esto, el servidor de Runna.io puede enviar correos. Mira si ha llegado a la bandeja de entrada y cómo se ve en modo claro y oscuro.'],
-    cta: { label: 'Abrir Runna.io', url: openUrl(ctx) },
+    paragraphs: ['Si lees esto, el servidor de KM2 puede enviar correos. Mira si ha llegado a la bandeja de entrada y cómo se ve en modo claro y oscuro.'],
+    cta: { label: 'Abrir KM2', url: openUrl(ctx) },
     reason: 'Te llega porque se ha pedido una prueba desde el panel de administración.',
   });
 }

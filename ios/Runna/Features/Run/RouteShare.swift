@@ -245,7 +245,7 @@ struct RouteShareOverlay: View {
             }
             .shadow(color: .black.opacity(0.4), radius: 4 * unit, y: 1)
             Spacer(minLength: 0)
-            // Always: every shared video carries Runna.io's mark
+            // Always: every shared video carries KM2's mark
             ShareBrandMark(unit: unit)
         }
     }
@@ -351,34 +351,16 @@ struct RouteShareOverlay: View {
     }
 }
 
-/// Watermark: a small brand tile with a runner and "runna.io" in a light rounded type, no box behind
-/// it; a soft shadow keeps it readable over any map.
+/// Watermark: the KM² logo (white and neon green), no box behind it; a soft shadow keeps it readable
+/// over any map.
 private struct ShareBrandMark: View {
     let unit: CGFloat
 
     var body: some View {
-        HStack(spacing: 6 * unit) {
-            RoundedRectangle(cornerRadius: 4.5 * unit, style: .continuous)
-                .fill(LinearGradient(colors: [Color.brandLime, Color.brand], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .frame(width: 17 * unit, height: 17 * unit)
-                .overlay {
-                    Image(systemName: "figure.run")
-                        .font(.system(size: 10 * unit, weight: .semibold))
-                        .foregroundStyle(Color.white)
-                }
-            HStack(spacing: 0) {
-                Text("runna")
-                    .font(.system(size: 15 * unit, weight: .semibold, design: .rounded))
-                Text(".io")
-                    .font(.system(size: 15 * unit, weight: .regular, design: .rounded))
-                    .opacity(0.7)
-            }
-            .tracking(0.3 * unit)
-        }
-        .foregroundStyle(Color.white)
+        KM2Logo(size: 18 * unit, onDark: true)
         .shadow(color: .black.opacity(0.45), radius: 6 * unit, y: 1 * unit)
         .opacity(0.95)
-        .accessibilityLabel("Runna.io")
+        .accessibilityLabel("KM2")
     }
 }
 
@@ -593,7 +575,7 @@ struct RouteShareEditor: View {
             controls
         case .rendering:
             VStack(spacing: DS.Spacing.s) {
-                Label("Deja Runna.io abierta mientras se crea", systemImage: "iphone")
+                Label("Deja KM2 abierta mientras se crea", systemImage: "iphone")
                     .font(.footnote.weight(.semibold))
                 Text("Se hace fotograma a fotograma, sin grabar la pantalla, y se guarda en Fotos al terminar.")
                     .font(.caption)
@@ -727,7 +709,7 @@ struct RouteShareEditor: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            ShareLink(item: url, preview: SharePreview("Mi carrera en Runna.io")) {
+            ShareLink(item: url, preview: SharePreview("Mi carrera en KM2")) {
                 Label("Compartir vídeo", systemImage: "square.and.arrow.up")
                     .frame(maxWidth: .infinity)
             }
@@ -748,7 +730,7 @@ struct RouteShareEditor: View {
     private func saveMessage(_ result: SaveResult) -> String {
         switch result {
         case .saved: return "Guardado en Fotos"
-        case .noPermission: return "Runna.io no tiene permiso para guardar en Fotos. Puedes guardarlo desde Compartir."
+        case .noPermission: return "KM2 no tiene permiso para guardar en Fotos. Puedes guardarlo desde Compartir."
         case .failed: return "No se ha podido guardar en Fotos. Puedes guardarlo desde Compartir."
         }
     }

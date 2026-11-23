@@ -3,6 +3,8 @@ import SwiftUI
 struct RootView: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
+    /// The KM2 → KM² intro plays once per launch, over whatever is loading behind it.
+    @State private var introDone = false
 
     var body: some View {
         Group {
@@ -16,6 +18,14 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: session.state)
+        .overlay {
+            if !introDone {
+                KM2IntroView {
+                    withAnimation(.easeOut(duration: 0.35)) { introDone = true }
+                }
+                .transition(.opacity)
+            }
+        }
         .task {
             await session.bootstrap()
         }
@@ -25,30 +35,19 @@ struct RootView: View {
     }
 }
 
-/// Launch screen while the session loads: plain system background, wordmark and a quiet spinner.
+/// While the session loads (after the intro, if it takes longer): the KM² logo on black, as the
+/// launch screen and the intro, with a quiet spinner.
 struct SplashView: View {
     var body: some View {
         ZStack {
-            Color(uiColor: .systemBackground)
+            Color.black
                 .ignoresSafeArea()
-            VStack(spacing: DS.Spacing.s) {
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text("Runna")
-                        .foregroundStyle(Color.primary)
-                    Text(".io")
-                        .foregroundStyle(Color.brand)
-                }
-                .font(.system(size: 40, weight: .bold))
-                .tracking(-1)
-                Text("Corre. Conquista. Repite.")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
+            KM2Logo(size: 96, onDark: true, tagline: true)
             VStack {
                 Spacer()
                 ProgressView()
                     .controlSize(.regular)
+                    .tint(.white)
                     .padding(.bottom, DS.Spacing.xxxl)
             }
         }
