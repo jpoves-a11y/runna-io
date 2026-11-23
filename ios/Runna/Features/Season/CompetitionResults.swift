@@ -119,6 +119,8 @@ struct CompetitionResultsView: View {
     @Environment(SessionStore.self) private var session
     @State private var page = 0
     @State private var opened: Set<String> = []
+    /// The common chest being opened in 3D, over everything.
+    @State private var opening: InventoryItem?
 
     private enum Page: Hashable { case club, mine, awards, rewards, next }
 
@@ -156,6 +158,12 @@ struct CompetitionResultsView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cerrar", action: onDone)
                 }
+            }
+        }
+        .overlay {
+            if let item = opening {
+                ChestOpeningOverlay(item: item) { collect(item) }
+                    .transition(.opacity)
             }
         }
         .interactiveDismissDisabled()
@@ -429,8 +437,13 @@ struct CompetitionResultsView: View {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.m), GridItem(.flexible(), spacing: DS.Spacing.m)], spacing: DS.Spacing.m) {
                 ForEach(summary.rewards) { item in
                     RewardChestCell(item: item, isOpen: opened.contains(item.id)) {
-                        withAnimation(.snappy) { _ = opened.insert(item.id) }
-                        Haptics.success()
+                        if item.rarity == "common" {
+                            Haptics.tap()
+                            withAnimation(.easeOut(duration: 0.25)) { opening = item }
+                        } else {
+                            withAnimation(.snappy) { _ = opened.insert(item.id) }
+                            Haptics.success()
+                        }
                     }
                 }
             }
@@ -442,6 +455,16 @@ struct CompetitionResultsView: View {
                 .buttonStyle(SecondaryButtonStyle())
             }
         }
+        .onAppear {
+            if summary.rewards.contains(where: { $0.rarity == "common" }) { ChestOpening3DView.prewarm() }
+        }
+    }
+
+    /// Closes the 3D opening and shows the item in its cell.
+    private func collect(_ item: InventoryItem) {
+        withAnimation(.easeOut(duration: 0.3)) { opening = nil }
+        withAnimation(.snappy) { _ = opened.insert(item.id) }
+        Haptics.success()
     }
 
     // MARK: 5. Next competition
@@ -483,6 +506,51 @@ struct CompetitionResultsView: View {
                 }
             }
         }
+    }
+}
+
+/// Full screen: the common chest opens in 3D, then what was inside rises into view.
+private struct ChestOpeningOverlay: View {
+    let item: InventoryItem
+    let onCollect: () -> Void
+
+    @State private var revealed = false
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            ChestOpening3DView {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { revealed = true }
+            }
+            .ignoresSafeArea()
+
+            if revealed {
+                VStack(spacing: DS.Spacing.m) {
+                    Image(systemName: PowerSymbol.name(item.itemId))
+                        .font(.system(size: 44, weight: .regular))
+                        .foregroundStyle(Rarity.color(item.rarity))
+                        .frame(width: 92, height: 92)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .shadow(color: Color.orange.opacity(0.45), radius: 26)
+                    Text(item.name)
+                        .font(.title2.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                    RarityPill(rarity: item.rarity)
+                    if let scope = item.definition?.scopeLabel {
+                        Text(scope)
+                            .font(Font.meta)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Recoger", action: onCollect)
+                        .buttonStyle(PrimaryButtonStyle())
+                        .padding(.top, DS.Spacing.s)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, DS.Spacing.screen)
+                .padding(.bottom, DS.Spacing.xxl)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .environment(\.colorScheme, .dark)
     }
 }
 
