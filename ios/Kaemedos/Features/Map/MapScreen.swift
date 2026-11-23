@@ -577,14 +577,15 @@ struct MapScreen: View {
             router.showPowers = true
         } label: {
             // Just the chest, as big as a control, with no circle behind
-            PowersIcon(size: DS.Size.mapControl + 4, glow: available > 0, lineWidth: 2)
+            PowersIcon(size: DS.Size.mapControl, glow: available > 0, lineWidth: 2)
                 .foregroundStyle(Color.primary)
                 .frame(width: DS.Size.mapControl, height: DS.Size.mapControl)
                 .contentShape(Rectangle())
-                .overlay(alignment: .topTrailing) {
+                // The count sits on the chest's bottom corner
+                .overlay(alignment: .bottomTrailing) {
                     if available > 0 {
-                        CountBadge(count: available)
-                            .offset(x: -2, y: 2)
+                        PowersCountBadge(count: available)
+                            .offset(x: 3, y: 1)
                     }
                 }
         }

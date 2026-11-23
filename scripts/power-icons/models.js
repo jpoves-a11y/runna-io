@@ -757,21 +757,7 @@ export const MODELS = {
     hinge.rotation.x = -1.85;
     g.add(hinge);
 
-    // Light pouring out
-    const beamTex = canvasTexture((ctx, n) => {
-      const grd = ctx.createLinearGradient(0, n, 0, 0);
-      grd.addColorStop(0, 'rgba(40,255,80,0.55)');
-      grd.addColorStop(1, 'rgba(40,255,80,0)');
-      ctx.fillStyle = grd;
-      ctx.fillRect(0, 0, n, n);
-    });
-    g.add(mesh(new THREE.CylinderGeometry(0.95, 0.62, 1.0, 40, 1, true), new THREE.MeshBasicMaterial({ map: beamTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }), { pos: [0, 0.55, 0], scale: [1.1, 1, 0.75] }));
-    [[0.35, 0.75, 0.2, 0.12], [-0.45, 0.95, 0.1, 0.1], [0.05, 1.15, 0.0, 0.08], [0.7, 0.4, 0.3, 0.07]].forEach(([x, y, z, k]) => {
-      const sp = spark(0x8dff9a, k);
-      sp.position.set(x, y, z);
-      g.add(sp);
-    });
-
+    // (The beam of light and the motes are animated in the app: PowersIcon)
     g.rotation.set(0.42, -0.55, 0);
     return g;
   },
