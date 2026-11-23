@@ -59,7 +59,7 @@ struct HomeSummaryWidget: Widget {
         StaticConfiguration(kind: "KaemedosSummary", provider: SummaryProvider()) { entry in
             HomeSummaryView(entry: entry)
                 .containerBackground(for: .widget) { Color(uiColor: .systemBackground) }
-                .widgetURL(URL(string: "kaemedos://tab/map"))
+                .widgetURL(URL(string: "runnaio://tab/map"))
         }
         .configurationDisplayName("Tu territorio")
         .description("Tu área, tu puesto en tu ciudad y si alguien te ha robado.")

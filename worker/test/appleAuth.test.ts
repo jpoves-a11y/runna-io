@@ -12,7 +12,7 @@ async function setup() {
     ['sign', 'verify'],
   );
   const jwk = await crypto.subtle.exportKey('jwk', keys.publicKey) as JsonWebKey;
-  const env = { APPLE_JWKS_JSON: JSON.stringify({ keys: [{ ...jwk, kid: 'test-kid', alg: 'RS256', use: 'sig' }] }), APNS_BUNDLE_ID: 'com.jpoves.kaemedos' };
+  const env = { APPLE_JWKS_JSON: JSON.stringify({ keys: [{ ...jwk, kid: 'test-kid', alg: 'RS256', use: 'sig' }] }), APNS_BUNDLE_ID: 'com.jpoves.runnaio' };
   async function sign(claims: Record<string, unknown>, kid = 'test-kid') {
     const head = b64url(JSON.stringify({ alg: 'RS256', kid }));
     const body = b64url(JSON.stringify(claims));
@@ -25,7 +25,7 @@ async function setup() {
 const now = Math.floor(Date.now() / 1000);
 const nonce = 'raw-nonce-123';
 const hashedNonce = createHash('sha256').update(nonce).digest('hex');
-const base = { iss: 'https://appleid.apple.com', aud: 'com.jpoves.kaemedos', exp: now + 600, iat: now, sub: '001234.abcd', nonce: hashedNonce };
+const base = { iss: 'https://appleid.apple.com', aud: 'com.jpoves.runnaio', exp: now + 600, iat: now, sub: '001234.abcd', nonce: hashedNonce };
 
 test('accepts a valid token and reads the email claims', async () => {
   const { env, sign } = await setup();

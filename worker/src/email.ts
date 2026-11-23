@@ -9,7 +9,7 @@ import {
 type EmailProvider = 'resend' | 'sendgrid' | 'gmail';
 
 // Public URL of the Worker: email buttons open its /open landing page, which launches the iOS app
-// (email clients don't reliably open custom URL schemes such as kaemedos://).
+// (email clients don't reliably open custom URL schemes such as runnaio://).
 export const DEFAULT_WORKER_URL = 'https://api.kaemedos.workers.dev';
 
 /** Support address: Reply-To of every email and the footer's "Soporte". */

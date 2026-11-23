@@ -6,7 +6,7 @@ import WidgetKit
 @available(iOS 18.0, *)
 struct StartRunControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
-        StaticControlConfiguration(kind: "com.jpoves.kaemedos.StartRun") {
+        StaticControlConfiguration(kind: "com.jpoves.runnaio.StartRun") {
             ControlWidgetButton(action: StartRunIntent()) {
                 Label("Correr", systemImage: "figure.run")
             }

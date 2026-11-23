@@ -51,7 +51,7 @@ const env = {
   APNS_KEY_ID: 'TESTKEY123',
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-  APNS_BUNDLE_ID: 'com.jpoves.kaemedos.app',
+  APNS_BUNDLE_ID: 'com.jpoves.runnaio.app',
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
 const ctx = { waitUntil: (p) => { pending.push(Promise.resolve(p)); }, passThroughOnException() {} };

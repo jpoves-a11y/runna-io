@@ -1,6 +1,6 @@
 # KM2 (KAEMEDOS)
 
-Se escribe KM2 y se pronuncia «kaemedos». App iOS `com.jpoves.kaemedos`, enlaces `kaemedos://` y API en `https://api.kaemedos.workers.dev`.
+Se escribe KM2 y se pronuncia «kaemedos». API en `https://api.kaemedos.workers.dev`. Lo que no ve el público conserva el nombre antiguo: bundle `com.jpoves.runnaio`, enlaces `runnaio://`.
 
 Corre y conquista el mapa. KM2 tiene dos modos a la vez:
 
@@ -288,8 +288,8 @@ node scripts/e2e/garmin-test.mjs
 | `/privacy` | Política de privacidad (URL para App Store Connect) |
 | `/terms` | Condiciones de uso |
 | `/support` | Soporte (URL para App Store Connect) |
-| `/invite/<token>` | Enlace de invitación de amistad: abre `kaemedos://friends/accept/<token>` en la app |
-| `/club-invite/<token>` | Enlace de invitación a un club: abre `kaemedos://clubs/join/<token>` en la app |
+| `/invite/<token>` | Enlace de invitación de amistad: abre `runnaio://friends/accept/<token>` en la app |
+| `/club-invite/<token>` | Enlace de invitación a un club: abre `runnaio://clubs/join/<token>` en la app |
 | `/open?tab=<map\|rankings\|activity\|club\|friends\|profile>` | Abre la app en una pestaña (lo usan los botones de los emails) |
 | `/.well-known/apple-app-site-association` | Enlaces universales: `/invite/*`, `/club-invite/*` y `/open` abren la app si está instalada (`appIDs` sale de `APNS_TEAM_ID`) |
 | `/admin` | Panel de administración: denuncias y estadísticas ([ver abajo](#panel-de-administración)) |

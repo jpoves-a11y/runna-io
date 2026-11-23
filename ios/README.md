@@ -51,9 +51,9 @@ App nativa en SwiftUI (iOS 17 o superior). Es el único cliente de KM2: habla co
 1. Descarga el repositorio y abre `ios/Kaemedos.xcodeproj` con Xcode 16 o superior.
 2. Selecciona el target **Kaemedos** → pestaña **Signing & Capabilities**:
    - En **Team** elige tu equipo de Apple Developer.
-   - Cambia **Bundle Identifier** si quieres (ahora es `com.jpoves.kaemedos`). Tiene que ser único en tu cuenta.
+   - Cambia **Bundle Identifier** si quieres (ahora es `com.jpoves.runnaio`). Tiene que ser único en tu cuenta.
    - Xcode creará el App ID con las capacidades que ya trae el proyecto: Push Notifications, HealthKit y Background Modes (Location updates).
-   - Haz lo mismo con el target **KaemedosLive** (la extensión de la Live Activity): mismo Team. Su Bundle Identifier tiene que ser el de la app seguido de `.KaemedosLive` (ahora `com.jpoves.kaemedos.KaemedosLive`).
+   - Haz lo mismo con el target **KaemedosLive** (la extensión de la Live Activity): mismo Team. Su Bundle Identifier tiene que ser el de la app seguido de `.KaemedosLive` (ahora `com.jpoves.runnaio.RunnaLive`).
 3. Elige tu iPhone y pulsa ▶︎.
 
 La app habla con la API de producción (`AppConfig.apiBaseURL` en `Kaemedos/Core/AppConfig.swift`).
@@ -68,10 +68,10 @@ Para probarla en el simulador contra una API local con datos de prueba (ver el [
 
 Una sola vez:
 
-1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.kaemedos`, con **HealthKit**, **Push Notifications**, **Sign in with Apple**, **Associated Domains** y **WeatherKit**. Si el identificador ya existe, ábrelo y marca las que falten (las tres últimas son nuevas) y guarda.
+1. [developer.apple.com → Identifiers](https://developer.apple.com/account/resources/identifiers/list) → **+** → App IDs → `com.jpoves.runnaio`, con **HealthKit**, **Push Notifications**, **Sign in with Apple**, **Associated Domains** y **WeatherKit**. Si el identificador ya existe, ábrelo y marca las que falten (las tres últimas son nuevas) y guarda.
    - Al marcar **Sign in with Apple** → **Configure** → **Server-to-Server Notification Endpoint**: `https://api.kaemedos.workers.dev/api/auth/apple/notifications`. Apple avisa ahí cuando alguien deja de usar Iniciar sesión con Apple con la app (se cierran sus sesiones) o borra su Apple ID (se borra su cuenta si solo entraba con Apple).
-   - Para que el servidor pueda desvincular la app del Apple ID al borrar una cuenta: developer.apple.com → Keys → **+** → marca **Sign in with Apple** (configúrala con el App ID `com.jpoves.kaemedos`), descarga el `.p8` y guárdalo en el Worker con `npx wrangler secret put APPLE_SIGNIN_KEY_ID -c wrangler.worker.toml` y `APPLE_SIGNIN_PRIVATE_KEY` (el contenido completo del `.p8`).
-   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.kaemedos.KaemedosLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.kaemedos.KaemedosLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
+   - Para que el servidor pueda desvincular la app del Apple ID al borrar una cuenta: developer.apple.com → Keys → **+** → marca **Sign in with Apple** (configúrala con el App ID `com.jpoves.runnaio`), descarga el `.p8` y guárdalo en el Worker con `npx wrangler secret put APPLE_SIGNIN_KEY_ID -c wrangler.worker.toml` y `APPLE_SIGNIN_PRIVATE_KEY` (el contenido completo del `.p8`).
+   - La extensión de la Live Activity usa su propio identificador, `com.jpoves.runnaio.RunnaLive`. El workflow lo crea solo (Xcode registra los identificadores que faltan con `-allowProvisioningUpdates` y la clave de API). Si prefieres crearlo a mano: **+** → App IDs → App → `com.jpoves.runnaio.RunnaLive`, sin marcar ninguna capacidad. No hace falta crear otra app en App Store Connect: va dentro de la app.
 2. [App Store Connect](https://appstoreconnect.apple.com) → Apps → **+** → Nueva app con ese Bundle ID (nombre único: "Kaemedos" ya existe).
 3. App Store Connect → Usuarios y acceso → Integraciones → **App Store Connect API** → nueva clave con rol **Admin**. Descarga el `.p8` (solo se puede una vez) y apunta **Key ID** e **Issuer ID**.
 4. Tu **Team ID**: developer.apple.com → Membership.
@@ -126,7 +126,7 @@ Mientras grabas una carrera, la app muestra una Live Activity con el tiempo (cue
 
 **Strava está oculto en la app** hasta que Strava apruebe la integración (mientras tanto su API solo admite al atleta del desarrollador). Para mostrarlo, pon `AppConfig.stravaEnabled = true` en `Kaemedos/Core/AppConfig.swift`. Quien ya lo tenga conectado sigue viendo la fila para poder desconectarlo. El servidor no cambia: las importaciones de cuentas ya conectadas siguen funcionando.
 
-La app abre el login de Strava/Polar en una ventana segura del sistema. Al terminar, el servidor la devuelve a la app con `kaemedos://oauth/...`. No hace falta cambiar nada en Strava ni en Polar: la URL de callback sigue siendo la del Worker.
+La app abre el login de Strava/Polar en una ventana segura del sistema. Al terminar, el servidor la devuelve a la app con `runnaio://oauth/...`. No hace falta cambiar nada en Strava ni en Polar: la URL de callback sigue siendo la del Worker.
 
 ## Revisión de Apple: notas útiles
 
@@ -156,4 +156,4 @@ La app abre el login de Strava/Polar en una ventana segura del sistema. Al termi
 - La abre en el simulador con una API local llena de datos de prueba (`scripts/e2e/`).
 - Hace una captura de cada pestaña, del chat del club, del inventario y de la ventana de fin de competición (páginas del club, logros y cofres).
 
-Las capturas se descargan desde la ejecución, en "Artifacts", y también se publican en la rama `ci-screenshots`. En las pruebas, la ventana de fin de competición solo se abre con su enlace de depuración `kaemedos://season/results`, para no tapar el resto de capturas.
+Las capturas se descargan desde la ejecución, en "Artifacts", y también se publican en la rama `ci-screenshots`. En las pruebas, la ventana de fin de competición solo se abre con su enlace de depuración `runnaio://season/results`, para no tapar el resto de capturas.

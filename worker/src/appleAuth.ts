@@ -15,7 +15,7 @@ const APPLE_ISSUER = 'https://appleid.apple.com';
 const APPLE_KEYS_URL = 'https://appleid.apple.com/auth/keys';
 const APPLE_TOKEN_URL = 'https://appleid.apple.com/auth/token';
 const APPLE_REVOKE_URL = 'https://appleid.apple.com/auth/revoke';
-const DEFAULT_BUNDLE_ID = 'com.jpoves.kaemedos';
+const DEFAULT_BUNDLE_ID = 'com.jpoves.runnaio';
 
 export interface AppleEnv {
   APPLE_BUNDLE_ID?: string;

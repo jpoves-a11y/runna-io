@@ -460,7 +460,7 @@ struct FriendsView: View {
         }
     }
 
-    /// An invite link was opened (kaemedos://friends/accept/<token>): ask before accepting it.
+    /// An invite link was opened (runnaio://friends/accept/<token>): ask before accepting it.
     private func takePendingInvite() {
         guard let token = router.pendingInviteToken else { return }
         router.pendingInviteToken = nil

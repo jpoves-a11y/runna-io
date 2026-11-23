@@ -136,7 +136,7 @@ jobs:
           # Relaunch on each screen (simctl openurl would show an "Open in app?" prompt)
           shoot() {
             xcrun simctl terminate "$DEVICE" "$BUNDLE_ID" || true
-            SIMCTL_CHILD_KAEMEDOS_TEST_DEEP_LINK="kaemedos://$1" xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
+            SIMCTL_CHILD_KAEMEDOS_TEST_DEEP_LINK="runnaio://$1" xcrun simctl launch "$DEVICE" "$BUNDLE_ID"
             sleep 12
             xcrun simctl io "$DEVICE" screenshot "screenshot-$2.png"
           }

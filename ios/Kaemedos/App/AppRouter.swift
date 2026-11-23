@@ -23,9 +23,9 @@ final class AppRouter {
     var selectedTab: Tab = .map
     var activitySection: ActivitySection = .feed
     var clubSection: ClubSection = .club
-    /// Club invite opened from a kaemedos://clubs/join/<token> link, shown once logged in.
+    /// Club invite opened from a runnaio://clubs/join/<token> link, shown once logged in.
     var pendingClubInviteToken: String?
-    /// Friend invite opened from a kaemedos://friends/accept/<token> link, accepted once logged in.
+    /// Friend invite opened from a runnaio://friends/accept/<token> link, accepted once logged in.
     var pendingInviteToken: String?
     /// Bumped when something changed elsewhere (e.g. a notification arrived) so screens reload.
     var reloadSignal = 0
@@ -46,7 +46,7 @@ final class AppRouter {
 
     func handle(url: URL) {
         // Universal links (https://<API host>/invite/…, /club-invite/…, /open?tab=…) open the app
-        // directly when it's installed: the same as the kaemedos:// link of each page
+        // directly when it's installed: the same as the runnaio:// link of each page
         if url.scheme == "https" || url.scheme == "http" {
             if let appLink = Self.appLink(forWeb: url) { handle(url: appLink) }
             return
@@ -55,23 +55,23 @@ final class AppRouter {
         let parts = url.pathComponents.filter { $0 != "/" }
         switch url.host {
         case "run":
-            // kaemedos://run/start (widgets, shortcuts): opens the run screen and starts recording
+            // runnaio://run/start (widgets, shortcuts): opens the run screen and starts recording
             if parts.first == "start" { StartRunRequest.post(source: "link") }
         case "friends":
-            // kaemedos://friends/accept/<token>
+            // runnaio://friends/accept/<token>
             if parts.count >= 2, parts[0] == "accept" {
                 pendingInviteToken = parts[1]
                 showFriends()
             }
         case "clubs":
-            // kaemedos://clubs/join/<token>
+            // runnaio://clubs/join/<token>
             if parts.count >= 2, parts[0] == "join" {
                 pendingClubInviteToken = parts[1]
                 clubSection = .club
                 selectedTab = .club
             }
         case "tab":
-            // kaemedos://tab/<map|rankings|activity|club|friends|profile>[/mine|feed|friends|chat]
+            // runnaio://tab/<map|rankings|activity|club|friends|profile>[/mine|feed|friends|chat]
             switch parts.first {
             case "rankings": selectedTab = .rankings
             case "activity": selectedTab = .activity
@@ -82,7 +82,7 @@ final class AppRouter {
             case "profile": showProfile = true
             default: selectedTab = .map
             }
-            // kaemedos://tab/map/<global|competition>
+            // runnaio://tab/map/<global|competition>
             if parts.count >= 2, parts.first == "map", let mode = MapMode(rawValue: parts[1]) {
                 MapModel.shared.mode = mode
             }
@@ -91,29 +91,29 @@ final class AppRouter {
             }
         #if DEBUG
         case "powers":
-            // kaemedos://powers (e2e screenshots)
+            // runnaio://powers (e2e screenshots)
             selectedTab = .map
             showPowers = true
         case "weekly-summary":
-            // kaemedos://weekly-summary (e2e screenshots)
+            // runnaio://weekly-summary (e2e screenshots)
             selectedTab = .rankings
             showWeeklySummary = true
         case "season":
-            // kaemedos://season/results (e2e screenshots): the pending end-of-competition summary pops
+            // runnaio://season/results (e2e screenshots): the pending end-of-competition summary pops
             // up (SeasonResultsInbox only does so in tests when launched with this link)
             if parts.first == "results" {
                 selectedTab = .club
             }
         case "weather":
-            // kaemedos://weather/<rain|snow|fog> (e2e screenshots)
+            // runnaio://weather/<rain|snow|fog> (e2e screenshots)
             weatherDemo = parts.first ?? "rain"
         case "clubform":
-            // kaemedos://clubform (e2e screenshots)
+            // runnaio://clubform (e2e screenshots)
             selectedTab = .club
             showClubFormDemo = true
         #endif
         case "oauth":
-            // kaemedos://oauth/<provider>?... (normally handled by the web authentication session)
+            // runnaio://oauth/<provider>?... (normally handled by the web authentication session)
             showProfile = true
             reloadSignal += 1
         default:
@@ -124,7 +124,7 @@ final class AppRouter {
     /// Domains whose links open the app (com.apple.developer.associated-domains in the entitlements).
     static let universalLinkHosts: Set<String> = [AppConfig.apiBaseURL.host ?? "", "api.kaemedos.workers.dev"]
 
-    /// The kaemedos:// link of a web page of the Worker (pages.ts), or nil when it isn't one.
+    /// The runnaio:// link of a web page of the Worker (pages.ts), or nil when it isn't one.
     static func appLink(forWeb url: URL) -> URL? {
         guard let host = url.host, universalLinkHosts.contains(host) else { return nil }
         let parts = url.pathComponents.filter { $0 != "/" }

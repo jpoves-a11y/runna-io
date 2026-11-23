@@ -4,7 +4,7 @@ import UIKit
 
 // MARK: - The weather on the glass, on its own (e2e screenshots)
 
-/// Which weather the preview shows (kaemedos://weather/<rain|snow|fog>).
+/// Which weather the preview shows (runnaio://weather/<rain|snow|fog>).
 struct WeatherDemoKind: Identifiable {
     let id: String
 }

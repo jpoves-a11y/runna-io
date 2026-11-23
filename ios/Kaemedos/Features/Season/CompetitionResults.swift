@@ -27,7 +27,7 @@ final class SeasonResultsInbox {
     static var autoPopupDisabledForTests: Bool {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
-        return environment["KAEMEDOS_TEST_TOKEN"] != nil && !(environment["KAEMEDOS_TEST_DEEP_LINK"] ?? "").hasPrefix("kaemedos://season/results")
+        return environment["KAEMEDOS_TEST_TOKEN"] != nil && !(environment["KAEMEDOS_TEST_DEEP_LINK"] ?? "").hasPrefix("runnaio://season/results")
         #else
         return false
         #endif
@@ -170,10 +170,10 @@ struct CompetitionResultsView: View {
         .onAppear(perform: openTestPage)
     }
 
-    /// CI screenshots: kaemedos://season/results/<awards|rewards|mine> opens on that page.
+    /// CI screenshots: runnaio://season/results/<awards|rewards|mine> opens on that page.
     private func openTestPage() {
         #if DEBUG
-        guard let link = ProcessInfo.processInfo.environment["KAEMEDOS_TEST_DEEP_LINK"], link.hasPrefix("kaemedos://season/results/") else { return }
+        guard let link = ProcessInfo.processInfo.environment["KAEMEDOS_TEST_DEEP_LINK"], link.hasPrefix("runnaio://season/results/") else { return }
         var wanted: Page?
         switch String(link.split(separator: "/").last ?? "") {
         case "awards": wanted = .awards

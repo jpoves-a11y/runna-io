@@ -1521,7 +1521,7 @@ struct ClubInviteSheet: View {
     }
 }
 
-/// A club invite link opened in the app (kaemedos://clubs/join/<token>): shows the club and joins it.
+/// A club invite link opened in the app (runnaio://clubs/join/<token>): shows the club and joins it.
 struct ClubJoinConfirmationSheet: View {
     let token: String
     @Environment(\.dismiss) private var dismiss

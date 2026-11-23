@@ -21,7 +21,7 @@ struct MentionCandidate: Identifiable, Hashable {
 /// notification to friends whose name or username matches the mention.
 enum Mentions {
     /// Links inside comment text use this scheme; views turn a tap into opening that profile.
-    static let urlScheme = "kaemedos-mention"
+    static let urlScheme = "runnaio-mention"
 
     private static let mentionRegex: NSRegularExpression? =
         try? NSRegularExpression(pattern: "@([\\w\\u00C0-\\u024F]+(?:\\s[\\w\\u00C0-\\u024F]+)?)")

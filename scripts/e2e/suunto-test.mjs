@@ -216,7 +216,7 @@ const baseEnv = {
   APNS_KEY_ID: 'TESTKEY123',
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-  APNS_BUNDLE_ID: 'com.jpoves.kaemedos.app',
+  APNS_BUNDLE_ID: 'com.jpoves.runnaio.app',
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
 const env = { ...baseEnv, SUUNTO_CLIENT_ID: CLIENT_ID, SUUNTO_CLIENT_SECRET: CLIENT_SECRET, SUUNTO_SUBSCRIPTION_KEY: SUBSCRIPTION_KEY, SUUNTO_WEBHOOK_SECRET: WEBHOOK_SECRET };
@@ -299,11 +299,11 @@ const state = authUrl.searchParams.get('state');
 const forged = await call('GET', `/api/suunto/callback?code=good-code&state=${encodeURIComponent(state.slice(0, -2) + 'xx')}`);
 check('callback with forged state: invalid_state', forged.status === 302 && forged.location.includes('suunto_error=invalid_state'), forged.location);
 const denied = await call('GET', `/api/suunto/callback?error=access_denied&state=${encodeURIComponent(state)}`);
-check('callback denied (app flow): kaemedos://oauth/suunto?suunto_error=denied', denied.location === 'kaemedos://oauth/suunto?suunto_error=denied', denied.location);
+check('callback denied (app flow): runnaio://oauth/suunto?suunto_error=denied', denied.location === 'runnaio://oauth/suunto?suunto_error=denied', denied.location);
 const badCode = await call('GET', `/api/suunto/callback?code=bad-code&state=${encodeURIComponent(state)}`);
 check('callback with rejected code: token_exchange', badCode.location?.includes('suunto_error=token_exchange'), badCode.location);
 const callback = await call('GET', `/api/suunto/callback?code=good-code&state=${encodeURIComponent(state)}`);
-check('callback success redirects to the app', callback.status === 302 && callback.location === 'kaemedos://oauth/suunto?suunto_connected=true', callback);
+check('callback success redirects to the app', callback.status === 302 && callback.location === 'runnaio://oauth/suunto?suunto_connected=true', callback);
 const account = await one('select * from suunto_accounts where user_id = ?', [user.id]);
 check('account stored with Suunto username from the JWT', account?.suunto_username === SUUNTO_USER && account.access_token === currentAccessToken && account.refresh_token === 'refresh-1' && Date.parse(account.expires_at) > Date.now() + 23 * 3600 * 1000, account);
 const tokenCall = calls.token.at(-1);

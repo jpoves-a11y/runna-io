@@ -37,7 +37,7 @@ const b64url = (data) => Buffer.from(data).toString('base64url');
 async function appleToken(claims) {
   const head = b64url(JSON.stringify({ alg: 'RS256', kid: 'e2e' }));
   const body = b64url(JSON.stringify({
-    iss: 'https://appleid.apple.com', aud: 'com.jpoves.kaemedos', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, ...claims,
+    iss: 'https://appleid.apple.com', aud: 'com.jpoves.runnaio', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, ...claims,
   }));
   const signature = await webcrypto.subtle.sign('RSASSA-PKCS1-v1_5', appleKeys.privateKey, new TextEncoder().encode(`${head}.${body}`));
   return `${head}.${body}.${b64url(new Uint8Array(signature))}`;
@@ -57,7 +57,7 @@ const env = {
   APNS_KEY_ID: 'TESTKEY123',
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-  APNS_BUNDLE_ID: 'com.jpoves.kaemedos',
+  APNS_BUNDLE_ID: 'com.jpoves.runnaio',
   APPLE_JWKS_JSON: JSON.stringify({ keys: [{ ...appleJwk, kid: 'e2e', alg: 'RS256', use: 'sig' }] }),
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
@@ -271,7 +271,7 @@ if (inventory) check('the gift is in the inventory', Number(inventory.n) === 1, 
 
 // ---------- 5. apple-app-site-association ----------
 res = await call('GET', '/.well-known/apple-app-site-association');
-check('AASA lists the app and the paths', res.status === 200 && res.data.applinks.details[0].appIDs[0] === 'TEAM123456.com.jpoves.kaemedos'
+check('AASA lists the app and the paths', res.status === 200 && res.data.applinks.details[0].appIDs[0] === 'TEAM123456.com.jpoves.runnaio'
   && res.data.applinks.details[0].components.some((c) => c['/'] === '/invite/*'), res.data);
 
 // ---------- 6. Admin panel: reports, suspension, stats ----------

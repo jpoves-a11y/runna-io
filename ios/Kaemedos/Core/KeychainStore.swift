@@ -3,7 +3,7 @@ import Security
 
 /// Small wrapper around the keychain for the session token.
 enum KeychainStore {
-    private static let service = "com.jpoves.kaemedos.session"
+    private static let service = "io.runna.session"
 
     static func set(_ value: String, for key: String) {
         let data = Data(value.utf8)

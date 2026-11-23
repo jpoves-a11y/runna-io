@@ -6,7 +6,7 @@ import type { AppEnv } from './auth';
 
 const DEFAULT_WORKER_URL = 'https://api.kaemedos.workers.dev';
 const CONTACT_EMAIL = 'kaeme2.support@gmail.com';
-const APP_SCHEME = 'kaemedos';
+const APP_SCHEME = 'runnaio';
 const APP_TABS = ['map', 'rankings', 'activity', 'club', 'friends', 'profile'] as const;
 
 /** Public base URL of this Worker: env WORKER_URL, else the request origin. No trailing slash. */
@@ -562,7 +562,7 @@ ${FOOTER}`), 404);
     }));
   });
 
-  // Club invite link (see /api/clubs/:id/invites): opens kaemedos://clubs/join/<token>
+  // Club invite link (see /api/clubs/:id/invites): opens runnaio://clubs/join/<token>
   app.get('/club-invite/:token', (c) => {
     const token = c.req.param('token');
     if (!TOKEN_PATTERN.test(token)) {
@@ -587,7 +587,7 @@ ${FOOTER}`), 404);
   // the fallback). appIDs = <team id>.<bundle id>; the app lists this domain in its associated domains.
   app.get('/.well-known/apple-app-site-association', (c) => {
     const team = (c.env?.APPLE_TEAM_ID || c.env?.APNS_TEAM_ID || '').trim();
-    const bundle = (c.env?.APPLE_BUNDLE_ID || c.env?.APNS_BUNDLE_ID || 'com.jpoves.kaemedos').trim();
+    const bundle = (c.env?.APPLE_BUNDLE_ID || c.env?.APNS_BUNDLE_ID || 'com.jpoves.runnaio').trim();
     const appIDs = team ? [`${team}.${bundle}`] : [];
     c.header('Cache-Control', 'public, max-age=3600');
     return c.json({

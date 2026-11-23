@@ -4124,7 +4124,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const userId = c.get('authUserId');
 
       const invite = await storage.createFriendInvite(userId);
-      // Landing page served by this Worker (pages.ts) that opens kaemedos://friends/accept/<token>
+      // Landing page served by this Worker (pages.ts) that opens runnaio://friends/accept/<token>
       const inviteUrl = `${publicBaseUrl(c)}/invite/${invite.token}`;
       
       return c.json({ token: invite.token, url: inviteUrl });

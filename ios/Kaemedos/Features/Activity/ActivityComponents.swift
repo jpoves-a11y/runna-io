@@ -153,7 +153,7 @@ enum ActivityMapSnapshots {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
-    private static let ioQueue = DispatchQueue(label: "com.jpoves.kaemedos.route-snapshots", qos: .utility)
+    private static let ioQueue = DispatchQueue(label: "io.runna.route-snapshots", qos: .utility)
 
     static func cached(_ key: String) -> UIImage? {
         cache.object(forKey: key as NSString)

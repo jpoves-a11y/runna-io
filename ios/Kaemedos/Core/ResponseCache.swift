@@ -31,7 +31,7 @@ final class ResponseCache {
     /// Number of mutations seen (see `mutationCount`).
     private var mutations = 0
     private let directory: URL?
-    private let ioQueue = DispatchQueue(label: "com.jpoves.kaemedos.response-cache", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "io.runna.response-cache", qos: .utility)
     /// Bodies larger than this are kept in memory only.
     private let maxDiskBytes = 6 * 1024 * 1024
     /// Bodies larger than this are not cached at all.

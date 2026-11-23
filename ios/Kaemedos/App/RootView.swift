@@ -118,7 +118,7 @@ struct MainTabView: View {
         .seasonResultsInbox()
         // My club (and its unread chat messages) on launch and whenever something changes
         .task(id: router.reloadSignal) { await clubModel.load() }
-        // "Empezar una carrera" (Siri, Shortcuts, Control Center, kaemedos://run/start)
+        // "Empezar una carrera" (Siri, Shortcuts, Control Center, runnaio://run/start)
         .onAppear {
             openRunIfRequested()
             Analytics.track("app_open")

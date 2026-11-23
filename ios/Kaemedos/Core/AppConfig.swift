@@ -13,7 +13,7 @@ enum AppConfig {
     }()
 
     /// Custom URL scheme registered in Info.plist (OAuth returns and friend invites).
-    static let urlScheme = "kaemedos"
+    static let urlScheme = "runnaio"
 
     /// Privacy policy, terms and support pages, served as static HTML by the Worker.
     static var privacyURL: URL { apiBaseURL.appendingPathComponent("privacy") }

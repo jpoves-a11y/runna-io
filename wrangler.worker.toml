@@ -43,7 +43,7 @@ RESEND_FROM = "onboarding@resend.dev"
 # wrangler secret put APNS_KEY_ID -c wrangler.worker.toml       # Key ID of the .p8 APNs key
 # wrangler secret put APNS_TEAM_ID -c wrangler.worker.toml      # Apple Developer Team ID
 # wrangler secret put APNS_PRIVATE_KEY -c wrangler.worker.toml  # full contents of AuthKey_XXXX.p8
-# wrangler secret put APNS_BUNDLE_ID -c wrangler.worker.toml    # com.jpoves.kaemedos
+# wrangler secret put APNS_BUNDLE_ID -c wrangler.worker.toml    # com.jpoves.runnaio
 #
 # ===== Polar instant sync (webhook) =====
 # 1. curl -X POST -H "Authorization: Bearer $UPSTASH_CRON_SECRET" <worker>/api/admin/polar/webhook/register
