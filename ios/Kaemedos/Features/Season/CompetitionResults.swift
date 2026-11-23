@@ -119,7 +119,7 @@ struct CompetitionResultsView: View {
     @Environment(SessionStore.self) private var session
     @State private var page = 0
     @State private var opened: Set<String> = []
-    /// The chest being opened in 3D, over everything.
+    /// The chest being opened, over everything.
     @State private var opening: InventoryItem?
 
     private enum Page: Hashable { case club, mine, awards, rewards, next }
@@ -451,11 +451,11 @@ struct CompetitionResultsView: View {
             }
         }
         .onAppear {
-            if !summary.rewards.isEmpty { ChestOpening3DView.prewarm() }
+            if !summary.rewards.isEmpty { ChestOpeningView.prewarm() }
         }
     }
 
-    /// Closes the 3D opening and shows the item in its cell.
+    /// Closes the opening and shows the item in its cell.
     private func collect(_ item: InventoryItem) {
         withAnimation(.easeOut(duration: 0.3)) { opening = nil }
         withAnimation(.snappy) { _ = opened.insert(item.id) }
@@ -503,7 +503,7 @@ struct CompetitionResultsView: View {
     }
 }
 
-/// Full screen: the chest opens in 3D, then what was inside rises into view.
+/// Full screen: the chest opens, then what was inside rises into view.
 private struct ChestOpeningOverlay: View {
     let item: InventoryItem
     let onCollect: () -> Void
@@ -512,7 +512,7 @@ private struct ChestOpeningOverlay: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ChestOpening3DView(rarity: item.rarity) {
+            ChestOpeningView(rarity: item.rarity) {
                 withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { revealed = true }
             }
             .ignoresSafeArea()
