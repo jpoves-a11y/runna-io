@@ -600,7 +600,8 @@ struct RouteReplayView: View {
     var activity: ReplayActivity?
 
     @AppStorage("routeReplayMode") private var modeRaw = RouteReplayMode.threeD.rawValue
-    @AppStorage("routeReplaySatellite") private var satellite = true
+    /// Always satellite when it opens; switching to the map lasts while it is open
+    @State private var satellite = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 

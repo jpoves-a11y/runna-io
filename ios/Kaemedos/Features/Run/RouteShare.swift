@@ -420,7 +420,8 @@ struct RouteShareEditor: View {
         self.activity = activity
         _config = State(initialValue: RouteReplayConfig(
             mode: RouteReplayMode(rawValue: UserDefaults.standard.string(forKey: "routeReplayMode") ?? "") ?? .threeD,
-            satellite: UserDefaults.standard.object(forKey: "routeReplaySatellite") as? Bool ?? true,
+            // Always satellite to start with
+            satellite: true,
             speed: 1
         ))
         _options = State(initialValue: RouteShareOptions(title: title, date: date, area: area))
