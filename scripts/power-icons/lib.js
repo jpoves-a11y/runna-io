@@ -9,6 +9,8 @@ export const RARITY = {
   rare: { metal: 0xc4ccd6, light: 0x9cc8ff, glow: 0x7fb6ff },
   epic: { metal: 0xf2b43a, light: 0xffc860, glow: 0xb07cff },
   legendary: { metal: 0x7fd4ff, light: 0x6fd0ff, glow: 0x4fc3ff },
+  // The Poderes emblem itself: the brand green
+  brand: { metal: 0xf2b43a, light: 0x5cff6e, glow: 0x00ff1e },
 };
 
 export function metal(color, roughness = 0.28) {

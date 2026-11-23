@@ -629,6 +629,24 @@ export const MODELS = {
     return g;
   },
 
+  // The Poderes button: a green power crystal with a golden bolt
+  powers_icon: (r) => {
+    const green = new THREE.MeshPhysicalMaterial({
+      color: 0x00b51a, metalness: 0.1, roughness: 0.06, transmission: 0.1, thickness: 0.8, ior: 2.1,
+      clearcoat: 1, clearcoatRoughness: 0.02, emissive: 0x00a816, emissiveIntensity: 0.45, flatShading: true,
+    });
+    const crystal = new THREE.Group();
+    crystal.add(mesh(cyl(0.62, 0.62, 0.9, 6), green));
+    crystal.add(mesh(new THREE.ConeGeometry(0.62, 0.55, 6), green, { pos: [0, 0.72, 0] }));
+    crystal.add(mesh(new THREE.ConeGeometry(0.62, 0.7, 6), green, { pos: [0, -0.8, 0], rot: [PI, 0, 0] }));
+    crystal.rotation.y = PI / 6;
+    crystal.scale.set(1.05, 1.15, 0.8);
+    const g = group(crystal);
+    g.add(mesh(extrude(bolt(), 0.24, 0.08), new THREE.MeshPhysicalMaterial({ color: 0xffc21a, metalness: 0.55, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.05, emissive: 0x6a4000, emissiveIntensity: 0.4 }), { pos: [0, -0.02, 0.62], scale: 0.82 }));
+    g.rotation.set(0.08, -0.22, 0);
+    return g;
+  },
+
   // Rest days
   master_key: (r) => {
     const steel = metal(r.metal, 0.18);
@@ -685,4 +703,5 @@ export const RARITIES = {
   revenge: 'epic', ambush: 'rare', bastion: 'rare', club_wall: 'legendary', radar: 'epic', double_or_nothing: 'epic',
   plunder: 'rare', explorer: 'epic', wide_trail: 'rare', streak_saver: 'common', compass: 'rare', tourist: 'epic',
   expedition: 'rare', dawn: 'common', cartographer: 'legendary', master_key: 'rare', double_loot: 'epic', treasure_map: 'common',
+  powers_icon: 'brand',
 };

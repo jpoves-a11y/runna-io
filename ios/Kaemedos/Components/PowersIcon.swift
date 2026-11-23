@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Outline of a treasure chest: domed lid, body, the band between them and a lock.
 struct ChestOutline: Shape {
@@ -47,35 +48,63 @@ private struct ChestLock: Shape {
     }
 }
 
-/// The Poderes icon: a chest outline in the current foreground colour. `glow` adds a soft golden
-/// light behind it and a small sparkle (there are powers waiting to be used).
+/// The Poderes icon: a green power crystal with a golden bolt (3D render, asset "powers_icon";
+/// the chest outline if it's missing). `glow` (powers waiting to be used) adds a green light that
+/// breathes behind it and a small sparkle.
 struct PowersIcon: View {
     var size: CGFloat = 20
     var glow: Bool = false
+    /// Only for the outline fallback.
     var lineWidth: CGFloat? = nil
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breathe = false
 
     var body: some View {
         ZStack {
             if glow {
                 Circle()
-                    .fill(Color.gold)
-                    .frame(width: size * 1.1, height: size * 1.1)
-                    .blur(radius: size * 0.35)
-                    .opacity(0.45)
+                    .fill(RadialGradient(
+                        colors: [Color.brandNeon.opacity(0.55), Color.brandNeon.opacity(0)],
+                        center: .center, startRadius: 0, endRadius: size * 0.8
+                    ))
+                    .frame(width: size * 1.6, height: size * 1.6)
+                    .scaleEffect(breathe ? 1.08 : 0.85)
+                    .opacity(breathe ? 1 : 0.65)
             }
-            ChestOutline()
-                .stroke(style: StrokeStyle(lineWidth: lineWidth ?? max(1.4, size / 13), lineCap: .round, lineJoin: .round))
-                .frame(width: size, height: size * 0.86)
-            ChestLock()
-                .frame(width: size, height: size * 0.86)
+            if let image = UIImage(named: "powers_icon") {
+                Image(uiImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: size * 1.15, height: size * 1.15)
+                    .shadow(color: .black.opacity(0.3), radius: size * 0.06, y: size * 0.04)
+            } else {
+                ChestOutline()
+                    .stroke(style: StrokeStyle(lineWidth: lineWidth ?? max(1.4, size / 13), lineCap: .round, lineJoin: .round))
+                    .frame(width: size, height: size * 0.86)
+                ChestLock()
+                    .frame(width: size, height: size * 0.86)
+            }
             if glow {
                 Image(systemName: "sparkle")
-                    .font(.system(size: size * 0.38, weight: .bold))
+                    .font(.system(size: size * 0.36, weight: .bold))
                     .foregroundStyle(Color.gold)
-                    .offset(x: size * 0.52, y: -size * 0.5)
+                    .offset(x: size * 0.5, y: -size * 0.48)
+                    .opacity(breathe ? 1 : 0.4)
             }
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+        .onAppear { startBreathing() }
+        .onChange(of: glow) { _, _ in startBreathing() }
+    }
+
+    private func startBreathing() {
+        guard glow, !reduceMotion else {
+            breathe = glow
+            return
+        }
+        withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) { breathe = true }
     }
 }

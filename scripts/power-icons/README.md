@@ -12,5 +12,7 @@ node render.js shield     # solo uno
 node install.js           # → ios/Kaemedos/Assets.xcassets/power_<id>.imageset (384 px)
 ```
 
+El botón de Poderes usa el mismo generador: `node render.js powers_icon` (asset `powers_icon`, 256 px).
+
 Para un poder nuevo: añade su modelo en `MODELS` y su rareza en `RARITIES` (`models.js`). En la app, `PowerArt`
 usa el asset `power_<id>` y, si no existe, el SF Symbol de `PowerSymbol`.
