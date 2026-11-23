@@ -139,7 +139,7 @@ final class RouteVideoRenderer: NSObject {
 
         // 2. The video file
         let videoSize = job.format.videoSize
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("runna-\(UUID().uuidString).mp4")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("km2-\(UUID().uuidString).mp4")
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let compression: [String: Any] = [
             AVVideoAverageBitRateKey: 12_000_000,

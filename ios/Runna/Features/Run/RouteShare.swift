@@ -789,7 +789,8 @@ struct RouteShareEditor: View {
     private static func removeOldVideos() {
         let folder = FileManager.default.temporaryDirectory
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        for file in files where file.lastPathComponent.hasPrefix("runna-") && file.pathExtension == "mp4" {
+        // "runna-": made before the KM2 rebrand
+        for file in files where (file.lastPathComponent.hasPrefix("km2-") || file.lastPathComponent.hasPrefix("runna-")) && file.pathExtension == "mp4" {
             try? FileManager.default.removeItem(at: file)
         }
     }
