@@ -383,6 +383,11 @@ struct ProfileView: View {
             } label: {
                 SocialSettingsLabel(title: "Ver tutorial", systemImage: "sparkles")
             }
+            NavigationLink {
+                ChestOpeningTestView()
+            } label: {
+                SocialSettingsLabel(title: "Probar apertura de cofres", systemImage: "shippingbox")
+            }
             Link(destination: AppConfig.privacyURL) {
                 SocialSettingsLabel(title: "Política de privacidad", systemImage: "lock")
             }

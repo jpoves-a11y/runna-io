@@ -119,7 +119,7 @@ struct CompetitionResultsView: View {
     @Environment(SessionStore.self) private var session
     @State private var page = 0
     @State private var opened: Set<String> = []
-    /// The common chest being opened in 3D, over everything.
+    /// The chest being opened in 3D, over everything.
     @State private var opening: InventoryItem?
 
     private enum Page: Hashable { case club, mine, awards, rewards, next }
@@ -437,13 +437,8 @@ struct CompetitionResultsView: View {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.m), GridItem(.flexible(), spacing: DS.Spacing.m)], spacing: DS.Spacing.m) {
                 ForEach(summary.rewards) { item in
                     RewardChestCell(item: item, isOpen: opened.contains(item.id)) {
-                        if item.rarity == "common" {
-                            Haptics.tap()
-                            withAnimation(.easeOut(duration: 0.25)) { opening = item }
-                        } else {
-                            withAnimation(.snappy) { _ = opened.insert(item.id) }
-                            Haptics.success()
-                        }
+                        Haptics.tap()
+                        withAnimation(.easeOut(duration: 0.25)) { opening = item }
                     }
                 }
             }
@@ -456,7 +451,7 @@ struct CompetitionResultsView: View {
             }
         }
         .onAppear {
-            if summary.rewards.contains(where: { $0.rarity == "common" }) { ChestOpening3DView.prewarm() }
+            if !summary.rewards.isEmpty { ChestOpening3DView.prewarm() }
         }
     }
 
@@ -464,7 +459,6 @@ struct CompetitionResultsView: View {
     private func collect(_ item: InventoryItem) {
         withAnimation(.easeOut(duration: 0.3)) { opening = nil }
         withAnimation(.snappy) { _ = opened.insert(item.id) }
-        Haptics.success()
     }
 
     // MARK: 5. Next competition
@@ -509,7 +503,7 @@ struct CompetitionResultsView: View {
     }
 }
 
-/// Full screen: the common chest opens in 3D, then what was inside rises into view.
+/// Full screen: the chest opens in 3D, then what was inside rises into view.
 private struct ChestOpeningOverlay: View {
     let item: InventoryItem
     let onCollect: () -> Void
@@ -518,7 +512,7 @@ private struct ChestOpeningOverlay: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ChestOpening3DView {
+            ChestOpening3DView(rarity: item.rarity) {
                 withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { revealed = true }
             }
             .ignoresSafeArea()
@@ -530,7 +524,7 @@ private struct ChestOpeningOverlay: View {
                         .foregroundStyle(Rarity.color(item.rarity))
                         .frame(width: 92, height: 92)
                         .background(.ultraThinMaterial, in: Circle())
-                        .shadow(color: Color.orange.opacity(0.45), radius: 26)
+                        .shadow(color: ChestOpening3DView.lightColor(item.rarity).opacity(0.5), radius: 26)
                     Text(item.name)
                         .font(.title2.weight(.semibold))
                         .multilineTextAlignment(.center)
