@@ -264,10 +264,8 @@ struct ClubHomeView: View {
             showInventory = true
         } label: {
             HStack(spacing: DS.Spacing.m) {
-                PowersIcon(size: 20, glow: season.availableItemCount > 0)
+                PowersIcon(size: 36, glow: season.availableItemCount > 0)
                     .foregroundStyle(Color.brand)
-                    .frame(width: 36, height: 36)
-                    .background(Color.brand.opacity(0.12), in: Circle())
                 Text("Poderes")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)

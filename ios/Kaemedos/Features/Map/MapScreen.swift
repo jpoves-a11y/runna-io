@@ -576,10 +576,9 @@ struct MapScreen: View {
         return Button {
             router.showPowers = true
         } label: {
-            PowersIcon(size: 28, glow: available > 0, lineWidth: 2)
+            // Just the chest, as big as a control, with no circle behind
+            PowersIcon(size: DS.Size.mapControl + 4, glow: available > 0, lineWidth: 2)
                 .foregroundStyle(Color.primary)
-                .shadow(color: Color(uiColor: .systemBackground).opacity(0.9), radius: 2)
-                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
                 .frame(width: DS.Size.mapControl, height: DS.Size.mapControl)
                 .contentShape(Rectangle())
                 .overlay(alignment: .topTrailing) {

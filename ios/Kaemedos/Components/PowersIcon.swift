@@ -49,8 +49,8 @@ private struct ChestLock: Shape {
 }
 
 /// The Poderes icon: an open treasure chest with green power pouring out (3D render, asset
-/// "powers_icon"; the chest outline if it's missing). `glow` (powers waiting to be used) adds a green light that
-/// breathes behind it and a small sparkle.
+/// "powers_icon"; the chest outline if it's missing). Just the chest, no circle behind: `glow`
+/// (powers waiting to be used) makes the chest itself glow green and breathe.
 struct PowersIcon: View {
     var size: CGFloat = 20
     var glow: Bool = false
@@ -61,37 +61,24 @@ struct PowersIcon: View {
     @State private var breathe = false
 
     var body: some View {
-        ZStack {
-            if glow {
-                Circle()
-                    .fill(RadialGradient(
-                        colors: [Color.brandNeon.opacity(0.55), Color.brandNeon.opacity(0)],
-                        center: .center, startRadius: 0, endRadius: size * 0.8
-                    ))
-                    .frame(width: size * 1.6, height: size * 1.6)
-                    .scaleEffect(breathe ? 1.08 : 0.85)
-                    .opacity(breathe ? 1 : 0.65)
-            }
+        Group {
             if let image = UIImage(named: "powers_icon") {
                 Image(uiImage: image)
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
-                    .frame(width: size * 1.15, height: size * 1.15)
-                    .shadow(color: .black.opacity(0.3), radius: size * 0.06, y: size * 0.04)
+                    // The glow follows the chest's own outline
+                    .shadow(color: Color.brandNeon.opacity(glow ? (breathe ? 0.85 : 0.35) : 0), radius: size * 0.18)
+                    .shadow(color: .black.opacity(0.28), radius: size * 0.05, y: size * 0.04)
+                    .scaleEffect(glow && breathe ? 1.04 : 1)
             } else {
-                ChestOutline()
-                    .stroke(style: StrokeStyle(lineWidth: lineWidth ?? max(1.4, size / 13), lineCap: .round, lineJoin: .round))
-                    .frame(width: size, height: size * 0.86)
-                ChestLock()
-                    .frame(width: size, height: size * 0.86)
-            }
-            if glow {
-                Image(systemName: "sparkle")
-                    .font(.system(size: size * 0.36, weight: .bold))
-                    .foregroundStyle(Color.gold)
-                    .offset(x: size * 0.5, y: -size * 0.48)
-                    .opacity(breathe ? 1 : 0.4)
+                ZStack {
+                    ChestOutline()
+                        .stroke(style: StrokeStyle(lineWidth: lineWidth ?? max(1.4, size / 13), lineCap: .round, lineJoin: .round))
+                        .frame(width: size, height: size * 0.86)
+                    ChestLock()
+                        .frame(width: size, height: size * 0.86)
+                }
             }
         }
         .frame(width: size, height: size)
