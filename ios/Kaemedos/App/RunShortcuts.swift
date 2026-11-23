@@ -10,6 +10,9 @@ struct KaemedosShortcuts: AppShortcutsProvider {
                 "Empezar a correr con \(.applicationName)",
                 "Salir a correr con \(.applicationName)",
                 "Correr con \(.applicationName)",
+                "Inicia una carrera en \(.applicationName)",
+                "Empieza a correr en \(.applicationName)",
+                "Empezar una carrera en \(.applicationName)",
             ],
             shortTitle: "Correr",
             systemImageName: "figure.run"

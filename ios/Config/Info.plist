@@ -56,9 +56,13 @@
 	<array>
 		<dict>
 			<key>INAlternativeAppName</key>
-			<string>Kaemedos</string>
+			<string>KM2</string>
 			<key>INAlternativeAppNamePronunciationHint</key>
-			<string>ka e me dos</string>
+			<string>ka eme dos</string>
+		</dict>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>KM 2</string>
 		</dict>
 		<dict>
 			<key>INAlternativeAppName</key>
