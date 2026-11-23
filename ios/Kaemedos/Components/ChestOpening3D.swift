@@ -11,11 +11,13 @@ import UIKit
 /// drawn from, with the picture painted onto it from there (see `ChestArt`), so at rest it looks
 /// exactly like the picture and the lid, the padlock and the hasp move with their part of it.
 ///
-/// It goes from less to more with the rarity: common has a warm glow; rare leaks light through the
-/// seam before it opens; epic has a longer charge, a purple light, a second beam and a shockwave;
-/// legendary levitates while it charges and slams down, then bursts open in a flash with
-/// diamond-blue flames and two shockwaves. Light, beams, particles, camera shake and haptics (Core
-/// Haptics rumbles on the premium ones) all grow with the rarity.
+/// It goes from less to more with the rarity: common has a warm glow and a column of light; rare
+/// leaks light through the seam before it opens, and rays fan out of it with twinkling stars and a
+/// shockwave; epic charges longer and bursts with a purple flash, a lens streak, more and longer
+/// rays and two shockwaves; legendary levitates while it charges and slams down, then bursts open in
+/// a blinding flash with diamond-blue flames, a second fountain of sparks, a sky of stars and three
+/// shockwaves. Light, rays, halo, particles, camera punch and shake and haptics (Core Haptics
+/// rumbles on the premium ones) all grow with the rarity.
 ///
 /// Tapping skips to the open chest; with Reduce Motion the lid just opens. `onOpened` is called
 /// once, when the lid is open (or the animation was skipped).
@@ -88,10 +90,25 @@ private struct ChestTier {
     let lightIntensity: CGFloat
     let beamOpacity: CGFloat
     let beamWidth: Float
+    /// Rays fanning out of the chest, and how long the longest is (scene units).
+    let rays: Int
+    let rayLength: Float
+    /// Halo of light behind the chest (opacity; it's bigger the rarer).
+    let halo: CGFloat
+    /// A horizontal lens streak on the burst.
+    let streak: Bool
+    /// How big the flash grows (0: no flash).
+    let flashSize: CGFloat
+    /// How much the camera punches in on the burst (fraction of the view).
+    let punch: Double
     let moteColor: UIColor
     let moteRate: CGFloat
     let sparkColor: UIColor
     let sparkRate: CGFloat
+    /// Twinkling stars around the open chest (per second).
+    let starRate: CGFloat
+    /// A second, higher fountain of sparks after the burst.
+    let fountain: Bool
     /// How far the lid lifts on each knock against the padlock (radians).
     let knocks: [CGFloat]
     /// Seconds of charging (trembling, light leaking from the seam) before the padlock gives way.
@@ -111,39 +128,47 @@ private struct ChestTier {
             level = 1
             treasure = .silverAndGold
             lightColor = UIColor(red: 0.72, green: 0.86, blue: 1, alpha: 1); lightIntensity = 1100
-            beamOpacity = 0.9; beamWidth = 1.05
-            moteColor = UIColor(red: 0.8, green: 0.9, blue: 1, alpha: 1); moteRate = 55
-            sparkColor = UIColor(red: 0.85, green: 0.93, blue: 1, alpha: 1); sparkRate = 1700
+            beamOpacity = 0.85; beamWidth = 1.0
+            rays = 6; rayLength = 1.4; halo = 0.5; streak = false; flashSize = 0; punch = 0.015
+            moteColor = UIColor(red: 0.8, green: 0.9, blue: 1, alpha: 1); moteRate = 60
+            sparkColor = UIColor(red: 0.85, green: 0.93, blue: 1, alpha: 1); sparkRate = 2000
+            starRate = 6; fountain = false
             knocks = [0.06, 0.09, 0.065]; charge = 0.35; seamGlow = 0.55
-            levitates = false; shockwaves = 0; flash = false; flames = false
+            levitates = false; shockwaves = 1; flash = false; flames = false
             shake = 0.01; rumble = 0.35
         case "epic":
             level = 2
             treasure = .gems
             lightColor = UIColor(red: 0.82, green: 0.56, blue: 1, alpha: 1); lightIntensity = 1700
-            beamOpacity = 1; beamWidth = 1.15
-            moteColor = UIColor(red: 0.86, green: 0.66, blue: 1, alpha: 1); moteRate = 85
-            sparkColor = UIColor(red: 1, green: 0.84, blue: 0.45, alpha: 1); sparkRate = 3200
+            beamOpacity = 1; beamWidth = 1.1
+            rays = 10; rayLength = 1.9; halo = 0.75; streak = true; flashSize = 4; punch = 0.035
+            moteColor = UIColor(red: 0.86, green: 0.66, blue: 1, alpha: 1); moteRate = 100
+            sparkColor = UIColor(red: 1, green: 0.84, blue: 0.45, alpha: 1); sparkRate = 4000
+            starRate = 16; fountain = false
             knocks = [0.07, 0.1, 0.08, 0.12]; charge = 0.7; seamGlow = 0.85
-            levitates = false; shockwaves = 1; flash = false; flames = false
+            levitates = false; shockwaves = 2; flash = true; flames = false
             shake = 0.025; rumble = 0.65
         case "legendary":
             level = 3
             treasure = .crystals
             lightColor = UIColor(red: 0.45, green: 0.78, blue: 1, alpha: 1); lightIntensity = 2600
-            beamOpacity = 1; beamWidth = 1.3
-            moteColor = UIColor(red: 0.6, green: 0.85, blue: 1, alpha: 1); moteRate = 130
-            sparkColor = UIColor(red: 0.8, green: 0.95, blue: 1, alpha: 1); sparkRate = 5200
+            beamOpacity = 1; beamWidth = 1.2
+            rays = 16; rayLength = 2.5; halo = 1; streak = true; flashSize = 7; punch = 0.06
+            moteColor = UIColor(red: 0.6, green: 0.85, blue: 1, alpha: 1); moteRate = 150
+            sparkColor = UIColor(red: 0.8, green: 0.95, blue: 1, alpha: 1); sparkRate = 6500
+            starRate = 34; fountain = true
             knocks = [0.08, 0.11, 0.09, 0.14]; charge = 1.1; seamGlow = 1
-            levitates = true; shockwaves = 2; flash = true; flames = true
+            levitates = true; shockwaves = 3; flash = true; flames = true
             shake = 0.045; rumble = 1
         default:
             level = 0
             treasure = .coins
             lightColor = UIColor(red: 1, green: 0.76, blue: 0.42, alpha: 1); lightIntensity = 750
-            beamOpacity = 0.8; beamWidth = 1
+            beamOpacity = 0.7; beamWidth = 0.9
+            rays = 0; rayLength = 0; halo = 0.3; streak = false; flashSize = 0; punch = 0
             moteColor = UIColor(red: 1, green: 0.82, blue: 0.5, alpha: 1); moteRate = 36
             sparkColor = UIColor(red: 1, green: 0.82, blue: 0.5, alpha: 1); sparkRate = 900
+            starRate = 0; fountain = false
             knocks = [0.06, 0.085, 0.05]; charge = 0; seamGlow = 0
             levitates = false; shockwaves = 0; flash = false; flames = false
             shake = 0; rumble = 0
@@ -186,7 +211,11 @@ final class ChestOpeningDirector {
     private let seamLight = SCNNode()
     private let seam = SCNNode()
     private let glow = SCNNode()
+    /// Light facing the camera, at the opening: the column and rays of light, the halo, the streak.
+    private let facing = SCNNode()
     private let beam = SCNNode()
+    private let halo = SCNNode()
+    private let streak = SCNNode()
     private let motes = SCNNode()
     private let flashNode = SCNNode()
     private var rings: [SCNNode] = []
@@ -289,7 +318,7 @@ final class ChestOpeningDirector {
         cameraNode.camera = camera
         let toViewer = ChestArt.toViewer
         cameraNode.simdPosition = toViewer * 8
-        cameraNode.simdOrientation = simd_quatf(simd_float3x3(columns: (ChestArt.right, ChestArt.up, toViewer)))
+        cameraNode.simdOrientation = ChestArt.facing
         cameraRig.position = Self.targetStart
         cameraShake.addChildNode(cameraNode)
         cameraRig.addChildNode(cameraShake)
@@ -322,19 +351,58 @@ final class ChestOpeningDirector {
         glow.renderingOrder = 10
         chestRoot.addChildNode(glow)
 
-        beam.addChildNode(Self.beamCone(top: 0.62, bottom: 0.36, height: 1.15, intensity: 1.5, tint: tier.lightColor, turn: 26))
-        if tier.level >= 2 {
-            // A narrower, brighter core turning the other way
-            let core = Self.beamCone(top: 0.34, bottom: 0.22, height: 1.6, intensity: 2.2, tint: .white, turn: -18)
-            core.position.y = 0.2
-            beam.addChildNode(core)
-        }
-        // Stretched to the chest's opening (the spinning children keep the rays turning inside)
-        beam.scale = SCNVector3(1.4 * tier.beamWidth, 1, 0.92 * tier.beamWidth)
-        beam.position.y = Float(Dim.height) - 0.03 + 0.575
+        // The light coming out, drawn on planes facing the camera (which never turns), from the
+        // opening up: a soft column of light and, the rarer, more and longer rays fanning out,
+        // each swaying and shimmering at its own pace; a halo behind the chest; a lens streak.
+        facing.simdOrientation = ChestArt.facing
+        facing.position = SCNVector3(0, Float(Dim.height) - 0.02, 0)
+        chestRoot.addChildNode(facing)
         beam.opacity = 0
-        beam.renderingOrder = 11
-        chestRoot.addChildNode(beam)
+        facing.addChildNode(beam)
+        let columnWidth = 0.95 * CGFloat(tier.beamWidth)
+        // (soft, so the open lid behind it still shows clearly)
+        beam.addChildNode(Self.lightPlane(textures.column, width: columnWidth, height: 1.4, bottom: 0, intensity: 0.75, tint: tier.lightColor))
+        if tier.level >= 2 {
+            // A narrower, brighter core
+            beam.addChildNode(Self.lightPlane(textures.column, width: columnWidth * 0.4, height: 1.8, bottom: 0, intensity: 0.8, tint: .white))
+        }
+        var random = SeededRandom(seed: 5)
+        for index in 0..<tier.rays {
+            let holder = SCNNode()
+            let spread = (Float(index) + 0.5) / Float(tier.rays) - 0.5
+            holder.eulerAngles.z = spread * 2.1 + random.next(in: -0.08...0.08)
+            let length = CGFloat(tier.rayLength * random.next(in: 0.6...1))
+            let ray = Self.lightPlane(textures.ray, width: CGFloat(random.next(in: 0.07...0.17)), height: length, bottom: 0, intensity: 1.5, tint: tier.lightColor)
+            holder.addChildNode(ray)
+            beam.addChildNode(holder)
+            let sway = CGFloat(random.next(in: 0.05...0.12))
+            let period = TimeInterval(random.next(in: 1.6...2.8))
+            holder.runAction(.repeatForever(.sequence([
+                .rotateBy(x: 0, y: 0, z: sway, duration: period).timed(Ease.inOut),
+                .rotateBy(x: 0, y: 0, z: -sway, duration: period).timed(Ease.inOut)
+            ])))
+            ray.runAction(.repeatForever(.sequence([
+                .fadeOpacity(to: CGFloat(random.next(in: 0.25...0.55)), duration: TimeInterval(random.next(in: 0.4...0.9))),
+                .fadeOpacity(to: 1, duration: TimeInterval(random.next(in: 0.4...0.9)))
+            ])))
+        }
+        let haloSize = 2.2 * (1 + 0.3 * CGFloat(tier.level))
+        let haloPlane = SCNPlane(width: haloSize, height: haloSize)
+        haloPlane.materials = [ChestScene.decal(textures.glow, add: true, intensity: 1, tint: tier.lightColor)]
+        halo.geometry = haloPlane
+        halo.position = SCNVector3(0, 0.3, -1.2)
+        halo.opacity = 0
+        halo.renderingOrder = 8
+        facing.addChildNode(halo)
+        if tier.streak {
+            let streakPlane = SCNPlane(width: 3.6, height: 0.2)
+            streakPlane.materials = [ChestScene.decal(textures.streak, add: true, intensity: 1.6, tint: tier.sparkColor, readsDepth: false)]
+            streak.geometry = streakPlane
+            streak.position = SCNVector3(0, 0.1, 1.5)
+            streak.opacity = 0
+            streak.renderingOrder = 21
+            facing.addChildNode(streak)
+        }
 
         motes.position.y = 0.4
         chestRoot.addChildNode(motes)
@@ -368,15 +436,13 @@ final class ChestOpeningDirector {
         }
     }
 
-    private static func beamCone(top: CGFloat, bottom: CGFloat, height: CGFloat, intensity: CGFloat, tint: UIColor, turn: TimeInterval) -> SCNNode {
-        let cone = SCNCone(topRadius: top, bottomRadius: bottom, height: height)
-        cone.radialSegmentCount = 48
-        let invisible = SCNMaterial()
-        invisible.transparency = 0
-        invisible.writesToDepthBuffer = false
-        cone.materials = [ChestScene.decal(ChestTextures.shared.beam, add: true, intensity: intensity, tint: tint), invisible, invisible]
-        let node = SCNNode(geometry: cone)
-        node.runAction(.repeatForever(.rotateBy(x: 0, y: (turn > 0 ? 1 : -1) * .pi * 2, z: 0, duration: abs(turn))))
+    /// A plane of light (added, tinted), standing on its bottom edge at `bottom`.
+    private static func lightPlane(_ image: UIImage, width: CGFloat, height: CGFloat, bottom: Float, intensity: CGFloat, tint: UIColor) -> SCNNode {
+        let plane = SCNPlane(width: width, height: height)
+        plane.materials = [ChestScene.decal(image, add: true, intensity: intensity, tint: tint)]
+        let node = SCNNode(geometry: plane)
+        node.position.y = bottom + Float(height / 2)
+        node.renderingOrder = 11
         return node
     }
 
@@ -414,9 +480,12 @@ final class ChestOpeningDirector {
         let done = open + (tier.level >= 3 ? 1.15 : 0.95)
 
         // Slowly closing in, a little more once it opens; then the chest moves up
+        // (and, the rarer, a punch in on the burst)
+        let punched = Self.zoomMid * (1 - tier.punch)
         cameraNode.runAction(.sequence([
-            Self.zoom(from: Self.zoomStart, to: Self.zoomMid, duration: open + 0.3),
-            Self.zoom(from: Self.zoomMid, to: Self.zoomEnd, duration: 1.3)
+            Self.zoom(from: Self.zoomStart, to: Self.zoomMid, duration: open + 0.05),
+            Self.zoom(from: Self.zoomMid, to: punched, duration: 0.08),
+            Self.zoom(from: punched, to: Self.zoomEnd, duration: 1.45)
         ]))
         cameraRig.runAction(.sequence([
             .wait(duration: open - 0.1),
@@ -499,7 +568,7 @@ final class ChestOpeningDirector {
         event(at: hitStop + 0.27) { [weak self] in self?.haptics.impact(.light, 0.4) }
 
         // 6. Light pours out, more the rarer
-        seam.runAction(.sequence([.wait(duration: open + 0.15), .fadeOut(duration: 0.4)]))
+        seam.runAction(.sequence([.wait(duration: open), .fadeOut(duration: 0.2)]))
         seamLight.runAction(.sequence([.wait(duration: open + 0.1), Self.lightRamp(to: 0, from: 500 * tier.seamGlow, duration: 0.4)]))
         if tier.flash {
             innerLight.runAction(.sequence([
@@ -511,8 +580,30 @@ final class ChestOpeningDirector {
             innerLight.runAction(.sequence([.wait(duration: open + 0.05), Self.lightRamp(to: tier.lightIntensity, from: 0, duration: 0.7)]))
         }
         glow.runAction(.sequence([.wait(duration: open + 0.1), .fadeOpacity(to: 0.85, duration: 0.6)]))
-        beam.runAction(.sequence([.wait(duration: open + 0.2), .fadeOpacity(to: tier.beamOpacity, duration: 0.8).timed(Ease.outQuad)]))
+        beam.runAction(.sequence([.wait(duration: open + 0.15), .fadeOpacity(to: tier.beamOpacity, duration: 0.7).timed(Ease.outQuad)]))
+        halo.runAction(.sequence([
+            .wait(duration: open + 0.05),
+            .fadeOpacity(to: tier.halo, duration: 0.5).timed(Ease.outQuad),
+            Self.pulse(from: tier.halo * 0.75, to: tier.halo, period: 1.2)
+        ]))
+        if tier.streak {
+            streak.scale = SCNVector3(0.3, 1, 1)
+            streak.runAction(.sequence([
+                .wait(duration: open + 0.03),
+                .group([
+                    .fadeOpacity(to: 1, duration: 0.05),
+                    .customAction(duration: 0.6) { node, elapsed in
+                        let progress = Float(min(1, elapsed / 0.6))
+                        node.scale = SCNVector3(0.3 + 1.1 * Ease.outCubic(progress), 1 - 0.5 * progress, 1)
+                    },
+                    .sequence([.wait(duration: 0.12), .fadeOut(duration: 0.48).timed(Ease.outQuad)])
+                ])
+            ]))
+        }
         event(at: open + 0.22) { [weak self] in self?.burstSparks() }
+        if tier.fountain {
+            event(at: open + 0.5) { [weak self] in self?.fountainSparks() }
+        }
         event(at: open + 0.3) { [weak self] in self?.startMotes() }
 
         if tier.level >= 2 {
@@ -530,7 +621,7 @@ final class ChestOpeningDirector {
                 .wait(duration: start),
                 .group([
                     .fadeOpacity(to: 1, duration: 0.04),
-                    .scale(to: 3.8 + 1.2 * CGFloat(index), duration: 0.75).timed(Ease.outCubic),
+                    .scale(to: 3.2 + 0.4 * CGFloat(tier.level) + 1.2 * CGFloat(index), duration: 0.75).timed(Ease.outCubic),
                     .sequence([.wait(duration: 0.15), .fadeOut(duration: 0.6)])
                 ])
             ]))
@@ -544,7 +635,7 @@ final class ChestOpeningDirector {
                 .wait(duration: open + 0.02),
                 .group([
                     .fadeOpacity(to: 1, duration: 0.05),
-                    .scale(to: 6, duration: 0.5).timed(Ease.outCubic),
+                    .scale(to: tier.flashSize, duration: 0.5).timed(Ease.outCubic),
                     .sequence([.wait(duration: 0.08), .fadeOut(duration: 0.42).timed(Ease.outQuad)])
                 ])
             ]))
@@ -613,6 +704,7 @@ final class ChestOpeningDirector {
         innerLight.runAction(.sequence([.wait(duration: 0.5), Self.lightRamp(to: tier.lightIntensity, from: 0, duration: 0.6)]))
         glow.runAction(.sequence([.wait(duration: 0.5), .fadeOpacity(to: 0.85, duration: 0.6)]))
         beam.runAction(.sequence([.wait(duration: 0.6), .fadeOpacity(to: tier.beamOpacity, duration: 0.6)]))
+        halo.runAction(.sequence([.wait(duration: 0.5), .fadeOpacity(to: tier.halo, duration: 0.6)]))
         let level = tier.level
         event(at: 1.3) { [weak self] in
             guard let self else { return }
@@ -624,7 +716,7 @@ final class ChestOpeningDirector {
     /// Jumps to the open chest.
     func skip() {
         guard built, !finished else { return }
-        var nodes = [events, chestRoot, lidPivot, padlock, innerLight, seamLight, seam, glow, beam, flashNode, cameraRig, cameraShake, cameraNode]
+        var nodes = [events, chestRoot, lidPivot, padlock, innerLight, seamLight, seam, glow, beam, halo, streak, flashNode, cameraRig, cameraShake, cameraNode]
         nodes.append(contentsOf: rings)
         for node in nodes {
             node.removeAllActions()
@@ -644,6 +736,8 @@ final class ChestOpeningDirector {
         seam.opacity = 0
         glow.opacity = 0.85
         beam.opacity = tier.beamOpacity
+        halo.opacity = tier.halo
+        streak.opacity = 0
         flashNode.opacity = 0
         for ring in rings { ring.opacity = 0 }
         for material in glowing { material.emission.intensity = Dim.crystalGlowEnd }
@@ -652,6 +746,7 @@ final class ChestOpeningDirector {
         cameraNode.camera?.orthographicScale = Self.zoomEnd
         SCNTransaction.commit()
         startMotes()
+        halo.runAction(Self.pulse(from: tier.halo * 0.75, to: tier.halo, period: 1.2))
         if tier.level >= 1 { haptics.success() }
         finish()
     }
@@ -679,6 +774,14 @@ final class ChestOpeningDirector {
             .rotateTo(x: -lift, y: 0, z: 0, duration: 0.07).timed(Ease.outQuad),
             .rotateTo(x: 0, y: 0, z: 0, duration: 0.08).timed(Ease.inQuad)
         ])
+    }
+
+    /// Opacity breathing between two values, for ever.
+    nonisolated private static func pulse(from low: CGFloat, to high: CGFloat, period: TimeInterval) -> SCNAction {
+        .repeatForever(.sequence([
+            .fadeOpacity(to: low, duration: period).timed(Ease.inOut),
+            .fadeOpacity(to: high, duration: period).timed(Ease.inOut)
+        ]))
     }
 
     /// The camera closing in (half the width of the view, in scene units).
@@ -743,10 +846,17 @@ final class ChestOpeningDirector {
         motes.addParticleSystem(ChestParticles.sparks(tier))
     }
 
+    private func fountainSparks() {
+        motes.addParticleSystem(ChestParticles.fountain(tier))
+    }
+
     private func startMotes() {
         guard !motesStarted else { return }
         motesStarted = true
         motes.addParticleSystem(ChestParticles.motes(tier))
+        if tier.starRate > 0 {
+            motes.addParticleSystem(ChestParticles.stars(tier))
+        }
         if tier.flames {
             motes.addParticleSystem(ChestParticles.flames(tier))
         }
@@ -944,6 +1054,8 @@ private struct ChestArt {
     static let right = SIMD3<Float>(cos(yaw), 0, -sin(yaw))
     static let up = SIMD3<Float>(-sin(pitch) * sin(yaw), cos(pitch), -sin(pitch) * cos(yaw))
     static let toViewer = SIMD3<Float>(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch))
+    /// Turned to face the camera (local x right, y up, z towards the viewer).
+    static let facing = simd_quatf(simd_float3x3(columns: (right, up, toViewer)))
 
     let name: String
     /// Pixel of the scene origin (the floor under the middle of the chest).
@@ -991,10 +1103,9 @@ private struct ChestArt {
     var lid: String { name + "_lid" }
     var base: String { name + "_base" }
     var padlock: String { name + "_lock" }
-    var wood: String { name + "_wood" }
     static func layers(_ rarity: String) -> [String] {
         let art = ChestArt(rarity)
-        return [art.lid, art.base, art.padlock, art.wood]
+        return [art.lid, art.base, art.padlock]
     }
 
     private static func offset(_ point: SIMD3<Float>) -> SIMD2<Float> {
@@ -1136,10 +1247,10 @@ private struct ChestBuilder {
         return node
     }
 
-    /// Planks repeating every so many scene units along u and v.
+    /// Planks running along u: `lengthU` × `lengthV` scene units of them. One copy of the texture
+    /// is six boards 0.085 wide and 1.1 long.
     private static func planks(_ lengthU: Float, _ lengthV: Float) -> (Float, Float, SIMD3<Float>) -> SIMD2<Float> {
-        // One copy of the texture covers about 0.39 x 0.16 units, as on the lid
-        { u, v, _ in SIMD2(u * lengthU / 0.39, v * lengthV / 0.16) }
+        { u, v, _ in SIMD2(u * lengthU / 1.1, v * lengthV / 0.51) }
     }
 
     func buildBase(into parent: SCNNode) {
@@ -1358,10 +1469,10 @@ private struct ChestMaterials {
             ? UIColor(red: 0.86, green: 0.76, blue: 0.5, alpha: 1)
             : UIColor(red: 0.85, green: 0.62, blue: 0.24, alpha: 1)
         heap = Self.metal(heapColor, roughness: NSNumber(value: 0.42))
-        heap.normal.contents = textures.woodNormal
+        heap.normal.contents = textures.planksNormal
         heap.normal.intensity = 0.6
-        wood = Self.planks(art.wood, shade: 0.75)
-        woodDark = Self.planks(art.wood, shade: 0.5)
+        wood = Self.planks(shade: 1)
+        woodDark = Self.planks(shade: 0.7)
         rim = SCNMaterial()
         rim.lightingModel = .lambert
         rim.diffuse.contents = art.band
@@ -1383,15 +1494,24 @@ private struct ChestMaterials {
         return material
     }
 
-    /// Planks lit by the light inside the chest (and a dim ambient light).
-    private static func planks(_ name: String, shade: CGFloat) -> SCNMaterial {
+    /// Wooden planks, lit by the light inside the chest (and a dim ambient light), with a faint
+    /// sheen. Two-sided, so the inside of the lid shows from wherever it's seen.
+    private static func planks(shade: CGFloat) -> SCNMaterial {
+        let textures = ChestTextures.shared
         let material = SCNMaterial()
-        material.lightingModel = .lambert
-        material.diffuse.contents = UIImage(named: name)
-        material.diffuse.wrapS = .mirror
-        material.diffuse.wrapT = .mirror
-        material.diffuse.mipFilter = .linear
-        material.multiply.contents = UIColor(white: shade, alpha: 1)
+        material.lightingModel = .blinn
+        material.diffuse.contents = textures.planksAlbedo
+        material.normal.contents = textures.planksNormal
+        material.normal.intensity = 1
+        material.specular.contents = UIColor(white: 0.12, alpha: 1)
+        material.shininess = 0.15
+        for property in [material.diffuse, material.normal] {
+            property.wrapS = .mirror
+            property.wrapT = .mirror
+            property.mipFilter = .linear
+        }
+        if shade < 1 { material.multiply.contents = UIColor(white: shade, alpha: 1) }
+        material.isDoubleSided = true
         return material
     }
 
@@ -1492,6 +1612,47 @@ private enum ChestParticles {
         return system
     }
 
+    /// A second, higher fountain of sparks (legendary).
+    static func fountain(_ tier: ChestTier) -> SCNParticleSystem {
+        let system = sparks(tier)
+        system.birthRate = tier.sparkRate * 0.7
+        system.emissionDuration = 0.15
+        system.spreadingAngle = 22
+        system.particleVelocity = 2.3
+        system.particleVelocityVariation = 0.6
+        system.acceleration = SCNVector3(0, -1.6, 0)
+        system.dampingFactor = 0.6
+        system.particleLifeSpan = 1.8
+        system.particleColor = tier.lightColor
+        system.stretchFactor = 0.04
+        return system
+    }
+
+    /// Four-point stars twinkling all around the open chest, more the rarer.
+    static func stars(_ tier: ChestTier) -> SCNParticleSystem {
+        let system = SCNParticleSystem()
+        system.particleImage = ChestTextures.shared.star
+        system.emitterShape = SCNBox(width: 1.5 + 0.25 * CGFloat(tier.level), height: 1.3, length: 0.9, chamferRadius: 0)
+        system.birthLocation = .volume
+        system.birthRate = tier.starRate
+        system.particleLifeSpan = 0.9
+        system.particleLifeSpanVariation = 0.4
+        system.particleVelocity = 0.03
+        system.particleVelocityVariation = 0.03
+        system.particleSize = 0.03 + 0.008 * CGFloat(tier.level)
+        system.particleSizeVariation = 0.015
+        system.particleAngleVariation = 40
+        system.particleAngularVelocity = 30
+        system.particleAngularVelocityVariation = 30
+        system.particleColor = tier.sparkColor
+        system.particleColorVariation = SCNVector4(0.02, 0.1, 0.1, 0)
+        system.particleIntensity = 2.5
+        system.blendMode = .additive
+        system.isLightingEnabled = false
+        system.propertyControllers = [.opacity: fade(peak: 0.35), .size: grow(from: 0.3, to: 1)]
+        return system
+    }
+
     /// Diamond-blue flames licking up out of the legendary chest.
     static func flames(_ tier: ChestTier) -> SCNParticleSystem {
         let system = SCNParticleSystem()
@@ -1561,49 +1722,74 @@ private enum ChestParticles {
 
 // MARK: - Procedural textures
 
-/// Textures generated once: wood grain bumps, faceted crystal (for the treasure), light sprites and
-/// the studio environment for reflections.
+/// Textures generated once: planks for the inside of the chest, faceted crystal (for the treasure),
+/// light sprites and the studio environment for reflections.
 private final class ChestTextures {
     static let shared = ChestTextures()
 
-    let woodNormal: UIImage
+    let planksAlbedo: UIImage
+    let planksNormal: UIImage
     let crystalAlbedo: UIImage
     let crystalNormal: UIImage
     let dot: UIImage
     let glow: UIImage
-    let beam: UIImage
+    let column: UIImage
+    let ray: UIImage
+    let star: UIImage
+    let streak: UIImage
     let seam: UIImage
     let ring: UIImage
     let contactShadow: UIImage
     let environment: UIImage
 
     private init() {
-        woodNormal = Self.makeWoodNormal()
+        (planksAlbedo, planksNormal) = Self.makePlanks()
         (crystalAlbedo, crystalNormal) = Self.makeCrystal()
         dot = Self.radial(size: 64, color: (1, 1, 1), power: 2.2, alpha: 1)
         glow = Self.radial(size: 128, color: (1, 1, 1), power: 1.6, alpha: 1)
         contactShadow = Self.radial(size: 128, color: (0, 0, 0), power: 1.4, alpha: 0.55)
-        beam = Self.makeBeam()
+        column = Self.makeLight(width: 128, spread: 0.28, power: 2.4)
+        ray = Self.makeLight(width: 48, spread: 0.17, power: 1.4)
+        star = Self.makeStar()
+        streak = Self.makeStreak()
         seam = Self.makeSeam()
         ring = Self.makeRing()
         environment = Self.makeEnvironment()
     }
 
-    /// Bumps of wood grain (for the heap of coins): growth rings warped by noise and fine fibres.
-    private static func makeWoodNormal() -> UIImage {
-        let width = 512, height = 256
+    /// Planks for the inside of the chest: six boards across, each with its own grain and tone and
+    /// dark gaps between them, with the normal map for the gaps and the grain. The boards run along
+    /// u (the texture is mirrored at its edges, which fall on gaps).
+    private static func makePlanks() -> (UIImage, UIImage) {
+        let width = 512, height = 512, boards = 6
         var heights = [Double](repeating: 0, count: width * height)
-        for y in 0..<height {
-            for x in 0..<width {
-                let u = Double(x) / Double(width), v = Double(y) / Double(height)
-                let warp = Noise.fbm(u * 3, v * 2, octaves: 3, seed: 1)
-                let rings = v * 9 + warp * 2.2 + 0.4 * Noise.value(u * 1.5, v * 0.5, seed: 9)
-                let line = pow(0.5 + 0.5 * sin(rings * 2 * .pi), 6)
-                let fiber = Noise.value(u * 10, v * 140, seed: 3)
-                heights[y * width + x] = 1 - 0.65 * line - 0.35 * fiber
-            }
+        let light = (0.62, 0.4, 0.21), dark = (0.24, 0.12, 0.055)
+        let albedo = pixels(width: width, height: height) { x, y in
+            let u = Double(x) / Double(width), v = Double(y) / Double(height)
+            let board = min(boards - 1, Int(v * Double(boards)))
+            let across = v * Double(boards) - Double(board)
+            let shift = Double(board) * 1.7
+            let warp = Noise.fbm(u * 3 + shift, across * 0.8, octaves: 3, seed: 1 + board)
+            let rings = across * 3.5 + warp * 2.2 + 0.4 * Noise.value(u * 1.5 + shift, across, seed: 9)
+            let line = pow(0.5 + 0.5 * sin(rings * 2 * .pi), 6)
+            let fiber = Noise.value(u * 14 + shift, across * 60, seed: 3)
+            let tone = Noise.fbm(u * 2.5 + shift, across, octaves: 3, seed: 5)
+            let boardTone = 0.82 + 0.3 * Noise.value(Double(board) * 3.7, 0.5, seed: 77)
+            // The gap between boards, and the edges worn darker
+            let edge = min(across, 1 - across)
+            let gap = smoothstep(0, 0.05, edge)
+            let worn = 0.75 + 0.25 * smoothstep(0, 0.2, edge)
+            let t = min(1, max(0, (0.62 + 0.4 * (tone - 0.5) - 0.38 * line - 0.2 * fiber) * boardTone))
+            heights[y * width + x] = (1 - 0.35 * line - 0.25 * fiber) * (0.2 + 0.8 * gap)
+            let shade = (0.18 + 0.82 * gap) * worn
+            return (
+                (dark.0 + (light.0 - dark.0) * t) * shade,
+                (dark.1 + (light.1 - dark.1) * t) * shade,
+                (dark.2 + (light.2 - dark.2) * t) * shade,
+                1
+            )
         }
-        return normalMap(heights, width: width, height: height, strength: 2.5)
+        return (albedo, normalMap(heights, width: width, height: height, strength: 3))
     }
 
     /// Faceted crystal: flat cells (Voronoi), each tilted its own way and a different blue, with
@@ -1648,15 +1834,38 @@ private final class ChestTextures {
         return (albedo, normal)
     }
 
-    /// Light beam: bright at the bottom, fading up, with soft rays around (seamless around the cone).
-    /// White: each chest tints it.
-    private static func makeBeam() -> UIImage {
-        let width = 256, height = 256
+    /// Light rising from the bottom edge and fading up, soft at the sides (white: tinted where used).
+    private static func makeLight(width: Int, spread: Double, power: Double) -> UIImage {
+        let height = 256
         return pixels(width: width, height: height) { x, y in
-            let u = Double(x) / Double(width), v = Double(y) / Double(height)
-            let rays = 0.45 + 0.55 * (0.5 + 0.5 * sin(u * 2 * .pi * 5 + 1.3)) * (0.5 + 0.5 * sin(u * 2 * .pi * 9 + 0.4))
-            let fade = pow(v, 1.8) * (1 - smoothstep(0.94, 1, v) * 0.5)
-            return (1, 0.97, 0.93, min(1, fade * rays * 0.75))
+            let u = (Double(x) + 0.5) / Double(width), v = (Double(y) + 0.5) / Double(height)
+            let across = exp(-pow((u - 0.5) / spread, 2))
+            // v grows downwards: brightest at the bottom, where it comes out
+            return (1, 0.98, 0.94, min(1, across * pow(v, power)))
+        }
+    }
+
+    /// A four-point star with a bright core.
+    private static func makeStar() -> UIImage {
+        let size = 64
+        return pixels(width: size, height: size) { x, y in
+            let dx = (Double(x) + 0.5) / Double(size) * 2 - 1
+            let dy = (Double(y) + 0.5) / Double(size) * 2 - 1
+            let core = exp(-(dx * dx + dy * dy) / 0.02)
+            let armX = exp(-abs(dy) / 0.035) * pow(max(0, 1 - abs(dx)), 2)
+            let armY = exp(-abs(dx) / 0.035) * pow(max(0, 1 - abs(dy)), 2)
+            return (1, 1, 1, min(1, core + armX + armY))
+        }
+    }
+
+    /// A horizontal lens streak: a thin bright line with a soft glow around it.
+    private static func makeStreak() -> UIImage {
+        let width = 256, height = 32
+        return pixels(width: width, height: height) { x, y in
+            let dx = (Double(x) + 0.5) / Double(width) * 2 - 1
+            let dy = (Double(y) + 0.5) / Double(height) * 2 - 1
+            let along = pow(max(0, 1 - abs(dx)), 1.6)
+            return (1, 1, 1, min(1, along * (exp(-pow(dy / 0.08, 2)) + 0.35 * exp(-pow(dy / 0.45, 2)))))
         }
     }
 
