@@ -202,7 +202,7 @@ final class TourController {
                      text: "Tu **ciudad base** decide tus rankings y los clubes a los que puedes unirte. Y elige el **color** con el que pintarás el mapa."),
             TourStep(id: "done", tab: .map, anchor: nil, symbol: "flag.fill",
                      title: "¡Listo para conquistar!",
-                     text: "Activa las **notificaciones** para saber cuándo te roban territorio o te reta un amigo. Lo demás lo irás descubriendo corriendo."),
+                     text: "Activa la **ubicación** para verte en el mapa y las **notificaciones** para saber cuándo te roban territorio o te reta un amigo. Lo demás lo irás descubriendo corriendo."),
         ]
     }
 }
@@ -239,6 +239,8 @@ struct GuidedTourOverlay: View {
     @State private var tour = TourController.shared
     @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
     @State private var isRequesting = false
+    @State private var location = LocationPermission.shared
+    @State private var isRequestingLocation = false
     @State private var ringPulse = false
     @Environment(\.colorScheme) private var colorScheme
 
@@ -357,7 +359,10 @@ struct GuidedTourOverlay: View {
             }
             .frame(maxWidth: .infinity, alignment: isHero ? .center : .leading)
             if step.id == "done" {
-                notificationButton
+                VStack(spacing: DS.Spacing.s) {
+                    locationButton
+                    notificationButton
+                }
             }
             if step.id == "competition" {
                 TourCompetitionCalendar()
@@ -493,6 +498,44 @@ struct GuidedTourOverlay: View {
             .buttonStyle(.pressable)
             .disabled(!tour.canAdvance)
             .animation(.snappy, value: tour.canAdvance)
+        }
+    }
+
+    /// Location, so the map can show where you are (a run asks for it anyway when it starts).
+    @ViewBuilder
+    private var locationButton: some View {
+        if location.isAllowed {
+            Label("Ubicación activada", systemImage: "checkmark.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.brand)
+        } else if location.isDenied {
+            Text("Puedes activar la ubicación cuando quieras en Ajustes.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        } else {
+            Button {
+                isRequestingLocation = true
+                Task {
+                    await location.request()
+                    isRequestingLocation = false
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if isRequestingLocation {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "location.fill")
+                        Text("Activar ubicación")
+                    }
+                }
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color.brand)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(Color.brand.opacity(0.12), in: Capsule())
+            }
+            .buttonStyle(.pressable)
+            .disabled(isRequestingLocation)
         }
     }
 

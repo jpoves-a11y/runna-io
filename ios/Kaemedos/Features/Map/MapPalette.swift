@@ -38,7 +38,7 @@ enum TerritoryRelation: Hashable {
 
 /// How the Global map shows the overlays.
 enum GlobalView: String, CaseIterable, Identifiable {
-    /// Mine filled, the others as outlines.
+    /// Mine and the others, all filled.
     case normal
     /// Everything somebody has run covered by fog: the clear streets are new ground.
     case unexplored
@@ -163,6 +163,10 @@ enum MapPalette {
         // Focus: the chosen runner (and me) in full, everybody else almost gone
         if let focus = context.focusUserId, shape.relation != .mine {
             if shape.userId == focus {
+                // In Global (comparing world maps) their area, without an outline that reads as a route
+                if context.mode == .global {
+                    return TerritoryStyle(fill: color, fillOpacity: 0.4, stroke: .clear, strokeOpacity: 0, lineWidth: 0, dash: TerritoryStyle.solid)
+                }
                 return TerritoryStyle(fill: color, fillOpacity: 0.34, stroke: color, strokeOpacity: 1, lineWidth: 3, dash: TerritoryStyle.solid)
             }
             return TerritoryStyle(fill: color, fillOpacity: 0.04, stroke: .clear, strokeOpacity: 0, lineWidth: 0, dash: TerritoryStyle.solid)
@@ -182,8 +186,9 @@ enum MapPalette {
         case .danger:
             style = TerritoryStyle(fill: color, fillOpacity: 0.22, stroke: .steal, strokeOpacity: 1, lineWidth: 2.5, dash: TerritoryStyle.alert)
         case .overlay:
-            // Other people's world maps overlap each other: outlines only, so they never turn to mud
-            style = TerritoryStyle(fill: color, fillOpacity: 0, stroke: color, strokeOpacity: 0.85, lineWidth: 1.5, dash: TerritoryStyle.solid)
+            // Other people's world maps: their area, filled and with no outline (an outline reads as
+            // the route they ran); light, so where they overlap the colours still show through
+            style = TerritoryStyle(fill: color, fillOpacity: 0.3, stroke: .clear, strokeOpacity: 0, lineWidth: 0, dash: TerritoryStyle.solid)
         }
         // Ran together: dotted outline
         if shape.isShared && shape.relation != .overlay {

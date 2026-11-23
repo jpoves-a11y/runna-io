@@ -206,6 +206,8 @@ final class ChestOpeningDirector {
     private let events = SCNNode()
     private let chestRoot = SCNNode()
     private let lidPivot = SCNNode()
+    /// The inside of the lid: hidden until it opens.
+    private var lidInside = SCNNode()
     private let padlock = SCNNode()
     private let innerLight = SCNNode()
     private let seamLight = SCNNode()
@@ -331,7 +333,8 @@ final class ChestOpeningDirector {
         builder.buildTreasure(into: chestRoot)
         lidPivot.position = SCNVector3(0, Float(Dim.height), -Float(Dim.depth / 2))
         chestRoot.addChildNode(lidPivot)
-        builder.buildLid(into: lidPivot)
+        lidInside = builder.buildLid(into: lidPivot)
+        lidInside.opacity = 0
         padlock.position = art.padlockHang
         chestRoot.addChildNode(padlock)
         builder.buildPadlock(into: padlock)
@@ -551,6 +554,7 @@ final class ChestOpeningDirector {
 
         // 5. The lid swings open (faster the rarer), falls back past vertical, hits its stop, settles
         let swingOpen = 0.42 - 0.045 * Double(tier.level)
+        lidInside.runAction(.sequence([.wait(duration: open), .fadeIn(duration: 0.06)]))
         lidPivot.runAction(.sequence([
             .wait(duration: open),
             .rotateTo(x: -1.05, y: 0, z: 0, duration: swingOpen).timed(Ease.outCubic),
@@ -694,6 +698,7 @@ final class ChestOpeningDirector {
 
     /// Reduce Motion: the chest is already in place; the padlock fades and the lid opens.
     private func playCalm() {
+        lidInside.runAction(.sequence([.wait(duration: 0.4), .fadeIn(duration: 0.1)]))
         cameraRig.position = Self.targetEnd
         cameraNode.camera?.orthographicScale = Self.zoomEnd
         padlock.runAction(.sequence([.wait(duration: 0.2), .fadeOut(duration: 0.25)]))
@@ -716,7 +721,7 @@ final class ChestOpeningDirector {
     /// Jumps to the open chest.
     func skip() {
         guard built, !finished else { return }
-        var nodes = [events, chestRoot, lidPivot, padlock, innerLight, seamLight, seam, glow, beam, halo, streak, flashNode, cameraRig, cameraShake, cameraNode]
+        var nodes = [events, chestRoot, lidPivot, lidInside, padlock, innerLight, seamLight, seam, glow, beam, halo, streak, flashNode, cameraRig, cameraShake, cameraNode]
         nodes.append(contentsOf: rings)
         for node in nodes {
             node.removeAllActions()
@@ -728,6 +733,7 @@ final class ChestOpeningDirector {
         chestRoot.eulerAngles = SCNVector3(0, 0, 0)
         chestRoot.opacity = 1
         lidPivot.eulerAngles = SCNVector3(Dim.openAngle, 0, 0)
+        lidInside.opacity = 1
         padlock.position = art.padlockRest
         padlock.eulerAngles = SCNVector3(-Dim.padlockTilt, 0, 0.12)
         padlock.opacity = calm ? 0 : 1
@@ -1066,6 +1072,10 @@ private struct ChestArt {
     let lock: CGRect
     /// The metal of the bands, for the rims the picture doesn't show.
     let band: UIColor
+    /// The padlock's outline in pixels: shackle (left, right, top) and body (left, right, top,
+    /// bottom of the sides, tip x, tip y), as split-chests.py cuts it.
+    let shackle: (left: CGFloat, right: CGFloat, top: CGFloat)
+    let lockBody: (left: CGFloat, right: CGFloat, top: CGFloat, sides: CGFloat, tipX: CGFloat, tipY: CGFloat)
 
     init(_ rarity: String) {
         let frontLeft: SIMD2<Float>
@@ -1076,24 +1086,28 @@ private struct ChestArt {
             hasp = CGRect(x: 120, y: 162, width: 81, height: 33)
             lock = CGRect(x: 107, y: 186, width: 99, height: 126)
             band = UIColor(red: 0.56, green: 0.58, blue: 0.66, alpha: 1)
+            shackle = (121, 189, 188); lockBody = (107, 205, 230, 285, 150, 310)
         case "epic":
             name = "chest_epic"
             frontLeft = SIMD2(30, 172); lidTop = 79
             hasp = CGRect(x: 123, y: 165, width: 79, height: 32)
             lock = CGRect(x: 111, y: 188, width: 97, height: 128)
             band = UIColor(red: 0.86, green: 0.67, blue: 0.14, alpha: 1)
+            shackle = (125, 188, 190); lockBody = (111, 207, 236, 285, 152, 314)
         case "legendary":
             name = "chest_legendary"
             frontLeft = SIMD2(34, 179); lidTop = 76
             hasp = CGRect(x: 126, y: 170, width: 76, height: 28)
             lock = CGRect(x: 114, y: 192, width: 97, height: 126)
             band = UIColor(red: 0.64, green: 0.67, blue: 0.75, alpha: 1)
+            shackle = (128, 195, 194); lockBody = (114, 210, 234, 290, 156, 316)
         default:
             name = "chest_common"
             frontLeft = SIMD2(32, 172); lidTop = 77
             hasp = CGRect(x: 123, y: 162, width: 79, height: 35)
             lock = CGRect(x: 111, y: 189, width: 97, height: 126)
             band = UIColor(red: 0.64, green: 0.31, blue: 0.13, alpha: 1)
+            shackle = (126, 188, 191); lockBody = (111, 207, 234, 288, 152, 313)
         }
         // The front-left corner of the top of the body is where the picture says it is
         let corner = SIMD3<Float>(-Float(Dim.width) / 2, Float(Dim.height), Float(Dim.depth) / 2)
@@ -1135,6 +1149,25 @@ private struct ChestArt {
         (origin.y - (lidTop - 2)) / (Self.pixelsPerUnit * Self.up.y) - Float(Dim.height)
     }
 
+    /// The padlock's outline: the shackle's arch from left to right, then the body down the right,
+    /// the tip and up the left.
+    var lockOutline: [CGPoint] {
+        let centerX = (shackle.left + shackle.right) / 2, radiusX = (shackle.right - shackle.left) / 2
+        let radiusY = lockBody.top - shackle.top
+        var points = (0...18).map { step -> CGPoint in
+            let angle = CGFloat.pi * CGFloat(step) / 18
+            return CGPoint(x: centerX - radiusX * cos(angle), y: lockBody.top - radiusY * sin(angle))
+        }
+        let body = lockBody
+        points += [
+            CGPoint(x: body.right - 5, y: body.top + 1), CGPoint(x: body.right - 2, y: body.top + 5),
+            CGPoint(x: body.right - 2, y: body.sides), CGPoint(x: body.tipX, y: body.tipY - 1),
+            CGPoint(x: body.left + 2, y: body.sides), CGPoint(x: body.left + 2, y: body.top + 5),
+            CGPoint(x: body.left + 5, y: body.top + 1)
+        ]
+        return points
+    }
+
     /// Where the padlock hangs from (the top of its shackle) and where it ends up on the floor.
     var padlockZ: Float { Float(Dim.depth) / 2 + 0.035 }
     var padlockHang: SCNVector3 {
@@ -1147,7 +1180,8 @@ private struct ChestArt {
     /// Lying on the floor, tilted back on its shackle (`Dim.padlockTilt`), in front of the chest.
     var padlockRest: SCNVector3 {
         let hang = padlockHang
-        return SCNVector3(hang.x + 0.02, padlockLength * cos(Dim.padlockTilt) + 0.012, hang.z + 0.06)
+        // (its back, 0.05 thick, rests on the floor)
+        return SCNVector3(hang.x + 0.02, padlockLength * cos(Dim.padlockTilt) + 0.05, hang.z + 0.08)
     }
 }
 
@@ -1295,14 +1329,16 @@ private struct ChestBuilder {
 
     /// The treasure inside: a heap of coins, with silver coins, gems or crystals the rarer it is.
     mutating func buildTreasure(into parent: SCNNode) {
-        let heap = SCNSphere(radius: 1)
-        heap.segmentCount = 32
+        // A low dome of coins standing on the floor of the chest (a whole sphere would poke out
+        // under the chest, where the picture is see-through)
+        let heapSize = SCNVector3(0.42, 0.22, 0.24)
+        let floor: Float = 0.04
+        let heap = Mesh.surface(columns: 32, rows: 12, flipped: true, point: { u, v in
+            let around = 2 * Float.pi * u, up = Float.pi / 2 * min(v, 0.98)
+            return SIMD3(heapSize.x * cos(up) * cos(around), floor + heapSize.y * sin(up), heapSize.z * cos(up) * sin(around))
+        }, texture: { u, v, _ in SIMD2(u * 4, v * 2) })
         heap.materials = [materials.heap]
-        let heapNode = SCNNode(geometry: heap)
-        let heapSize = SCNVector3(0.42, 0.19, 0.24)
-        heapNode.scale = heapSize
-        heapNode.position.y = 0.07
-        parent.addChildNode(heapNode)
+        parent.addChildNode(SCNNode(geometry: heap))
 
         var random = SeededRandom(seed: 21)
         let halfX = Float(Dim.width / 2 - Dim.plank) - 0.04
@@ -1312,7 +1348,7 @@ private struct ChestBuilder {
             let x = random.next(in: -halfX...halfX)
             let z = random.next(in: -halfZ...halfZ)
             let inside = 1 - pow(x / heapSize.x, 2) - pow(z / heapSize.z, 2)
-            return SCNVector3(x, 0.07 + heapSize.y * sqrt(max(0, inside)) + 0.004, z)
+            return SCNVector3(x, floor + heapSize.y * sqrt(max(0, inside)) + 0.004, z)
         }
 
         let gold = SCNCylinder(radius: 0.034, height: 0.008)
@@ -1375,7 +1411,10 @@ private struct ChestBuilder {
 
     /// The domed lid. `pivot` sits on the back hinge; the lid's node, in the middle of the top of the
     /// body, half a depth in front of it.
-    func buildLid(into pivot: SCNNode) {
+    /// Returns the node with the inside of the lid, which the director keeps hidden until the lid
+    /// opens: where the picture on the dome is see-through it would show through.
+    @discardableResult
+    func buildLid(into pivot: SCNNode) -> SCNNode {
         let lid = SCNNode()
         lid.position = SCNVector3(0, 0, Float(Dim.depth / 2))
         pivot.addChildNode(lid)
@@ -1413,39 +1452,72 @@ private struct ChestBuilder {
         })
 
         // Inside: the underside of the dome and of its left end, and the edges it rests on
+        let underside = SCNNode()
+        lid.addChildNode(underside)
         let innerWidth = halfWidth - 0.02
-        lid.addChildNode(inside(materials.wood, Mesh.surface(columns: 8, rows: 24, flipped: true, offset: at, point: { u, v in
+        underside.addChildNode(inside(materials.wood, Mesh.surface(columns: 8, rows: 24, flipped: true, offset: at, point: { u, v in
             let angle = Float.pi * v
             return SIMD3(-innerWidth + 2 * innerWidth * u, height + (radiusY - thickness) * sin(angle), (radiusZ - thickness) * cos(angle))
         }, texture: Self.planks(2 * innerWidth, Float.pi * radiusZ))))
-        lid.addChildNode(inside(materials.woodDark, Mesh.surface(columns: 4, rows: 24, flipped: true, offset: at, point: { u, v in
+        underside.addChildNode(inside(materials.woodDark, Mesh.surface(columns: 4, rows: 24, flipped: true, offset: at, point: { u, v in
             let angle = Float.pi * v
             return SIMD3(-innerWidth, height + (radiusY - thickness) * u * sin(angle), (radiusZ - thickness) * u * cos(angle))
         }, texture: Self.planks(radiusZ, 2 * radiusZ))))
         for (z0, z1) in [(radiusZ - thickness, radiusZ), (-radiusZ, -radiusZ + thickness)] {
-            lid.addChildNode(inside(materials.rim, Mesh.surface(columns: 1, rows: 1, offset: at, point: { u, v in
+            underside.addChildNode(inside(materials.rim, Mesh.surface(columns: 1, rows: 1, offset: at, point: { u, v in
                 SIMD3(-halfWidth + 2 * halfWidth * u, height, z0 + (z1 - z0) * v)
             }, texture: { u, v, _ in SIMD2(u, v) })))
         }
+        return underside
     }
 
-    /// The padlock: its picture, and a darker copy just behind it so it has some thickness when it
-    /// lies on the floor. The node's origin is where it hangs from (the top of the shackle).
+    /// The padlock: a solid in the padlock's outline (so it has thickness when it falls and lies on
+    /// the floor), with the picture on its face. The node's origin is where it hangs from (the top
+    /// of the shackle).
     func buildPadlock(into node: SCNNode) {
         let z = art.padlockZ
         let topLeft = art.point(at: CGPoint(x: art.lock.minX - 3, y: art.lock.minY - 3), z: z)
         let bottomRight = art.point(at: CGPoint(x: art.lock.maxX + 3, y: art.lock.maxY + 3), z: z)
         let hang = art.padlockHang
         let offset = SIMD3<Float>(hang.x, hang.y, hang.z)
-        for (shade, depth) in [(CGFloat(1), Float(0)), (0.35, -0.022)] {
-            let face = pictured(art.padlock, shade: shade) { texture in
-                Mesh.surface(columns: 2, rows: 2, offset: offset, point: { u, v in
-                    SIMD3(topLeft.x + (bottomRight.x - topLeft.x) * u, bottomRight.y + (topLeft.y - bottomRight.y) * v, z)
-                }, texture: texture)
-            }
-            face.position.z = depth
-            node.addChildNode(face)
+        node.addChildNode(pictured(art.padlock) { texture in
+            Mesh.surface(columns: 2, rows: 2, offset: offset, point: { u, v in
+                SIMD3(topLeft.x + (bottomRight.x - topLeft.x) * u, bottomRight.y + (topLeft.y - bottomRight.y) * v, z)
+            }, texture: texture)
+        })
+
+        // The body: the outline (a touch inside the picture's, so its sides don't show around it)
+        // extruded backwards
+        let outline = art.lockOutline.map { pixel -> CGPoint in
+            let point = art.point(at: pixel, z: z) - offset
+            return CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))
         }
+        guard outline.count > 2 else { return }
+        let center = CGPoint(
+            x: outline.map(\.x).reduce(0, +) / CGFloat(outline.count),
+            y: outline.map(\.y).reduce(0, +) / CGFloat(outline.count)
+        )
+        let path = UIBezierPath()
+        for (index, point) in outline.enumerated() {
+            let inset = CGPoint(x: center.x + (point.x - center.x) * 0.97, y: center.y + (point.y - center.y) * 0.97)
+            if index == 0 { path.move(to: inset) } else { path.addLine(to: inset) }
+        }
+        path.close()
+        let depth: CGFloat = 0.05
+        let shape = SCNShape(path: path, extrusionDepth: depth)
+        let metal = SCNMaterial()
+        metal.lightingModel = .lambert
+        metal.diffuse.contents = art.band.withAlphaComponent(1)
+        metal.multiply.contents = UIColor(white: 0.75, alpha: 1)
+        let back = SCNMaterial()
+        back.lightingModel = .lambert
+        back.diffuse.contents = art.band
+        back.multiply.contents = UIColor(white: 0.45, alpha: 1)
+        // Front (behind the picture), back, sides
+        shape.materials = [back, back, metal]
+        let body = SCNNode(geometry: shape)
+        body.position.z = -Float(depth / 2) - 0.004
+        node.addChildNode(body)
     }
 }
 

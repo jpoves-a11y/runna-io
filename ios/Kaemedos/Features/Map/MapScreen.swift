@@ -26,6 +26,9 @@ struct MapScreen: View {
     @State private var confirmDiscardRun = false
     @AppStorage("map_show_own_routes") private var showOwnRoutes = true
     @AppStorage("map_style_satellite") private var satellite = false
+    @State private var location = LocationPermission.shared
+    /// The location button was tapped without permission (or with Location Services off).
+    @State private var showLocationSettings = false
 
     private static let fallbackPosition: MapCameraPosition = .region(MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: AppConfig.defaultLatitude, longitude: AppConfig.defaultLongitude),
@@ -57,6 +60,12 @@ struct MapScreen: View {
             Button("Cancelar", role: .cancel) {}
         } message: {
             Text("Se perderá el recorrido que quedó grabado.")
+        }
+        .alert("Ubicación desactivada", isPresented: $showLocationSettings) {
+            Button("Abrir Ajustes") { LocationPermission.openSettings() }
+            Button("Ahora no", role: .cancel) {}
+        } message: {
+            Text("Para centrar el mapa en ti, permite que KM2 use tu ubicación en Ajustes (y comprueba que la Localización del iPhone está activada).")
         }
         .task(id: router.reloadSignal) {
             await reload(force: model.reloadTracker.consume(router.reloadSignal))
@@ -308,7 +317,26 @@ struct MapScreen: View {
         camera.followsUserLocation
     }
 
+    /// Follows me on the map, asking for the location first if it hasn't been asked yet; without
+    /// it (refused, or Location Services off) offers to open Settings.
     private func centerOnUser() {
+        if location.isAllowed {
+            followUser()
+        } else if location.isDenied {
+            showLocationSettings = true
+        } else {
+            Task {
+                let status = await location.request()
+                if status == .authorizedWhenInUse || status == .authorizedAlways {
+                    followUser()
+                } else {
+                    showLocationSettings = true
+                }
+            }
+        }
+    }
+
+    private func followUser() {
         withAnimation(.smooth(duration: 0.8)) {
             camera = .userLocation(fallback: Self.fallbackPosition)
         }
