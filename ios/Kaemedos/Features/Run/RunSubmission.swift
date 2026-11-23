@@ -443,9 +443,9 @@ enum PendingRuns {
     }
 }
 
-/// Keeps the app running for a short while in the background so an upload can finish.
+/// Keeps the app running for a short while in the background so an upload (or a video) can finish.
 @MainActor
-private final class BackgroundTaskToken {
+final class BackgroundTaskToken {
     private var identifier: UIBackgroundTaskIdentifier = .invalid
 
     func begin(_ name: String) {
