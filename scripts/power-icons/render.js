@@ -12,8 +12,9 @@ const fs = require('fs');
   fs.mkdirSync('out', { recursive: true });
   for (const id of ids) {
     try {
-      const data = await p.evaluate(i => window.renderIcon(i), id);
-      fs.writeFileSync(`out/${id}.png`, Buffer.from(data.split(',')[1], 'base64'));
+      const result = await p.evaluate(i => window.renderIcon(i), id);
+      fs.writeFileSync(`out/${id}.png`, Buffer.from(result.png.split(',')[1], 'base64'));
+      if (result.markers.length) fs.writeFileSync(`out/${id}.json`, JSON.stringify({ markers: result.markers }, null, 2));
       console.log('ok', id);
     } catch (e) { console.log('FAIL', id, e.message.split('\n')[0]); }
   }

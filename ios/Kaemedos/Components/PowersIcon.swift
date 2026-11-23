@@ -81,7 +81,7 @@ struct PowersIcon: View {
                                 PowerLight(time: context.date.timeIntervalSince(start), size: size)
                             }
                             // Taller than the icon: the light rises above it
-                            .frame(width: size * 1.3, height: size * 1.55)
+                            .frame(width: size * 1.3, height: size * 1.5)
                             .allowsHitTesting(false)
                         }
                     }
@@ -110,62 +110,120 @@ struct PowersIcon: View {
     }
 }
 
-/// The light coming out of the open chest: a flickering beam and rising motes, added as light.
-/// Drawn in a frame 1.3× as wide and 1.55× as tall as the icon, sharing its bottom edge.
+/// The light coming out of the open chest: the opening glows and pulses, a soft column of light rises
+/// from its exact shape (in perspective), rays flicker inside it and motes of light drift up. All
+/// added as light. Drawn in a frame 1.3× as wide and 1.5× as tall as the icon, sharing its bottom
+/// edge (the light rises above the chest).
 private struct PowerLight: View {
     let time: Double
     let size: CGFloat
 
+    /// Corners of the chest's opening in the cropped render (0...1 from the top left): front left,
+    /// front right, back right, back left. Exported by scripts/power-icons (crop.py).
+    static let opening = [
+        CGPoint(x: 0.126, y: 0.573),
+        CGPoint(x: 0.597, y: 0.707),
+        CGPoint(x: 0.764, y: 0.574),
+        CGPoint(x: 0.314, y: 0.459),
+    ]
+
     var body: some View {
         Canvas { context, canvas in
+            let origin = CGPoint(x: (canvas.width - size) / 2, y: canvas.height - size)
+            let corners = Self.opening.map { CGPoint(x: origin.x + $0.x * size, y: origin.y + $0.y * size) }
+            /// A point inside the opening: u across (left to right), w in depth (front to back).
+            func inside(_ u: CGFloat, _ w: CGFloat) -> CGPoint {
+                let front = lerp(corners[0], corners[1], u)
+                let back = lerp(corners[3], corners[2], u)
+                return lerp(front, back, w)
+            }
+            let center = inside(0.5, 0.5)
+            let rise = size * 0.82
+            let pulse = 0.8 + 0.12 * sin(time * 3.1) + 0.08 * sin(time * 7.7)
+
             context.blendMode = .plusLighter
-            let width = canvas.width
-            let height = canvas.height
-            // Where the chest's opening is in the (cropped) render: 43% across, 47% down
-            let openingX = width / 2 - size * 0.07
-            let openingY = height - size * 0.53
-            let flicker = 0.75 + 0.15 * sin(time * 7.3) + 0.1 * sin(time * 12.1)
 
-            // Beam: a trapezoid from the opening up, fading to nothing
-            var beam = Path()
-            let baseHalf = size * 0.26
-            let topHalf = size * 0.4
-            let top = openingY - size * 0.8
-            beam.move(to: CGPoint(x: openingX - baseHalf, y: openingY))
-            beam.addLine(to: CGPoint(x: openingX + baseHalf, y: openingY))
-            beam.addLine(to: CGPoint(x: openingX + topHalf, y: top))
-            beam.addLine(to: CGPoint(x: openingX - topHalf, y: top))
-            beam.closeSubpath()
-            context.fill(beam, with: .linearGradient(
-                Gradient(colors: [Color.brandNeon.opacity(0.5 * flicker), Color.brandNeon.opacity(0)]),
-                startPoint: CGPoint(x: openingX, y: openingY),
-                endPoint: CGPoint(x: openingX, y: top)
-            ))
+            // 1. The opening itself glows
+            var mouth = Path()
+            mouth.addLines(corners)
+            mouth.closeSubpath()
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: size * 0.05))
+                layer.fill(mouth, with: .color(Color.brandNeon.opacity(0.35 * pulse)))
+            }
 
-            // Motes drifting up, each on its own loop
-            for index in 0..<7 {
+            // 2. A column of light rising from the opening's outline, widening a little and fading
+            func up(_ point: CGPoint, spread: CGFloat) -> CGPoint {
+                CGPoint(x: center.x + (point.x - center.x) * spread, y: point.y - rise)
+            }
+            var column = Path()
+            column.move(to: corners[0])
+            column.addLine(to: corners[1])
+            column.addLine(to: corners[2])
+            column.addLine(to: up(corners[2], spread: 1.25))
+            column.addLine(to: up(corners[3], spread: 1.25))
+            column.addLine(to: up(corners[0], spread: 1.25))
+            column.closeSubpath()
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: size * 0.06))
+                layer.fill(column, with: .linearGradient(
+                    Gradient(stops: [
+                        .init(color: Color.brandNeon.opacity(0.55 * pulse), location: 0),
+                        .init(color: Color.brandNeon.opacity(0.22 * pulse), location: 0.45),
+                        .init(color: Color.brandNeon.opacity(0), location: 1),
+                    ]),
+                    startPoint: CGPoint(x: center.x, y: center.y),
+                    endPoint: CGPoint(x: center.x, y: center.y - rise * 1.05)
+                ))
+            }
+
+            // 3. Rays flickering inside the column
+            context.drawLayer { layer in
+                layer.addFilter(.blur(radius: size * 0.015))
+                for index in 0..<5 {
+                    let seed = Double(index)
+                    let base = inside(0.15 + 0.7 * CGFloat(fract(seed * 0.618 + 0.1)), 0.25 + 0.5 * CGFloat(fract(seed * 0.37)))
+                    let flicker = 0.5 + 0.5 * sin(time * (2.2 + seed * 0.7) + seed * 2.1)
+                    let length = rise * (0.55 + 0.35 * CGFloat(flicker))
+                    let width = size * (0.025 + 0.015 * CGFloat(fract(seed * 0.53)))
+                    let ray = Path(roundedRect: CGRect(x: base.x - width / 2, y: base.y - length, width: width, height: length), cornerRadius: width / 2)
+                    layer.fill(ray, with: .linearGradient(
+                        Gradient(colors: [Color.white.opacity(0.45 * flicker), Color.brandNeon.opacity(0)]),
+                        startPoint: CGPoint(x: base.x, y: base.y),
+                        endPoint: CGPoint(x: base.x, y: base.y - length)
+                    ))
+                }
+            }
+
+            // 4. Motes born inside the opening, drifting up and fading
+            for index in 0..<9 {
                 let seed = Double(index)
-                let period = 1.3 + 0.9 * fract(seed * 0.618)
+                let period = 1.4 + 0.9 * fract(seed * 0.618)
                 let cycle = time / period + fract(seed * 0.37)
                 let life = fract(cycle)
-                let startX = openingX + (CGFloat(fract(seed * 0.43 + floor(cycle) * 0.29)) - 0.5) * size * 0.44
-                let x = startX + CGFloat(sin(time * 2.4 + seed * 1.9)) * size * 0.05 * CGFloat(life)
-                let y = openingY - CGFloat(life) * size * 0.9
-                let alpha = min(1, life / 0.15) * (1 - life)
-                let radius = size * (0.035 + 0.025 * CGFloat(fract(seed * 0.71))) * CGFloat(1 - life * 0.4)
+                let round = floor(cycle)
+                let start = inside(0.1 + 0.8 * CGFloat(fract(seed * 0.43 + round * 0.29)), 0.15 + 0.7 * CGFloat(fract(seed * 0.71 + round * 0.53)))
+                let x = start.x + CGFloat(sin(time * 2.4 + seed * 1.9)) * size * 0.04 * CGFloat(life)
+                let y = start.y - CGFloat(life) * rise * 1.05
+                let alpha = min(1, life / 0.12) * pow(1 - life, 1.3)
+                let radius = size * (0.022 + 0.018 * CGFloat(fract(seed * 0.91))) * CGFloat(1 - life * 0.5)
                 let color = index % 3 == 0 ? Color(red: 1, green: 0.85, blue: 0.4) : Color.brandNeon
-                let halo = radius * 3
+                let halo = radius * 3.2
                 context.fill(
                     Path(ellipseIn: CGRect(x: x - halo, y: y - halo, width: halo * 2, height: halo * 2)),
-                    with: .radialGradient(Gradient(colors: [color.opacity(0.45 * alpha), color.opacity(0)]),
+                    with: .radialGradient(Gradient(colors: [color.opacity(0.5 * alpha), color.opacity(0)]),
                                           center: CGPoint(x: x, y: y), startRadius: 0, endRadius: halo)
                 )
                 context.fill(
                     Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)),
-                    with: .color(Color.white.opacity(0.9 * alpha))
+                    with: .color(Color.white.opacity(0.95 * alpha))
                 )
             }
         }
+    }
+
+    private func lerp(_ a: CGPoint, _ b: CGPoint, _ t: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
     }
 
     private func fract(_ value: Double) -> Double { value - floor(value) }

@@ -39,7 +39,16 @@ window.renderIcon = (id) => {
   camera.lookAt(0, 0, 0);
   renderer.setClearColor(0x000000, 0);
   renderer.render(scene, camera);
-  return renderer.domElement.toDataURL('image/png');
+  // Markers (e.g. the chest's opening) in image coordinates, 0...1 from the top left
+  const markers = [];
+  scene.updateMatrixWorld(true);
+  scene.traverse(o => {
+    if (o.name === 'markers') o.children.forEach(m => {
+      const p = new THREE.Vector3().setFromMatrixPosition(m.matrixWorld).project(camera);
+      markers.push([(p.x + 1) / 2, (1 - p.y) / 2]);
+    });
+  });
+  return { png: renderer.domElement.toDataURL('image/png'), markers };
 };
 window.ids = Object.keys(MODELS);
 window.ready = true;

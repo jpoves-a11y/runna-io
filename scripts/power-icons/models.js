@@ -693,42 +693,58 @@ export const MODELS = {
     return group(g);
   },
 
-  // The Poderes button: an open treasure chest (wood and gold, like the game's chests) with green
-  // power pouring out of it: glowing gems, coins, a beam of light and sparks
+  // The Poderes button: an open treasure chest (wood and gold, like the game's chests), hollow, full
+  // to the brim with green power: a glowing surface, gems and coins. The beam of light and the motes
+  // are animated in the app (PowersIcon), from the opening's corners exported as markers.
   powers_icon: (r) => {
-    const W = 1.7, H = 0.82, D = 1.1, R = D / 2;
+    const W = 1.7, H = 0.82, D = 1.1, R = D / 2, T = 0.09;
     const woodM = new THREE.MeshPhysicalMaterial({ color: 0x8a4a22, roughness: 0.55, clearcoat: 0.35, clearcoatRoughness: 0.35 });
-    const woodDark = new THREE.MeshPhysicalMaterial({ color: 0x5a2c12, roughness: 0.7 });
+    const woodInside = new THREE.MeshPhysicalMaterial({ color: 0x3a1c0c, roughness: 0.8 });
     const gold = metal(0xf2b43a, 0.16);
     const goldBright = metal(0xffd36a, 0.12);
     const g = new THREE.Group();
 
-    // Body: three planks, gold corners and rims
+    // Walls of planks (hollow), dark inside, and a floor
     for (let i = 0; i < 3; i++) {
       const plank = woodM.clone();
       plank.color.multiplyScalar(0.9 + i * 0.07);
-      g.add(mesh(rbox(W, H / 3 - 0.02, D, 0.05), plank, { pos: [0, -H + (i + 0.5) * (H / 3), 0] }));
+      const y = -H + (i + 0.5) * (H / 3);
+      const h = H / 3 - 0.02;
+      [-1, 1].forEach(side => {
+        g.add(mesh(rbox(W, h, T, 0.035), plank, { pos: [0, y, side * (D / 2 - T / 2)] }));
+        g.add(mesh(rbox(T, h, D - 2 * T, 0.035), plank, { pos: [side * (W / 2 - T / 2), y, 0] }));
+      });
     }
-    [-1, 1].forEach(sx => [-1, 1].forEach(sz => g.add(mesh(rbox(0.16, H + 0.04, 0.16, 0.04), gold, { pos: [sx * (W / 2 - 0.06), -H / 2, sz * (D / 2 - 0.06)] }))));
-    g.add(mesh(rbox(W + 0.04, 0.1, D + 0.04, 0.04), gold, { pos: [0, -0.02, 0] }));
-    g.add(mesh(rbox(W + 0.04, 0.1, D + 0.04, 0.04), gold, { pos: [0, -H + 0.03, 0] }));
-    // Rivets
-    [-1, 1].forEach(sx => [-0.15, -0.65].forEach(y => g.add(mesh(sphere(0.035, 16, 12), goldBright, { pos: [sx * (W / 2 - 0.06), y, D / 2 + 0.02] }))));
-    // Lock plate with keyhole, and the hasp hanging open
-    g.add(mesh(rbox(0.36, 0.42, 0.06, 0.05), gold, { pos: [0, -0.3, D / 2 + 0.02] }));
-    g.add(mesh(cyl(0.05, 0.05, 0.08, 20), matte(0x1a1a1a), { pos: [0, -0.27, D / 2 + 0.05], rot: [PI / 2, 0, 0] }));
-    g.add(mesh(rbox(0.035, 0.1, 0.06, 0.01), matte(0x1a1a1a), { pos: [0, -0.35, D / 2 + 0.05] }));
-
-    // Glowing contents: a mound of green light, gems and coins
-    g.add(mesh(sphere(1, 48, 24), glow(0x1dff3c, 1.3), { pos: [0, -0.06, 0], scale: [W / 2 - 0.12, 0.2, D / 2 - 0.12] }));
-    const gemM = new THREE.MeshPhysicalMaterial({ color: 0x00e01e, emissive: 0x00c81a, emissiveIntensity: 0.8, roughness: 0.05, clearcoat: 1, flatShading: true });
-    [[-0.45, 0.12, 0.1, 0.17, 0.4], [0.2, 0.16, -0.12, 0.2, -0.3], [0.55, 0.08, 0.2, 0.14, 0.8], [-0.1, 0.1, 0.28, 0.12, 0.2]].forEach(([x, y, z, k, rot]) =>
-      g.add(mesh(new THREE.OctahedronGeometry(k, 0), gemM, { pos: [x, y, z], rot: [0.3, rot, 0.2], scale: [1, 1.3, 1] })));
-    [[-0.2, 0.06, -0.2, 0.4], [0.42, 0.05, -0.25, -0.5], [-0.62, 0.04, -0.15, 0.2], [0.05, 0.07, 0.05, 0.9]].forEach(([x, y, z, rz]) => {
-      g.add(mesh(cyl(0.12, 0.12, 0.035, 32), goldBright, { pos: [x, y, z], rot: [0.5, 0, rz] }));
+    // Gold corners, a rim around the opening (a frame, so the inside stays open) and a base
+    [-1, 1].forEach(sx => [-1, 1].forEach(sz => g.add(mesh(rbox(0.17, H + 0.05, 0.17, 0.04), gold, { pos: [sx * (W / 2 - 0.05), -H / 2, sz * (D / 2 - 0.05)] }))));
+    [-1, 1].forEach(side => {
+      g.add(mesh(rbox(W + 0.05, 0.09, 0.14, 0.03), gold, { pos: [0, -0.02, side * (D / 2 - 0.04)] }));
+      g.add(mesh(rbox(0.14, 0.09, D + 0.05, 0.03), gold, { pos: [side * (W / 2 - 0.04), -0.02, 0] }));
     });
+    g.add(mesh(rbox(W + 0.06, 0.1, D + 0.06, 0.04), gold, { pos: [0, -H + 0.03, 0] }));
+    // Rivets
+    [-1, 1].forEach(sx => [-0.18, -0.62].forEach(y => g.add(mesh(sphere(0.036, 16, 12), goldBright, { pos: [sx * (W / 2 - 0.05), y, D / 2 + 0.035] }))));
+    // Lock plate with keyhole
+    g.add(mesh(rbox(0.36, 0.42, 0.06, 0.05), gold, { pos: [0, -0.32, D / 2 + 0.02] }));
+    g.add(mesh(cyl(0.05, 0.05, 0.08, 20), matte(0x1a1a1a), { pos: [0, -0.29, D / 2 + 0.05], rot: [PI / 2, 0, 0] }));
+    g.add(mesh(rbox(0.035, 0.1, 0.06, 0.01), matte(0x1a1a1a), { pos: [0, -0.37, D / 2 + 0.05] }));
 
-    // Domed lid, open backwards on its hinge
+    // The power inside, to the brim: a flat glowing surface the shape of the opening
+    const inW = W - 2 * T, inD = D - 2 * T, level = -0.1;
+    // Dark inner walls showing above the contents, and the contents' body below the surface
+    [-1, 1].forEach(side => {
+      g.add(mesh(new THREE.BoxGeometry(inW, 0.2, 0.01), woodInside, { pos: [0, -0.06, side * (inD / 2 - 0.004)] }));
+      g.add(mesh(new THREE.BoxGeometry(0.01, 0.2, inD), woodInside, { pos: [side * (inW / 2 - 0.004), -0.06, 0] }));
+    });
+    g.add(mesh(new THREE.BoxGeometry(inW - 0.004, H + level - 0.02, inD - 0.004), glow(0x0a8a1c, 0.6), { pos: [0, (level - H) / 2 - 0.01, 0] }));
+    g.add(mesh(new THREE.BoxGeometry(inW, 0.02, inD), glow(0x1dff3c, 1.5), { pos: [0, level, 0] }));
+    const gemM = new THREE.MeshPhysicalMaterial({ color: 0x00e01e, emissive: 0x00c81a, emissiveIntensity: 0.75, roughness: 0.05, clearcoat: 1, flatShading: true });
+    [[-0.45, 0.4, 0.15, 0.4], [0.18, -0.25, 0.19, -0.3], [0.5, 0.2, 0.14, 0.8], [-0.1, 0.22, 0.12, 0.2], [-0.6, -0.2, 0.11, 1.1]].forEach(([x, z, k, rot]) =>
+      g.add(mesh(new THREE.OctahedronGeometry(k, 0), gemM, { pos: [x, level + k * 0.6, z * (inD / 2) / 0.45], rot: [0.3, rot, 0.2], scale: [1, 1.3, 1] })));
+    [[-0.2, -0.25, 0.4], [0.42, -0.3, -0.5], [-0.66, 0.15, 0.2], [0.05, 0.05, 0.9], [0.62, 0.32, -0.2]].forEach(([x, z, rz]) =>
+      g.add(mesh(cyl(0.12, 0.12, 0.035, 32), goldBright, { pos: [x, level + 0.04, z], rot: [0.45, 0, rz] })));
+
+    // Domed lid, open backwards on its hinge, dark wood inside
     const half = new THREE.Shape();
     half.moveTo(R, 0);
     half.absarc(0, 0, R, 0, PI, false);
@@ -737,7 +753,7 @@ export const MODELS = {
     const dome = mesh(extrude(half, W - 0.08, 0.04), woodM);
     dome.rotation.y = PI / 2;
     lid.add(dome);
-    lid.add(mesh(rbox(W - 0.06, 0.04, D - 0.1, 0.02), woodDark, { pos: [0, 0.02, 0] }));
+    lid.add(mesh(new THREE.BoxGeometry(W - 0.1, 0.03, D - 0.1), woodInside, { pos: [0, 0.005, 0] }));
     [-1, 0, 1].forEach(k => {
       const band = new THREE.Shape();
       band.moveTo(R + 0.05, 0);
@@ -749,15 +765,23 @@ export const MODELS = {
       b.position.x = k * (W / 2 - 0.1);
       lid.add(b);
     });
-    // Pivot on the back top edge; open to about 105°
     lid.position.set(0, 0, R);
     const hinge = new THREE.Group();
     hinge.add(lid);
     hinge.position.set(0, 0.03, -D / 2);
-    hinge.rotation.x = -1.85;
+    hinge.rotation.x = -1.9;
     g.add(hinge);
 
-    // (The beam of light and the motes are animated in the app: PowersIcon)
+    // Corners of the opening, projected by render.html into <id>.json for the app's animation
+    const markers = new THREE.Group();
+    markers.name = 'markers';
+    [[-1, 1], [1, 1], [1, -1], [-1, -1]].forEach(([sx, sz]) => {
+      const m = new THREE.Object3D();
+      m.position.set(sx * inW / 2, level, sz * inD / 2);
+      markers.add(m);
+    });
+    g.add(markers);
+
     g.rotation.set(0.42, -0.55, 0);
     return g;
   },
