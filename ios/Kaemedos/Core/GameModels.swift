@@ -1371,17 +1371,20 @@ struct SeasonMapResponse: Decodable {
 
     let competitionId: String?
     let mode: String?
+    /// The current cycle (when the competition shown started).
+    let cycle: SeasonCycle?
     let territories: [Territory]
     let fortifications: [Fortification]
     let chests: [Chest]
     /// Banderas: the flags and who holds them.
     let flags: [CompetitionFlag]
 
-    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests, flags }
+    enum CodingKeys: String, CodingKey { case competitionId, mode, cycle, territories, fortifications, chests, flags }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         competitionId = c.string(.competitionId)
+        cycle = try? c.decodeIfPresent(SeasonCycle.self, forKey: .cycle)
         mode = c.string(.mode)
         territories = (try? c.decodeIfPresent([Territory].self, forKey: .territories)) ?? []
         fortifications = (try? c.decodeIfPresent([Fortification].self, forKey: .fortifications)) ?? []

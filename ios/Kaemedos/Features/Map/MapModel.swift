@@ -54,6 +54,7 @@ struct RouteLine: Identifiable {
     let userId: String
     let color: Color
     let coordinates: [CLLocationCoordinate2D]
+    let startDate: Date?
 }
 
 /// The two maps of the app: the user's world map (Global) and the running club competition.
@@ -115,6 +116,8 @@ final class MapModel {
     private(set) var errorMessage: String?
     /// The competition map has data to show (I take part in a running competition).
     private(set) var hasCompetitionMap = false
+    /// When the competition on the Competición map started (its runs are the ones drawn there).
+    private(set) var competitionStart: Date?
     /// Mode of the competition on the map ("ffa", "teams", "derby"…).
     private(set) var competitionMode: String?
 
@@ -179,7 +182,13 @@ final class MapModel {
     var visibleFlags: [CompetitionFlag] { mode == .competition ? flags : [] }
     var visibleCompassSpots: [CompassResponse.Spot] { mode == .global ? compassSpots : [] }
     var visibleCastles: [CastleZone] { mode == .competition ? castles : [] }
-    var visibleRouteLines: [RouteLine] { routeLines }
+    /// My runs: all of them on Global; on Competición only those of the competition shown (none
+    /// in the rest days, when there's no competition map).
+    var visibleRouteLines: [RouteLine] {
+        guard mode == .competition else { return routeLines }
+        guard hasCompetitionMap, let start = competitionStart else { return [] }
+        return routeLines.filter { ($0.startDate ?? .distantPast) >= start }
+    }
 
     /// Chests that haven't expired yet (the rest days' chests, on both maps).
     var liveChests: [Chest] {
@@ -228,6 +237,7 @@ final class MapModel {
         routeColor = nil
         hasContent = false
         hasCompetitionMap = false
+        competitionStart = nil
         competitionMode = nil
         focusUserId = nil
         paletteContext = nil
@@ -367,6 +377,7 @@ final class MapModel {
         chests = response.chests
         flags = response.flags
         hasCompetitionMap = response.competitionId != nil
+        competitionStart = response.competitionId == nil ? nil : response.cycle.flatMap { APIDate.parse($0.competitionStartsAt) }
         makeFortifications(response.fortifications, ownColor: ownColor)
     }
 
@@ -382,7 +393,7 @@ final class MapModel {
         routeLines = recent.compactMap { route -> RouteLine? in
             let coordinates = route.locations
             guard coordinates.count >= 2 else { return nil }
-            return RouteLine(id: route.id, userId: user.id, color: color, coordinates: coordinates)
+            return RouteLine(id: route.id, userId: user.id, color: color, coordinates: coordinates, startDate: route.startDate)
         }
     }
 
