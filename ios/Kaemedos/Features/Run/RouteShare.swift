@@ -420,7 +420,8 @@ struct RouteShareEditor: View {
         self.activity = activity
         _config = State(initialValue: RouteReplayConfig(
             mode: RouteReplayMode(rawValue: UserDefaults.standard.string(forKey: "routeReplayMode") ?? "") ?? .threeD,
-            satellite: UserDefaults.standard.object(forKey: "routeReplaySatellite") as? Bool ?? true,
+            // Always satellite to start with
+            satellite: true,
             speed: 1
         ))
         _options = State(initialValue: RouteShareOptions(title: title, date: date, area: area))
@@ -575,9 +576,9 @@ struct RouteShareEditor: View {
             controls
         case .rendering:
             VStack(spacing: DS.Spacing.s) {
-                Label("Deja KM2 abierta mientras se crea", systemImage: "iphone")
+                Label("Si bloqueas el móvil, se pausa y sigue al volver", systemImage: "lock.iphone")
                     .font(.footnote.weight(.semibold))
-                Text("Se hace fotograma a fotograma, sin grabar la pantalla, y se guarda en Fotos al terminar.")
+                Text("El mapa solo se dibuja con KM2 abierta. Se hace fotograma a fotograma, sin grabar la pantalla, y se guarda en Fotos al terminar.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -665,7 +666,7 @@ struct RouteShareEditor: View {
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(phase != .editing || renderTask != nil)
 
-                Text("Se crea fotograma a fotograma en alta calidad, sin grabar la pantalla y con el mapa ya cargado, y se guarda solo en Fotos.")
+                Text("Se crea fotograma a fotograma en alta calidad, sin grabar la pantalla y con el mapa ya cargado, y se guarda solo en Fotos. Si bloqueas el móvil, se pausa y sigue al volver.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -758,15 +759,21 @@ struct RouteShareEditor: View {
         self.renderer = renderer
         phase = .rendering
         renderTask = Task { @MainActor in
-            // Asked first, so the question doesn't wait for the end
-            let canSave = await VideoLibrary.requestAccess()
-            renderer.setRunnerPhoto(await job.runner.loadPhoto())
+            // Asked first, so the question doesn't wait for the end; the runner's photo meanwhile
+            async let access = VideoLibrary.requestAccess()
+            async let photo = job.runner.loadPhoto()
+            let canSave = await access
+            renderer.setRunnerPhoto(await photo)
             do {
                 Self.removeOldVideos()
                 let url = try await renderer.render()
                 let result: SaveResult
                 if canSave {
+                    // Saved even if KM2 goes to the background right then
+                    let background = BackgroundTaskToken()
+                    background.begin("km2-video-save")
                     result = await VideoLibrary.save(url) ? .saved : .failed
+                    background.end()
                 } else {
                     result = .noPermission
                 }
@@ -811,7 +818,7 @@ private struct VideoRenderProgressView: View {
             }
             .frame(width: 104, height: 104)
             VStack(spacing: 4) {
-                Text(progress.isLoadingMap ? "Cargando el mapa…" : "Creando tu vídeo…")
+                Text(title)
                     .font(.headline)
                 Text(detail)
                     .font(.subheadline)
@@ -823,7 +830,17 @@ private struct VideoRenderProgressView: View {
         .padding(DS.Spacing.l)
     }
 
+    private var title: String {
+        if progress.isPaused {
+            return "En pausa"
+        }
+        return progress.isLoadingMap ? "Cargando el mapa…" : "Creando tu vídeo…"
+    }
+
     private var detail: String {
+        if progress.isPaused {
+            return "Sigue en cuanto vuelvas a KM2"
+        }
         if progress.isLoadingMap {
             return "Para que no falte ninguna zona"
         }

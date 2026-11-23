@@ -32,6 +32,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         let payload = Self.payload(from: notification.request.content.userInfo)
+        // The paused video's notice is only for when KM2 isn't open
+        if payload.type == AppRouter.videoRenderType {
+            completionHandler([])
+            return
+        }
         Task { @MainActor in
             AppRouter.shared.receivedNotificationInForeground(type: payload.type, routeId: payload.routeId)
         }
