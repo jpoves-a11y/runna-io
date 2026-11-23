@@ -48,7 +48,7 @@ private struct ChestLock: Shape {
     }
 }
 
-/// The Poderes icon: a green power crystal with a golden bolt (3D render, asset "powers_icon";
+/// The Poderes icon: a potion flask of glowing KM2-green liquid (3D render, asset "powers_icon";
 /// the chest outline if it's missing). `glow` (powers waiting to be used) adds a green light that
 /// breathes behind it and a small sparkle.
 struct PowersIcon: View {
