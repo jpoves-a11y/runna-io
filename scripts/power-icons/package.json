@@ -1,0 +1,11 @@
+{
+  "name": "kaemedos-power-icons",
+  "private": true,
+  "description": "Renders the 3D power icons (three.js in headless Chromium) into ios/Kaemedos/Assets.xcassets/power_<id>.imageset",
+  "scripts": {
+    "render": "node render.js && node install.js"
+  },
+  "dependencies": {
+    "three": "0.169.0"
+  }
+}

@@ -1,0 +1,46 @@
+<!doctype html><html><body style="margin:0;background:transparent">
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { MODELS, RARITIES } from './models.js';
+import { RARITY } from './lib.js';
+const SIZE = 512;
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setSize(SIZE, SIZE);
+renderer.setPixelRatio(1);
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.03).texture;
+
+window.renderIcon = (id) => {
+  const rarity = RARITIES[id];
+  const palette = RARITY[rarity];
+  const scene = new THREE.Scene();
+  scene.environment = envTex;
+  scene.environmentIntensity = 0.75;
+  const key = new THREE.DirectionalLight(0xfff4e6, 2.4); key.position.set(-2, 3, 4); scene.add(key);
+  const rim = new THREE.DirectionalLight(palette.light, 3.0); rim.position.set(3, 1.5, -3); scene.add(rim);
+  const rim2 = new THREE.DirectionalLight(palette.light, 1.6); rim2.position.set(-3, -1, -2); scene.add(rim2);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+  const model = MODELS[id](palette);
+  const holder = new THREE.Group(); holder.add(model); scene.add(holder);
+  // Centre and fit
+  const box = new THREE.Box3().setFromObject(holder);
+  const center = box.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+  const sphere = new THREE.Box3().setFromObject(holder).getBoundingSphere(new THREE.Sphere());
+  const camera = new THREE.PerspectiveCamera(26, 1, 0.1, 100);
+  const dist = sphere.radius / Math.sin((26 * Math.PI) / 360) * 1.02;
+  camera.position.set(0, 0, dist);
+  camera.lookAt(0, 0, 0);
+  renderer.setClearColor(0x000000, 0);
+  renderer.render(scene, camera);
+  return renderer.domElement.toDataURL('image/png');
+};
+window.ids = Object.keys(MODELS);
+window.ready = true;
+</script></body></html>

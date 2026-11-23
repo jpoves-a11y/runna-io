@@ -519,12 +519,7 @@ private struct ChestOpeningOverlay: View {
 
             if revealed {
                 VStack(spacing: DS.Spacing.m) {
-                    Image(systemName: PowerSymbol.name(item.itemId))
-                        .font(.system(size: 44, weight: .regular))
-                        .foregroundStyle(Rarity.color(item.rarity))
-                        .frame(width: 92, height: 92)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .shadow(color: ChestOpening3DView.lightColor(item.rarity).opacity(0.5), radius: 26)
+                    PowerArt(itemId: item.itemId, rarity: item.rarity, size: 128)
                     Text(item.name)
                         .font(.title2.weight(.semibold))
                         .multilineTextAlignment(.center)
@@ -558,10 +553,7 @@ private struct RewardChestCell: View {
         Button(action: onOpen) {
             VStack(spacing: DS.Spacing.s) {
                 if isOpen {
-                    Image(systemName: PowerSymbol.name(item.itemId))
-                        .font(.system(size: 34, weight: .regular))
-                        .foregroundStyle(Rarity.color(item.rarity))
-                        .frame(height: 72)
+                    PowerArt(itemId: item.itemId, rarity: item.rarity, size: 72)
                         .transition(.scale(scale: 0.85).combined(with: .opacity))
                     Text(item.name)
                         .font(.subheadline.weight(.semibold))
