@@ -526,7 +526,7 @@ private struct FriendsInviteCard: View {
             ShareLink(
                 item: inviteURL,
                 subject: Text("Únete a KM2"),
-                message: Text("Compite conmigo en KM2. Corre y conquista la ciudad:")
+                message: Text("Compite conmigo en KM2. Conquista tu ciudad:")
             ) {
                 SocialPillLabel(title: "Compartir enlace", systemImage: "square.and.arrow.up", tint: .brand, kind: .filled, expand: true)
             }

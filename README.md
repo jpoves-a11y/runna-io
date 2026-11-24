@@ -2,7 +2,7 @@
 
 Se escribe KM2 y se pronuncia «kaemedos». Lo que no ve el público conserva de momento el nombre antiguo: la API en `https://runna-io-api.runna-io-api.workers.dev`, el bundle `com.jpoves.runnaio`, enlaces `runnaio://`.
 
-Corre y conquista el mapa. KM2 tiene dos modos a la vez:
+**Conquista tu ciudad.** KM2 tiene dos modos a la vez:
 
 - **Modo global**: cada carrera suma al mapa del mundo el área nueva que encierra. Nadie te la puede quitar. Hay rankings mundial, de tu país, de tu ciudad, de tus amigos y de tu club, de siempre y del mes. Los rankings solo muestran el área total, nunca recorridos.
 - **Modo competición**: para quien está en un club. Ciclos de 14 días (hora de Madrid):

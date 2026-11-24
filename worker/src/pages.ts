@@ -621,7 +621,7 @@ ${FOOTER}`), 404);
     return html(c, landing(c, {
       title: 'Abrir KM2',
       heading: 'Abre KM2',
-      text: 'Sal a correr, conquista el mapa y compite con tu club.',
+      text: 'Conquista tu ciudad. Sal a correr y compite con tu club.',
       appLink: `${APP_SCHEME}://tab/${tab}`,
     }));
   });
