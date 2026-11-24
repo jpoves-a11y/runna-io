@@ -187,7 +187,7 @@ La app abre el inicio de sesión de Google en la ventana segura del sistema (OAu
 
 Para activarlo:
 
-1. En [console.cloud.google.com](https://console.cloud.google.com) crea un proyecto (o usa uno) y configura la **pantalla de consentimiento de OAuth** (APIs y servicios → Pantalla de consentimiento de OAuth): tipo *Externo*, nombre «KM2», email de soporte `kaeme2.support@gmail.com`, logotipo, y los enlaces a `/privacy` y `/terms` del Worker. Los permisos son solo `openid`, `email` y `profile`, que no necesitan verificación de Google. Publica la app (estado «En producción»); en «Prueba» solo pueden entrar los usuarios de prueba que añadas.
+1. En [console.cloud.google.com](https://console.cloud.google.com) crea un proyecto (o usa uno) y configura la **pantalla de consentimiento de OAuth** (APIs y servicios → Pantalla de consentimiento de OAuth): tipo *Externo*, nombre «KM2», email de soporte `kaeme2.support@gmail.com` y los enlaces a `/privacy` y `/terms` del Worker. Sin logotipo: subir uno obliga a que Google verifique la marca (varios días); se puede añadir después. Los permisos son solo `openid`, `email` y `profile`, que no necesitan verificación de Google. Todo esto es gratis y no hace falta activar la facturación. Publica la app (estado «En producción»); en «Prueba» solo pueden entrar los usuarios de prueba que añadas.
 2. APIs y servicios → Credenciales → **Crear credenciales → ID de cliente de OAuth**, tipo **iOS**, ID del paquete `com.jpoves.runnaio`. Copia el ID de cliente (`….apps.googleusercontent.com`).
 3. Ponlo en `GOOGLE_CLIENT_IDS` de `wrangler.worker.toml` y despliega el Worker.
 4. Ponlo en `googleClientID` de `ios/Kaemedos/Core/AppConfig.swift` y sube una versión de la app. Mientras esté vacío, el botón de Google no aparece.
