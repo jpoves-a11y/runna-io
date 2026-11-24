@@ -8,7 +8,6 @@ struct RunView: View {
     @Environment(RunTracker.self) private var tracker
     @Environment(SessionStore.self) private var session
     @State private var camera: MapCameraPosition = .userLocation(followsHeading: false, fallback: .automatic)
-    @State private var confirmFinish = false
     @State private var confirmCancel = false
     @State private var submission: RunSubmission?
     @State private var tooShortAlert = false
@@ -51,12 +50,9 @@ struct RunView: View {
         .onDisappear {
             tracker.stopPreview()
         }
-        .sensoryFeedback(.impact(weight: .medium), trigger: tracker.phase)
-        .confirmationDialog("¿Terminar la carrera?", isPresented: $confirmFinish, titleVisibility: .visible) {
-            Button("Terminar y guardar") { finish() }
-            Button("Seguir corriendo", role: .cancel) {}
-        } message: {
-            Text("Mantén pulsado el botón de terminar para hacerlo sin confirmar.")
+        // Pause / resume / start; finishing has its own feedback in the finish button
+        .sensoryFeedback(trigger: tracker.phase) { _, new in
+            new == .idle ? nil : .impact(weight: .medium)
         }
         .confirmationDialog("¿Descartar esta carrera?", isPresented: $confirmCancel, titleVisibility: .visible) {
             Button("Descartar", role: .destructive) {
@@ -70,9 +66,6 @@ struct RunView: View {
         .alert("Ruta demasiado corta", isPresented: $tooShortAlert) {
             Button("Seguir corriendo") {
                 tracker.resume()
-            }
-            if tracker.pointCount >= 2 {
-                Button("Guardar igualmente") { finish(force: true) }
             }
             Button("Descartar", role: .destructive) {
                 tracker.cancel()
@@ -265,22 +258,21 @@ struct RunView: View {
             .buttonStyle(PrimaryButtonStyle())
             // With approximate location every GPS fix is discarded: the run would be lost
             .disabled(!canStart)
-        case .running:
+        case .running, .paused:
+            // One finish button for both phases, so pausing never resets a press in progress
             HStack(spacing: 48) {
-                RunRoundControl(systemImage: "pause.fill", title: "Pausar", style: .neutral) {
-                    Haptics.tap()
-                    tracker.pause()
+                if tracker.phase == .running {
+                    RunRoundControl(systemImage: "pause.fill", title: "Pausar", style: .neutral) {
+                        Haptics.tap()
+                        tracker.pause()
+                    }
+                } else {
+                    RunRoundControl(systemImage: "play.fill", title: "Reanudar", style: .brand) {
+                        Haptics.tap()
+                        tracker.resume()
+                    }
                 }
-                HoldToFinishButton(onTap: { confirmFinish = true }, onFinish: { finish() })
-            }
-            .frame(maxWidth: .infinity)
-        case .paused:
-            HStack(spacing: 48) {
-                RunRoundControl(systemImage: "play.fill", title: "Reanudar", style: .brand) {
-                    Haptics.tap()
-                    tracker.resume()
-                }
-                HoldToFinishButton(onTap: { confirmFinish = true }, onFinish: { finish() })
+                HoldToFinishButton(requiresHold: tracker.phase == .running) { finish() }
             }
             .frame(maxWidth: .infinity)
         }
@@ -326,7 +318,7 @@ struct RunView: View {
         if tracker.hasReducedAccuracy {
             return "Casi no hay puntos GPS: con la ubicación aproximada no se puede dibujar la ruta. Activa «Ubicación exacta» y sigue corriendo."
         }
-        return "Apenas hay puntos GPS grabados (la señal ha sido muy débil). Puedes seguir corriendo, guardarla igualmente o descartarla."
+        return "No se ha grabado ningún tramo de ruta (la señal GPS ha sido muy débil). Puedes seguir corriendo o descartarla."
     }
 
     private func startRun() {
@@ -334,14 +326,14 @@ struct RunView: View {
         tracker.start()
     }
 
-    private func finish(force: Bool = false) {
+    /// Finishes without asking. Only a run with fewer than 2 GPS points (nothing to save) shows a choice.
+    private func finish(force: Bool = true) {
         guard let run = tracker.finish(force: force) else {
             // Stop the clock while the user decides what to do
             tracker.pause()
             tooShortAlert = true
             return
         }
-        Haptics.success()
         let newSubmission = RunSubmission(run: run)
         submission = newSubmission
         Task { await newSubmission.submit() }
@@ -516,63 +508,137 @@ private struct RunRoundControl: View {
     }
 }
 
-/// Finish button: hold it to finish right away (a progress ring fills), a quick tap asks first.
+/// Finish button. While running it must be held (a ring fills, with ticks along the way) so a stray
+/// touch never ends the run; once paused a tap is enough. It never asks for confirmation.
 private struct HoldToFinishButton: View {
     var size: CGFloat = 76
-    let onTap: () -> Void
+    /// Running: hold to finish. Paused: a tap finishes.
+    let requiresHold: Bool
     let onFinish: () -> Void
 
-    private let holdDuration: Double = 1.2
+    private let holdDuration: Double = 0.8
+    /// Moving the finger this far away cancels the press.
+    private let cancelDistance: CGFloat = 60
+    private let ticks: [Double] = [0.25, 0.5, 0.75]
+
     @State private var progress: CGFloat = 0
-    @State private var pressStart: Date?
-    @State private var completions = 0
+    @State private var isPressing = false
+    @State private var didFire = false
+    @State private var holdTask: Task<Void, Never>?
+    @State private var hintPulse = false
+    /// The finger left the button during this touch: ignore it until it lifts.
+    @State private var touchCancelled = false
 
     var body: some View {
         VStack(spacing: DS.Spacing.s) {
             ZStack {
                 Circle()
-                    .fill(Color(uiColor: .tertiarySystemFill))
+                    .fill(requiresHold ? Color(uiColor: .tertiarySystemFill) : Color.primary)
                 Circle()
                     .trim(from: 0, to: progress)
-                    .stroke(Color.primary, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .stroke(Color.primary, style: StrokeStyle(lineWidth: 4, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .padding(1.5)
+                    .padding(2)
                 Image(systemName: "stop.fill")
                     .font(.system(size: size * 0.28, weight: .semibold))
-                    .foregroundStyle(Color.primary)
+                    .foregroundStyle(requiresHold ? Color.primary : Color(uiColor: .systemBackground))
             }
             .frame(width: size, height: size)
+            .scaleEffect(isPressing ? 0.92 : 1)
+            .animation(.snappy(duration: 0.2), value: isPressing)
+            .animation(.snappy, value: requiresHold)
             .contentShape(Circle())
-            .onLongPressGesture(minimumDuration: holdDuration, maximumDistance: 40) {
-                pressStart = nil
-                completions += 1
-                progress = 0
-                onFinish()
-            } onPressingChanged: { pressing in
-                if pressing {
-                    pressStart = Date()
-                    withAnimation(.linear(duration: holdDuration)) { progress = 1 }
-                } else {
-                    withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
-                    // Released early (a tap or a short press): ask instead
-                    if let start = pressStart, Date().timeIntervalSince(start) < holdDuration - 0.1 {
-                        onTap()
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let moved = hypot(value.translation.width, value.translation.height)
+                        if moved > cancelDistance {
+                            if !touchCancelled { cancelPress() }
+                            touchCancelled = true
+                        } else if !isPressing, !didFire, !touchCancelled {
+                            beginPress()
+                        }
                     }
-                    pressStart = nil
-                }
-            }
-            Text("Mantén para terminar")
+                    .onEnded { value in
+                        let moved = hypot(value.translation.width, value.translation.height)
+                        endPress(inside: moved <= cancelDistance)
+                        touchCancelled = false
+                    }
+            )
+            Text(requiresHold ? "Mantén para terminar" : "Terminar")
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(hintPulse ? Color.primary : Color.secondary)
+                .scaleEffect(hintPulse ? 1.08 : 1)
                 .lineLimit(1)
                 .fixedSize()
         }
-        .sensoryFeedback(.success, trigger: completions)
+        .onChange(of: requiresHold) { _, _ in cancelPress() }
+        .onDisappear { holdTask?.cancel() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Terminar carrera")
-        .accessibilityHint("Mantén pulsado para terminar al instante")
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { onTap() }
+        .accessibilityAction { fire() }
+    }
+
+    private func beginPress() {
+        isPressing = true
+        // Paused: the tap itself finishes on release (with its own haptic)
+        guard requiresHold else { return }
+        Haptics.tap()
+        withAnimation(.linear(duration: holdDuration)) { progress = 1 }
+        holdTask?.cancel()
+        holdTask = Task { @MainActor in
+            var elapsed = 0.0
+            for (index, tick) in ticks.enumerated() {
+                try? await Task.sleep(nanoseconds: UInt64((tick * holdDuration - elapsed) * 1_000_000_000))
+                if Task.isCancelled { return }
+                elapsed = tick * holdDuration
+                // Each tick a little stronger: the finish is getting closer
+                UIImpactFeedbackGenerator(style: index == 0 ? .light : (index == 1 ? .medium : .heavy)).impactOccurred()
+            }
+            try? await Task.sleep(nanoseconds: UInt64((holdDuration - elapsed) * 1_000_000_000))
+            if Task.isCancelled { return }
+            fire()
+        }
+    }
+
+    private func endPress(inside: Bool) {
+        guard isPressing else { return }
+        if requiresHold {
+            if !didFire {
+                // Released too early: nothing happens, just a reminder to hold
+                cancelPress()
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                withAnimation(.snappy(duration: 0.15)) { hintPulse = true }
+                withAnimation(.snappy(duration: 0.3).delay(0.35)) { hintPulse = false }
+            }
+        } else if inside {
+            fire()
+        }
+        isPressing = false
+    }
+
+    private func cancelPress() {
+        holdTask?.cancel()
+        holdTask = nil
+        isPressing = false
+        withAnimation(.easeOut(duration: 0.2)) { progress = 0 }
+    }
+
+    private func fire() {
+        guard !didFire else { return }
+        didFire = true
+        holdTask?.cancel()
+        holdTask = nil
+        isPressing = false
+        Haptics.success()
+        onFinish()
+        // The run screen normally closes; if it stays (nothing to save), allow trying again
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            didFire = false
+            progress = 0
+        }
     }
 }
 

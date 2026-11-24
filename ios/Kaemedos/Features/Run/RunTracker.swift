@@ -4,7 +4,8 @@ import Observation
 import UIKit
 
 /// Records a run with CoreLocation, including while the screen is locked.
-/// GPS filtering mirrors the web app: poor accuracy, jitter, stationary drift and impossible jumps are discarded.
+/// GPS: poor accuracy, stationary drift and impossible jumps are discarded, recording waits for a precise fix,
+/// and the route is smoothed with a Kalman filter so GPS zigzag doesn't add distance.
 @MainActor
 @Observable
 final class RunTracker {
@@ -14,12 +15,22 @@ final class RunTracker {
         case paused
     }
 
-    // Filtering thresholds (same values as the web app)
+    // GPS filtering thresholds
     private let maxAccuracy: CLLocationAccuracy = 30
-    private let minMovement: CLLocationDistance = 5
-    private let maxJump: CLLocationDistance = 200
-    private let maxJumpInterval: TimeInterval = 5
+    /// Smallest step between saved points; grows with poor accuracy (half the accuracy, up to `maxMovementThreshold`).
+    private let minMovement: CLLocationDistance = 3
+    private let maxMovementThreshold: CLLocationDistance = 10
+    /// Faster than this between two fixes (≈40 km/h) is a GPS jump, not running.
+    private let maxRunningSpeed: CLLocationSpeed = 11
+    /// After this many fixes rejected in a row as jumps, the reference fix was the bad one: start again from the new one.
+    private let maxConsecutiveJumps = 5
     private let minSpeed: CLLocationSpeed = 0.3
+    /// Warm-up after start / resume: wait for a precise fix so the route doesn't begin off to one side.
+    private let warmUpAccuracy: CLLocationAccuracy = 15
+    private let warmUpGoodFixes = 2
+    private let warmUpRelaxedAccuracy: CLLocationAccuracy = 25
+    private let warmUpRelaxedAfter: TimeInterval = 10
+    private let warmUpGiveUpAfter: TimeInterval = 20
     private let treasureRadius: CLLocationDistance = 100
     /// After a pause, a first step longer than this is the distance moved while paused: it isn't counted.
     private let maxStepAfterPause: CLLocationDistance = 25
@@ -87,7 +98,6 @@ final class RunTracker {
     private var altitudes: [Double?] = []
     private var pausedAt: Date?
     private var pausedTotal: TimeInterval = 0
-    private var lastAcceptedAt: Date?
     /// The next accepted fix starts a new segment (after a pause or a recovered run).
     private var skipNextSegment = false
     private var collectingTreasureIds: Set<String> = []
@@ -97,6 +107,15 @@ final class RunTracker {
     private var ownerId: String?
     private var wantsFullAccuracy = false
     private var fullAccuracyRequested = false
+
+    // GPS smoothing and outlier rejection
+    @ObservationIgnored private var kalman = GPSKalmanFilter()
+    /// Last raw fix that passed the filters (jumps are measured against it, not against the smoothed route).
+    @ObservationIgnored private var lastRawFix: CLLocation?
+    @ObservationIgnored private var consecutiveJumps = 0
+    /// Nil once the GPS is precise enough to record; otherwise when the warm-up started.
+    @ObservationIgnored private var warmUpStartedAt: Date?
+    @ObservationIgnored private var warmUpGoodCount = 0
 
     @ObservationIgnored private var treasureRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
@@ -228,8 +247,8 @@ final class RunTracker {
         distance = 0
         pausedTotal = 0
         pausedAt = nil
-        lastAcceptedAt = nil
         skipNextSegment = false
+        resetGPSFiltering()
         collectedTreasures = []
         collectingTreasureIds = []
         collectedTreasureIds = []
@@ -271,8 +290,8 @@ final class RunTracker {
         }
         pausedAt = nil
         // Don't count the distance between the point before the pause and the first one after it
-        lastAcceptedAt = nil
         skipNextSegment = true
+        resetGPSFiltering()
         phase = .running
         UIApplication.shared.isIdleTimerDisabled = true
         startTreasureRefresh()
@@ -310,8 +329,8 @@ final class RunTracker {
         pausedTotal = saved.pausedTotal
         // Time while the app was closed counts as a pause
         pausedAt = saved.savedAt
-        lastAcceptedAt = nil
         skipNextSegment = true
+        resetGPSFiltering()
         runId = saved.id ?? UUID().uuidString
         ownerId = saved.ownerId ?? RunOwner.currentUserId
         collectedTreasures = []
@@ -380,6 +399,8 @@ final class RunTracker {
     private func reset(clearSavedRun: Bool) {
         manager.stopUpdatingLocation()
         manager.allowsBackgroundLocationUpdates = false
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        resetGPSFiltering()
         UIApplication.shared.isIdleTimerDisabled = false
         treasureRefreshTask?.cancel()
         treasureRefreshTask = nil
@@ -394,7 +415,6 @@ final class RunTracker {
         startDate = nil
         pausedAt = nil
         pausedTotal = 0
-        lastAcceptedAt = nil
         skipNextSegment = false
         lastCollected = nil
         collectingTreasureIds = []
@@ -407,6 +427,10 @@ final class RunTracker {
     }
 
     private func beginBackgroundUpdates() {
+        // Best accuracy iOS offers: fuses GPS with the motion sensors (more battery, only while recording)
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.activityType = .fitness
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         manager.startUpdatingLocation()
@@ -430,15 +454,66 @@ final class RunTracker {
         }
     }
 
+    /// Starts the warm-up and clears the smoothing (start, resume, recovered run).
+    private func resetGPSFiltering() {
+        kalman.reset()
+        lastRawFix = nil
+        consecutiveJumps = 0
+        warmUpStartedAt = Date()
+        warmUpGoodCount = 0
+    }
+
+    /// True once the GPS is precise enough to start drawing the route.
+    private func isWarmedUp(with location: CLLocation) -> Bool {
+        guard let started = warmUpStartedAt else { return true }
+        let accuracy = location.horizontalAccuracy
+        let waited = Date().timeIntervalSince(started)
+        if accuracy <= warmUpAccuracy {
+            warmUpGoodCount += 1
+        } else {
+            warmUpGoodCount = 0
+        }
+        if warmUpGoodCount >= warmUpGoodFixes
+            || (waited >= warmUpRelaxedAfter && accuracy <= warmUpRelaxedAccuracy)
+            || waited >= warmUpGiveUpAfter {
+            warmUpStartedAt = nil
+            return true
+        }
+        return false
+    }
+
     private func accept(_ location: CLLocation) {
-        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= maxAccuracy else { return }
-        // Stationary drift: the device reports it's not moving
-        if location.speed >= 0, location.speed < minSpeed { return }
+        let accuracy = location.horizontalAccuracy
+        guard accuracy >= 0, accuracy <= maxAccuracy else { return }
+        // Batched fixes can arrive repeated or out of order
+        if let lastRawFix, location.timestamp <= lastRawFix.timestamp { return }
+        guard isWarmedUp(with: location) else { return }
+        // Stationary drift: the device reports it's not moving (when that speed can be trusted)
+        if location.speed >= 0, location.speed < minSpeed, location.speedAccuracy < 1 { return }
+
+        // Impossible jumps: faster than anyone runs since the last good fix
+        if let lastRawFix {
+            let dt = location.timestamp.timeIntervalSince(lastRawFix.timestamp)
+            let jump = location.distance(from: lastRawFix)
+            if dt > 0, jump / dt > maxRunningSpeed, jump > accuracy + lastRawFix.horizontalAccuracy {
+                consecutiveJumps += 1
+                guard consecutiveJumps >= maxConsecutiveJumps else { return }
+                // The reference was the outlier: restart the smoothing from here without counting the gap
+                kalman.reset()
+                skipNextSegment = true
+            }
+        }
+        consecutiveJumps = 0
+        lastRawFix = location
+
+        let smoothed = kalman.process(location)
+        let smoothedLocation = CLLocation(latitude: smoothed.latitude, longitude: smoothed.longitude)
 
         if let last = coordinates.last {
             let lastLocation = CLLocation(latitude: last.latitude, longitude: last.longitude)
-            let step = location.distance(from: lastLocation)
-            if step < minMovement { return }
+            let step = smoothedLocation.distance(from: lastLocation)
+            let threshold = min(max(minMovement, accuracy * 0.5), maxMovementThreshold)
+            if step < threshold { return }
             if skipNextSegment {
                 // First fix after a pause: what was covered while paused (or with the app closed) isn't running
                 skipNextSegment = false
@@ -446,22 +521,18 @@ final class RunTracker {
                     distance += step
                 }
             } else {
-                if let lastAcceptedAt, step > maxJump, location.timestamp.timeIntervalSince(lastAcceptedAt) < maxJumpInterval {
-                    return
-                }
                 distance += step
             }
         } else {
             skipNextSegment = false
         }
 
-        coordinates.append(location.coordinate)
+        coordinates.append(smoothed)
         if let startDate {
             // Never backwards: the server drops out-of-order points
             pointTimes.append(max(pointTimes.last ?? 0, location.timestamp.timeIntervalSince(startDate)))
         }
         altitudes.append(location.verticalAccuracy > 0 && location.verticalAccuracy <= 50 ? location.altitude : nil)
-        lastAcceptedAt = location.timestamp
         if coordinates.count % 10 == 0 {
             persist()
         }
