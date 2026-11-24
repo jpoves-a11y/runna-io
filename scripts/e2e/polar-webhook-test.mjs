@@ -219,8 +219,9 @@ const route = activity?.route_id ? await one('select * from routes where id = ?'
 check('route created for the user', route?.user_id === user.id && Math.abs(route.distance - 2600) < 1 && route.duration === 930, route);
 const feed = route ? await one('select * from feed_events where route_id = ?', [route.id]) : null;
 check('feed event created', feed?.user_id === user.id, feed);
-const territory = await one('select count(*) n from territories where user_id = ?', [user.id]);
-check('territory processed by the queue', Number(territory.n) > 0, territory);
+// Not in a club, so the run only counts on the global map (the competition map is for club competitions)
+const globalGain = route ? await one('select area from global_area_events where user_id = ? and route_id = ?', [user.id, route.id]) : null;
+check('run processed by the queue: area on the global map', Number(globalGain?.area) > 0, globalGain);
 const push = await checkActivityReadyPush('polar', 'polar_auto_import', route?.id, () => calls.apns.slice(apnsBefore));
 check('APNs push polar_auto_import to the registered device', !!push && push.path === `/3/device/${deviceToken}` && push.topic === 'com.jpoves.runnaio', calls.apns.slice(apnsBefore));
 

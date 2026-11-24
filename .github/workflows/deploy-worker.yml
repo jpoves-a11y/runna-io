@@ -34,7 +34,9 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci --legacy-peer-deps --no-audit --no-fund
-          (cd worker && npm ci --no-audit --no-fund)
+
+      - name: Type check
+        run: npm run check
 
       - name: Unit tests
         run: npm test
@@ -42,7 +44,7 @@ jobs:
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: worker/node_modules/.bin/wrangler deploy -c wrangler.worker.toml
+        run: npx wrangler deploy -c wrangler.worker.toml
 
       - name: Check the API answers
         run: |

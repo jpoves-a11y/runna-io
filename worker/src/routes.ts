@@ -3,6 +3,7 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
 import * as turf from '@turf/turf';
+import type { Polygon, MultiPolygon } from 'geojson';
 import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES, SIGNUP_CODE_MINUTES } from './email';
 import { LIMITS, clientIp, lockedForSeconds, recordAttempt, clearAttempts, tooManyAttempts } from './rateLimit';
 import { sql } from 'drizzle-orm';
@@ -1093,7 +1094,7 @@ function safeUnion(geomA: any, geomB: any): any | null {
     const toFeature = (geom: any) => geom.type === 'MultiPolygon'
       ? turf.multiPolygon(geom.coordinates)
       : turf.polygon(geom.coordinates);
-    const result = turf.union(turf.featureCollection([toFeature(geomA), toFeature(geomB)]));
+    const result = turf.union(turf.featureCollection<Polygon | MultiPolygon>([toFeature(geomA), toFeature(geomB)]));
     return result ? result.geometry : null;
   } catch (err) {
     console.error('[TERRITORY] safeUnion failed:', err);
@@ -1237,7 +1238,7 @@ async function getValidStravaToken(
     userId: string;
     accessToken: string;
     refreshToken: string;
-    expiresAt: Date;
+    expiresAt: string;
   },
   storage: WorkerStorage,
   env: Env
@@ -1278,7 +1279,7 @@ async function getValidStravaToken(
     await storage.updateStravaAccount(stravaAccount.userId, {
       accessToken: access_token,
       refreshToken: refresh_token,
-      expiresAt: new Date(expires_at * 1000),
+      expiresAt: new Date(expires_at * 1000).toISOString(),
     });
 
     return access_token;
@@ -1394,6 +1395,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const user = await storage.createUser({
         username: "demo_runner",
         name: "Demo Runner",
+        email: "demo_runner@example.com",
         password: hashedPassword,
         color: "#3B82F6",
         avatar: null,
@@ -2178,7 +2180,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const notSelf = rejectIfNotSelf(c, formData.get('userId'));
       if (notSelf) return notSelf;
       const userId = c.get('authUserId');
-      const file = formData.get('avatar') as File;
+      const file = formData.get('avatar') as unknown as File | null;
 
       if (!file) {
         return c.json({ error: 'Missing file' }, 400);
@@ -2756,7 +2758,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 : turf.polygon(geom.coordinates);
               const currentFeature = toFeature(currentGeometry);
               const newFeature = toFeature(enclosedPoly.geometry);
-              const union = turf.union(turf.featureCollection([currentFeature, newFeature]));
+              const union = turf.union(turf.featureCollection<Polygon | MultiPolygon>([currentFeature, newFeature]));
               if (union) currentGeometry = union.geometry;
             } catch (err) {
               console.error('[BATCH REPROCESS] Error merging geometry:', err);
@@ -2840,7 +2842,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       console.log(`[ADMIN CLEANUP] Deleted strava activities`);
 
       // 6. Reset user stats
-      await storage.updateUser(userId, { totalArea: 0, totalDistance: 0 });
+      await storage.updateUserTotalArea(userId, 0);
       console.log(`[ADMIN CLEANUP] Reset user stats`);
 
       // 7. Reprocess friend group territories — SAFE: only reprocess each user individually
@@ -2972,7 +2974,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 await storage.updatePolarActivity(activity.id, {
                   routeId: null,
                   territoryId: null,
-                  processed: false,
+                  processed: 0,
                   processedAt: null,
                 });
                 resetActivities++;
@@ -3012,7 +3014,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           console.log(`[REIMPORT] Processing activity ${activity.id} for user ${user?.name || userId}: "${activity.name}"`);
 
           if (!activity.summaryPolyline) {
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
             return c.json({
               phase: 'process', action: 'skipped_no_gps',
               activity: { id: activity.id, name: activity.name },
@@ -3022,7 +3024,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
           const startDate = coerceDate(activity.startDate);
           if (!startDate) {
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date(), skipReason: 'bad_date' });
+            await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString(), skipReason: 'bad_date' });
             return c.json({
               phase: 'process', action: 'skipped_bad_date',
               activity: { id: activity.id, name: activity.name },
@@ -3032,7 +3034,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
           // COMPETITION FILTER: Skip activities before competition start date
           if (isBeforeSeason(startDate)) {
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date(), skipReason: 'before_competition' });
+            await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString(), skipReason: 'before_competition' });
             console.log(`[REIMPORT] ❌ Activity ${activity.id} before competition start (${startDate.toISOString()})`);
             return c.json({
               phase: 'process', action: 'skipped_before_competition',
@@ -3045,7 +3047,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           const coordinates: Array<[number, number]> = decoded.map((coord: [number, number]) => [coord[0], coord[1]]);
 
           if (coordinates.length < 3) {
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+            await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
             return c.json({
               phase: 'process', action: 'skipped_few_coords',
               activity: { id: activity.id, name: activity.name },
@@ -3076,8 +3078,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
           // Link activity to route and mark as processed
           await storage.updatePolarActivity(activity.id, {
             routeId: route.id,
-            processed: true,
-            processedAt: new Date(),
+            processed: 1,
+            processedAt: new Date().toISOString(),
           });
 
           return c.json({
@@ -3188,7 +3190,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           let resetCount = 0;
           for (const activity of activities) {
             await storage.updatePolarActivity(activity.id, {
-              processed: false,
+              processed: 0,
               processedAt: null,
               routeId: null,
               territoryId: null,
@@ -3200,7 +3202,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           await storage.deleteTerritoriesByUserId(userId);
           await storage.deleteAllRoutesByUserId(userId);
           await storage.deleteConquestMetricsByUserId(userId);
-          await storage.updateUser(userId, { totalArea: 0 });
+          await storage.updateUserTotalArea(userId, 0);
 
           resetResults.push({
             userId,
@@ -4692,7 +4694,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         return finish(`${FRONTEND_URL}/?strava_error=already_linked`);
       }
 
-      const expiresAtDate = new Date(expires_at * 1000);
+      const expiresAtDate = new Date(expires_at * 1000).toISOString();
       const stravaAccountData = {
         userId,
         stravaAthleteId: athlete.id,
@@ -4803,9 +4805,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
                   activityType: activity.sport_type || activity.type,
                   distance: activity.distance,
                   duration: activity.moving_time,
-                  startDate: new Date(activity.start_date),
+                  startDate: new Date(activity.start_date).toISOString(),
                   summaryPolyline: activity.map?.summary_polyline || null,
-                  processed: false,
+                  processed: 0,
                   processedAt: null,
                 });
 
@@ -4878,8 +4880,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
                         if (savedActivity) {
                           await storage.updateStravaActivity(savedActivity.id, {
                             routeId: route.id,
-                            processed: true,
-                            processedAt: new Date(),
+                            processed: 1,
+                            processedAt: new Date().toISOString(),
                           });
                         }
 
@@ -4907,7 +4909,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
                           await generateFeedEvents(storage, stravaAccount.userId, shortRoute.id, activity.distance, activity.moving_time, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
                           const savedActivity = await storage.getStravaActivityByStravaId(activity.id);
                           if (savedActivity) {
-                            await storage.updateStravaActivity(savedActivity.id, { routeId: shortRoute.id, processed: true, processedAt: new Date() });
+                            await storage.updateStravaActivity(savedActivity.id, { routeId: shortRoute.id, processed: 1, processedAt: new Date().toISOString() });
                           }
                         } catch (_) {}
                       }
@@ -4960,7 +4962,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         }
 
         if (!activity.summaryPolyline) {
-          await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+          await storage.updateStravaActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
           continue;
         }
 
@@ -4968,12 +4970,12 @@ export function registerRoutes(app: Hono<AppEnv>) {
           const startDate = coerceDate(activity.startDate);
           if (!startDate) {
             console.log(`[STRAVA PROCESS] Skipping activity ${activity.id} - invalid start date`);
-            await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+            await storage.updateStravaActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
             continue;
           }
           // Runs from before the new season are never imported again
           if (isBeforeSeason(startDate)) {
-            await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+            await storage.updateStravaActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
             continue;
           }
 
@@ -5032,8 +5034,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
             const { processRun } = await import('./runPipeline');
             const pipeline = await processRun(storage, undefined, { userId, routeId: route.id, earlyFeedEventId });
             await storage.updateStravaActivity(activity.id, {
-              processed: true,
-              processedAt: new Date(),
+              processed: 1,
+              processedAt: new Date().toISOString(),
               routeId: route.id,
             });
             results.push({
@@ -5064,15 +5066,15 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 });
               }
               await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
-              await storage.updateStravaActivity(activity.id, { routeId: shortRoute.id, processed: true, processedAt: new Date() });
+              await storage.updateStravaActivity(activity.id, { routeId: shortRoute.id, processed: 1, processedAt: new Date().toISOString() });
             } catch (feedErr) {
               console.warn('[STRAVA] Short route feed event failed:', feedErr);
-              await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+              await storage.updateStravaActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
             }
           }
         } catch (err) {
           console.error('Error processing Strava activity:', err);
-          await storage.updateStravaActivity(activity.id, { processed: true, processedAt: new Date() });
+          await storage.updateStravaActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
         }
       }
 
@@ -5195,7 +5197,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             
             if (detailedResponse.ok) {
               const detailedActivity = await detailedResponse.json();
-              summaryPolyline = detailedActivity.map?.summary_polyline || null;
+              summaryPolyline = (detailedActivity as any).map?.summary_polyline || null;
             } else {
               console.warn(`Failed to fetch detailed activity ${activity.id}:`, await detailedResponse.text());
             }
@@ -5217,9 +5219,9 @@ export function registerRoutes(app: Hono<AppEnv>) {
             activityType: activity.sport_type || activity.type,
             distance: activity.distance,
             duration: activity.moving_time,
-            startDate: new Date(activity.start_date),
+            startDate: new Date(activity.start_date).toISOString(),
             summaryPolyline,
-            processed: false,
+            processed: 0,
             processedAt: null,
           });
           imported++;
@@ -5231,7 +5233,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       }
 
       // Update last sync time
-      await storage.updateStravaAccount(userId, { lastSyncAt: new Date() });
+      await storage.updateStravaAccount(userId, { lastSyncAt: new Date().toISOString() });
 
       return c.json({ imported, total: totalFetched, hasMore });
     } catch (error: any) {
@@ -5768,7 +5770,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
               duration,
               startDate: startDateISO,
               summaryPolyline: null,
-              processed: true,
+              processed: 1,
               processedAt: new Date().toISOString(),
               skipReason: reason,
             });
@@ -5867,7 +5869,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
             duration: duration,
             startDate: startDateISO,
             summaryPolyline,
-            processed: false,
+            processed: 0,
             processedAt: null,
           });
 
@@ -5910,7 +5912,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
     let processed = 0;
     // 1. Sync new exercises from Polar API
     const syncResult = await syncPolarExercisesDirect(account, userId, storage);
-    await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+    await storage.updatePolarAccount(userId, { lastSyncAt: new Date().toISOString() });
     const afterUnprocessed = await storage.getUnprocessedPolarActivities(userId);
     const newCount = afterUnprocessed.length;
 
@@ -6178,7 +6180,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // No transaction needed, allows reimporting deleted exercises
       const result = await syncPolarExercisesDirect(polarAccount, userId, storage);
       
-      await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+      await storage.updatePolarAccount(userId, { lastSyncAt: new Date().toISOString() });
       return c.json(result);
     } catch (error: any) {
       console.error('Polar sync error:', error);
@@ -6294,7 +6296,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
       // Use GET /v3/exercises directly - returns exercises from last 30 days
       const result = await syncPolarExercisesDirect(polarAccount, userId, storage);
       
-      await storage.updatePolarAccount(userId, { lastSyncAt: new Date() });
+      await storage.updatePolarAccount(userId, { lastSyncAt: new Date().toISOString() });
       return c.json(result);
     } catch (error: any) {
       console.error('Polar full sync error:', error);
@@ -6349,7 +6351,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
         if (!activity.summaryPolyline) {
           console.log(`[PROCESS] Skipping activity ${activity.id} - no GPS data`);
-          await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date(), skipReason: 'no_gps' });
+          await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString(), skipReason: 'no_gps' });
           continue;
         }
 
@@ -6359,14 +6361,14 @@ export function registerRoutes(app: Hono<AppEnv>) {
           const startDate = coerceDate(activity.startDate);
           if (!startDate) {
             console.log(`[PROCESS] Skipping activity ${activity.id} - invalid start date`);
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date(), skipReason: 'bad_date' });
+            await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString(), skipReason: 'bad_date' });
             continue;
           }
 
           // COMPETITION FILTER: Skip activities before competition start date
           if (isBeforeSeason(startDate)) {
             console.log(`[PROCESS] Skipping activity ${activity.id} - before competition start (${startDate.toISOString()})`);
-            await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date(), skipReason: 'before_competition' });
+            await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString(), skipReason: 'before_competition' });
             continue;
           }
 
@@ -6391,10 +6393,10 @@ export function registerRoutes(app: Hono<AppEnv>) {
                 });
               }
               await generateFeedEvents(storage, userId, shortRoute.id, activity.distance, activity.duration, { newAreaConquered: 0, victims: [], ranTogetherWith: [] });
-              await storage.updatePolarActivity(activity.id, { routeId: shortRoute.id, processed: true, processedAt: new Date() });
+              await storage.updatePolarActivity(activity.id, { routeId: shortRoute.id, processed: 1, processedAt: new Date().toISOString() });
             } catch (feedErr) {
               console.warn('[POLAR] Short route feed event failed:', feedErr);
-              await storage.updatePolarActivity(activity.id, { processed: true, processedAt: new Date() });
+              await storage.updatePolarActivity(activity.id, { processed: 1, processedAt: new Date().toISOString() });
             }
             continue;
           }
@@ -6481,8 +6483,8 @@ export function registerRoutes(app: Hono<AppEnv>) {
           // Mark as processed — territory will be handled by queue consumer
           await storage.updatePolarActivity(activity.id, { 
             routeId: route.id, 
-            processed: true, 
-            processedAt: new Date() 
+            processed: 1, 
+            processedAt: new Date().toISOString() 
           });
 
           results.push({
@@ -6496,7 +6498,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
           console.error(`[PROCESS] ❌ Error processing activity ${activity.id}:`, e);
           // Only mark as processed if route was created — otherwise allow retry
           if (route?.id) {
-            await storage.updatePolarActivity(activity.id, { routeId: route.id, processed: true, processedAt: new Date() });
+            await storage.updatePolarActivity(activity.id, { routeId: route.id, processed: 1, processedAt: new Date().toISOString() });
           }
         }
       }

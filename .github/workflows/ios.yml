@@ -105,7 +105,6 @@ jobs:
       - name: Start local API with seeded test data
         run: |
           npm ci --legacy-peer-deps --no-audit --no-fund
-          (cd worker && npm ci --no-audit --no-fund)
           mkdir -p scripts/e2e/.build
           npx esbuild worker/src/index.ts --bundle --format=esm --platform=node --target=node20 \
             --outfile=scripts/e2e/.build/worker.mjs --alias:@libsql/client/web=@libsql/client --alias:cloudflare:sockets=./scripts/e2e/cloudflare-sockets-stub.mjs --external:@libsql/client --log-level=warning

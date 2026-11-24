@@ -9,24 +9,27 @@
     "db:push": "drizzle-kit push",
     "worker:dev": "wrangler dev -c wrangler.worker.toml",
     "worker:deploy": "wrangler deploy -c wrangler.worker.toml",
-    "test": "node --import tsx --test worker/test/*.test.ts"
+    "test": "node --import tsx --test worker/test/*.test.ts",
+    "test:e2e": "node scripts/e2e/run-all.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.7",
     "@libsql/client": "^0.17.0",
-    "@turf/turf": "^7.3.0",
-    "drizzle-orm": "^0.39.1",
+    "@turf/turf": "7.3.1",
+    "drizzle-orm": "0.39.3",
     "drizzle-zod": "^0.7.0",
-    "hono": "^4.10.8",
+    "hono": "4.11.1",
     "resend": "^6.8.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
     "@types/geojson": "^7946.0.16",
     "@types/node": "20.16.11",
     "drizzle-kit": "^0.31.4",
     "esbuild": "^0.25.12",
     "tsx": "^4.21.0",
-    "typescript": "5.6.3"
+    "typescript": "5.6.3",
+    "wrangler": "3.114.15"
   }
 }

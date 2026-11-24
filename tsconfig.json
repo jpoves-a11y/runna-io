@@ -1,6 +1,15 @@
 {
-  "include": ["shared/**/*", "drizzle.config.ts"],
-  "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
+  "include": [
+    "shared/**/*",
+    "worker/src/**/*",
+    "drizzle.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "build",
+    "dist",
+    "**/*.test.ts"
+  ],
   "compilerOptions": {
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
@@ -8,15 +17,22 @@
     "target": "ES2022",
     "module": "ESNext",
     "strict": true,
-    "lib": ["es2022"],
+    "lib": [
+      "es2022"
+    ],
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
     "baseUrl": ".",
-    "types": ["node"],
+    "types": [
+      "node",
+      "@cloudflare/workers-types"
+    ],
     "paths": {
-      "@shared/*": ["./shared/*"]
+      "@shared/*": [
+        "./shared/*"
+      ]
     }
   }
 }

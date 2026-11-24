@@ -127,9 +127,9 @@ async function encryptPayload(
     { name: 'ECDH', namedCurve: 'P-256' },
     true,
     ['deriveBits']
-  );
+  ) as CryptoKeyPair;
   const serverPublicKeyRaw = new Uint8Array(
-    await crypto.subtle.exportKey('raw', serverKeyPair.publicKey)
+    await crypto.subtle.exportKey('raw', serverKeyPair.publicKey) as ArrayBuffer
   );
 
   // Import client public key
@@ -143,7 +143,8 @@ async function encryptPayload(
 
   // ECDH shared secret
   const sharedSecret = await crypto.subtle.deriveBits(
-    { name: 'ECDH', public: clientPublicKey },
+    // Cloudflare's types call this field `$public`; the runtime takes the standard `public`
+    { name: 'ECDH', public: clientPublicKey } as unknown as SubtleCryptoDeriveKeyAlgorithm,
     serverKeyPair.privateKey,
     256
   );

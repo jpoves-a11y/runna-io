@@ -84,6 +84,9 @@ import {
   type InactivityReminder,
   type TerritoryLossNotification,
   type UserWithStats,
+  type InsertCompetition,
+  type InsertTreasure,
+  type InsertUserPower,
   type TerritoryWithUser,
   type RouteWithTerritory,
   type FeedEvent,
@@ -110,10 +113,22 @@ import { eq, desc, sql, and, or, inArray, notInArray, isNull, lt } from 'drizzle
 import { type Database } from './db';
 import { applyGameSchema, applyCompetitionColumns, GameStorage } from './gameStorage';
 import { applySchemaPlan } from './schemaPlan';
+import type { Feature, Polygon, MultiPolygon } from 'geojson';
 import { messageFor, type ValidationReason } from './antiCheat';
 
+/**
+ * What territories have always stored as conquered_at: milliseconds since 1970 as text
+ * ("1764000000000"), because a Date used to be passed and the database driver turns it into a
+ * number. Kept on purpose: the late-import check in routes.ts (an old run imported late does not
+ * steal what the rival conquered after it) cannot read this value, so today it never skips a steal.
+ * Writing a real date would switch that check on and change how stealing works.
+ */
+function legacyConqueredAt(): string {
+  return String(Date.now());
+}
+
 // Helper function to create a turf feature from either Polygon or MultiPolygon geometry
-function geometryToFeature(geometry: any): turf.Feature<turf.Polygon | turf.MultiPolygon> {
+function geometryToFeature(geometry: any): Feature<Polygon | MultiPolygon> {
   if (geometry.type === 'MultiPolygon') {
     return turf.multiPolygon(geometry.coordinates);
   }
@@ -733,7 +748,7 @@ export class WorkerStorage {
     await this.db.delete(authSessions).where(eq(authSessions.userId, userId));
   }
 
-  async getAllUsersWithStats(): Promise<UserWithStats[]> {
+  async getAllUsersWithStats() {
     const allUsers = await this.db
       .select({
         id: users.id,
@@ -755,7 +770,8 @@ export class WorkerStorage {
     const friendCounts = new Map<string, number>();
     for (const row of countRows) friendCounts.set(row.userId, Number(row.count) || 0);
 
-    const usersWithStats: UserWithStats[] = allUsers.map((user, index) => ({
+    // Only the public columns are selected (no email or password), so these are not full User rows
+    const usersWithStats = allUsers.map((user, index) => ({
       ...user,
       rank: index + 1,
       friendCount: friendCounts.get(user.id) ?? 0,
@@ -799,7 +815,7 @@ export class WorkerStorage {
    * route_private_ends and `privacyCut` says which points were kept, so callers can cut the arrays
    * aligned with the points (times, altitudes) the same way.
    */
-  async createRoute(insertRoute: InsertRoute): Promise<Route & { privacyCut?: PrivacyCut; originalPointCount?: number }> {
+  async createRoute(insertRoute: Omit<InsertRoute, 'coordinates'> & { coordinates: string | [number, number][] }): Promise<Route & { privacyCut?: PrivacyCut; originalPointCount?: number }> {
     // Safely stringify coordinates — avoid double-encoding if already a string
     let coordsValue = typeof insertRoute.coordinates === 'string'
       ? insertRoute.coordinates
@@ -1570,8 +1586,8 @@ export class WorkerStorage {
     }
 
     // Use helper to handle both Polygon and MultiPolygon
-    let originalFeature: turf.Feature<turf.Polygon | turf.MultiPolygon>;
-    let subtractionFeature: turf.Feature<turf.Polygon | turf.MultiPolygon>;
+    let originalFeature: Feature<Polygon | MultiPolygon>;
+    let subtractionFeature: Feature<Polygon | MultiPolygon>;
     try {
       originalFeature = geometryToFeature(parsedGeometry);
       subtractionFeature = geometryToFeature(subtractionGeometry);
@@ -1732,7 +1748,7 @@ export class WorkerStorage {
           routeId,
           geometry: JSON.stringify(newGeometry),
           area: newArea,
-          conqueredAt: new Date(),
+          conqueredAt: legacyConqueredAt(),
         })
         .returning();
 
@@ -1762,7 +1778,7 @@ export class WorkerStorage {
           routeId,
           geometry: JSON.stringify(newGeometry),
           area: newArea,
-          conqueredAt: new Date(),
+          conqueredAt: legacyConqueredAt(),
         })
         .returning();
 
@@ -1792,7 +1808,7 @@ export class WorkerStorage {
         routeId,
         geometry: JSON.stringify(finalGeometry),
         area: finalArea,
-        conqueredAt: new Date(),
+        conqueredAt: legacyConqueredAt(),
       })
       .returning();
 
@@ -1823,7 +1839,7 @@ export class WorkerStorage {
         routeId,
         geometry: JSON.stringify(geometry),
         area,
-        conqueredAt: new Date(),
+        conqueredAt: legacyConqueredAt(),
       })
       .returning();
 
@@ -2117,7 +2133,7 @@ export class WorkerStorage {
     const [activity] = await this.db
       .update(stravaActivities)
       .set({
-        processed: false,
+        processed: 0,
         processedAt: null,
         routeId: null,
         territoryId: null,
@@ -2235,7 +2251,7 @@ export class WorkerStorage {
     const [activity] = await this.db
       .update(polarActivities)
       .set({
-        processed: false,
+        processed: 0,
         processedAt: null,
         skipReason: null,
         routeId: null,
@@ -2413,7 +2429,7 @@ export class WorkerStorage {
     const result = await this.db
       .update(polarActivities)
       .set({
-        processed: false,
+        processed: 0,
         processedAt: null,
         routeId: null,
         territoryId: null,
@@ -2998,7 +3014,7 @@ export class WorkerStorage {
     const [activity] = await this.db
       .update(corosActivities)
       .set({
-        processed: true,
+        processed: 1,
         processedAt: new Date().toISOString(),
         routeId,
         territoryId,
@@ -4249,7 +4265,7 @@ export class WorkerStorage {
       ));
   }
 
-  async createUserPower(data: InsertUserPower): Promise<UserPower> {
+  async createUserPower(data: InsertUserPower & Partial<Pick<UserPower, 'id' | 'status'>>): Promise<UserPower> {
     await this.ensureCompetitionTables();
     const [p] = await this.db.insert(userPowers).values(data).returning();
     return p;
