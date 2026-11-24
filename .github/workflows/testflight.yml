@@ -5,6 +5,15 @@ name: TestFlight
 #   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (App Store Connect API key, Admin role), APPLE_TEAM_ID
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Apple Silicon Mac image (try another one if the queue is cancelled for lack of Macs)"
+        type: choice
+        default: macos-latest
+        options:
+          - macos-latest
+          - macos-26
+          - macos-15
 
 concurrency:
   group: testflight
@@ -15,8 +24,8 @@ jobs:
     name: Archive and upload to TestFlight
     # Apple Silicon. Not macos-15-intel: its newest Xcode is 26.3, whose compiler miscompiles our
     # `async let` (build 1092 crashed at launch for every signed-in user). If the queue is long,
-    # wait or run it again; never build a release with an older Xcode.
-    runs-on: macos-latest
+    # run it again or pick another Apple Silicon image (input "runner"); never an older Xcode.
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
