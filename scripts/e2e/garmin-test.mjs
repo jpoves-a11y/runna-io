@@ -282,7 +282,9 @@ check('route distance/duration/start from the summary', runRoute && Math.abs(run
   && runRoute.duration === runDetail.summary.durationInSeconds && Date.parse(runRoute.started_at) === runDetail.summary.startTimeInSeconds * 1000, runRoute);
 check('route name', runRoute?.name === `Carrera Garmin (${(runDetail.summary.distanceInMeters / 1000).toFixed(2)}km)`, runRoute?.name);
 check('feed event created', !!(runRoute && await one('select * from feed_events where route_id = ?', [runRoute.id])));
-check('territory processed by the queue', Number((await one('select count(*) n from territories where user_id = ?', [user.id])).n) > 0);
+// Not in a club, so the run only counts on the global map (the competition map is for club competitions)
+const globalGain = runRoute ? await one('select area from global_area_events where user_id = ? and route_id = ?', [user.id, runRoute.id]) : null;
+check('run processed by the queue: area on the global map', Number(globalGain?.area) > 0, globalGain);
 await checkActivityReadyPush('garmin', 'garmin_auto_import', runRoute?.id, () => calls.apns);
 const skipped = async (id) => (await one('select skip_reason from garmin_activities where summary_id = ?', [id]))?.skip_reason;
 check('bike skipped as excluded_type', await skipped('1002-detail') === 'excluded_type');

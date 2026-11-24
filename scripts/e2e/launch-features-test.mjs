@@ -325,7 +325,7 @@ const stats = await page.text();
 check('stats page renders', page.status === 200 && stats.includes('Embudo') && stats.includes('rankings'), stats.slice(0, 300));
 page = await raw('GET', '/admin/emails', { headers: { Cookie: cookie } });
 const emailsHtml = await page.text();
-check('emails page previews every email', page.status === 200 && (emailsHtml.match(/<iframe/g) ?? []).length === 7 && emailsHtml.includes('Bienvenido a Kaemedos.io, Lucía'), emailsHtml.slice(0, 300));
+check('emails page previews every email', page.status === 200 && (emailsHtml.match(/<iframe/g) ?? []).length === 7 && emailsHtml.includes('Bienvenido a KM2, Lucía'), emailsHtml.slice(0, 300));
 
 // Competitions: calendar and a club competition of the current cycle (inserted by hand)
 page = await raw('GET', '/admin/competitions', { headers: { Cookie: cookie } });

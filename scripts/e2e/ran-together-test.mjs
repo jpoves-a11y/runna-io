@@ -1,5 +1,6 @@
-// End-to-end test of "ran together" against the bundled Worker: whoever uploads first, two friends
-// who ran together don't steal from each other; a partial run only protects the shared area; the
+// End-to-end test of "ran together" against the bundled Worker, on the competition map (only club
+// mates in a running competition steal): whoever uploads first, two runners who ran together don't
+// steal from each other; a partial run only protects the shared area; the
 // same loop run 12 minutes apart (with per-point times) is not "together"; "te han robado" pushes
 // are queued, dropped when the steal is undone, and held while the victim is recording a run.
 //
@@ -37,6 +38,16 @@ globalThis.fetch = async (input, init = {}) => {
 
 // ---------- Worker ----------
 
+const DAY = 86400_000;
+/** YYYY-MM-DD of the last Friday at least `minDaysAgo` days ago. */
+function friday(minDaysAgo) {
+  const d = new Date();
+  d.setUTCHours(12, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - minDaysAgo);
+  while (d.getUTCDay() !== 5) d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 const worker = (await import('./.build/worker.mjs')).default;
 const db = createClient({ url: databaseUrl });
 const queued = [];
@@ -52,6 +63,9 @@ const env = {
   APNS_TEAM_ID: 'TEAM123456',
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   APNS_BUNDLE_ID: 'com.jpoves.runnaio.app',
+  // "now" is inside the first competition (day 2-8 of 10)
+  SEASON_ANCHOR_DATE: friday(2),
+  SUBREQUEST_LIMIT: 100000,
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
 const ctx = { waitUntil: (p) => { pending.push(Promise.resolve(p)); }, passThroughOnException() {} };
@@ -83,11 +97,6 @@ const stamp = Date.now() % 100000;
 async function register(name) {
   const r = await call('POST', '/api/auth/register/confirm', { body: await pendingSignup(db, { username: `${name}${stamp}` }) });
   return { id: r.data.id, token: r.data.token, name };
-}
-async function befriend(a, b) {
-  for (const [x, y] of [[a, b], [b, a]]) {
-    await db.execute({ sql: 'insert into friendships (user_id, friend_id) values (?, ?)', args: [x.id, y.id] });
-  }
 }
 
 // ---------- Synthetic runs: a square loop of 4 × 1250 m, a point every 25 m ----------
@@ -150,11 +159,36 @@ const ranTogetherOf = async (routeId) => JSON.parse((await one('select ran_toget
 const areaOf = async (userId) => Number((await one('select coalesce(sum(area), 0) as a from territories where user_id = ?', [userId])).a);
 const feedMeta = async (routeId) => JSON.parse((await one('select metadata from feed_events where route_id = ?', [routeId]))?.metadata || '{}');
 
-// ---------- 1. Together, the friend who stole uploads first ----------
+// ---------- Everybody in one club, with a free-for-all competition running ----------
+const people = {};
+for (const name of ['ana', 'bea', 'carla', 'dani', 'eva', 'fran', 'gema', 'hugo', 'ines']) {
+  people[name] = await register(name);
+  const res = await call('PATCH', '/api/users/me/location', { token: people[name].token, body: { city: 'Madrid', countryCode: 'ES', countryName: 'España', lat: MADRID[0], lng: MADRID[1] } });
+  if (res.status !== 200) throw new Error(`location: ${JSON.stringify(res.data)}`);
+}
+const crest = { shape: 'classic', pattern: 'stripes', primary: '#16A34A', secondary: '#FFFFFF', icon: 'flame.fill', initials: 'MC' };
+const club = (await call('POST', '/api/clubs', { token: people.ana.token, body: { name: `Madrid Corre ${stamp}`, crest, visibility: 'public' } })).data.club;
+if (!club) throw new Error('club not created');
+for (const p of Object.values(people)) if (p !== people.ana) {
+  const joined = await call('POST', `/api/clubs/${club.id}/join`, { token: p.token, body: {} });
+  if (!joined.data.joined) throw new Error(`join: ${JSON.stringify(joined.data)}`);
+}
+const admin = (route, body = {}) => call('POST', route, { token: env.UPSTASH_CRON_SECRET, body });
+const tick = await admin('/api/admin/season/tick');
+const competition = await one('select mode from club_competitions where club_id = ?', [club.id]);
+check('setup: the club competition is running, everyone against everyone', tick.data.phase === 'competition' && competition?.mode === 'ffa', { tick: tick.data, competition });
+// The runs below are from the last two hours: count them, as if everybody had joined at the start
+await admin('/api/admin/season/runs-from', { at: new Date(NOW - 4 * DAY).toISOString() });
+const season = (await call('GET', '/api/season/current', { token: people.ana.token })).data;
+await db.execute({ sql: 'UPDATE club_members SET joined_at = ?', args: [season.cycle.competitionStartsAt] });
+await db.execute({ sql: 'UPDATE competition_participants SET joined_at = ?', args: [season.cycle.competitionStartsAt] });
+const players = await one('select count(*) as n from competition_participants p join club_competitions c on c.id = p.competition_id where c.club_id = ?', [club.id]);
+check('setup: the 9 club mates take part', Number(players?.n) === 9, players);
+
+// ---------- 1. Together, the club mate who stole uploads first ----------
 {
-  const a = await register('ana');
-  const b = await register('bea');
-  await befriend(a, b);
+  const a = people.ana;
+  const b = people.bea;
   const origin = MADRID;
   await upload(b, loop(origin), 115, 25); // Bea's own territory from an earlier run
   const bAreaBefore = await areaOf(b.id);
@@ -184,8 +218,7 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
 
   // ---------- 4. Pushes: held while the victim records a run, then sent ----------
   await db.execute({ sql: 'insert into push_subscriptions (user_id, endpoint, p256dh, auth) values (?, ?, ?, ?)', args: [a.id, `apns:sandbox:device${stamp}`, 'apns', 'apns'] });
-  const c = await register('carla');
-  await befriend(a, c);
+  const c = people.carla;
   const routeC = await upload(c, loop(origin, { offset: 3 }), 40, 25); // Carla runs the same loop alone later
   check('4. Carla took Ana\'s loop', (await metricsFromRoute(routeC.id, a.id)).length === 1);
   const queuedForAna = await pendingFor(routeC.id, a.id);
@@ -220,8 +253,8 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
   check('4b. seen in the app: no "tu carrera está lista" push', seen.status === 200 && cron.data.activityReady?.sent === 0 && apns.length === apnsBefore, cron.data);
   check('4b. result-seen needs a session', (await call('POST', `/api/routes/${routeC.id}/result-seen`)).status === 401);
 
-  // ---------- 5. Reprocess gives the same result ----------
-  queued.push({ type: 'reprocess_friend_group', userId: a.id });
+  // ---------- 5. Rebuilding the competition map gives the same result ----------
+  queued.push({ type: 'rebuild_user_territory', userId: a.id });
   await flush();
   check('5. after reprocessing, still no steal between Ana and Bea',
     (await metricsFromRoute(routeA.id, b.id)).length === 0 && (await metricsFromRoute(routeB.id, a.id)).length === 0);
@@ -230,9 +263,8 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
 
 // ---------- 2. Together, the other order ----------
 {
-  const d = await register('dani');
-  const e = await register('eva');
-  await befriend(d, e);
+  const d = people.dani;
+  const e = people.eva;
   const origin = [MADRID[0] + 0.05, MADRID[1]];
   await upload(e, loop(origin), 115, 25);
   const eAreaBefore = await areaOf(e.id);
@@ -246,9 +278,8 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
 
 // ---------- 3. Partial: Fran joins Gema for the second half ----------
 {
-  const f = await register('fran');
-  const g = await register('gema');
-  await befriend(f, g);
+  const f = people.fran;
+  const g = people.gema;
   const origin = [MADRID[0] + 0.10, MADRID[1]];
   await upload(f, loop(origin), 115, 25); // Fran's own territory
   const routeG = await upload(g, loop(origin), 80, 25); // Gema runs the whole loop and uploads first
@@ -268,9 +299,8 @@ const feedMeta = async (routeId) => JSON.parse((await one('select metadata from 
 
 // ---------- 6. Same loop 12 minutes apart, with point times: not together ----------
 {
-  const h = await register('hugo');
-  const i = await register('ines');
-  await befriend(h, i);
+  const h = people.hugo;
+  const i = people.ines;
   const origin = [MADRID[0] + 0.15, MADRID[1]];
   const routeH = await upload(h, loop(origin), 80, 25);
   const routeI = await upload(i, loop(origin, { offset: 8 }), 68, 25);
