@@ -34,7 +34,7 @@ enum AppConfig {
     /// OAuth client ID of the iOS app in Google Cloud (APIs & Services → Credentials → OAuth client
     /// ID, type iOS, bundle com.jpoves.runnaio). Not secret. Empty: the Google button is hidden.
     /// The Worker must list the same ID in GOOGLE_CLIENT_IDS.
-    static let googleClientID = ""
+    static let googleClientID = "872664300416-tmr9ipo7n8tnjhf2rrnhta9lqr9fu4bd.apps.googleusercontent.com"
 
     /// The redirect of the Google sign-in: the client ID reversed, as Google expects for iOS clients
     /// ("com.googleusercontent.apps.<id>"). Nil when Google sign-in is off.
