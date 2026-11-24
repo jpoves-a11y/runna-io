@@ -36,6 +36,9 @@ test('size: big cities get a wider urban core and their places of interest; vill
 test('the place lookup only sends the members\' centre rounded to 0.1°', () => {
   const query = placeQuery(41.64873, -0.88916);
   assert.match(query, /around:20000,41\.6,-0\.9\)/);
+  // Nodes must come with their coordinates: "out tags" leaves them out
+  assert.match(query, /out body/);
+  assert.doesNotMatch(query, /out tags/);
   assert.doesNotMatch(query, /41\.648|0\.889/);
 });
 
@@ -81,6 +84,9 @@ test('the places query covers parks, squares, landmarks... in cities and streets
   for (const piece of ['leisure"~"^(park|garden)$', 'place"="square', 'highway"="pedestrian', 'historic', 'tourism', 'amenity"="fountain', 'landuse"~"^(industrial|retail', 'aeroway"="aerodrome', 'around:4000,']) {
     assert.ok(poi.includes(piece), piece);
   }
+  // Nodes (fountains, monuments, squares) with coordinates; ways and relations with their centre
+  assert.ok(poi.includes('node.spots;out body') && poi.includes('way.spots;out tags center') && poi.includes('rel.spots;out tags center'));
+  assert.ok(poi.includes('.avoid out geom'));
   const streets = spotsQuery(ZGZ.lat, ZGZ.lng, 800, 'streets');
   assert.ok(streets.includes('highway"~"^(pedestrian|living_street|residential|footway)$') && streets.includes('access"!~"^(private|no)$'));
   assert.ok(!streets.includes('historic'));
