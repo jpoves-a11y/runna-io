@@ -1609,8 +1609,10 @@ private final class ChestTextures {
         let albedo = pixels(width: size, height: size) { x, y in
             let cell = cells[nearest[y * size + x]]
             let e = edge[y * size + x]
-            let base = (0.2 * cell.tone, 0.55 * cell.tone, 0.95 * min(1, cell.tone))
-            return (base.0 + (0.85 - base.0) * e, base.1 + (0.95 - base.1) * e, base.2 + (1 - base.2) * e, 1)
+            let r: Double = 0.2 * cell.tone
+            let g: Double = 0.55 * cell.tone
+            let b: Double = 0.95 * min(1, cell.tone)
+            return (r + (0.85 - r) * e, g + (0.95 - g) * e, b + (1 - b) * e, 1)
         }
         let normal = pixels(width: size, height: size, linear: true) { x, y in
             let cell = cells[nearest[y * size + x]]
@@ -1624,10 +1626,16 @@ private final class ChestTextures {
     /// White: each chest tints it.
     private static func makeBeam() -> UIImage {
         let width = 256, height = 256
-        return pixels(width: width, height: height) { x, y in
-            let u = Double(x) / Double(width), v = Double(y) / Double(height)
-            let rays = 0.45 + 0.55 * (0.5 + 0.5 * sin(u * 2 * .pi * 5 + 1.3)) * (0.5 + 0.5 * sin(u * 2 * .pi * 9 + 0.4))
-            let fade = pow(v, 1.8) * (1 - smoothstep(0.94, 1, v) * 0.5)
+        // Split into small typed steps: as one expression it took the compiler too long to type-check
+        return pixels(width: width, height: height) { (x: Int, y: Int) -> (Double, Double, Double, Double) in
+            let u: Double = Double(x) / Double(width)
+            let v: Double = Double(y) / Double(height)
+            let turn: Double = u * 2 * Double.pi
+            let wave5: Double = 0.5 + 0.5 * sin(turn * 5 + 1.3)
+            let wave9: Double = 0.5 + 0.5 * sin(turn * 9 + 0.4)
+            let rays: Double = 0.45 + 0.55 * wave5 * wave9
+            let top: Double = 1 - smoothstep(0.94, 1, v) * 0.5
+            let fade: Double = pow(v, 1.8) * top
             return (1, 0.97, 0.93, min(1, fade * rays * 0.75))
         }
     }
@@ -1654,7 +1662,9 @@ private final class ChestTextures {
             let dx = (Double(x) + 0.5) / Double(size) * 2 - 1
             let dy = (Double(y) + 0.5) / Double(size) * 2 - 1
             let d = sqrt(dx * dx + dy * dy)
-            let ring = exp(-pow((d - 0.86) / 0.05, 2)) + 0.3 * exp(-pow((d - 0.65) / 0.18, 2))
+            let sharp: Double = exp(-pow((d - 0.86) / 0.05, 2))
+            let soft: Double = exp(-pow((d - 0.65) / 0.18, 2))
+            let ring: Double = sharp + 0.3 * soft
             return (1, 1, 1, d > 1 ? 0 : min(1, ring))
         }
     }
