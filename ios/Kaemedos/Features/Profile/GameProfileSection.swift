@@ -92,18 +92,12 @@ struct GameProfileSection: View {
         .sheet(isPresented: $showInventory, onDismiss: { Task { await season.load(force: true) } }) {
             InventorySheet()
         }
-        .confirmationDialog(
-            confirmTitle,
-            isPresented: Binding(get: { detected != nil }, set: { if !$0 { detected = nil } }),
-            titleVisibility: .visible
-        ) {
-            Button("Guardar") {
-                if let detected { save(detected) }
-            }
-            Button("Cancelar", role: .cancel) {}
-        } message: {
-            Text("La usaremos para los rankings de tu país y tu ciudad y para los cofres de los clubes.")
-        }
+        .km2Confirm(
+            item: $detected,
+            title: { "¿Tu ciudad base es \($0.city) (\($0.countryName))?" },
+            message: { _ in "La usaremos para los rankings de tu país y tu ciudad y para los cofres de los clubes." },
+            destructive: false
+        ) { save($0) }
         .errorAlert($errorMessage)
     }
 
@@ -117,11 +111,6 @@ struct GameProfileSection: View {
         guard let city = me.city else { return "Elegir" }
         guard let country = me.countryName else { return city }
         return "\(city), \(country)"
-    }
-
-    private var confirmTitle: String {
-        guard let detected else { return "" }
-        return "¿Tu ciudad base es \(detected.city) (\(detected.countryName))?"
     }
 
     private func locate() {

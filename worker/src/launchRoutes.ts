@@ -202,7 +202,7 @@ export function registerLaunchRoutes(app: Hono<AppEnv>): void {
     const missions = [
       { id: 'first_run', title: 'Sal a correr', detail: 'Graba tu primera carrera o importa una de tu reloj.', done: Number(counts?.runs ?? 0) > 0 },
       { id: 'first_territory', title: 'Conquista tu primer territorio', detail: 'Cierra un recorrido para que su área sea tuya.', done: Number(user.globalArea ?? 0) > 0 },
-      { id: 'first_friend', title: 'Añade un amigo', detail: 'Invita a alguien: así podéis robaros territorio.', done: Number(counts?.friends ?? 0) > 0 },
+      { id: 'first_friend', title: 'Añade un amigo', detail: 'Invita a alguien y compara tu mapa con el suyo en el ranking de amigos.', done: Number(counts?.friends ?? 0) > 0 },
       { id: 'join_club', title: 'Únete a un club', detail: 'Compite con tu club cada dos semanas.', done: Boolean(membership) },
       { id: 'connect_device', title: 'Conecta tu reloj', detail: 'Garmin, Suunto, Polar o Apple Salud: tus carreras llegan solas.', done: Number(counts?.devices ?? 0) > 0 || c.req.query('health') === '1' },
     ];

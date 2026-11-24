@@ -174,11 +174,23 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 | `SENDGRID_API_KEY` / `RESEND_API_KEY` | No | Alternativas a Gmail (`EMAIL_PROVIDER` en `[vars]` elige el proveedor); las dos necesitan un dominio propio verificado |
 | `GARMIN_CLIENT_ID`, `GARMIN_CLIENT_SECRET` | Para Garmin | Consumer key y secret de la app en el portal de Garmin ([ver abajo](#garmin)) |
 | `APPLE_SIGNIN_KEY_ID`, `APPLE_SIGNIN_PRIVATE_KEY` | Para Apple | Clave con **Sign in with Apple** de developer.apple.com → Keys (Key ID y contenido del `.p8`). Sirve para desvincular la app del Apple ID al borrar una cuenta, como exige Apple. Sin ella se puede entrar con Apple, pero no se revoca. El equipo es `APNS_TEAM_ID` |
+| `GOOGLE_CLIENT_IDS` (`[vars]`, no secreto) | Para Google | Client ID de OAuth de la app de iPhone en Google Cloud, separados por comas si hay varios. Vacío: no se puede entrar con Google. Ver [Iniciar sesión con Google](#iniciar-sesión-con-google) |
 | `GARMIN_WEBHOOK_SECRET` | No | Si está, la URL del webhook de Garmin debe llevar `?key=<secreto>` (Garmin no firma sus avisos) |
 | `WORKER_URL` | No | URL pública del Worker para enlaces de invitación y botones de los emails. Por defecto, el origen de la petición |
 | `APP_DOWNLOAD_URL` | No | Enlace de App Store / TestFlight; si está, las páginas `/invite` y `/open` muestran "Descargar la app" |
 | `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` | No | Solo si aún llamas a `/api/tasks/*` desde QStash |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | No | Web Push de la web retirada; no hacen falta para la app |
+
+### Iniciar sesión con Google
+
+La app abre el inicio de sesión de Google en la ventana segura del sistema (OAuth 2.0 con PKCE, sin el SDK de Google), recibe un *ID token* y lo manda a `POST /api/auth/google`. El Worker comprueba la firma con las claves públicas de Google, que el token es para la app (`GOOGLE_CLIENT_IDS`), que no ha caducado y el *nonce*. A partir de ahí funciona como Apple: una cuenta con el mismo email verificado se vincula sola; si no, la app pide nombre de usuario y aceptar las condiciones, o «Ya tengo cuenta» la vincula con la contraseña.
+
+Para activarlo:
+
+1. En [console.cloud.google.com](https://console.cloud.google.com) crea un proyecto (o usa uno) y configura la **pantalla de consentimiento de OAuth** (APIs y servicios → Pantalla de consentimiento de OAuth): tipo *Externo*, nombre «KM2», email de soporte `kaeme2.support@gmail.com` y los enlaces a `/privacy` y `/terms` del Worker. Sin logotipo: subir uno obliga a que Google verifique la marca (varios días); se puede añadir después. Los permisos son solo `openid`, `email` y `profile`, que no necesitan verificación de Google. Todo esto es gratis y no hace falta activar la facturación. Publica la app (estado «En producción»); en «Prueba» solo pueden entrar los usuarios de prueba que añadas.
+2. APIs y servicios → Credenciales → **Crear credenciales → ID de cliente de OAuth**, tipo **iOS**, ID del paquete `com.jpoves.runnaio`. Copia el ID de cliente (`….apps.googleusercontent.com`).
+3. Ponlo en `GOOGLE_CLIENT_IDS` de `wrangler.worker.toml` y despliega el Worker.
+4. Ponlo en `googleClientID` de `ios/Kaemedos/Core/AppConfig.swift` y sube una versión de la app. Mientras esté vacío, el botón de Google no aparece.
 
 ### Emails
 

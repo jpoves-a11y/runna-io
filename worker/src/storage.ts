@@ -228,6 +228,16 @@ export class WorkerStorage {
     await this.db.update(users).set(data).where(eq(users.id, userId));
   }
 
+  async getUserByGoogleSub(googleSub: string): Promise<User | undefined> {
+    const [user] = await this.db.select().from(users).where(eq(users.googleSub, googleSub));
+    return user || undefined;
+  }
+
+  /** Links an account to a Google account. */
+  async setGoogleIdentity(userId: string, googleSub: string): Promise<void> {
+    await this.db.update(users).set({ googleSub }).where(eq(users.id, userId));
+  }
+
   async createUser(insertUser: InsertUser): Promise<User> {
     const [user] = await this.db
       .insert(users)
@@ -428,6 +438,7 @@ export class WorkerStorage {
       sql`ALTER TABLE users ADD COLUMN ban_reason TEXT`,
       sql`ALTER TABLE users ADD COLUMN welcome_reward_at TEXT`,
       sql`ALTER TABLE users ADD COLUMN tour_done_at TEXT`,
+      sql`ALTER TABLE users ADD COLUMN google_sub TEXT`,
       sql`ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'open'`,
       sql`ALTER TABLE reports ADD COLUMN resolved_at TEXT`,
       sql`ALTER TABLE reports ADD COLUMN action TEXT`,
@@ -435,6 +446,7 @@ export class WorkerStorage {
       try { await this.db.run(column); } catch (_) { /* column already exists */ }
     }
     await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub ON users(apple_sub)`);
+    await this.db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)`);
     await this.db.run(sql`CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at)`);
     await this.db.run(sql`CREATE TABLE IF NOT EXISTS route_private_ends (
       route_id TEXT PRIMARY KEY,

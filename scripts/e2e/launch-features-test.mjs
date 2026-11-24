@@ -44,6 +44,22 @@ async function appleToken(claims) {
 }
 const nonceHash = (raw) => createHash('sha256').update(raw).digest('hex');
 
+// ---------- Test Google keys ----------
+const GOOGLE_CLIENT_ID = 'e2e-ios.apps.googleusercontent.com';
+const googleKeys = await webcrypto.subtle.generateKey(
+  { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+  true, ['sign', 'verify'],
+);
+const googleJwk = await webcrypto.subtle.exportKey('jwk', googleKeys.publicKey);
+async function googleToken(claims) {
+  const head = b64url(JSON.stringify({ alg: 'RS256', kid: 'g-e2e' }));
+  const body = b64url(JSON.stringify({
+    iss: 'https://accounts.google.com', aud: GOOGLE_CLIENT_ID, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600, ...claims,
+  }));
+  const signature = await webcrypto.subtle.sign('RSASSA-PKCS1-v1_5', googleKeys.privateKey, new TextEncoder().encode(`${head}.${body}`));
+  return `${head}.${body}.${b64url(new Uint8Array(signature))}`;
+}
+
 const worker = (await import('./.build/worker.mjs')).default;
 const db = createClient({ url: databaseUrl });
 const queued = [];
@@ -59,6 +75,8 @@ const env = {
   APNS_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   APNS_BUNDLE_ID: 'com.jpoves.runnaio',
   APPLE_JWKS_JSON: JSON.stringify({ keys: [{ ...appleJwk, kid: 'e2e', alg: 'RS256', use: 'sig' }] }),
+  GOOGLE_CLIENT_IDS: GOOGLE_CLIENT_ID,
+  GOOGLE_JWKS_JSON: JSON.stringify({ keys: [{ ...googleJwk, kid: 'g-e2e', alg: 'RS256', use: 'sig' }] }),
   TERRITORY_QUEUE: { send: async (body) => { queued.push(body); } },
 };
 const ctx = { waitUntil: (p) => { pending.push(Promise.resolve(p)); }, passThroughOnException() {} };
@@ -71,7 +89,7 @@ async function flush() {
   }
 }
 
-async function raw(method, route, { token, body, headers = {}, form } = {}) {
+async function raw(method, route, { token, body, headers = {}, form, useEnv = env } = {}) {
   const h = { 'cf-connecting-ip': '203.0.113.9', ...headers };
   if (token) h.Authorization = `Bearer ${token}`;
   let payload;
@@ -82,7 +100,7 @@ async function raw(method, route, { token, body, headers = {}, form } = {}) {
     h['Content-Type'] = 'application/json';
     payload = JSON.stringify(body);
   }
-  const res = await worker.fetch(new Request(`http://127.0.0.1:8787${route}`, { method, headers: h, body: payload, redirect: 'manual' }), env, ctx);
+  const res = await worker.fetch(new Request(`http://127.0.0.1:8787${route}`, { method, headers: h, body: payload, redirect: 'manual' }), useEnv, ctx);
   await flush();
   return res;
 }
@@ -226,6 +244,57 @@ res = await call('POST', '/api/auth/apple', { body: { identityToken: await relay
 check('linking with the password signs into the existing account', res.status === 200 && res.data.id === dora.id && res.data.linked === true && res.data.token, res.data);
 res = await call('POST', '/api/auth/apple', { body: { identityToken: await relayToken('l4'), nonce: 'l4' } });
 check('the linked Apple ID signs in directly afterwards', res.status === 200 && res.data.id === dora.id);
+
+// ---------- 2b. Sign in with Google ----------
+const googleSub = `10${stamp}77`;
+const elenaEmail = `elena${stamp}@gmail.com`;
+const google = async (nonce, claims = {}, extra = {}) => call('POST', '/api/auth/google', {
+  body: { idToken: await googleToken({ sub: googleSub, nonce, email: elenaEmail, email_verified: true, name: 'Elena Ruiz', ...claims }), nonce, ...extra },
+});
+res = await google('g1');
+check('new Google user is asked for a profile, with the name and email from Google', res.status === 200 && res.data.needsProfile === true
+  && res.data.name === 'Elena Ruiz' && res.data.email === elenaEmail && res.data.suggestedUsername === 'elenaruiz', res.data);
+res = await google('g2', {}, { username: `elena${stamp}` });
+check('Google: terms must be accepted', res.status === 400, res.data);
+res = await google('g3', {}, { username: `elena${stamp}`, acceptedTerms: true });
+check('Google account is created and signed in', res.status === 200 && typeof res.data.token === 'string' && res.data.created === true && res.data.name === 'Elena Ruiz', res.data);
+check('the Google id is not sent to the app', res.data.googleSub === undefined);
+const elena = { id: res.data.id };
+const elenaRow = await one('select google_sub, email, email_verified, password from users where id = ?', [elena.id]);
+check('the account keeps the Google id and the verified email, no password', elenaRow?.google_sub === googleSub && elenaRow.email === elenaEmail && Number(elenaRow.email_verified) === 1 && elenaRow.password === '', elenaRow);
+res = await google('g4');
+check('same Google account signs in again', res.status === 200 && res.data.id === elena.id && res.data.token, res.data);
+res = await call('POST', '/api/auth/google', { body: { idToken: await googleToken({ sub: googleSub, nonce: 'g5' }), nonce: 'another' } });
+check('Google: wrong nonce is refused', res.status === 401, res.data);
+res = await call('POST', '/api/auth/google', { body: { idToken: await googleToken({ sub: googleSub, nonce: 'g6', aud: 'someone-else.apps.googleusercontent.com' }), nonce: 'g6' } });
+check('Google: a token for another app is refused', res.status === 401, res.data);
+// An existing email account is linked when Google has verified the address
+const bruno = await register('bruno');
+const brunoEmail = `${bruno.username}@e2e.test`.toLowerCase();
+res = await call('POST', '/api/auth/google', { body: { idToken: await googleToken({ sub: `20${stamp}`, nonce: 'g7', email: brunoEmail, email_verified: false }), nonce: 'g7' } });
+check('an unverified Google email does not link the account', res.status === 200 && res.data.needsProfile === true, res.data);
+res = await call('POST', '/api/auth/google', { body: { idToken: await googleToken({ sub: `20${stamp}`, nonce: 'g8', email: brunoEmail, email_verified: true }), nonce: 'g8' } });
+check('a Google-verified email links the existing account', res.status === 200 && res.data.id === bruno.id && res.data.token, res.data);
+check('the Google link is stored', (await one('select google_sub from users where id = ?', [bruno.id]))?.google_sub === `20${stamp}`);
+// "Ya tengo cuenta" with another address: linked by the password
+const clara = await register('clara');
+const claraGoogle = async (nonce, extra = {}) => call('POST', '/api/auth/google', {
+  body: { idToken: await googleToken({ sub: `30${stamp}`, nonce, email: `otra${stamp}@gmail.com`, email_verified: true }), nonce, ...extra },
+});
+res = await claraGoogle('c1', { linkIdentifier: clara.username, linkPassword: 'wrong-password' });
+check('Google: linking with a wrong password is refused', res.status === 401, res.data);
+res = await claraGoogle('c2', { linkIdentifier: clara.username, linkPassword: 'e2e-password' });
+check('Google: linking with the password signs into the existing account', res.status === 200 && res.data.id === clara.id && res.data.linked === true, res.data);
+res = await claraGoogle('c3');
+check('the linked Google account signs in directly afterwards', res.status === 200 && res.data.id === clara.id, res.data);
+// A suspended account can't sign in with Google either
+await db.execute({ sql: "update users set banned_at = ? where id = ?", args: [new Date().toISOString(), clara.id] });
+res = await claraGoogle('c4');
+check('a suspended account is refused with Google', res.status === 403 && res.data.error === 'account_suspended', res.data);
+await db.execute({ sql: 'update users set banned_at = null where id = ?', args: [clara.id] });
+// Not configured: the endpoint says so
+res = await call('POST', '/api/auth/google', { body: { idToken: 'x', nonce: 'y' }, useEnv: { ...env, GOOGLE_CLIENT_IDS: '' } });
+check('Google sign-in without client IDs answers 503', res.status === 503, res);
 
 // The tour is shown once per account
 res = await call('GET', `/api/current-user/${dora.id}`, { token: dora.token });

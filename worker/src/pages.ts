@@ -3,6 +3,7 @@
 // URL scheme (friend invites and email buttons). Plain HTML with inline CSS, no external resources.
 import type { Context, Hono } from 'hono';
 import type { AppEnv } from './auth';
+import { EMAIL_LOGO_PATH, emailLogoPng } from './brandAssets';
 
 const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 const CONTACT_EMAIL = 'kaeme2.support@gmail.com';
@@ -232,8 +233,9 @@ const PRIVACY_HTML = page('Política de Privacidad · KM2', `
 <p>Si las permites, guardamos el <strong>token de dispositivo</strong> que da Apple para enviarte avisos (solicitudes de amistad, territorio robado, comentarios, tesoros…) a través del servicio Apple Push Notification service (APNs). Puedes desactivarlas en Ajustes del iPhone.</p>
 <h3>2.7. Contenido social</h3>
 <p>Comentarios y reacciones que publicas en el feed, tus amistades y, si los usas, las denuncias y bloqueos que haces.</p>
-<h3>2.8. Iniciar sesión con Apple</h3>
+<h3>2.8. Iniciar sesión con Apple o con Google</h3>
 <p>Si entras con Apple, recibimos de Apple un identificador de tu Apple ID y el email que elijas compartir (puede ser una dirección privada de Apple que reenvía a la tuya). Al borrar tu cuenta pedimos a Apple que desvincule KM2 de tu Apple ID.</p>
+<p>Si entras con Google, recibimos de Google un identificador de tu cuenta de Google, tu email y tu nombre. No recibimos tu contraseña ni accedemos a ningún otro dato de tu cuenta de Google. Puedes quitar el acceso de KM2 cuando quieras en myaccount.google.com → Seguridad → Aplicaciones de terceros; al borrar tu cuenta de KM2 eliminamos ese identificador.</p>
 <h3>2.9. Uso de la app</h3>
 <p>Para saber qué partes de la app se usan y mejorarlas, la app envía a nuestro servidor eventos de uso (por ejemplo, «ha abierto la pestaña Ranking» o «ha empezado una carrera»), con la versión de la app y un identificador de la instalación. Se guardan en nuestra base de datos, vinculados a tu cuenta, durante 180 días como máximo, y nunca se comparten con terceros ni se usan para publicidad.</p>
 <h3>2.10. Zona privada</h3>
@@ -279,7 +281,7 @@ const PRIVACY_HTML = page('Política de Privacidad · KM2', `
 <tr><td>Cloudflare</td><td>Alojamiento del servidor</td><td>Global</td></tr>
 <tr><td>Turso</td><td>Base de datos</td><td>UE</td></tr>
 <tr><td>Apple (APNs)</td><td>Notificaciones push</td><td>EE. UU.</td></tr>
-<tr><td>SendGrid / Resend</td><td>Emails de la cuenta</td><td>EE. UU.</td></tr>
+<tr><td>Google (Gmail)</td><td>Emails de la cuenta; inicio de sesión con Google (opcional)</td><td>EE. UU.</td></tr>
 <tr><td>Strava</td><td>Importación (opcional)</td><td>EE. UU.</td></tr>
 <tr><td>Polar Flow</td><td>Importación (opcional)</td><td>Finlandia (UE)</td></tr>
 <tr><td>Suunto</td><td>Importación (opcional)</td><td>Finlandia (UE)</td></tr>
@@ -537,6 +539,15 @@ export function registerPublicPages(app: Hono<AppEnv>): void {
     c.header('Referrer-Policy', 'no-referrer');
     return c.html(body, status);
   };
+
+  // The logo at the top of every email
+  app.get(EMAIL_LOGO_PATH, () => new Response(emailLogoPng(), {
+    headers: {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  }));
 
   app.get('/privacy', (c) => html(c, PRIVACY_HTML));
   app.get('/terms', (c) => html(c, TERMS_HTML));

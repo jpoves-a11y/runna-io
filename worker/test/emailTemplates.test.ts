@@ -38,8 +38,15 @@ test('HTML declares the dark version and sets text and background together', () 
     assert.match(email.html, /@media \(prefers-color-scheme: dark\)/);
     assert.doesNotMatch(email.html, /display:\s*grid|linear-gradient/);
     // The card and the page set their own background; the texts their own colour
-    assert.match(email.html, /class="card card-pad" style="background:#FFFFFF/);
+    assert.match(email.html, /class="card" [^>]*style="[^"]*background:#FFFFFF/);
     assert.match(email.html, /class="txt h1" style="[^"]*color:#111418/);
+  }
+});
+
+test('the KM2 logo heads every email, on its own black band, with a readable alt text', () => {
+  for (const email of all) {
+    assert.match(email.html, /bgcolor="#000000"[^>]*>\s*<img src="https:\/\/api\.example\.test\/brand\/km2-logo-email-v1\.png" width="240" height="118" alt="KM2 · Kaemedos" style="[^"]*color:#FFFFFF/);
+    assert.equal((email.html.match(/<img /g) ?? []).length, 1, 'one image only');
   }
 });
 
@@ -83,4 +90,13 @@ test('unsubscribe links are signed', async () => {
   assert.equal(await isValidUnsubscribeToken('secret', 'user-2', token), false);
   assert.equal(await isValidUnsubscribeToken('other', 'user-1', token), false);
   assert.equal(await isValidUnsubscribeToken('', 'user-1', token), false);
+});
+
+test('the email logo served by the Worker is a 480 x 236 PNG', async () => {
+  const { emailLogoPng } = await import('../src/brandAssets.ts');
+  const png = emailLogoPng();
+  assert.deepEqual([...png.slice(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(png.buffer, png.byteOffset);
+  assert.equal(view.getUint32(16), 480);
+  assert.equal(view.getUint32(20), 236);
 });

@@ -31,6 +31,19 @@ enum AppConfig {
     /// still sees the row, to disconnect.
     static let stravaEnabled = false
 
+    /// OAuth client ID of the iOS app in Google Cloud (APIs & Services → Credentials → OAuth client
+    /// ID, type iOS, bundle com.jpoves.runnaio). Not secret. Empty: the Google button is hidden.
+    /// The Worker must list the same ID in GOOGLE_CLIENT_IDS.
+    static let googleClientID = ""
+
+    /// The redirect of the Google sign-in: the client ID reversed, as Google expects for iOS clients
+    /// ("com.googleusercontent.apps.<id>"). Nil when Google sign-in is off.
+    static var googleRedirectScheme: String? {
+        let suffix = ".apps.googleusercontent.com"
+        guard googleClientID.hasSuffix(suffix) else { return nil }
+        return "com.googleusercontent.apps." + googleClientID.dropLast(suffix.count)
+    }
+
     /// Minimum age to use the app (Terms, "Elegibilidad").
     static let minimumAge = 14
 

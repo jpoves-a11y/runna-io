@@ -114,6 +114,9 @@ struct MainTabView: View {
         .sheet(isPresented: Binding(get: { router.showClubFormDemo }, set: { router.showClubFormDemo = $0 })) {
             ClubFormView(mode: .create)
         }
+        .fullScreenCover(isPresented: Binding(get: { router.showAuthDemo }, set: { router.showAuthDemo = $0 })) {
+            AuthView()
+        }
         #endif
         .seasonResultsInbox()
         // My club (and its unread chat messages) on launch and whenever something changes

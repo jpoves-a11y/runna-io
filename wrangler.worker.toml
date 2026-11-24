@@ -29,6 +29,10 @@ EMAIL_PROVIDER = "gmail"
 # GMAIL_APP_PASSWORD must be an app password of this same account
 GMAIL_USER = "kaeme2.support@gmail.com"
 SENDGRID_FROM = "kaeme2.support@gmail.com"
+# Sign in with Google: the OAuth client ID(s) of the app (Google Cloud → APIs & Services →
+# Credentials, type iOS), comma-separated. Not secret. Empty: /api/auth/google answers 503.
+# The app has the same ID in ios/Kaemedos/Core/AppConfig.swift (googleClientID).
+GOOGLE_CLIENT_IDS = ""
 RESEND_FROM = "onboarding@resend.dev"
 
 # NOTA: Las API keys deben configurarse como secretos:

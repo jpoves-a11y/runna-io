@@ -1,7 +1,7 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { createDb } from './db';
 import { WorkerStorage } from './storage';
-import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route } from '../../shared/schema';
+import { insertUserSchema, insertRouteSchema, insertFriendshipSchema, type InsertRoute, type Route, type User } from '../../shared/schema';
 import * as turf from '@turf/turf';
 import type { Polygon, MultiPolygon } from 'geojson';
 import { DEFAULT_WORKER_URL, emailConfig, emailServiceFromEnv, PASSWORD_RESET_CODE_MINUTES, SIGNUP_CODE_MINUTES } from './email';
@@ -34,6 +34,7 @@ import { hashPassword, verifyPassword, needsRehash } from './passwords';
 import { toPublicUser, toSelfUser } from './users';
 import { PRIVACY_ZONE_METERS } from './privacyZone';
 import { verifyAppleIdentityToken, verifyAppleServerNotification, exchangeAppleAuthorizationCode, revokeAppleToken, usernameCandidates, AppleTokenError } from './appleAuth';
+import { verifyGoogleIdToken, googleClientIds, GoogleTokenError } from './googleAuth';
 
 /**
  * Deletes an account and everything in it (Perfil → Borrar cuenta, or Apple telling us the Apple
@@ -1377,6 +1378,131 @@ export async function canSeeRunsOf(storage: WorkerStorage, viewerId: string | un
   return new GameStorage(storage.database).sameClub(viewerId, ownerId);
 }
 
+/** One Apple or Google account, as /api/auth/apple and /api/auth/google hand it to finishSocialSignIn. */
+interface SocialSignIn {
+  provider: 'apple' | 'google';
+  /** The account id at Apple / Google */
+  sub: string;
+  email: string | null;
+  /** The provider has verified the email and it is a real address: it can match an existing account */
+  emailMatches: boolean;
+  /** The email can be shown in the app (not Apple's hidden relay address) */
+  showEmail: boolean;
+  /** The name the provider gave (Google); Apple's comes from the app */
+  nameFromProvider: string | null;
+  linkedSubOf: (user: User) => string | null;
+  findBySub: (sub: string) => Promise<User | undefined>;
+  /** Links this provider account to a user */
+  link: (user: Partial<User> & { id: string }) => Promise<void>;
+  /** Called when an already linked user signs in (Apple stores a refresh token it was missing) */
+  relinkSignedIn: (user: User) => Promise<void>;
+  /** Email of a new account when the provider gave none (keeps the NOT NULL UNIQUE column happy) */
+  placeholderEmail: string;
+  emailTakenMessage: string;
+  otherAccountMessage: string;
+}
+
+/**
+ * The common part of Sign in with Apple and Sign in with Google, once the provider's token is checked:
+ * - a linked account signs in; an existing account with the same verified email is linked and signs in;
+ * - "Ya tengo cuenta": the user and password of an existing account link it;
+ * - otherwise, a new account: first `needsProfile` (the app asks for a username, the age and the
+ *   terms), then, with them, the account is created and signs in.
+ */
+async function finishSocialSignIn(c: Context<AppEnv>, storage: WorkerStorage, body: any, ip: string | null, social: SocialSignIn) {
+  let user = await social.findBySub(social.sub);
+  if (!user && social.email && social.emailMatches) {
+    const byEmail = await storage.getUserByEmail(social.email);
+    if (byEmail && !social.linkedSubOf(byEmail)) {
+      await social.link(byEmail);
+      user = byEmail;
+    }
+  } else if (user) {
+    await social.relinkSignedIn(user);
+  }
+  if (user) {
+    if (user.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
+    const token = await createSession(storage, user.id);
+    return c.json({ ...toSelfUser(user), token });
+  }
+
+  // "Ya tengo cuenta": an account the email didn't match (Apple's hidden email, another address)
+  // is proved with its password and linked
+  const linkIdentifier = typeof body?.linkIdentifier === 'string' ? body.linkIdentifier.trim() : '';
+  const linkPassword = typeof body?.linkPassword === 'string' ? body.linkPassword : '';
+  if (linkIdentifier && linkPassword) {
+    const ipKey = ip ? `login:ip:${ip}` : null;
+    if (ipKey) {
+      const wait = await lockedForSeconds(storage, ipKey);
+      if (wait > 0) return tooManyAttempts(c, wait);
+    }
+    const existing = await findUserByIdentifier(storage, linkIdentifier);
+    const accountKey = existing ? `login:account:${existing.id}` : null;
+    if (accountKey) {
+      const wait = await lockedForSeconds(storage, accountKey);
+      if (wait > 0) return tooManyAttempts(c, wait);
+    }
+    const valid = existing && existing.password
+      ? await verifyPassword(linkPassword, existing.password)
+      : (await verifyPassword(linkPassword, await dummyPasswordHash()), false);
+    if (!existing || !valid) {
+      await Promise.all([
+        ipKey ? recordAttempt(storage, ipKey, LIMITS.loginIp) : null,
+        accountKey ? recordAttempt(storage, accountKey, LIMITS.loginAccount) : null,
+      ]);
+      return c.json({ error: 'Usuario, email o contraseña incorrectos' }, 401);
+    }
+    await clearAttempts(storage, accountKey!);
+    if (existing.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
+    const linkedSub = social.linkedSubOf(existing);
+    if (linkedSub && linkedSub !== social.sub) return c.json({ error: social.otherAccountMessage }, 409);
+    await social.link(existing);
+    const token = await createSession(storage, existing.id);
+    return c.json({ ...toSelfUser(existing), token, linked: true });
+  }
+
+  // New account: the app asks for a username and the age / terms first
+  const name = (typeof body?.name === 'string' ? body.name.trim() : '').slice(0, 60) || social.nameFromProvider || '';
+  const username = typeof body?.username === 'string' ? body.username.trim() : '';
+  if (!username) {
+    let suggestedUsername: string | null = null;
+    for (const candidate of usernameCandidates(name || social.email?.split('@')[0] || 'runner')) {
+      if (!(await storage.isUsernameTaken(candidate))) { suggestedUsername = candidate; break; }
+    }
+    return c.json({ needsProfile: true, name: name || null, email: social.showEmail ? social.email : null, suggestedUsername });
+  }
+  if (body?.acceptedTerms !== true) return c.json({ error: `Tienes que tener al menos ${MINIMUM_AGE} años y aceptar las condiciones.` }, 400);
+  if (!name) return c.json({ error: 'Escribe tu nombre.' }, 400);
+  if (username.length < 3) return c.json({ error: 'El usuario debe tener al menos 3 caracteres.' }, 400);
+  if (username.length > 30) return c.json({ error: 'El usuario no puede tener más de 30 caracteres.' }, 400);
+  if (/\s/.test(username)) return c.json({ error: 'El usuario no puede contener espacios.' }, 400);
+  if (await storage.isUsernameTaken(username)) return c.json({ error: 'Ese nombre de usuario ya está en uso. Elige otro.' }, 409);
+  const email = social.email ?? social.placeholderEmail;
+  if (await storage.isEmailTaken(email)) return c.json({ error: social.emailTakenMessage }, 409);
+  const color = typeof body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color)
+    ? body.color
+    : USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
+  let created;
+  try {
+    created = await storage.createUser(insertUserSchema.parse({ username, email, name, password: '', color, emailVerified: true }));
+  } catch (err) {
+    console.error(`[AUTH] ${social.provider} sign-up create failed:`, err);
+    return c.json({ error: 'Ese email o nombre de usuario ya está en uso.' }, 409);
+  }
+  await social.link(created);
+  await storage.createEmailPreferences(created.id);
+  if (social.email && !email.endsWith('.invalid')) {
+    try {
+      const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(social.email, name, created.id);
+      try { c.executionCtx.waitUntil(welcome); } catch { /* runs on its own */ }
+    } catch (err) {
+      console.error('[EMAIL] Failed to send welcome email:', err);
+    }
+  }
+  const token = await createSession(storage, created.id);
+  return c.json({ ...toSelfUser(created), token, created: true });
+}
+
 export function registerRoutes(app: Hono<AppEnv>) {
   // Maintenance endpoints: require the admin/cron secret (Authorization: Bearer <UPSTASH_CRON_SECRET>)
   app.use('/api/admin/*', requireAdmin);
@@ -1532,105 +1658,75 @@ export function registerRoutes(app: Hono<AppEnv>) {
       const refreshTokenFor = async (user: { appleRefreshToken?: string | null }) =>
         !user.appleRefreshToken && authorizationCode ? await exchangeAppleAuthorizationCode(c.env, authorizationCode).catch(() => null) : null;
 
-      let user = await storage.getUserByAppleSub(identity.sub);
-      if (!user && identity.email && identity.emailVerified && !identity.isPrivateEmail) {
-        const byEmail = await storage.getUserByEmail(identity.email);
-        if (byEmail && !byEmail.appleSub) {
-          await storage.setAppleIdentity(byEmail.id, identity.sub, await refreshTokenFor(byEmail));
-          user = byEmail;
-        }
-      } else if (user) {
-        const refreshToken = await refreshTokenFor(user);
-        if (refreshToken) await storage.setAppleIdentity(user.id, identity.sub, refreshToken);
-      }
-      if (user) {
-        if (user.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
-        const token = await createSession(storage, user.id);
-        return c.json({ ...toSelfUser(user), token });
-      }
-
-      // "Ya tengo cuenta": an Apple ID with a hidden (relay) email can't be matched by email, so the
-      // user proves the existing account with its password and Apple is linked to it
-      const linkIdentifier = typeof body?.linkIdentifier === 'string' ? body.linkIdentifier.trim() : '';
-      const linkPassword = typeof body?.linkPassword === 'string' ? body.linkPassword : '';
-      if (linkIdentifier && linkPassword) {
-        const ipKey = ip ? `login:ip:${ip}` : null;
-        if (ipKey) {
-          const wait = await lockedForSeconds(storage, ipKey);
-          if (wait > 0) return tooManyAttempts(c, wait);
-        }
-        const existing = await findUserByIdentifier(storage, linkIdentifier);
-        const accountKey = existing ? `login:account:${existing.id}` : null;
-        if (accountKey) {
-          const wait = await lockedForSeconds(storage, accountKey);
-          if (wait > 0) return tooManyAttempts(c, wait);
-        }
-        const valid = existing && existing.password
-          ? await verifyPassword(linkPassword, existing.password)
-          : (await verifyPassword(linkPassword, await dummyPasswordHash()), false);
-        if (!existing || !valid) {
-          await Promise.all([
-            ipKey ? recordAttempt(storage, ipKey, LIMITS.loginIp) : null,
-            accountKey ? recordAttempt(storage, accountKey, LIMITS.loginAccount) : null,
-          ]);
-          return c.json({ error: 'Usuario, email o contraseña incorrectos' }, 401);
-        }
-        await clearAttempts(storage, accountKey!);
-        if (existing.bannedAt) return c.json({ error: 'account_suspended', message: SUSPENDED_MESSAGE }, 403);
-        if (existing.appleSub && existing.appleSub !== identity.sub) {
-          return c.json({ error: 'Esa cuenta ya está vinculada a otro Apple ID.' }, 409);
-        }
-        await storage.setAppleIdentity(existing.id, identity.sub, await refreshTokenFor(existing));
-        const token = await createSession(storage, existing.id);
-        return c.json({ ...toSelfUser(existing), token, linked: true });
-      }
-
-      // New account: the app asks for a username and the age / terms first
-      const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 60) : '';
-      const username = typeof body?.username === 'string' ? body.username.trim() : '';
-      if (!username) {
-        let suggestedUsername: string | null = null;
-        for (const candidate of usernameCandidates(name || identity.email?.split('@')[0] || 'runner')) {
-          if (!(await storage.isUsernameTaken(candidate))) { suggestedUsername = candidate; break; }
-        }
-        return c.json({ needsProfile: true, name: name || null, email: identity.isPrivateEmail ? null : identity.email, suggestedUsername });
-      }
-      if (body?.acceptedTerms !== true) return c.json({ error: `Tienes que tener al menos ${MINIMUM_AGE} años y aceptar las condiciones.` }, 400);
-      if (!name) return c.json({ error: 'Escribe tu nombre.' }, 400);
-      if (username.length < 3) return c.json({ error: 'El usuario debe tener al menos 3 caracteres.' }, 400);
-      if (username.length > 30) return c.json({ error: 'El usuario no puede tener más de 30 caracteres.' }, 400);
-      if (/\s/.test(username)) return c.json({ error: 'El usuario no puede contener espacios.' }, 400);
-      if (await storage.isUsernameTaken(username)) return c.json({ error: 'Ese nombre de usuario ya está en uso. Elige otro.' }, 409);
-      // Without an email from Apple (rare), a unique placeholder keeps the NOT NULL UNIQUE column happy
-      const email = identity.email ?? `apple-${identity.sub.replace(/[^a-zA-Z0-9]/g, '').slice(0, 40)}@appleid.invalid`;
-      if (await storage.isEmailTaken(email)) {
-        return c.json({ error: 'Ya hay una cuenta con el email de tu Apple ID. Inicia sesión con tu contraseña.' }, 409);
-      }
-      const color = typeof body?.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.color)
-        ? body.color
-        : USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)];
-      let created;
-      try {
-        created = await storage.createUser(insertUserSchema.parse({ username, email, name, password: '', color, emailVerified: true }));
-      } catch (err) {
-        console.error('[AUTH] Apple sign-up create failed:', err);
-        return c.json({ error: 'Ese email o nombre de usuario ya está en uso.' }, 409);
-      }
-      await storage.setAppleIdentity(created.id, identity.sub, await refreshTokenFor({}));
-      await storage.createEmailPreferences(created.id);
-      if (identity.email && !identity.email.endsWith('@appleid.invalid')) {
-        try {
-          const welcome = emailServiceFromEnv(c.env, publicBaseUrl(c)).sendWelcomeEmail(identity.email, name, created.id);
-          try { c.executionCtx.waitUntil(welcome); } catch { /* runs on its own */ }
-        } catch (err) {
-          console.error('[EMAIL] Failed to send welcome email:', err);
-        }
-      }
-      const token = await createSession(storage, created.id);
-      return c.json({ ...toSelfUser({ ...created, appleSub: identity.sub }), token, created: true });
+      return await finishSocialSignIn(c, storage, body, ip, {
+        provider: 'apple',
+        sub: identity.sub,
+        email: identity.email,
+        // A hidden (relay) email can't be matched to an existing account
+        emailMatches: identity.emailVerified && !identity.isPrivateEmail,
+        showEmail: !identity.isPrivateEmail,
+        nameFromProvider: null,
+        linkedSubOf: (user) => user.appleSub ?? null,
+        findBySub: (sub) => storage.getUserByAppleSub(sub),
+        link: async (user) => storage.setAppleIdentity(user.id, identity.sub, await refreshTokenFor(user)),
+        relinkSignedIn: async (user) => {
+          const refreshToken = await refreshTokenFor(user);
+          if (refreshToken) await storage.setAppleIdentity(user.id, identity.sub, refreshToken);
+        },
+        placeholderEmail: `apple-${identity.sub.replace(/[^a-zA-Z0-9]/g, '').slice(0, 40)}@appleid.invalid`,
+        emailTakenMessage: 'Ya hay una cuenta con el email de tu Apple ID. Inicia sesión con tu contraseña.',
+        otherAccountMessage: 'Esa cuenta ya está vinculada a otro Apple ID.',
+      });
     } catch (error: any) {
       console.error('[AUTH] Apple sign-in failed:', error);
       return c.json({ error: 'No se pudo iniciar sesión con Apple. Inténtalo de nuevo.' }, 500);
+    }
+  });
+
+  // Sign in with Google: the app sends the ID token Google gave it and the nonce of its request.
+  // Same answers as /api/auth/apple (needsProfile for a new account, link by password, created).
+  app.post('/api/auth/google', async (c) => {
+    try {
+      if (googleClientIds(c.env).length === 0) {
+        return c.json({ error: 'El inicio de sesión con Google no está disponible todavía.' }, 503);
+      }
+      const storage = new WorkerStorage(getDb(c.env));
+      const body = await c.req.json().catch(() => ({}));
+      const ip = clientIp(c);
+      const ipKey = ip ? `google:ip:${ip}` : null;
+      if (ipKey) {
+        const wait = await lockedForSeconds(storage, ipKey);
+        if (wait > 0) return tooManyAttempts(c, wait);
+      }
+
+      let identity;
+      try {
+        identity = await verifyGoogleIdToken(c.env, String(body?.idToken ?? ''), { nonce: typeof body?.nonce === 'string' ? body.nonce : null });
+      } catch (err) {
+        if (ipKey) await recordAttempt(storage, ipKey, LIMITS.loginIp);
+        if (err instanceof GoogleTokenError) return c.json({ error: err.message }, 401);
+        throw err;
+      }
+
+      return await finishSocialSignIn(c, storage, body, ip, {
+        provider: 'google',
+        sub: identity.sub,
+        email: identity.email,
+        // Google has checked the address: it can be matched to an existing account
+        emailMatches: identity.emailVerified,
+        showEmail: true,
+        nameFromProvider: identity.name,
+        linkedSubOf: (user) => user.googleSub ?? null,
+        findBySub: (sub) => storage.getUserByGoogleSub(sub),
+        link: (user) => storage.setGoogleIdentity(user.id, identity.sub),
+        relinkSignedIn: async () => {},
+        placeholderEmail: `google-${identity.sub.replace(/[^a-zA-Z0-9]/g, '').slice(0, 40)}@google.invalid`,
+        emailTakenMessage: 'Ya hay una cuenta con el email de tu cuenta de Google. Inicia sesión con tu contraseña.',
+        otherAccountMessage: 'Esa cuenta ya está vinculada a otra cuenta de Google.',
+      });
+    } catch (error: any) {
+      console.error('[AUTH] Google sign-in failed:', error);
+      return c.json({ error: 'No se pudo iniciar sesión con Google. Inténtalo de nuevo.' }, 500);
     }
   });
 

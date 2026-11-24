@@ -31,7 +31,7 @@ struct AuthView: View {
                     }
                 }
                 .padding(.horizontal, DS.Spacing.xl)
-                .padding(.top, 56)
+                .padding(.top, DS.Spacing.xxl)
                 .padding(.bottom, DS.Spacing.xxl)
                 .frame(maxWidth: 480)
                 .frame(maxWidth: .infinity)
@@ -67,17 +67,30 @@ struct AuthView: View {
 
 // MARK: - Header
 
-/// Wordmark (or screen title) with a one-line subtitle, left aligned.
+/// Screen title with a one-line subtitle, left aligned; or, with `logo`, the KM2 logo big and
+/// centred on a black block (the brand hero, the same as in the emails) with the subtitle under it.
 private struct AuthHeader: View {
     let title: String
-    /// Shows the KM² logo instead of the title (the title stays as its accessibility label).
+    /// Shows the KM2 logo instead of the title (the title stays as its accessibility label).
     var logo = false
     let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
+        VStack(alignment: logo ? .center : .leading, spacing: logo ? DS.Spacing.l : DS.Spacing.s) {
             if logo {
-                KM2Logo(size: 48)
+                Image("KM2LogoHero")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 250)
+                    .padding(.vertical, 40)
+                    .padding(.horizontal, DS.Spacing.xxl)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.black, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    // A thin outline so the block keeps its edge on a black (dark mode) screen
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                    }
                     .accessibilityLabel(title)
             } else {
                 Text(title)
@@ -86,11 +99,12 @@ private struct AuthHeader: View {
                     .foregroundStyle(.primary)
             }
             Text(subtitle)
-                .font(.body)
+                .font(logo ? .title3.weight(.medium) : .body)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(logo ? .center : .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: logo ? .center : .leading)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }

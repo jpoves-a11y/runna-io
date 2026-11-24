@@ -39,6 +39,15 @@ struct ProfileView: View {
 
     private var conquest: ConquestStats? { model.conquest }
 
+    /// Under "¿Cerrar sesión?" only when there are runs still to upload.
+    private var logoutMessage: String? {
+        let pending = PendingRuns.pendingCount
+        if pending == 0 { return nil }
+        return pending == 1
+            ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se quedará en este iPhone y se subirá cuando vuelvas a entrar con tu cuenta."
+            : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se quedarán en este iPhone y se subirán cuando vuelvas a entrar con tu cuenta."
+    }
+
     var body: some View {
         NavigationStack {
             list
@@ -55,6 +64,14 @@ struct ProfileView: View {
                 .task(id: router.reloadSignal) {
                     await reload(force: model.reloadTracker.consume(router.reloadSignal))
                 }
+                #if DEBUG
+                .task {
+                    guard router.logoutConfirmDemo else { return }
+                    router.logoutConfirmDemo = false
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    confirmLogout = true
+                }
+                #endif
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { notificationStatus = await PushManager.shared.authorizationStatus() } }
                 }
@@ -74,28 +91,16 @@ struct ProfileView: View {
                 .sheet(isPresented: $showEdit) {
                     EditProfileView()
                 }
-                .confirmationDialog("¿Cerrar sesión?", isPresented: $confirmLogout, titleVisibility: .visible) {
-                    Button("Cerrar sesión", role: .destructive) {
-                        Task { await session.logout() }
-                    }
-                } message: {
-                    let pending = PendingRuns.pendingCount
-                    if pending > 0 {
-                        Text(pending == 1
-                             ? "Tienes 1 carrera sin subir. Intentaremos subirla antes de salir; si no hay conexión, se quedará en este iPhone y se subirá cuando vuelvas a entrar con tu cuenta."
-                             : "Tienes \(pending) carreras sin subir. Intentaremos subirlas antes de salir; si no hay conexión, se quedarán en este iPhone y se subirán cuando vuelvas a entrar con tu cuenta.")
-                    }
+                .km2Confirm("¿Cerrar sesión?", isPresented: $confirmLogout, message: logoutMessage) {
+                    Task { await session.logout() }
                 }
-                .confirmationDialog("¿Quitar tu foto de perfil?", isPresented: $confirmRemoveAvatar, titleVisibility: .visible) {
-                    Button("Quitar foto", role: .destructive) { removeAvatar() }
-                } message: {
-                    Text("Volverás a aparecer con tu inicial sobre tu color de territorio.")
+                .km2Confirm("¿Quitar tu foto de perfil?", isPresented: $confirmRemoveAvatar,
+                            message: "Volverás a aparecer con tu inicial sobre tu color de territorio.") {
+                    removeAvatar()
                 }
-                .alert("¿Borrar tu cuenta?", isPresented: $confirmDelete) {
-                    Button("Borrar definitivamente", role: .destructive) { deleteAccount() }
-                    Button("Cancelar", role: .cancel) {}
-                } message: {
-                    Text("Se borrarán tu perfil, tus carreras, tu territorio y tus amigos. No se puede deshacer.")
+                .km2Confirm("¿Borrar tu cuenta?", isPresented: $confirmDelete,
+                            message: "Se borrarán tu perfil, tus carreras, tu territorio y tus amigos. No se puede deshacer.") {
+                    deleteAccount()
                 }
                 .errorAlert($errorMessage)
                 .alert("Notificaciones", isPresented: Binding(get: { info != nil }, set: { if !$0 { info = nil } })) {

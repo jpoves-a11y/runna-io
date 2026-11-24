@@ -35,6 +35,7 @@ export const users = sqliteTable("users", {
   // Sign in with Apple: the Apple user id ("sub") and the refresh token used to revoke on deletion
   appleSub: text("apple_sub"),
   appleRefreshToken: text("apple_refresh_token"),
+  googleSub: text("google_sub"), // Sign in with Google: the Google account id ("sub" of its ID token)
   // Moderation (admin panel): a suspended user can't sign in and their sessions are revoked
   bannedAt: text("banned_at"),
   banReason: text("ban_reason"),
