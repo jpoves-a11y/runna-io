@@ -63,7 +63,7 @@ struct HomeSummaryWidget: Widget {
         }
         .configurationDisplayName("Tu territorio")
         .description("Tu área, tu puesto en tu ciudad y si alguien te ha robado.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular, .accessoryInline])
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 

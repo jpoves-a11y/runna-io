@@ -139,7 +139,7 @@ struct PodiumWidget: Widget {
         }
         .configurationDisplayName("Podio")
         .description("Los tres primeros de tu competición y lo que te falta para subir.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular, .accessoryInline])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
         .contentMarginsDisabled()
     }
 }

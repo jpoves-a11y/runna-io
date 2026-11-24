@@ -11,6 +11,8 @@ struct KaemedosLiveBundle: WidgetBundle {
         TerritoryMapWidget()
         PodiumWidget()
         HomeSummaryWidget()
+        // The only one for the lock screen
+        LockScreenLogoWidget()
         if #available(iOS 18.0, *) {
             StartRunControl()
         }
