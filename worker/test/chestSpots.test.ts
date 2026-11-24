@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   distanceM, insideRing, radiusFor, modeFor, normalizeName, placeQuery, pickPlace, spotsQuery, parseSpots, pickSpot,
-  prepareArea, CHEST_MIN_SPACING_M, type ChestSpot,
+  prepareArea, overpass, CHEST_MIN_SPACING_M, type ChestSpot,
 } from '../src/chestSpots';
 
 const ZGZ = { lat: 41.6563, lng: -0.8773 }; // Plaza del Pilar
@@ -177,6 +177,22 @@ test('preparing a city: place, then its places; a city with too few places of in
   assert.equal(requests.length, 3);
   assert.match(requests[0], /around:20000,41\.6,-0\.9\)/);
   assert.match(requests[1], /around:1300,41\.656300,-0\.877300\)/);
+});
+
+test('a busy Overpass server passes the query to the next one; an error remark is not an empty answer', async () => {
+  const hosts: string[] = [];
+  const answers: Array<() => Response> = [
+    () => new Response('busy', { status: 502 }),
+    () => new Response(JSON.stringify({ remark: 'runtime error: Query timed out in "query" at line 1 after 26 seconds.', elements: [] }), { status: 200 }),
+    () => { throw new TypeError('fetch failed'); },
+    () => new Response(JSON.stringify({ elements: [{ type: 'node', id: 1, lat: 1, lon: 2 }] }), { status: 200 }),
+  ];
+  let counted = 0;
+  const json = await overpass('q', async (url) => { hosts.push(new URL(url).host); return answers[hosts.length - 1](); }, () => counted++) as { elements: unknown[] };
+  assert.equal(json.elements.length, 1);
+  assert.equal(hosts.length, 4);
+  assert.equal(counted, 4);
+  await assert.rejects(overpass('q', async () => new Response('busy', { status: 504 })), /Overpass unavailable \(overpass-api\.de: HTTP 504;/);
 });
 
 test('preparing fails clearly when OpenStreetMap is down or the city is not found', async () => {
