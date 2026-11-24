@@ -122,7 +122,8 @@ export function normalizeName(value: string): string {
 export function placeQuery(lat: number, lng: number): string {
   const rLat = Math.round(lat * 10) / 10;
   const rLng = Math.round(lng * 10) / 10;
-  return `[out:json][timeout:25];node["place"~"^(city|town|village)$"](around:20000,${rLat},${rLng});out tags qt 400;`;
+  // "out body": nodes with their coordinates ("out tags" would leave them out)
+  return `[out:json][timeout:25];node["place"~"^(city|town|village)$"](around:20000,${rLat},${rLng});out body qt 400;`;
 }
 
 /**
@@ -189,7 +190,10 @@ export function spotsQuery(lat: number, lng: number, radius: number, mode: Chest
       `nwr["leisure"~"^(park|garden)$"]${around};`,
       `nwr["place"="square"]${around};`,
     ];
-  return `[out:json][timeout:40];(${places.join('')})->.spots;.spots out center tags qt 1500;`
+  // Nodes with their coordinates; ways and relations with their centre and tags (no member lists);
+  // the areas to avoid with their outline
+  return `[out:json][timeout:40];(${places.join('')})->.spots;`
+    + `node.spots;out body qt 1500;way.spots;out tags center qt 1500;rel.spots;out tags center qt 300;`
     + `(way["landuse"~"^(${EXCLUDED_LANDUSE})$"]${aroundBad};way["aeroway"="aerodrome"]${aroundBad};)->.avoid;.avoid out geom qt 600;`;
 }
 
