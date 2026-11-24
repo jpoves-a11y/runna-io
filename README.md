@@ -78,8 +78,7 @@ Necesitas Node.js 20 o superior.
 
 ```bash
 npm ci --legacy-peer-deps
-(cd worker && npm ci)
-npm run check        # comprueba los tipos de shared/
+npm run check        # comprueba los tipos de shared/ y worker/
 npm test             # tests unitarios del juego (worker/test)
 ```
 
@@ -107,12 +106,11 @@ node scripts/e2e/launch-features-test.mjs
 
 Para apuntar la app del simulador a esta API, ver [`ios/README.md`](ios/README.md). El workflow `.github/workflows/ios.yml` hace exactamente esto en un Mac de GitHub Actions y saca capturas de cada pantalla.
 
-También puedes usar `wrangler dev` (`npm run worker:dev`, con wrangler instalado: `npm i -g wrangler` o `npx wrangler` desde `worker/`), que necesita los secretos en `.dev.vars`.
+También puedes usar `wrangler dev` (`npm run worker:dev`; wrangler viene con `npm ci`), que necesita los secretos en `.dev.vars`.
 
 ## Desplegar el Worker
 
 ```bash
-(cd worker && npm ci)
 npx wrangler deploy -c wrangler.worker.toml
 ```
 

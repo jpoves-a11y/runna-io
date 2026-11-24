@@ -410,7 +410,7 @@ ${events.map((row) => `<tr><td><code>${escapeHtml(row.name)}</code></td><td clas
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 export function registerAdminPanel(app: Hono<AppEnv>): void {
-  const html = (c: AdminContext, body: string, status: 200 | 401 | 403 | 429 = 200) => {
+  const html = (c: AdminContext, body: string, status: 200 | 401 | 403 | 404 | 429 = 200) => {
     noStore(c);
     return c.html(body, status);
   };
