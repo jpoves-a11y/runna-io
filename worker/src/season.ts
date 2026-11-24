@@ -38,7 +38,8 @@ import {
 } from '../../shared/game';
 import { computeAwards, runDaysByUser, type AwardCandidate, type AwardContext } from './awards';
 import { CHAT_RETENTION_DAYS } from './clubChat';
-import { checkBudget, subrequestsLeft, SubrequestBudgetError } from './db';
+import { checkBudget, countSubrequest, subrequestsLeft, SubrequestBudgetError } from './db';
+import { prepareArea, pickSpot, CHEST_AREA_REFRESH_MS, CHEST_AREA_RETRY_MS, type FetchLike } from './chestSpots';
 import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
 import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
@@ -1280,8 +1281,65 @@ export function randomPointAround(lat: number, lng: number, minM: number, maxM: 
   return { lat: lat + dLat, lng: lng + dLng };
 }
 
+/** Radius around the club members of a city for chests while it has no places from OpenStreetMap. */
+export const FALLBACK_CHEST_RADIUS_M = 1200;
+
 /**
- * Spawns rest-phase chests around each city with club members, spread over the day (07:00-21:00
+ * Gets one city ready for chests: its real centre and places from OpenStreetMap (chestSpots.ts).
+ * Cities never prepared come first, then those older than 30 days; a failed one is retried after
+ * 6 hours. One city per call (2-3 requests to OpenStreetMap). Cities without a name (only a
+ * position) keep the fallback.
+ */
+export async function prepareChestAreas(game: GameStorage, fetchFn: FetchLike, now = Date.now()): Promise<Record<string, unknown>> {
+  const cities = (await game.clubMemberCities()).filter((c) => !c.cityKey.startsWith('geo:'));
+  if (cities.length === 0) return { prepared: null };
+  const areas = new Map((await game.listChestAreas()).map((a) => [a.cityKey, a]));
+  const due = cities
+    .map((city) => {
+      const area = areas.get(city.cityKey);
+      if (!area) return { city, priority: 0, age: Infinity };
+      const age = now - Date.parse(area.refreshedAt);
+      if (area.status === 'failed') return age >= CHEST_AREA_RETRY_MS ? { city, priority: area.spotsCount > 0 ? 2 : 1, age } : null;
+      return age >= CHEST_AREA_REFRESH_MS ? { city, priority: 3, age } : null;
+    })
+    .filter((d): d is NonNullable<typeof d> => d !== null)
+    .sort((a, b) => a.priority - b.priority || b.city.members - a.city.members || b.age - a.age);
+  const next = due[0];
+  if (!next) return { prepared: null, pending: 0 };
+  checkBudget('chest areas', 8);
+  try {
+    const area = await prepareArea({ name: next.city.city, lat: next.city.lat, lng: next.city.lng }, fetchFn, () => countSubrequest());
+    await game.saveChestArea(next.city.cityKey, {
+      name: area.place.name, lat: area.place.lat, lng: area.place.lng, placeType: area.place.placeType,
+      population: area.place.population, radiusM: area.radiusM, mode: area.mode, spots: area.spots,
+    });
+    console.log(`[CHESTS] ${next.city.cityKey}: ${area.spots.length} places (${area.mode}, ${area.radiusM} m around ${area.place.name})`);
+    return { prepared: next.city.cityKey, spots: area.spots.length, mode: area.mode, radiusM: area.radiusM, pending: due.length - 1 };
+  } catch (error) {
+    if (error instanceof SubrequestBudgetError) throw error;
+    console.error(`[CHESTS] Could not prepare ${next.city.cityKey}:`, error);
+    await game.markChestAreaFailed(next.city.cityKey, String(error));
+    return { prepared: null, failed: next.city.cityKey, error: String(error), pending: due.length - 1 };
+  }
+}
+
+/**
+ * Where a new chest of a city goes: a place from OpenStreetMap (parks, squares, monuments...;
+ * streets in towns) away from the city's other chests, or, while the city has none, a point near
+ * its club members within FALLBACK_CHEST_RADIUS_M.
+ */
+async function chestSpotFor(game: GameStorage, city: { cityKey: string; lat: number; lng: number }, rarity: string, random: () => number, now: number): Promise<{ lat: number; lng: number }> {
+  const area = await game.getChestArea(city.cityKey);
+  if (area && area.spots.length > 0) {
+    const recent = await game.recentChestPoints(city.cityKey, new Date(now - 3 * 86_400_000).toISOString(), now);
+    const spot = pickSpot(area.spots, rarity, recent, random);
+    if (spot) return { lat: spot.lat, lng: spot.lng };
+  }
+  return randomPointAround(city.lat, city.lng, 200, FALLBACK_CHEST_RADIUS_M, random);
+}
+
+/**
+ * Spawns rest-phase chests in each city with club members, spread over the day (07:00-21:00
  * Madrid): at each tick a city gets a chest if it is behind its daily schedule.
  */
 export async function spawnRestChests(storage: WorkerStorage, game: GameStorage, env: any, info: CycleInfo, now = Date.now()): Promise<number> {
@@ -1303,7 +1361,7 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
     const random = seededRandom(`chest:${city.cityKey}:${now}:${already}`);
     const rarity = pickRarity(random);
     const itemId = pickRewardItem(rarity, random);
-    const spot = randomPointAround(city.lat, city.lng, 300, 3000, random);
+    const spot = await chestSpotFor(game, city, rarity, random, now);
     const item = ITEMS[itemId];
     const expiresAt = new Date(Math.min(restEnd, now + 24 * 3600 * 1000)).toISOString();
     const hidden = random() < 0.2;

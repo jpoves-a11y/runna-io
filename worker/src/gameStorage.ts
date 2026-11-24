@@ -3,6 +3,7 @@
 import { sql } from 'drizzle-orm';
 import { readExistingSchema } from './schemaPlan';
 import type { Database } from './db';
+import type { ChestSpot } from './chestSpots';
 import {
   ITEMS,
   INVENTORY_CAP,
@@ -14,6 +15,21 @@ import { cycleAt } from './cycles';
 import { parseEntryMode, entryModeFromVisibility, visibilityOf, type EntryMode, type InvitePermission } from './clubRules';
 
 type Row = Record<string, any>;
+
+export interface ChestAreaRow {
+  cityKey: string;
+  name: string | null;
+  lat: number | null;
+  lng: number | null;
+  placeType: string | null;
+  population: number | null;
+  radiusM: number | null;
+  mode: string | null;
+  spots: ChestSpot[];
+  status: string;
+  error: string | null;
+  refreshedAt: string;
+}
 
 /** Key of the city a user belongs to for chests: "ES:zaragoza", or a ~10 km grid cell without a city. */
 export function cityKeyOf(countryCode: string | null | undefined, city: string | null | undefined, lat: number, lng: number): string {
@@ -322,6 +338,22 @@ export async function applyGameSchema(db: Database): Promise<void> {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`);
   await db.run(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_challenges_unique ON user_challenges(user_id, cycle_number, type)`);
+  // Where rest-day chests appear in each city (worker/src/chestSpots.ts): one row per city
+  await db.run(sql`CREATE TABLE IF NOT EXISTS chest_areas (
+    city_key TEXT PRIMARY KEY,
+    name TEXT,
+    lat REAL,
+    lng REAL,
+    place_type TEXT,
+    population INTEGER,
+    radius_m INTEGER,
+    mode TEXT,
+    spots TEXT,
+    spots_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error TEXT,
+    refreshed_at TEXT NOT NULL
+  )`);
   await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_users_global_area ON users(global_area)`);
   await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_users_city ON users(country_code, city)`);
   await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_routes_validation ON routes(validation_status)`);
@@ -1733,6 +1765,61 @@ export class GameStorage {
     return id;
   }
 
+  /** Chests of a city that are active or appeared since `sinceIso`: new ones keep away from them. */
+  async recentChestPoints(cityKey: string, sinceIso: string, now = Date.now()): Promise<Array<{ lat: number; lng: number }>> {
+    const rows = await this.db.all<Row>(sql`SELECT lat, lng FROM treasures WHERE city_key = ${cityKey}
+      AND (spawned_at >= ${sinceIso} OR (active = 1 AND collected_by IS NULL AND expires_at > ${new Date(now).toISOString()}))`);
+    return rows.map((r) => ({ lat: Number(r.lat), lng: Number(r.lng) })).filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+  }
+
+  // ─── Chest areas (worker/src/chestSpots.ts) ───────────────────────────────
+
+  async getChestArea(cityKey: string): Promise<ChestAreaRow | null> {
+    const rows = await this.db.all<Row>(sql`SELECT * FROM chest_areas WHERE city_key = ${cityKey}`);
+    const r = rows[0];
+    if (!r) return null;
+    let spots: ChestSpot[] = [];
+    try { spots = r.spots ? JSON.parse(String(r.spots)) : []; } catch { spots = []; }
+    return {
+      cityKey: String(r.city_key),
+      name: r.name ?? null,
+      lat: r.lat === null ? null : Number(r.lat),
+      lng: r.lng === null ? null : Number(r.lng),
+      placeType: r.place_type ?? null,
+      population: r.population === null || r.population === undefined ? null : Number(r.population),
+      radiusM: r.radius_m === null || r.radius_m === undefined ? null : Number(r.radius_m),
+      mode: r.mode ?? null,
+      spots,
+      status: String(r.status),
+      error: r.error ?? null,
+      refreshedAt: String(r.refreshed_at),
+    };
+  }
+
+  /** All the cities' rows without their spots (to see which ones to prepare). */
+  async listChestAreas(): Promise<Array<{ cityKey: string; status: string; refreshedAt: string; spotsCount: number }>> {
+    const rows = await this.db.all<Row>(sql`SELECT city_key, status, refreshed_at, spots_count FROM chest_areas`);
+    return rows.map((r) => ({ cityKey: String(r.city_key), status: String(r.status), refreshedAt: String(r.refreshed_at), spotsCount: Number(r.spots_count ?? 0) }));
+  }
+
+  async saveChestArea(cityKey: string, data: { name: string; lat: number; lng: number; placeType: string; population: number | null; radiusM: number; mode: string; spots: ChestSpot[] }): Promise<void> {
+    const now = nowIso();
+    await this.db.run(sql`INSERT INTO chest_areas (city_key, name, lat, lng, place_type, population, radius_m, mode, spots, spots_count, status, error, refreshed_at)
+      VALUES (${cityKey}, ${data.name}, ${data.lat}, ${data.lng}, ${data.placeType}, ${data.population}, ${data.radiusM}, ${data.mode},
+        ${JSON.stringify(data.spots)}, ${data.spots.length}, 'ready', NULL, ${now})
+      ON CONFLICT(city_key) DO UPDATE SET name = excluded.name, lat = excluded.lat, lng = excluded.lng, place_type = excluded.place_type,
+        population = excluded.population, radius_m = excluded.radius_m, mode = excluded.mode, spots = excluded.spots,
+        spots_count = excluded.spots_count, status = 'ready', error = NULL, refreshed_at = excluded.refreshed_at`);
+  }
+
+  /** A failed attempt (retried after CHEST_AREA_RETRY_MS). A city that had places keeps using them. */
+  async markChestAreaFailed(cityKey: string, error: string): Promise<void> {
+    const now = nowIso();
+    const message = error.slice(0, 300);
+    await this.db.run(sql`INSERT INTO chest_areas (city_key, status, error, refreshed_at) VALUES (${cityKey}, 'failed', ${message}, ${now})
+      ON CONFLICT(city_key) DO UPDATE SET status = 'failed', error = excluded.error, refreshed_at = excluded.refreshed_at`);
+  }
+
   async activeChests(now = Date.now()): Promise<Row[]> {
     const iso = new Date(now).toISOString();
     return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND city_key IS NOT NULL`);
@@ -1754,18 +1841,18 @@ export class GameStorage {
    * Club cities: club members with a home location grouped by city (centre = mean of their homes,
    * so no single home is exposed). Members without a city are grouped by ~10 km grid cell.
    */
-  async clubMemberCities(): Promise<Array<{ cityKey: string; city: string; lat: number; lng: number; members: number; memberIds: string[] }>> {
+  async clubMemberCities(): Promise<Array<{ cityKey: string; city: string; countryCode: string | null; lat: number; lng: number; members: number; memberIds: string[] }>> {
     const rows = await this.db.all<Row>(sql`SELECT u.id, u.country_code, u.city, u.home_lat, u.home_lng
       FROM club_members m JOIN users u ON u.id = m.user_id
       WHERE u.home_lat IS NOT NULL AND u.home_lng IS NOT NULL`);
-    type CityGroup = { city: string; lats: number[]; lngs: number[]; memberIds: string[] };
+    type CityGroup = { city: string; countryCode: string | null; lats: number[]; lngs: number[]; memberIds: string[] };
     const groups = new Map<string, CityGroup>();
     for (const r of rows) {
       const lat = Number(r.home_lat);
       const lng = Number(r.home_lng);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
       const key = cityKeyOf(r.country_code, r.city, lat, lng);
-      const group: CityGroup = groups.get(key) ?? { city: r.city || 'Tu zona', lats: [], lngs: [], memberIds: [] };
+      const group: CityGroup = groups.get(key) ?? { city: r.city || 'Tu zona', countryCode: r.country_code ?? null, lats: [], lngs: [], memberIds: [] };
       group.lats.push(lat);
       group.lngs.push(lng);
       group.memberIds.push(r.id);
@@ -1774,6 +1861,7 @@ export class GameStorage {
     return [...groups.entries()].map(([cityKey, g]) => ({
       cityKey,
       city: g.city,
+      countryCode: g.countryCode,
       lat: g.lats.reduce((a, b) => a + b, 0) / g.lats.length,
       lng: g.lngs.reduce((a, b) => a + b, 0) / g.lngs.length,
       members: g.memberIds.length,
