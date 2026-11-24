@@ -13,9 +13,10 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload to TestFlight
-    # Intel Mac: GitHub's Apple Silicon (arm64) Macs were short of capacity and jobs were cancelled
-    # after 15 minutes in the queue. The iPhone build is the same from an Intel Mac.
-    runs-on: macos-15-intel
+    # Apple Silicon. Not macos-15-intel: its newest Xcode is 26.3, whose compiler miscompiles our
+    # `async let` (build 1092 crashed at launch for every signed-in user). If the queue is long,
+    # wait or run it again; never build a release with an older Xcode.
+    runs-on: macos-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +29,14 @@ jobs:
           fi
           sudo xcode-select -s "$XCODE/Contents/Developer"
           xcodebuild -version
+          # Xcode 26.3 built an app that crashed at launch (Swift concurrency, `async let`); 26.6 is the
+          # newest known good one. Anything older is refused
+          VERSION=$(xcodebuild -version | awk 'NR==1 {print $2}')
+          MINIMUM=26.6
+          if [ "$(printf '%s\n%s\n' "$MINIMUM" "$VERSION" | sort -V | head -1)" != "$MINIMUM" ]; then
+            echo "::error::Xcode $VERSION is too old for a release (minimum $MINIMUM): its compiler breaks the app"
+            exit 1
+          fi
 
       - name: Install Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate download (chest effects are Metal shaders)
