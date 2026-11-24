@@ -121,7 +121,8 @@ final class AppRouter {
             selectedTab = .club
             showClubFormDemo = true
         case "auth":
-            // runnaio://auth (e2e screenshots): the sign-in screen
+            // runnaio://auth (e2e screenshots): the sign-in screen, with the Google button
+            GoogleSignIn.showButtonForScreenshots = true
             showAuthDemo = true
         #endif
         case "oauth":

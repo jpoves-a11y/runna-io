@@ -2,15 +2,17 @@ import SwiftUI
 import AuthenticationServices
 import CryptoKit
 
-/// "Iniciar sesión con Apple" below the email forms. A new Apple user then picks a username and
-/// accepts the terms (14+) in a sheet; an existing one goes straight in.
+/// "Iniciar sesión con Apple" and "Continuar con Google" below the email forms. A new user then
+/// picks a username and accepts the terms (14+) in a sheet; an existing one goes straight in.
 struct AppleSignInSection: View {
     let isRegister: Bool
 
     @Environment(SessionStore.self) private var session
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
     @State private var rawNonce = ""
     @State private var isLoading = false
+    @State private var isLoadingGoogle = false
     @State private var errorMessage: String?
     @State private var pendingProfile: PendingAppleProfile?
 
@@ -37,6 +39,10 @@ struct AppleSignInSection: View {
             .overlay {
                 if isLoading { ProgressView() }
             }
+            if GoogleSignIn.isEnabled {
+                GoogleSignInButton(isLoading: isLoadingGoogle, action: signInWithGoogle)
+                    .disabled(isLoading)
+            }
         }
         .errorAlert($errorMessage)
         .sheet(item: $pendingProfile) { profile in
@@ -48,6 +54,30 @@ struct AppleSignInSection: View {
         Rectangle()
             .fill(Color.secondary.opacity(0.25))
             .frame(height: 1)
+    }
+
+    private func signInWithGoogle() {
+        isLoadingGoogle = true
+        Task {
+            defer { isLoadingGoogle = false }
+            do {
+                guard let credential = try await GoogleSignIn.signIn(using: webAuthenticationSession) else { return }
+                try await finish(.google(credential))
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Sends the Apple / Google credential to the server; a new account goes on in the profile sheet.
+    private func finish(_ social: SessionStore.SocialCredential) async throws {
+        switch try await session.signIn(with: social) {
+        case .signedIn:
+            break
+        case .needsProfile(let name, let suggestedUsername):
+            Analytics.track("signup_started", ["method": social.analyticsMethod])
+            pendingProfile = PendingAppleProfile(credential: social, name: name ?? "", username: suggestedUsername ?? "")
+        }
     }
 
     private func handle(_ result: Result<ASAuthorization, Error>) {
@@ -74,13 +104,7 @@ struct AppleSignInSection: View {
             Task {
                 defer { isLoading = false }
                 do {
-                    switch try await session.signInWithApple(credential) {
-                    case .signedIn:
-                        break
-                    case .needsProfile(let name, let suggestedUsername):
-                        Analytics.track("signup_started", ["method": "apple"])
-                        pendingProfile = PendingAppleProfile(credential: credential, name: name ?? "", username: suggestedUsername ?? "")
-                    }
+                    try await finish(.apple(credential))
                 } catch {
                     errorMessage = error.localizedDescription
                 }
@@ -101,14 +125,14 @@ struct AppleSignInSection: View {
 
 struct PendingAppleProfile: Identifiable {
     let id = UUID()
-    let credential: SessionStore.AppleCredential
+    let credential: SessionStore.SocialCredential
     let name: String
     let username: String
 }
 
-/// New account with Apple: name, username and the age / terms check (the email comes from Apple).
-/// Or, for someone who already has an account (Apple may hide the email, so it can't be matched),
-/// their user and password link Apple to it.
+/// New account with Apple or Google: name, username and the age / terms check (the email comes from
+/// Apple / Google). Or, for someone who already has an account the email didn't match (Apple may
+/// hide it; a Google account may use another address), their user and password link it.
 private struct AppleProfileSheet: View {
     let profile: PendingAppleProfile
 
@@ -189,7 +213,7 @@ private struct AppleProfileSheet: View {
             SecureField("Contraseña", text: $linkPassword)
                 .textContentType(.password)
         } footer: {
-            Text("Entra con tu cuenta de KM2 y la vincularemos a tu Apple ID. Desde entonces podrás entrar con Apple o con tu contraseña, y conservarás todo tu territorio.")
+            Text("Entra con tu cuenta de KM2 y la vincularemos a tu \(profile.credential.accountName). Desde entonces podrás entrar con \(providerName) o con tu contraseña, y conservarás todo tu territorio.")
         }
     }
 
@@ -202,8 +226,8 @@ private struct AppleProfileSheet: View {
         Task {
             defer { isLoading = false }
             do {
-                _ = try await session.signInWithApple(profile.credential, link: (linkIdentifier, linkPassword))
-                Analytics.track("apple_linked")
+                _ = try await session.signIn(with: profile.credential, link: (linkIdentifier, linkPassword))
+                Analytics.track("\(profile.credential.analyticsMethod)_linked")
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
@@ -234,6 +258,13 @@ private struct AppleProfileSheet: View {
         }
     }
 
+    private var providerName: String {
+        switch profile.credential {
+        case .apple: return "Apple"
+        case .google: return "Google"
+        }
+    }
+
     private var termsText: AttributedString {
         let markdown = "Tengo al menos \(AppConfig.minimumAge) años y acepto los [términos](\(AppConfig.termsURL.absoluteString)) y la [política de privacidad](\(AppConfig.privacyURL.absoluteString))"
         return (try? AttributedString(markdown: markdown)) ?? AttributedString("Tengo al menos \(AppConfig.minimumAge) años y acepto los términos y la política de privacidad")
@@ -248,8 +279,8 @@ private struct AppleProfileSheet: View {
         Task {
             defer { isLoading = false }
             do {
-                _ = try await session.signInWithApple(
-                    profile.credential,
+                _ = try await session.signIn(
+                    with: profile.credential,
                     username: username,
                     name: name.trimmingCharacters(in: .whitespaces),
                     acceptedTerms: acceptedTerms

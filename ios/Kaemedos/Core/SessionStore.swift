@@ -154,16 +154,61 @@ final class SessionStore {
         }
     }
 
+    // MARK: - Sign in with Google
+
+    /// What Google gave the app (its ID token), plus the nonce the request was made with.
+    struct GoogleCredential {
+        let idToken: String
+        let nonce: String
+    }
+
+    /// An Apple or Google sign-in waiting for the server (and, for a new account, for a username).
+    enum SocialCredential {
+        case apple(AppleCredential)
+        case google(GoogleCredential)
+
+        /// "Apple ID" / "cuenta de Google", for the copy of the profile sheet.
+        var accountName: String {
+            switch self {
+            case .apple: return "Apple ID"
+            case .google: return "cuenta de Google"
+            }
+        }
+
+        var analyticsMethod: String {
+            switch self {
+            case .apple: return "apple"
+            case .google: return "google"
+            }
+        }
+    }
+
     /// Signs in with Apple; with `username` (and the accepted terms) it creates the account; with
     /// `link` (the user and password of an existing account) it links Apple to that account.
     func signInWithApple(_ credential: AppleCredential, username: String? = nil, name: String? = nil, acceptedTerms: Bool = false, link: (identifier: String, password: String)? = nil) async throws -> AppleSignInOutcome {
+        try await signIn(with: .apple(credential), username: username, name: name, acceptedTerms: acceptedTerms, link: link)
+    }
+
+    /// Signs in with Apple or Google (POST /api/auth/apple or /api/auth/google, the same answers).
+    func signIn(with social: SocialCredential, username: String? = nil, name: String? = nil, acceptedTerms: Bool = false, link: (identifier: String, password: String)? = nil) async throws -> AppleSignInOutcome {
         var body: [String: Any] = [
-            "identityToken": credential.identityToken,
-            "nonce": credential.rawNonce,
             "color": AppConfig.userColors.randomElement() ?? "#377EB8",
         ]
-        if let code = credential.authorizationCode { body["authorizationCode"] = code }
-        if let fullName = name ?? credential.fullName, !fullName.isEmpty { body["name"] = fullName }
+        let path: String
+        var nameFromProvider: String?
+        switch social {
+        case .apple(let credential):
+            path = "/api/auth/apple"
+            body["identityToken"] = credential.identityToken
+            body["nonce"] = credential.rawNonce
+            if let code = credential.authorizationCode { body["authorizationCode"] = code }
+            nameFromProvider = credential.fullName
+        case .google(let credential):
+            path = "/api/auth/google"
+            body["idToken"] = credential.idToken
+            body["nonce"] = credential.nonce
+        }
+        if let fullName = name ?? nameFromProvider, !fullName.isEmpty { body["name"] = fullName }
         if let username {
             body["username"] = username.trimmingCharacters(in: .whitespaces)
             body["acceptedTerms"] = acceptedTerms
@@ -172,14 +217,14 @@ final class SessionStore {
             body["linkIdentifier"] = link.identifier.trimmingCharacters(in: .whitespaces)
             body["linkPassword"] = link.password
         }
-        let response: AppleAuthResponse = try await api.request("POST", "/api/auth/apple", body: body)
+        let response: AppleAuthResponse = try await api.request("POST", path, body: body)
         if response.needsProfile {
-            return .needsProfile(name: response.name ?? credential.fullName, suggestedUsername: response.suggestedUsername)
+            return .needsProfile(name: response.name ?? nameFromProvider, suggestedUsername: response.suggestedUsername)
         }
         guard let user = response.user, let token = user.token else {
             throw APIError(status: 0, message: "El servidor no ha devuelto una sesión. Inténtalo más tarde.")
         }
-        Analytics.track(response.created ? "signup_completed" : "login", ["method": "apple"])
+        Analytics.track(response.created ? "signup_completed" : "login", ["method": social.analyticsMethod])
         startSession(user: user, token: token)
         return .signedIn
     }
