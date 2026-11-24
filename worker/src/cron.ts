@@ -9,12 +9,14 @@
 
 export const CRON_TIME_ZONE = 'Europe/Madrid';
 
-export type CronTask = 'season-tick' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check' | 'steal-notifications' | 'events-purge';
+export type CronTask = 'season-tick' | 'chest-areas' | 'polar-auto-sync' | 'suunto-auto-sync' | 'inactivity-check' | 'steal-notifications' | 'events-purge';
 
 /** The device poll (Polar's fallback) runs on the minutes divisible by this. */
 const DEVICE_POLL_MINUTES = 3;
 /** The season engine (resets, competitions, cuts, chests) runs on the minutes divisible by this. */
 const SEASON_TICK_MINUTES = 5;
+/** One city gets its chest places from OpenStreetMap on the minutes that end in this digit. */
+const CHEST_AREAS_MINUTE = 2;
 
 export interface LocalTime {
   /** 0 = Sunday ... 6 = Saturday */
@@ -56,6 +58,7 @@ export function madridTime(time: number): LocalTime {
  *   pushes that are due, 3 minutes after the run arrived)
  * - season-tick: every 5 minutes (one-time reset, start/end of competitions, Eliminación cuts,
  *   rest-phase chests, chat clean-up; see season.ts)
+ * - chest-areas: every 10 minutes (one city gets its chest places from OpenStreetMap; chestSpots.ts)
  * - polar-auto-sync: every 3 minutes (fallback poll; Polar's webhook imports at once)
  * - inactivity-check: 10:00 and 19:00
  * - suunto-auto-sync: at minute 30 of every hour (fallback poll; Suunto's webhook is the primary path)
@@ -69,6 +72,7 @@ export function tasksDue(scheduledTime: number): CronTask[] {
   // First: it is quick, and the pushes it sends are the ones people are waiting for
   tasks.push('steal-notifications');
   if (minute % SEASON_TICK_MINUTES === 0) tasks.push('season-tick');
+  if (minute % 10 === CHEST_AREAS_MINUTE) tasks.push('chest-areas');
   if (topOfHour && (hour === 10 || hour === 19)) tasks.push('inactivity-check');
   if (minute === 30) tasks.push('suunto-auto-sync');
   if (hour === 4 && minute === 15) tasks.push('events-purge');

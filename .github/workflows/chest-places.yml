@@ -1,0 +1,38 @@
+name: Chest places preview
+
+# Asks OpenStreetMap for the chest places of the cities given, exactly as the Worker does, prints a
+# summary and uploads a map (chest-places.html) to look at them. Run it by hand: Actions ->
+# Chest places preview -> Run workflow. Each city is "Name:lat:lng", separated by spaces.
+on:
+  workflow_dispatch:
+    inputs:
+      cities:
+        description: 'Cities, "Name:lat:lng" separated by spaces'
+        default: 'Zaragoza:41.65:-0.88 Huesca:42.14:-0.41 Cuarte_de_Huerva:41.59:-0.93 Alfajarín:41.61:-0.70'
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --legacy-peer-deps --no-audit --no-fund
+      - name: Ask OpenStreetMap
+        env:
+          CITIES: ${{ inputs.cities }}
+        run: |
+          # Underscores stand for spaces in a city name
+          args=()
+          for city in $CITIES; do args+=("${city//_/ }"); done
+          node --import tsx scripts/chest-places/preview.ts "${args[@]}" --html chest-places.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chest-places
+          path: chest-places.html

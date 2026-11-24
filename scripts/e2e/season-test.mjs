@@ -587,9 +587,30 @@ const madrid = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', yea
 const today = madrid.format(new Date());
 const eveningMadrid = Date.parse(`${today}T19:30:00Z`); // 20:30 or 21:30 Madrid... keep before 21:00 local
 const spawnAt = eveningMadrid - 2 * 3600_000;
+// Chest places: OpenStreetMap can't be reached in the tests, so the attempt is recorded as failed
+const prepared = (await admin('/api/admin/chest-areas/prepare')).data;
+check('chest places: an unreachable OpenStreetMap is recorded, not fatal', prepared.failed === 'ES:zaragoza' && /external network disabled/.test(prepared.error), prepared);
+const areasView = (await call('GET', '/api/admin/chest-areas', { token: 'e2e-cron-secret' })).data;
+check('chest places: the admin view lists the club cities and their state', areasView.cities?.some((c) => c.cityKey === 'ES:zaragoza' && c.area?.status === 'failed'), areasView);
+// ...and as if it had answered: the places of the city (squares, parks, a monument), up to 1.5 km from the centre
+const zaragozaSpots = [[0, 0, 'square', 'Plaza del Pilar'], [600, 300, 'park', 'Parque A'], [-500, 400, 'landmark', 'Puente'],
+  [300, -700, 'park', 'Parque B'], [-900, -300, 'pedestrian', 'Calle peatonal'], [1200, 900, 'park', 'Parque C']]
+  .map(([north, east, kind, name]) => ({
+    lat: C[0] + north / 111320, lng: C[1] + east / (111320 * Math.cos((C[0] * Math.PI) / 180)), kind, name, weight: 2,
+  }));
+await db.execute({
+  sql: `update chest_areas set name = 'Zaragoza', lat = ?, lng = ?, place_type = 'city', population = 682513, radius_m = 4000, mode = 'poi',
+    spots = ?, spots_count = ?, status = 'ready', error = null, refreshed_at = ? where city_key = 'ES:zaragoza'`,
+  args: [C[0], C[1], JSON.stringify(zaragozaSpots), zaragozaSpots.length, new Date().toISOString()],
+});
 let chests = 0;
 for (let i = 0; i < 10; i++) chests += Number((await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data.chests ?? 0);
 check('rest days: chests spawn around the club city, capped per day', chests >= 2 && chests <= 8, chests);
+const spawnedChests = await all("select lat, lng from treasures where city_key = 'ES:zaragoza'");
+const atAPlace = (c) => zaragozaSpots.some((p) => Math.abs(p.lat - Number(c.lat)) < 1e-9 && Math.abs(p.lng - Number(c.lng)) < 1e-9);
+check('chests appear exactly at places of the city (not random points)', spawnedChests.length === chests && spawnedChests.every(atAPlace), spawnedChests);
+const distinct = new Set(spawnedChests.map((c) => `${c.lat},${c.lng}`)).size;
+check('chests of the same day spread over different places', distinct >= Math.min(spawnedChests.length, zaragozaSpots.length) - 1, { distinct, chests: spawnedChests.length });
 const freshChests = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
 check('a chest is hidden from everybody during its first hour (Mapa del Tesoro)', freshChests.length === 0 || Date.now() >= spawnAt + 3600_000, freshChests.length);
 // The tick was in the evening: an hour later they are public

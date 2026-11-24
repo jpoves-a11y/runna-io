@@ -1756,6 +1756,35 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     return c.json(await seasonTick(storage, game, c.env, Number.isFinite(at) ? at : Date.now()));
   }));
 
+  // One city a run gets its chest places from OpenStreetMap (chestSpots.ts)
+  app.post('/api/tasks/chest-areas', handler(async (c) => {
+    if (!(await isCronRequest(c))) return c.json({ error: 'Unauthorized' }, 401);
+    const { game } = stores(c);
+    const { prepareChestAreas } = await import('./season');
+    return c.json(await prepareChestAreas(game, (input, init) => fetch(input, init)));
+  }));
+
+  /** Chest places of every city: status, places, radius. POST prepares the next city now. */
+  app.get('/api/admin/chest-areas', requireAdmin, handler(async (c) => {
+    const { game } = stores(c);
+    const cities = await game.clubMemberCities();
+    const areas = await game.listChestAreas();
+    const byKey = new Map(areas.map((a) => [a.cityKey, a]));
+    return c.json({
+      cities: cities.map((city) => ({ cityKey: city.cityKey, city: city.city, members: city.members, area: byKey.get(city.cityKey) ?? null })),
+    });
+  }));
+  app.get('/api/admin/chest-areas/:cityKey', requireAdmin, handler(async (c) => {
+    const { game } = stores(c);
+    const area = await game.getChestArea(c.req.param('cityKey'));
+    return area ? c.json(area) : fail(c, 404, 'Esa ciudad aún no tiene sitios.');
+  }));
+  app.post('/api/admin/chest-areas/prepare', requireAdmin, handler(async (c) => {
+    const { game } = stores(c);
+    const { prepareChestAreas } = await import('./season');
+    return c.json(await prepareChestAreas(game, (input, init) => fetch(input, init)));
+  }));
+
   /** Runs the season tick at a given time (testing). */
   app.post('/api/admin/season/tick', requireAdmin, handler(async (c) => {
     const { storage, game } = stores(c);
