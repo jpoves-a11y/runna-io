@@ -8,7 +8,8 @@ struct StartRunControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "com.jpoves.runnaio.StartRun") {
             ControlWidgetButton(action: StartRunIntent()) {
-                Label("Correr", systemImage: "figure.run")
+                // The KM2 wordmark, traced from the icon (a custom symbol: controls only show symbols)
+                Label("Correr", image: "km2")
             }
         }
         .displayName("Empezar a correr")
