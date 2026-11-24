@@ -1306,7 +1306,8 @@ export async function prepareChestAreas(game: GameStorage, fetchFn: FetchLike, n
     .sort((a, b) => a.priority - b.priority || b.city.members - a.city.members || b.age - a.age);
   const next = due[0];
   if (!next) return { prepared: null, pending: 0 };
-  checkBudget('chest areas', 8);
+  // Up to 3 queries, each of which may go through all 4 Overpass servers, and 2 writes
+  checkBudget('chest areas', 16);
   try {
     const area = await prepareArea({ name: next.city.city, lat: next.city.lat, lng: next.city.lng }, fetchFn, () => countSubrequest());
     await game.saveChestArea(next.city.cityKey, {

@@ -16,7 +16,13 @@
 // Privacy: the first query only carries the members' centre rounded to 0.1° (about 10 km), never a
 // home; the second one uses the public centre of the city. Data © OpenStreetMap contributors (ODbL).
 
-export const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+/** Public Overpass servers, tried in order: they are often busy (502, 504, 429). */
+export const OVERPASS_URLS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
 /** How long the places of a city are kept before asking OpenStreetMap again. */
 export const CHEST_AREA_REFRESH_MS = 30 * 24 * 3600 * 1000;
 /** After a failed attempt, the next one waits this long. */
@@ -279,18 +285,44 @@ export function pickSpot(
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-export async function overpass(query: string, fetchFn: FetchLike): Promise<unknown> {
-  const response = await fetchFn(OVERPASS_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      // Overpass asks automated clients to say who they are
-      'User-Agent': 'KM2-chests/1.0 (running game; chest places, cached monthly)',
-    },
-    body: `data=${encodeURIComponent(query)}`,
-  });
-  if (!response.ok) throw new Error(`Overpass: HTTP ${response.status}`);
-  return response.json();
+/**
+ * Runs a query on the first Overpass server that answers it. A server that is busy or fails (HTTP
+ * error, network error, or a "runtime error" remark with an incomplete answer) passes it to the next.
+ * `onRequest` is called before each request (the Worker counts them as subrequests).
+ */
+export async function overpass(query: string, fetchFn: FetchLike, onRequest: () => void = () => {}, urls = OVERPASS_URLS): Promise<unknown> {
+  const problems: string[] = [];
+  for (const url of urls) {
+    const host = new URL(url).host;
+    try {
+      onRequest();
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          // Overpass asks automated clients to say who they are
+          'User-Agent': 'KM2-chests/1.0 (running game; chest places, cached monthly)',
+        },
+        body: `data=${encodeURIComponent(query)}`,
+        // A hung server must not hold the task: the next one is tried
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (!response.ok) {
+        problems.push(`${host}: HTTP ${response.status}`);
+        continue;
+      }
+      const json = await response.json() as { remark?: unknown };
+      // A timeout or lack of memory comes back as 200 with a remark and part of the answer (or none)
+      if (typeof json?.remark === 'string' && /error|timed out|out of memory/i.test(json.remark)) {
+        problems.push(`${host}: ${json.remark.slice(0, 120)}`);
+        continue;
+      }
+      return json;
+    } catch (error) {
+      problems.push(`${host}: ${String(error).slice(0, 120)}`);
+    }
+  }
+  throw new Error(`Overpass unavailable (${problems.join('; ')})`);
 }
 
 export interface PreparedArea {
@@ -309,16 +341,13 @@ export async function prepareArea(
   fetchFn: FetchLike,
   onRequest: () => void = () => {},
 ): Promise<PreparedArea> {
-  onRequest();
-  const place = pickPlace(await overpass(placeQuery(city.lat, city.lng), fetchFn), city.name, city.lat, city.lng);
+  const place = pickPlace(await overpass(placeQuery(city.lat, city.lng), fetchFn, onRequest), city.name, city.lat, city.lng);
   if (!place) throw new Error(`city not found in OpenStreetMap: ${city.name}`);
   const radiusM = radiusFor(place.placeType, place.population);
   const mode = modeFor(place.placeType, place.population);
-  onRequest();
-  let spots = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, mode), fetchFn), place, radiusM);
+  let spots = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, mode), fetchFn, onRequest), place, radiusM);
   if (mode === 'poi' && spots.length < 12) {
-    onRequest();
-    const streets = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, 'streets'), fetchFn), place, radiusM);
+    const streets = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, 'streets'), fetchFn, onRequest), place, radiusM);
     spots = [...spots, ...streets.filter((s) => s.kind === 'street')];
   }
   return { place, mode, radiusM, spots };
