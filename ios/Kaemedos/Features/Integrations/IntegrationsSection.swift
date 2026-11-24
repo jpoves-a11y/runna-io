@@ -79,18 +79,12 @@ struct IntegrationsSection: View {
             Más información en la política de privacidad (Perfil > Información).
             """)
         }
-        .confirmationDialog(
-            "¿Desconectar \(providerToDisconnect.map(Self.displayName) ?? "")?",
-            isPresented: Binding(get: { providerToDisconnect != nil }, set: { if !$0 { providerToDisconnect = nil } }),
-            titleVisibility: .visible,
-            presenting: providerToDisconnect
+        .km2Confirm(
+            item: $providerToDisconnect,
+            title: { "¿Desconectar \(Self.displayName($0))?" },
+            message: { _ in "Ya no se importarán tus actividades nuevas. Tus rutas y territorios existentes no se borrarán." }
         ) { provider in
-            Button("Desconectar", role: .destructive) {
-                Task { await disconnect(provider) }
-            }
-            Button("Cancelar", role: .cancel) {}
-        } message: { _ in
-            Text("Ya no se importarán tus actividades nuevas. Tus rutas y territorios existentes no se borrarán.")
+            Task { await disconnect(provider) }
         }
     }
 
@@ -954,16 +948,12 @@ struct ImportedActivitiesView: View {
         } message: {
             Text(info ?? "")
         }
-        .confirmationDialog(
-            "¿Eliminar actividad de \(providerName)?",
-            isPresented: Binding(get: { activityToDelete != nil }, set: { if !$0 { activityToDelete = nil } }),
-            titleVisibility: .visible,
-            presenting: activityToDelete
+        .km2Confirm(
+            item: $activityToDelete,
+            title: { _ in "¿Eliminar actividad de \(providerName)?" },
+            message: { _ in "Se borrará la carrera y su territorio se recalculará. No se puede deshacer." }
         ) { activity in
-            Button("Eliminar", role: .destructive) { delete(activity) }
-            Button("Cancelar", role: .cancel) {}
-        } message: { _ in
-            Text("Se borrará la carrera y su territorio se recalculará. No se puede deshacer.")
+            delete(activity)
         }
     }
 

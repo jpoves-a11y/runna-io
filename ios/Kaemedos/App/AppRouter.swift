@@ -40,6 +40,8 @@ final class AppRouter {
     var weatherDemo: String?
     /// Opens the new-club form (e2e screenshots).
     var showClubFormDemo = false
+    /// Asks "¿Cerrar sesión?" once Profile is open (e2e screenshots).
+    var logoutConfirmDemo = false
     #endif
 
     private init() {}
@@ -79,7 +81,12 @@ final class AppRouter {
                 clubSection = parts.count >= 2 && parts[1] == "friends" ? .friends : parts.count >= 2 && parts[1] == "chat" ? .chat : .club
                 selectedTab = .club
             case "friends": showFriends()
-            case "profile": showProfile = true
+            case "profile":
+                showProfile = true
+                #if DEBUG
+                // runnaio://tab/profile/logout (e2e screenshots)
+                if parts.count >= 2, parts[1] == "logout" { logoutConfirmDemo = true }
+                #endif
             default: selectedTab = .map
             }
             // runnaio://tab/map/<global|competition>
