@@ -175,11 +175,14 @@ const EXCLUDED_LANDUSE = 'industrial|retail|railway|military|quarry|landfill|far
 export function spotsQuery(lat: number, lng: number, radius: number, mode: ChestAreaMode): string {
   const around = `(around:${Math.round(radius)},${lat.toFixed(6)},${lng.toFixed(6)})`;
   const aroundBad = `(around:${Math.round(radius + 300)},${lat.toFixed(6)},${lng.toFixed(6)})`;
+  // Big cities: only named parks and pedestrian streets (the unnamed ones are the least interesting
+  // and make the query too heavy for the public servers)
+  const named = radius >= 3000 ? '["name"]' : '';
   const places = mode === 'poi'
     ? [
-      `nwr["leisure"~"^(park|garden)$"]${around};`,
+      `nwr["leisure"~"^(park|garden)$"]${named}${around};`,
       `nwr["place"="square"]${around};`,
-      `way["highway"="pedestrian"]${around};`,
+      `way["highway"="pedestrian"]${named}${around};`,
       `nwr["tourism"~"^(attraction|viewpoint|artwork|museum)$"]${around};`,
       `nwr["historic"~"^(monument|memorial|castle|city_gate|fort|ruins|archaeological_site)$"]${around};`,
       `node["amenity"="fountain"]${around};`,
@@ -192,7 +195,7 @@ export function spotsQuery(lat: number, lng: number, radius: number, mode: Chest
     ];
   // Nodes with their coordinates; ways and relations with their centre and tags (no member lists);
   // the areas to avoid with their outline
-  return `[out:json][timeout:40];(${places.join('')})->.spots;`
+  return `[out:json][timeout:90];(${places.join('')})->.spots;`
     + `node.spots;out body qt 1500;way.spots;out tags center qt 1500;rel.spots;out tags center qt 300;`
     + `(way["landuse"~"^(${EXCLUDED_LANDUSE})$"]${aroundBad};way["aeroway"="aerodrome"]${aroundBad};)->.avoid;.avoid out geom qt 600;`;
 }
@@ -294,7 +297,7 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
  * error, network error, or a "runtime error" remark with an incomplete answer) passes it to the next.
  * `onRequest` is called before each request (the Worker counts them as subrequests).
  */
-export async function overpass(query: string, fetchFn: FetchLike, onRequest: () => void = () => {}, urls = OVERPASS_URLS): Promise<unknown> {
+export async function overpass(query: string, fetchFn: FetchLike, onRequest: () => void = () => {}, urls = OVERPASS_URLS, timeoutMs = 45_000): Promise<unknown> {
   const problems: string[] = [];
   for (const url of urls) {
     const host = new URL(url).host;
@@ -309,7 +312,7 @@ export async function overpass(query: string, fetchFn: FetchLike, onRequest: () 
         },
         body: `data=${encodeURIComponent(query)}`,
         // A hung server must not hold the task: the next one is tried
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!response.ok) {
         problems.push(`${host}: HTTP ${response.status}`);
@@ -349,9 +352,10 @@ export async function prepareArea(
   if (!place) throw new Error(`city not found in OpenStreetMap: ${city.name}`);
   const radiusM = radiusFor(place.placeType, place.population);
   const mode = modeFor(place.placeType, place.population);
-  let spots = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, mode), fetchFn, onRequest), place, radiusM);
+  // The places query is heavier: the servers get up to 90 s (the query's own limit)
+  let spots = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, mode), fetchFn, onRequest, OVERPASS_URLS, 95_000), place, radiusM);
   if (mode === 'poi' && spots.length < 12) {
-    const streets = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, 'streets'), fetchFn, onRequest), place, radiusM);
+    const streets = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, 'streets'), fetchFn, onRequest, OVERPASS_URLS, 95_000), place, radiusM);
     spots = [...spots, ...streets.filter((s) => s.kind === 'street')];
   }
   return { place, mode, radiusM, spots };

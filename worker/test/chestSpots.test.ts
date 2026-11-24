@@ -87,6 +87,10 @@ test('the places query covers parks, squares, landmarks... in cities and streets
   // Nodes (fountains, monuments, squares) with coordinates; ways and relations with their centre
   assert.ok(poi.includes('node.spots;out body') && poi.includes('way.spots;out tags center') && poi.includes('rel.spots;out tags center'));
   assert.ok(poi.includes('.avoid out geom'));
+  // Big cities: only named parks and pedestrian streets; smaller ones, all of them
+  assert.ok(poi.includes('leisure"~"^(park|garden)$"]["name"](around:4000') && poi.includes('highway"="pedestrian"]["name"](around:4000'));
+  const town = spotsQuery(ZGZ.lat, ZGZ.lng, 2000, 'poi');
+  assert.ok(town.includes('leisure"~"^(park|garden)$"](around:2000') && !town.includes('["name"]'));
   const streets = spotsQuery(ZGZ.lat, ZGZ.lng, 800, 'streets');
   assert.ok(streets.includes('highway"~"^(pedestrian|living_street|residential|footway)$') && streets.includes('access"!~"^(private|no)$'));
   assert.ok(!streets.includes('historic'));
