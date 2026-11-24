@@ -1,6 +1,7 @@
 // Endpoints of the launch features that sit outside the game:
 //   POST /api/events            product analytics from the app (admin panel → Estadísticas)
 //   GET  /api/widget/summary    small summary for the home-screen widget
+//   GET  /api/widget/details    what the map and podium widgets draw
 //   GET  /api/onboarding/missions  welcome missions of the first two weeks (gift when all are done)
 import type { Context, Hono } from 'hono';
 import { sql } from 'drizzle-orm';
@@ -8,7 +9,10 @@ import { createDb } from './db';
 import { WorkerStorage } from './storage';
 import { GameStorage } from './gameStorage';
 import { requireAuth, isCronRequest, type AppEnv } from './auth';
-import { cycleAt, monthPeriod } from './cycles';
+import { cycleAt, monthPeriod, isClosing } from './cycles';
+import { parseGeometry } from './globalTerritory';
+import { polygonsOf, simplifyForWidget, boundsOf, padBounds, intersects, podiumOf } from './widgetData';
+import { MODE_INFO, type CompetitionMode } from '../../shared/game';
 import { competitionStandings, seededRandom } from './season';
 import { pickRewardItem } from '../../shared/game';
 import { isValidUnsubscribeToken } from './email';
@@ -177,6 +181,69 @@ export function registerLaunchRoutes(app: Hono<AppEnv>): void {
       phase: info.phase,
       nextChangeAt: info.phase === 'competition' ? info.competitionEndsAt : info.restEndsAt,
       competition,
+      serverTime: new Date(now).toISOString(),
+    });
+  });
+
+  // The map widget (my world map, and my friends' and club mates' around it) and the podium widget
+  // (the top three of my competition and the gap to whoever is just ahead of me)
+  app.get('/api/widget/details', requireAuth, async (c) => {
+    const { storage, game } = stores(c);
+    const userId = c.get('authUserId');
+    const now = Date.now();
+
+    let map: Record<string, unknown> | null = null;
+    const membership = await game.getMembership(userId);
+    const friendIds = await storage.getFriendIds(userId);
+    const clubIds = membership ? (await game.getClubMemberIds(membership.clubId)).filter((id) => id !== userId) : [];
+    const othersIds = [...new Set([...friendIds, ...clubIds])].slice(0, 80);
+    const rows = await game.getGlobalTerritories([userId, ...othersIds]);
+    const users = await game.getUserLite([userId, ...othersIds]);
+    const mineRow = rows.find((r) => r.userId === userId);
+    const mine = mineRow ? simplifyForWidget(polygonsOf(parseGeometry(mineRow.geometry) as any), 700) : [];
+    const mineBounds = boundsOf(mine);
+    if (mineRow && mineBounds) {
+      const view = padBounds(mineBounds, 0.35);
+      const others = rows
+        .filter((r) => r.userId !== userId)
+        .map((r) => ({ row: r, polygons: polygonsOf(parseGeometry(r.geometry) as any) }))
+        .map(({ row, polygons }) => ({ row, polygons: polygons.filter((p) => { const b = boundsOf([p]); return b && intersects(b, view); }) }))
+        .filter(({ polygons }) => polygons.length > 0)
+        .sort((a, b) => b.row.area - a.row.area)
+        .slice(0, 8)
+        .map(({ row, polygons }) => ({ color: users.get(row.userId)?.color ?? null, polygons: simplifyForWidget(polygons, 180) }));
+      map = {
+        color: users.get(userId)?.color ?? null,
+        area: mineRow.area,
+        polygons: mine,
+        others,
+        bounds: view,
+      };
+    }
+
+    let podium: Record<string, unknown> | null = null;
+    const info = cycleAt(now);
+    const participation = await game.getActiveParticipation(userId);
+    if (participation && (info.phase === 'competition' || isClosing(info, now))) {
+      const competition = participation.competition;
+      const standings = await competitionStandings(game, competition, now);
+      const ids = [...standings.slice(0, 3).map((s: any) => s.userId), userId];
+      const lite = await game.getUserLite(ids);
+      const colors = new Map(ids.map((id) => [id, lite.get(id)?.color ?? null] as [string, string | null]));
+      podium = {
+        mode: competition.mode,
+        modeName: MODE_INFO[competition.mode as CompetitionMode]?.name ?? 'Competición',
+        participants: standings.length,
+        endsAt: info.competitionEndsAt,
+        ...podiumOf(standings as any, userId, colors),
+      };
+    }
+
+    return c.json({
+      map,
+      podium,
+      phase: info.phase,
+      nextChangeAt: info.phase === 'competition' ? info.competitionEndsAt : info.restEndsAt,
       serverTime: new Date(now).toISOString(),
     });
   });
