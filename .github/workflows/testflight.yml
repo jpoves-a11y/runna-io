@@ -13,7 +13,9 @@ concurrency:
 jobs:
   upload:
     name: Archive and upload to TestFlight
-    runs-on: macos-latest
+    # Intel Mac: GitHub's Apple Silicon (arm64) Macs were short of capacity and jobs were cancelled
+    # after 15 minutes in the queue. The iPhone build is the same from an Intel Mac.
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
