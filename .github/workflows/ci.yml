@@ -1,0 +1,47 @@
+name: Tests
+
+# Runs on every push and pull request: type check, unit tests and the end-to-end tests against the
+# bundled Worker with a test SQLite database. Needs no secrets and touches nothing in production.
+# Deploying is still a separate, manual workflow (Deploy Worker).
+on:
+  push:
+    paths-ignore:
+      - 'ios/**'
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - 'ios/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Type check, unit and e2e tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
+
+      - name: Type check
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: End-to-end tests
+        run: npm run test:e2e

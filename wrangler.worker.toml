@@ -26,10 +26,9 @@ ENVIRONMENT = "production"
 # account's SMTP server, free and without an own domain. Needs the secret GMAIL_APP_PASSWORD:
 # an app password of that Google account (README → "Emails").
 EMAIL_PROVIDER = "gmail"
-# Sender for now; to send from kaeme2.support@gmail.com, put that account's app password in
-# GMAIL_APP_PASSWORD and change these two
-GMAIL_USER = "runna.io.service@gmail.com"
-SENDGRID_FROM = "runna.io.service@gmail.com"
+# GMAIL_APP_PASSWORD must be an app password of this same account
+GMAIL_USER = "kaeme2.support@gmail.com"
+SENDGRID_FROM = "kaeme2.support@gmail.com"
 RESEND_FROM = "onboarding@resend.dev"
 
 # NOTA: Las API keys deben configurarse como secretos:

@@ -80,6 +80,7 @@ Necesitas Node.js 20 o superior.
 npm ci --legacy-peer-deps
 npm run check        # comprueba los tipos de shared/ y worker/
 npm test             # tests unitarios del juego (worker/test)
+npm run test:e2e     # pruebas end-to-end contra el Worker con una base de datos de prueba (~30 s)
 ```
 
 La forma más rápida de tener una API local con datos es la de las pruebas end-to-end: ejecuta el Worker en Node con una base de datos SQLite de prueba y la llena con usuarios, amigos, dos clubes, una competición en marcha (el servidor de prueba coloca "hoy" dentro de una), carreras que conquistan el mapa global y roban en el de competición, una carrera rechazada por el anti-trampas, objetos en el inventario, un cofre y comentarios.
@@ -96,7 +97,7 @@ node scripts/e2e/seed.mjs        # en otra terminal; imprime un token y un userI
 
 Con `E2E_RUN_CRON=1` (y opcionalmente `E2E_CRON_TIME`), `server.mjs` ejecuta una vez las tareas programadas al arrancar.
 
-Pruebas: `npm test` (unitarias del Worker) y los scripts de `scripts/e2e/`. `launch-features-test.mjs` prueba zona privada, Iniciar sesión con Apple (con claves de prueba), suspensiones, el panel, la analítica, el widget, las misiones y los enlaces universales:
+Pruebas: `npm test` (unitarias del Worker) y `npm run test:e2e`, que ejecuta todos los scripts de `scripts/e2e/` (menos `suunto-test.mjs`, que necesita ficheros `.fit` reales); `npm run test:e2e -- season ran-together` ejecuta solo los que nombres. El workflow `.github/workflows/ci.yml` ("Tests") lo ejecuta todo en cada push y pull request. `launch-features-test.mjs` prueba zona privada, Iniciar sesión con Apple (con claves de prueba), suspensiones, el panel, la analítica, el widget, las misiones y los enlaces universales:
 
 ```bash
 rm -f scripts/e2e/.build/launch.db
@@ -181,7 +182,7 @@ Los secretos se configuran con `npx wrangler secret put <NOMBRE> -c wrangler.wor
 
 ### Emails
 
-Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`runna.io.service@gmail.com` de momento; el contacto que se muestra es `kaeme2.support@gmail.com`). Es gratis, no necesita dominio propio y Gmail los firma, así que no acaban en spam. El límite es de unos 500 emails al día.
+Los emails salen por el servidor SMTP de la cuenta de Gmail de `GMAIL_USER` (`kaeme2.support@gmail.com`, que también es el contacto de soporte). Es gratis, no necesita dominio propio y Gmail los firma, así que no acaban en spam. El límite es de unos 500 emails al día.
 
 1. Entra en esa cuenta de Google y activa la **verificación en dos pasos** (myaccount.google.com → Seguridad). Sin ella, Google no deja crear contraseñas de aplicación.
 2. Abre [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), crea una con el nombre "Kaemedos Worker" y copia las 16 letras.

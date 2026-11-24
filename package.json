@@ -9,7 +9,8 @@
     "db:push": "drizzle-kit push",
     "worker:dev": "wrangler dev -c wrangler.worker.toml",
     "worker:deploy": "wrangler deploy -c wrangler.worker.toml",
-    "test": "node --import tsx --test worker/test/*.test.ts"
+    "test": "node --import tsx --test worker/test/*.test.ts",
+    "test:e2e": "node scripts/e2e/run-all.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.7",
