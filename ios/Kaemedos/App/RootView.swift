@@ -18,6 +18,8 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: session.state)
+        // A newer version in the App Store: announced, and required after a day (AppUpdate)
+        .appUpdateGate()
         .overlay {
             if !introDone {
                 KM2IntroView {
