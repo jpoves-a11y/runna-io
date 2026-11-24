@@ -23,7 +23,7 @@ struct AuthView: View {
                     AuthHeader(
                         title: "KM2",
                         logo: true,
-                        subtitle: "Corre por tu ciudad y conquista el mapa."
+                        subtitle: "Conquista tu ciudad."
                     )
                     VStack(spacing: DS.Spacing.xl) {
                         modePicker
