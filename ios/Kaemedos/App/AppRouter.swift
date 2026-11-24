@@ -42,6 +42,8 @@ final class AppRouter {
     var showClubFormDemo = false
     /// Asks "¿Cerrar sesión?" once Profile is open (e2e screenshots).
     var logoutConfirmDemo = false
+    /// Shows the sign-in screen while signed in (e2e screenshots).
+    var showAuthDemo = false
     #endif
 
     private init() {}
@@ -118,6 +120,9 @@ final class AppRouter {
             // runnaio://clubform (e2e screenshots)
             selectedTab = .club
             showClubFormDemo = true
+        case "auth":
+            // runnaio://auth (e2e screenshots): the sign-in screen
+            showAuthDemo = true
         #endif
         case "oauth":
             // runnaio://oauth/<provider>?... (normally handled by the web authentication session)

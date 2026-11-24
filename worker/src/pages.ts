@@ -3,6 +3,7 @@
 // URL scheme (friend invites and email buttons). Plain HTML with inline CSS, no external resources.
 import type { Context, Hono } from 'hono';
 import type { AppEnv } from './auth';
+import { EMAIL_LOGO_PATH, emailLogoPng } from './brandAssets';
 
 const DEFAULT_WORKER_URL = 'https://runna-io-api.runna-io-api.workers.dev';
 const CONTACT_EMAIL = 'kaeme2.support@gmail.com';
@@ -537,6 +538,15 @@ export function registerPublicPages(app: Hono<AppEnv>): void {
     c.header('Referrer-Policy', 'no-referrer');
     return c.html(body, status);
   };
+
+  // The logo at the top of every email
+  app.get(EMAIL_LOGO_PATH, () => new Response(emailLogoPng(), {
+    headers: {
+      'Content-Type': 'image/png',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  }));
 
   app.get('/privacy', (c) => html(c, PRIVACY_HTML));
   app.get('/terms', (c) => html(c, TERMS_HTML));

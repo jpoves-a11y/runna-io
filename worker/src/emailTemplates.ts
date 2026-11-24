@@ -3,8 +3,12 @@
 // The HTML is built for email clients, not browsers: tables and inline styles (Gmail ignores grid
 // and gradients), every block sets both its background and its text colour, and a dark version is
 // declared (color-scheme + prefers-color-scheme + Outlook's [data-ogsc]) so a light text never ends
-// up on a light background. No images, no emoji in subjects, no tracking pixels: plain, readable
-// emails get to the inbox more often.
+// up on a light background. One image only, the KM2 logo, on its own black band at the top of the
+// card: it looks the same in light and dark inboxes (clients that invert colours leave images and
+// dark blocks alone), and if images are blocked the band still says "KM2" in its alt text. No emoji
+// in subjects, no tracking pixels: plain, readable emails get to the inbox more often.
+
+import { EMAIL_LOGO_PATH, EMAIL_LOGO_WIDTH, EMAIL_LOGO_HEIGHT } from './brandAssets';
 
 export interface EmailContent {
   subject: string;
@@ -37,8 +41,11 @@ export interface EmailLayout {
   supportEmail: string;
 }
 
+/** The logo band: the same in light and dark mode */
+const HERO = { bg: '#000000', neon: '#00FF1E' };
+
 const LIGHT = {
-  page: '#F3F4F6',
+  page: '#F2F3F5',
   card: '#FFFFFF',
   text: '#111418',
   muted: '#5B6470',
@@ -106,8 +113,10 @@ const STYLE = `
   [data-ogsc] .btn a { color:${DARK.buttonText} !important; }
   [data-ogsc] .code { background:${DARK.codeBg} !important; color:${DARK.text} !important; }
   @media (max-width: 600px) {
-    .card-pad { padding:28px 22px !important; }
+    .card-pad { padding:28px 22px 30px !important; }
+    .hero-pad { padding:30px 16px 26px !important; }
     .h1 { font-size:24px !important; }
+    .code { font-size:30px !important; letter-spacing:8px !important; }
   }
 `;
 
@@ -145,15 +154,16 @@ export function renderEmail(subject: string, layout: EmailLayout): EmailContent 
     : '';
 
   const cta = layout.cta
-    ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 24px;">
-        <tr><td class="btn" style="background:${LIGHT.brand};border-radius:999px;">
-          <a href="${escapeEmail(layout.cta.url)}" style="display:inline-block;padding:14px 28px;font-family:${FONT};font-size:16px;font-weight:600;color:${LIGHT.buttonText};text-decoration:none;">${escapeEmail(layout.cta.label)}</a>
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:8px 0 24px;">
+        <tr><td align="center" class="btn" style="background:${LIGHT.brand};border-radius:12px;">
+          <a href="${escapeEmail(layout.cta.url)}" style="display:block;padding:15px 24px;font-family:${FONT};font-size:16px;font-weight:700;color:${LIGHT.buttonText};text-decoration:none;text-align:center;">${escapeEmail(layout.cta.label)}</a>
         </td></tr>
       </table>`
     : '';
 
   const closing = layout.closing ? p(richText(layout.closing)) : '';
   const privacyUrl = `${layout.baseUrl}/privacy`;
+  const logoUrl = `${layout.baseUrl}${EMAIL_LOGO_PATH}`;
   const footerLinks = [
     layout.unsubscribeUrl ? `<a href="${escapeEmail(layout.unsubscribeUrl)}" class="faint" style="color:${LIGHT.faint};text-decoration:underline;">Darte de baja</a>` : '',
     `<a href="${escapeEmail(privacyUrl)}" class="faint" style="color:${LIGHT.faint};text-decoration:underline;">Privacidad</a>`,
@@ -174,16 +184,19 @@ export function renderEmail(subject: string, layout: EmailLayout): EmailContent 
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">${escapeEmail(layout.preheader)}&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;</div>
 <table role="presentation" class="page" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:${LIGHT.page};">
   <tr><td align="center" style="padding:32px 16px;">
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;">
-      <tr><td style="padding:0 4px 18px;font-family:${FONT};font-size:20px;font-weight:700;letter-spacing:-0.3px;">
-        <span class="txt" style="color:${LIGHT.text};font-weight:900;">KM</span><span class="brand" style="color:${LIGHT.brand};font-weight:900;">2</span>
+    <table role="presentation" class="card" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;background:${LIGHT.card};border:1px solid ${LIGHT.line};border-radius:20px;border-collapse:separate;overflow:hidden;">
+      <tr><td align="center" class="hero-pad" bgcolor="${HERO.bg}" style="background:${HERO.bg};border-radius:19px 19px 0 0;padding:40px 24px 34px;">
+        <img src="${escapeEmail(logoUrl)}" width="${EMAIL_LOGO_WIDTH}" height="${EMAIL_LOGO_HEIGHT}" alt="KM2 · Kaemedos" style="display:block;width:${EMAIL_LOGO_WIDTH}px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;font-family:${FONT};font-size:40px;font-weight:900;line-height:1.1;color:#FFFFFF;text-align:center;">
       </td></tr>
-      <tr><td class="card card-pad" style="background:${LIGHT.card};border:1px solid ${LIGHT.line};border-radius:20px;padding:36px 32px;">
-        <h1 class="txt h1" style="margin:0 0 16px;font-family:${FONT};font-size:26px;line-height:1.25;font-weight:700;letter-spacing:-0.4px;color:${LIGHT.text};">${escapeEmail(layout.heading)}</h1>
+      <tr><td height="4" bgcolor="${HERO.neon}" style="background:${HERO.neon};height:4px;line-height:4px;font-size:0;">&nbsp;</td></tr>
+      <tr><td class="card-pad" style="padding:36px 36px 38px;">
+        <h1 class="txt h1" style="margin:0 0 16px;font-family:${FONT};font-size:26px;line-height:1.25;font-weight:800;letter-spacing:-0.4px;color:${LIGHT.text};">${escapeEmail(layout.heading)}</h1>
         ${paragraphs}${steps}${code}${details}${cta}${closing}
-        <p class="txt" style="margin:8px 0 0;font-family:${FONT};font-size:16px;line-height:1.6;color:${LIGHT.text};">El equipo de KM2</p>
+        <p class="txt" style="margin:8px 0 0;font-family:${FONT};font-size:16px;line-height:1.6;color:${LIGHT.text};">El equipo de <strong style="font-weight:800;">KM<span class="brand" style="color:${LIGHT.brand};">2</span></strong></p>
       </td></tr>
-      <tr><td style="padding:20px 8px 0;font-family:${FONT};font-size:12px;line-height:1.6;color:${LIGHT.faint};" class="faint">
+    </table>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;">
+      <tr><td align="center" style="padding:22px 16px 0;font-family:${FONT};font-size:12px;line-height:1.7;color:${LIGHT.faint};text-align:center;" class="faint">
         ${escapeEmail(layout.reason)}<br>${footerLinks}
       </td></tr>
     </table>
@@ -237,7 +250,7 @@ export function welcomeEmail(ctx: TemplateContext, name: string, unsubscribeUrl?
     ],
     steps: [
       '**Sal a correr** con la app, o conecta tu reloj para que tus carreras lleguen solas.',
-      '**Invita a un amigo.** Así podréis robaros territorio.',
+      '**Invita a un amigo** y comparad quién conquista más mapa en el ranking de amigos.',
       '**Únete a un club** de tu ciudad y compite con él cada dos semanas.',
     ],
     cta: { label: 'Abrir KM2', url: openUrl(ctx, 'map') },
