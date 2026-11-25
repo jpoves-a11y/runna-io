@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   distanceM, insideRing, radiusFor, modeFor, normalizeName, placeQuery, pickPlace, spotsQuery, parseSpots, pickSpot,
-  prepareArea, overpass, CHEST_MIN_SPACING_M, type ChestSpot,
+  prepareArea, overpass, avoidQuery, CHEST_MIN_SPACING_M, type ChestSpot,
 } from '../src/chestSpots';
 
 const ZGZ = { lat: 41.6563, lng: -0.8773 }; // Plaza del Pilar
@@ -81,12 +81,18 @@ test('without a name match: the biggest place within 6 km of the members; nothin
 
 test('the places query covers parks, squares, landmarks... in cities and streets in villages, with the areas to avoid', () => {
   const poi = spotsQuery(ZGZ.lat, ZGZ.lng, 4000, 'poi');
-  for (const piece of ['leisure"~"^(park|garden)$', 'place"="square', 'highway"="pedestrian', 'historic', 'tourism', 'amenity"="fountain', 'landuse"~"^(industrial|retail', 'aeroway"="aerodrome', 'around:4000,']) {
+  for (const piece of ['leisure"~"^(park|garden)$', 'place"="square', 'highway"="pedestrian', 'historic', 'tourism', 'amenity"="fountain', 'around:4000,']) {
     assert.ok(poi.includes(piece), piece);
+  }
+  // No memorials (victims, mass graves...)
+  assert.ok(!poi.includes('memorial'));
+  // The areas to avoid go in their own query, with their outline: cemeteries too
+  const avoid = avoidQuery(ZGZ.lat, ZGZ.lng, 4000);
+  for (const piece of ['landuse"~"^(industrial|retail', 'cemetery', 'amenity"="grave_yard', 'aeroway"="aerodrome', 'around:4300,', 'out geom']) {
+    assert.ok(avoid.includes(piece), piece);
   }
   // Nodes (fountains, monuments, squares) with coordinates; ways and relations with their centre
   assert.ok(poi.includes('node.spots;out body') && poi.includes('way.spots;out tags center') && poi.includes('rel.spots;out tags center'));
-  assert.ok(poi.includes('.avoid out geom'));
   // Big cities: only named parks and pedestrian streets; smaller ones, all of them
   assert.ok(poi.includes('leisure"~"^(park|garden)$"]["name"](around:4000') && poi.includes('highway"="pedestrian"]["name"](around:4000'));
   const town = spotsQuery(ZGZ.lat, ZGZ.lng, 2000, 'poi');
@@ -104,6 +110,8 @@ test('places: inside the radius, out of industrial estates, none within 120 m of
       node(2, offset(ZGZ, 30, 30).lat, offset(ZGZ, 30, 30).lng, { amenity: 'fountain' }), // same cell: the square wins
       { type: 'way', id: 3, center: { lat: offset(ZGZ, -800, 300).lat, lon: offset(ZGZ, -800, 300).lng }, tags: { leisure: 'park', name: 'Parque Grande' } },
       node(4, offset(ZGZ, 400, -200).lat, offset(ZGZ, 400, -200).lng, { historic: 'monument', name: 'Puente de Piedra' }),
+      node(9, offset(ZGZ, -400, -900).lat, offset(ZGZ, -400, -900).lng, { historic: 'memorial', name: 'Memorial a las víctimas' }),
+      node(10, offset(ZGZ, 900, -900).lat, offset(ZGZ, 900, -900).lng, { tourism: 'artwork', memorial: 'war_memorial', name: 'Monumento a los caídos' }),
       { type: 'way', id: 5, center: { lat: offset(ZGZ, 1800, 1800).lat, lon: offset(ZGZ, 1800, 1800).lng }, tags: { leisure: 'park' } }, // inside the estate
       node(6, offset(ZGZ, 6000, 0).lat, offset(ZGZ, 6000, 0).lng, { tourism: 'viewpoint' }), // beyond the radius
       { type: 'way', id: 7, center: { lat: offset(ZGZ, 200, 900).lat, lon: offset(ZGZ, 200, 900).lng }, tags: { leisure: 'park', access: 'private' } },
@@ -165,10 +173,11 @@ test('rare chests go to landmarks and squares more often; everything still retur
   assert.ok(pickSpot(spots.slice(0, 1), 'common', [spots[0]], random));
 });
 
-test('preparing a city: place, then its places; a city with too few places of interest adds its streets', async () => {
+test('preparing a city: place, areas to avoid, its places; a city with too few places of interest adds its streets', async () => {
   const requests: string[] = [];
   const answers = [
     { elements: [node(1, 41.6563, -0.8773, { place: 'town', name: 'Villa', population: '25000' })] },
+    { elements: [] }, // nothing to avoid
     { elements: [node(2, 41.657, -0.877, { place: 'square', name: 'Plaza Mayor' })] },
     { elements: [{ type: 'way', id: 3, center: { lat: 41.660, lon: -0.880 }, tags: { highway: 'residential', name: 'Calle Real' } }] },
   ];
@@ -183,10 +192,11 @@ test('preparing a city: place, then its places; a city with too few places of in
   assert.equal(area.mode, 'poi');
   assert.equal(area.radiusM, 1300);
   assert.deepEqual(area.spots.map((s) => s.name).sort(), ['Calle Real', 'Plaza Mayor']);
-  assert.equal(counted, 3);
-  assert.equal(requests.length, 3);
+  assert.equal(counted, 4);
+  assert.equal(requests.length, 4);
   assert.match(requests[0], /around:20000,41\.6,-0\.9\)/);
-  assert.match(requests[1], /around:1300,41\.656300,-0\.877300\)/);
+  assert.match(requests[1], /landuse.*around:1600,41\.656300,-0\.877300\)/);
+  assert.match(requests[2], /around:1300,41\.656300,-0\.877300\)/);
 });
 
 test('a busy Overpass server passes the query to the next one; an error remark is not an empty answer', async () => {

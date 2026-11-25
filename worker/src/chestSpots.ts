@@ -27,6 +27,11 @@ export const OVERPASS_URLS = [
 export const CHEST_AREA_REFRESH_MS = 30 * 24 * 3600 * 1000;
 /** After a failed attempt, the next one waits this long. */
 export const CHEST_AREA_RETRY_MS = 6 * 3600 * 1000;
+/**
+ * Version of the rules that choose the places. Cities prepared with an older one are prepared again
+ * at once. 2: no memorials, cemeteries avoided.
+ */
+export const CHEST_AREA_VERSION = 2;
 /** A new chest stays at least this far from the active ones and the last days' ones of the city. */
 export const CHEST_MIN_SPACING_M = 400;
 const MAX_SPOTS = 400;
@@ -169,12 +174,11 @@ export function pickPlace(json: unknown, cityName: string, memberLat: number, me
 
 // ─── 2. The places of the city ──────────────────────────────────────────────
 
-const EXCLUDED_LANDUSE = 'industrial|retail|railway|military|quarry|landfill|farmland|farmyard|construction|brownfield|greenhouse_horticulture|depot';
+const EXCLUDED_LANDUSE = 'industrial|retail|railway|military|quarry|landfill|farmland|farmyard|construction|brownfield|greenhouse_horticulture|depot|cemetery';
 
-/** Overpass query: the candidate places within `radius` m of the centre, and the areas to avoid. */
+/** Overpass query: the candidate places within `radius` m of the centre (the areas to avoid go in avoidQuery). */
 export function spotsQuery(lat: number, lng: number, radius: number, mode: ChestAreaMode): string {
   const around = `(around:${Math.round(radius)},${lat.toFixed(6)},${lng.toFixed(6)})`;
-  const aroundBad = `(around:${Math.round(radius + 300)},${lat.toFixed(6)},${lng.toFixed(6)})`;
   // Big cities: only named parks and pedestrian streets (the unnamed ones are the least interesting
   // and make the query too heavy for the public servers)
   const named = radius >= 3000 ? '["name"]' : '';
@@ -184,7 +188,8 @@ export function spotsQuery(lat: number, lng: number, radius: number, mode: Chest
       `nwr["place"="square"]${around};`,
       `way["highway"="pedestrian"]${named}${around};`,
       `nwr["tourism"~"^(attraction|viewpoint|artwork|museum)$"]${around};`,
-      `nwr["historic"~"^(monument|memorial|castle|city_gate|fort|ruins|archaeological_site)$"]${around};`,
+      // No memorials (war, victims, mass graves...): no place for a game's chest
+      `nwr["historic"~"^(monument|castle|city_gate|fort|ruins|archaeological_site)$"]${around};`,
       `node["amenity"="fountain"]${around};`,
       `nwr["leisure"="track"]["sport"~"running|athletics"]${around};`,
     ]
@@ -196,8 +201,18 @@ export function spotsQuery(lat: number, lng: number, radius: number, mode: Chest
   // Nodes with their coordinates; ways and relations with their centre and tags (no member lists);
   // the areas to avoid with their outline
   return `[out:json][timeout:90];(${places.join('')})->.spots;`
-    + `node.spots;out body qt 1500;way.spots;out tags center qt 1500;rel.spots;out tags center qt 300;`
-    + `(way["landuse"~"^(${EXCLUDED_LANDUSE})$"]${aroundBad};way["aeroway"="aerodrome"]${aroundBad};)->.avoid;.avoid out geom qt 600;`;
+    + `node.spots;out body qt 1500;way.spots;out tags center qt 1500;rel.spots;out tags center qt 300;`;
+}
+
+/**
+ * Overpass query: the areas no chest should be in, with their outline: industrial estates, retail
+ * parks, railways, farmland, quarries, military land, cemeteries, airports... A separate query from
+ * the places, so each one is light enough for the busy public servers.
+ */
+export function avoidQuery(lat: number, lng: number, radius: number): string {
+  const aroundBad = `(around:${Math.round(radius + 300)},${lat.toFixed(6)},${lng.toFixed(6)})`;
+  return `[out:json][timeout:90];(way["landuse"~"^(${EXCLUDED_LANDUSE})$"]${aroundBad};way["amenity"="grave_yard"]${aroundBad};`
+    + `way["aeroway"="aerodrome"]${aroundBad};);out geom qt 600;`;
 }
 
 function kindOf(tags: Record<string, string>): { kind: ChestSpotKind; weight: number } | null {
@@ -231,6 +246,7 @@ export function parseSpots(json: unknown, centre: { lat: number; lng: number }, 
     const lng = element.lon ?? element.center?.lon;
     if (typeof lat !== 'number' || typeof lng !== 'number') continue;
     if (tags.access === 'private' || tags.access === 'no') continue;
+    if (tags.historic === 'memorial' || tags.memorial || tags.amenity === 'grave_yard') continue;
     const kind = kindOf(tags);
     if (!kind) continue;
     const point = { lat, lng };
@@ -332,6 +348,10 @@ export async function overpass(query: string, fetchFn: FetchLike, onRequest: () 
   throw new Error(`Overpass unavailable (${problems.join('; ')})`);
 }
 
+function elementsOf(json: unknown): OsmElement[] {
+  return (json as { elements?: OsmElement[] })?.elements ?? [];
+}
+
 export interface PreparedArea {
   place: CityPlace;
   mode: ChestAreaMode;
@@ -352,10 +372,12 @@ export async function prepareArea(
   if (!place) throw new Error(`city not found in OpenStreetMap: ${city.name}`);
   const radiusM = radiusFor(place.placeType, place.population);
   const mode = modeFor(place.placeType, place.population);
-  // The places query is heavier: the servers get up to 90 s (the query's own limit)
-  let spots = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, mode), fetchFn, onRequest, OVERPASS_URLS, 95_000), place, radiusM);
+  // The areas to avoid and the places, in two lighter queries; each server gets up to 90 s
+  const avoid = await overpass(avoidQuery(place.lat, place.lng, radiusM), fetchFn, onRequest, OVERPASS_URLS, 95_000);
+  const withAvoid = (json: unknown) => ({ elements: [...elementsOf(json), ...elementsOf(avoid)] });
+  let spots = parseSpots(withAvoid(await overpass(spotsQuery(place.lat, place.lng, radiusM, mode), fetchFn, onRequest, OVERPASS_URLS, 95_000)), place, radiusM);
   if (mode === 'poi' && spots.length < 12) {
-    const streets = parseSpots(await overpass(spotsQuery(place.lat, place.lng, radiusM, 'streets'), fetchFn, onRequest, OVERPASS_URLS, 95_000), place, radiusM);
+    const streets = parseSpots(withAvoid(await overpass(spotsQuery(place.lat, place.lng, radiusM, 'streets'), fetchFn, onRequest, OVERPASS_URLS, 95_000)), place, radiusM);
     spots = [...spots, ...streets.filter((s) => s.kind === 'street')];
   }
   return { place, mode, radiusM, spots };
