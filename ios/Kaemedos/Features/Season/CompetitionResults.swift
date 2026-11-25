@@ -493,7 +493,7 @@ struct CompetitionResultsView: View {
                     .card()
                 }
                 if !next.running {
-                    Text("Si tu club no tiene gente suficiente para este modo, jugará otro. Entre medias, cuatro días de descanso con cofres y retos.")
+                    Text("Si tu club no tiene gente suficiente para este modo, jugará otro. Entre medias, cuatro días de descanso con más cofres y retos.")
                         .font(Font.meta)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

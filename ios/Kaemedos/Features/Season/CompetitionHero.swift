@@ -138,10 +138,11 @@ struct CompetitionHero: View {
     var body: some View {
         VStack(spacing: 0) {
             banner
+            // What matters most first: how this mode is going and the table; then the chest at stake
             VStack(alignment: .leading, spacing: DS.Spacing.l) {
-                ChestTrack(projection: ChestProjection(competition: competition, userId: userId), accent: theme.accent)
                 modeDetails
                 table
+                ChestTrack(projection: ChestProjection(competition: competition, userId: userId), accent: theme.accent)
             }
             .padding(DS.Spacing.l)
             .background(Color.surface)

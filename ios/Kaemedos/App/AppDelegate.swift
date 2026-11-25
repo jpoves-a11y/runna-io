@@ -34,6 +34,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let payload = Self.payload(from: notification.request.content.userInfo)
         Task { @MainActor in
             AppRouter.shared.receivedNotificationInForeground(type: payload.type, routeId: payload.routeId)
+            // A mention or reply in a chat: fresh unread counts (badges)
+            if payload.type == "club_chat" { await ClubModel.shared.refreshChats() }
         }
         completionHandler([.banner, .sound, .list])
     }

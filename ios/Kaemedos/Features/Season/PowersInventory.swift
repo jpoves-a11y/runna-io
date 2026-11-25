@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 /// Poderes: the powers working now, the ones ready to use (same power grouped, ×2) and cosmetics.
@@ -10,6 +11,10 @@ struct InventorySheet: View {
     @State private var season = SeasonStore.shared
     @State private var detail: PowerStack?
     @State private var targetItem: InventoryItem?
+    /// Venganza: who stole from me lately (the only ones it can be used against)
+    @State private var revengeItem: InventoryItem?
+    @State private var revengeTargets: [RevengeTargetsResponse.Target] = []
+    @State private var bastionItem: InventoryItem?
     @State private var busyId: String?
     @State private var message: String?
     @State private var spiedRoute: RunRoute?
@@ -45,17 +50,41 @@ struct InventorySheet: View {
                 PowerDetailSheet(
                     stack: stack,
                     usability: usability(stack.first),
-                    isBusy: busyId != nil
-                ) {
-                    detail = nil
-                    // After this sheet has gone (Espía and co. open the rival picker)
-                    let item = stack.first
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { use(item) }
-                }
+                    isBusy: busyId != nil,
+                    onUse: {
+                        detail = nil
+                        // After this sheet has gone (Espía and co. open the rival picker)
+                        let item = stack.first
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { use(item) }
+                    },
+                    onPutBack: {
+                        detail = nil
+                        let item = stack.first
+                        Task { await putBack(item) }
+                    }
+                )
             }
             .sheet(item: $targetItem) { item in
                 TargetPickerSheet(item: item, rivals: rivals) { targetId, nickname in
                     Task { await activate(item, targetUserId: targetId, nickname: nickname) }
+                }
+            }
+            .sheet(item: $revengeItem) { item in
+                TargetPickerSheet(
+                    item: item,
+                    rivals: revengeTargets.compactMap(\.user),
+                    details: Dictionary(revengeTargets.map { target in
+                        let when = Format.relative(APIDate.parse(target.lastAt))
+                        return (target.userId, "Te robó \(Format.area(target.area))\(when.isEmpty ? "" : " · \(when)")")
+                    }, uniquingKeysWith: { a, _ in a }),
+                    header: "¿De quién te vengas? (te robaron en los últimos 3 días)"
+                ) { targetId, _ in
+                    Task { await activate(item, targetUserId: targetId, nickname: nil) }
+                }
+            }
+            .sheet(item: $bastionItem) { item in
+                BastionPickerSheet(item: item) { point in
+                    await activate(item, targetUserId: nil, nickname: nil, point: point)
                 }
             }
             .sheet(item: $spiedRoute) { route in
@@ -98,7 +127,8 @@ struct InventorySheet: View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
             Label("**Competición**: solo cuentan en la competición de tu club.", systemImage: "flag.2.crossed.fill")
             Label("**Global**: extras para tu mapa global, como mucho 1 km² más por carrera.", systemImage: "globe.europe.africa.fill")
-            Label("**Descanso**: para los cofres de los días de descanso. Duran dos semanas.", systemImage: "gift.fill")
+            Label("**Cofres**: para encontrar y abrir cofres (salen todos los días). Duran dos semanas.", systemImage: "gift.fill")
+            Label("Los de **siguiente carrera** se activan antes de salir: cuentan para la carrera que empieces después. Si cambias de idea, puedes guardarlos otra vez.", systemImage: "figure.run")
             Label("Si no los usas, los de defensa caducan a los 3 días y el resto a los 7. Puedes tener \(model.cap) de cada.", systemImage: "hourglass")
         }
         .font(.footnote)
@@ -217,6 +247,7 @@ struct InventorySheet: View {
     private func usability(_ item: InventoryItem) -> String? {
         guard let definition = item.definition else { return "No disponible" }
         if definition.activation == "passive" { return "Se usa solo" }
+        if definition.scope == "rest" && season.club == nil { return "Solo para miembros de un club" }
         switch definition.usablePhase {
         case "competition":
             return season.isCompeting ? nil : "Solo durante la competición de tu club"
@@ -245,18 +276,52 @@ struct InventorySheet: View {
 
     private func use(_ item: InventoryItem) {
         guard usability(item) == nil, busyId == nil else { return }
-        if item.definition?.needsTarget == true {
+        if item.itemId == "revenge" {
+            Task { await chooseRevenge(item) }
+        } else if item.definition?.needsZone == true {
+            bastionItem = item
+        } else if item.definition?.needsTarget == true {
             targetItem = item
         } else {
             Task { await activate(item, targetUserId: nil, nickname: nil) }
         }
     }
 
-    private func activate(_ item: InventoryItem, targetUserId: String?, nickname: String?) async {
+    /// Venganza: only against who stole from me in the last 3 days.
+    private func chooseRevenge(_ item: InventoryItem) async {
         busyId = item.id
         defer { busyId = nil }
         do {
-            let response = try await model.activate(item, targetUserId: targetUserId, nickname: nickname)
+            revengeTargets = try await model.revengeTargets()
+            if revengeTargets.isEmpty {
+                message = "Nadie te ha robado en los últimos 3 días. Guarda la Venganza para cuando lo hagan."
+            } else {
+                revengeItem = item
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// A "next run" power activated before going out goes back to the inventory.
+    private func putBack(_ item: InventoryItem) async {
+        busyId = item.id
+        defer { busyId = nil }
+        do {
+            let response = try await model.deactivate(item)
+            Haptics.tap()
+            message = response.message ?? "\(item.name) guardado otra vez."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    private func activate(_ item: InventoryItem, targetUserId: String?, nickname: String?, point: CLLocationCoordinate2D? = nil) async -> Bool {
+        busyId = item.id
+        defer { busyId = nil }
+        do {
+            let response = try await model.activate(item, targetUserId: targetUserId, nickname: nickname, point: point)
             Haptics.success()
             if let route = response.route {
                 spiedRoute = route
@@ -265,8 +330,10 @@ struct InventorySheet: View {
             } else {
                 message = response.message ?? "\(item.name) activado."
             }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -432,16 +499,20 @@ private struct PowerDetailSheet: View {
     let usability: String?
     let isBusy: Bool
     let onUse: () -> Void
+    /// A "next run" power already activated: back to the inventory
+    var onPutBack: (() -> Void)? = nil
 
     private var item: InventoryItem { stack.first }
 
     private var timing: String? {
         guard let definition = item.definition else { return nil }
         switch definition.activation {
-        case "next_run": return "Se aplica en tu siguiente carrera"
+        case "next_run":
+            return item.itemId == "double_loot" ? "Se aplica al siguiente cofre que abras" : "Actívalo antes de salir: cuenta para la carrera que empieces después"
         case "timed": return definition.activeHours.map { "Dura \(Int($0)) h desde que lo actives" }
         case "instant": return "Efecto inmediato"
-        case "target": return "Eliges a un rival"
+        case "zone": return "Eliges un punto de tu territorio en el mapa"
+        case "target": return item.itemId == "revenge" ? "Eliges a quien te robó en los últimos 3 días" : "Eliges a un rival"
         case "passive": return "Se usa solo cuando hace falta"
         default: return nil
         }
@@ -488,6 +559,13 @@ private struct PowerDetailSheet: View {
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(usability != nil || isBusy)
+            } else if item.isActive, item.definition?.isNextRun == true, let onPutBack {
+                // Activated for the next run, not used yet: changed your mind before going out
+                Button(action: onPutBack) {
+                    Text("Guardar otra vez")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(isBusy)
             }
         }
         .padding(.horizontal, DS.Spacing.xl)

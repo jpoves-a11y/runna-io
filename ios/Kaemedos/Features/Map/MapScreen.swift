@@ -524,12 +524,12 @@ struct MapScreen: View {
 
     private var noCompetitionText: String {
         if season.club == nil {
-            return "La competición es por clubes. Únete a uno para competir y abrir los cofres del descanso."
+            return "La competición es por clubes. Únete a uno para competir y abrir más cofres."
         }
         if season.cycle?.isCompetition == true {
             return "Tu club no compite en esta ronda. Mientras tanto, cada carrera suma a tu mapa global."
         }
-        return "Días de descanso: busca los cofres cerca de tu ciudad y completa tus retos."
+        return "Días de descanso: hay más cofres cerca de tu ciudad y tienes retos."
     }
 
     // MARK: - Floating controls

@@ -16,7 +16,7 @@ struct ClubTabView: View {
                     ClubHomeView()
                 case .chat:
                     if let club = model.club {
-                        ClubChatView(clubId: club.id, members: model.detail?.members ?? [])
+                        ClubChatsView(clubId: club.id, members: model.detail?.members ?? [])
                             .navigationTitle(club.name)
                             .navigationBarTitleDisplayMode(.inline)
                     } else {
@@ -31,19 +31,76 @@ struct ClubTabView: View {
             .toolbar {
                 ProfileToolbarItem()
                 ToolbarItem(placement: .principal) {
-                    Picker("Sección", selection: $router.clubSection) {
-                        Text("Club").tag(AppRouter.ClubSection.club)
-                        // The chat only with a club
-                        if model.isMember {
-                            Text(model.chatUnread > 0 ? "Chat · \(model.chatUnread)" : "Chat").tag(AppRouter.ClubSection.chat)
-                        }
-                        Text("Amigos").tag(AppRouter.ClubSection.friends)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: model.isMember ? 250 : 180)
-                    .tourAnchor(.clubPicker)
+                    BadgedSwitch(segments: sections, selection: $router.clubSection)
+                        .frame(width: model.isMember ? 260 : 190)
+                        .tourAnchor(.clubPicker)
                 }
             }
+        }
+    }
+}
+
+extension ClubTabView {
+    /// Club · Chat (with its unread messages, all chats together) · Amigos
+    fileprivate var sections: [BadgedSwitch<AppRouter.ClubSection>.Segment] {
+        var list: [BadgedSwitch<AppRouter.ClubSection>.Segment] = [.init(id: .club, title: "Club")]
+        // The chat only with a club
+        if model.isMember { list.append(.init(id: .chat, title: "Chat", badge: model.chatUnread)) }
+        list.append(.init(id: .friends, title: "Amigos"))
+        return list
+    }
+}
+
+// MARK: - Chats
+
+/// The club chat; during a competition with sides, two chats with a switch on top: "Competición"
+/// (the club in Por equipos, both clubs in Duelo and Derbi) and "Mi equipo" (only my team, or my
+/// club). Each with its unread messages.
+struct ClubChatsView: View {
+    let clubId: String
+    let members: [ClubMember]
+
+    @State private var model = ClubModel.shared
+    @AppStorage("club.chat.channel") private var savedChannel = ""
+    @State private var channel = "club"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if model.hasCompetitionChats {
+                BadgedSwitch(
+                    segments: model.chats.map { .init(id: $0.channel, title: $0.title, badge: $0.channel == channel ? 0 : model.unread($0.channel)) },
+                    selection: $channel
+                )
+                .padding(.horizontal, DS.Spacing.l)
+                .padding(.vertical, DS.Spacing.s)
+                .background(Color.canvas)
+                .overlay(alignment: .bottom) { HairlineDivider() }
+            }
+            ClubChatView(clubId: clubId, members: members, channel: current)
+                // A new chat (its own messages and polling) when switching
+                .id(current)
+        }
+        .onAppear(perform: pickChannel)
+        .onChange(of: model.chats.map(\.channel)) { _, _ in pickChannel() }
+        .onChange(of: channel) { _, value in savedChannel = value }
+        .task { await model.refreshChats() }
+    }
+
+    /// The chat on screen: the one chosen, if it is still open.
+    private var current: String {
+        model.chats.contains { $0.channel == channel } ? channel : "club"
+    }
+
+    /// The last chat used if it's still there; else the one with unread messages, else the first.
+    private func pickChannel() {
+        let open = model.chats.map(\.channel)
+        if open.contains(channel) && channel != "club" { return }
+        if !savedChannel.isEmpty && open.contains(savedChannel) {
+            channel = savedChannel
+        } else if let unread = model.chats.first(where: { model.unread($0.channel) > 0 }) {
+            channel = unread.channel
+        } else {
+            channel = open.first ?? "club"
         }
     }
 }
@@ -201,8 +258,18 @@ struct ClubHomeView: View {
     private func memberContent(detail: ClubDetailResponse, club: ClubSummary) -> some View {
         ScrollView {
             VStack(spacing: DS.Spacing.l) {
-                ClubHeaderCard(club: club, trophies: detail.trophies)
-                seasonSection
+                // During a competition it goes first: the banner, what's happening, the powers.
+                // The club itself, its members and history follow, folded
+                if isCompeting {
+                    seasonSection
+                    CompetitionActivityCard()
+                    inventoryButton
+                    ClubHeaderCard(club: club, trophies: detail.trophies)
+                } else {
+                    ClubHeaderCard(club: club, trophies: detail.trophies)
+                    seasonSection
+                    inventoryButton
+                }
                 if detail.isAdmin && !detail.pendingRequests.isEmpty {
                     requestsSection(detail.pendingRequests)
                 }
@@ -239,9 +306,13 @@ struct ClubHomeView: View {
                         hero(last)
                     }
                 }
-                inventoryButton
             }
         }
+    }
+
+    /// A competition of my club is running (taking part in it or following it).
+    private var isCompeting: Bool {
+        season.cycle?.isCompetition == true && (season.competition != nil || season.clubCompetition != nil)
     }
 
     private func hero(_ competition: ClubCompetition) -> some View {
@@ -340,7 +411,7 @@ struct ClubHomeView: View {
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Text("Cofres por la ciudad y retos activos")
+                Text("Más cofres por la ciudad y retos activos")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.85))
             }
@@ -396,16 +467,29 @@ struct ClubHomeView: View {
         }
     }
 
+    /// Folded: a row of faces until tapped.
     private func membersSection(_ detail: ClubDetailResponse) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            SectionHeader(title: "Miembros (\(detail.members.count))", actionTitle: detail.canInvite ? "Invitar" : nil, action: { showInvite = true })
+        FoldedSection(title: "Miembros (\(detail.members.count))", actionTitle: detail.canInvite ? "Invitar" : nil, action: { showInvite = true }) {
+            HStack(spacing: -8) {
+                ForEach(detail.members.prefix(6)) { member in
+                    AvatarView(name: member.user.name, avatar: member.user.avatar, color: member.user.color, size: 28, ring: false)
+                        .overlay(Circle().strokeBorder(Color.surface, lineWidth: 2))
+                }
+                if detail.members.count > 6 {
+                    Text("+\(detail.members.count - 6)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 12)
+                }
+            }
+            .accessibilityHidden(true)
+        } content: {
             VStack(spacing: 0) {
                 ForEach(Array(detail.members.enumerated()), id: \.element.id) { index, member in
                     if index > 0 { HairlineDivider() }
                     memberRow(member, detail: detail)
                 }
             }
-            .card(padding: DS.Spacing.m)
         }
     }
 
@@ -455,15 +539,17 @@ struct ClubHomeView: View {
     }
 
     private func historySection(_ history: [ClubHistoryEntry]) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            SectionHeader(title: "Historial")
+        FoldedSection(title: "Historial") {
+            Text(history.count == 1 ? "1 competición" : "\(history.count) competiciones")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } content: {
             VStack(spacing: 0) {
                 ForEach(Array(history.enumerated()), id: \.element.id) { index, entry in
                     if index > 0 { HairlineDivider() }
                     ClubHistoryRow(entry: entry)
                 }
             }
-            .card(padding: DS.Spacing.m)
         }
     }
 

@@ -81,8 +81,15 @@ async function call(method, route, { token, body } = {}) {
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
   while (pending.length) await Promise.allSettled(pending.splice(0));
+  // The runs of these tests are dated in the past, and a "next run" power only counts for runs that
+  // start after it was activated: activations are dated back (except where a check needs them not)
+  const activation = /^\/api\/inventory\/([^/]+)\/activate$/.exec(route);
+  if (activation && res.status === 200 && backdateActivations) {
+    await db.execute({ sql: "update user_powers set activated_at = '2000-01-01T00:00:00.000Z' where id = ? and status = 'active'", args: [activation[1]] });
+  }
   return { status: res.status, data };
 }
+let backdateActivations = true;
 const admin = (route, body = {}) => call('POST', route, { token: 'e2e-cron-secret', body });
 const tick = (time) => admin('/api/admin/season/tick', time ? { time: new Date(time).toISOString() } : {});
 const one = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows[0];
@@ -235,6 +242,45 @@ const competitionOf = async (index, club) => one('select * from club_competition
     && !Object.values(result.awards ?? {}).flat().some((a) => ['conqueror', 'thief', 'wall'].includes(a)), result.awards);
 }
 
+// ───────────── Por equipos: chats and Llamada al Club ─────────────
+
+{
+  const { close } = await startCycleOfMode(3, 'teams');
+  const start = Date.now() - 2 * DAY;
+  const comp = await competitionOf(3, clubA);
+  check('Por equipos for the club of 6', comp?.mode === 'teams', comp?.mode);
+  const parts = await all('select user_id, team from competition_participants where competition_id = ?', [comp.id]);
+  const teamOf = Object.fromEntries(parts.map((p) => [p.user_id, Number(p.team)]));
+  const six = [ana, ben, cris, dani, eva, fede];
+  const mate = six.find((u) => u.id !== ana.id && teamOf[u.id] === teamOf[ana.id]);
+  const rival = six.find((u) => teamOf[u.id] !== teamOf[ana.id]);
+  const rivalMate = six.find((u) => u.id !== rival.id && teamOf[u.id] === teamOf[rival.id]);
+  const chats = (await call('GET', `/api/clubs/${clubA.id}/chats`, { token: ana.token })).data;
+  check('Por equipos chats: "Competición" (the club) and "Mi equipo"', chats.chats?.map((c) => c.channel).join() === 'club,team' && chats.chats[0].title === 'Competición' && chats.chats[1].title === 'Mi equipo', chats);
+  const sent = await call('POST', `/api/clubs/${clubA.id}/messages`, { token: ana.token, body: { body: 'Plan del equipo', channel: 'team' } });
+  check('team chat: message sent', sent.status === 200, sent);
+  const mateChats = (await call('GET', `/api/clubs/${clubA.id}/chats`, { token: mate.token })).data;
+  check('team chat: a teammate has it unread, and it adds to the total', mateChats.chats.find((c) => c.channel === 'team')?.unread === 1 && mateChats.total >= 1, mateChats);
+  const rivalMsgs = (await call('GET', `/api/clubs/${clubA.id}/messages?channel=team`, { token: rival.token })).data;
+  check('team chat: the other team has its own (it does not see this one)', !(rivalMsgs.messages ?? []).some((m) => m.body === 'Plan del equipo'), rivalMsgs.messages?.map((m) => m.body));
+  const clubMsgs = (await call('GET', `/api/clubs/${clubA.id}/messages?channel=club`, { token: mate.token })).data;
+  check('team chat: not in the club chat', !(clubMsgs.messages ?? []).some((m) => m.body === 'Plan del equipo'));
+  // Llamada al Club: the whole team of whoever activates it, not the other team
+  const r = 300;
+  const base = await run(rival, 'Base equipos', loop(Z[0] + 0.3, Z[1] + 0.3, r), start + 2 * HOUR);
+  const baseArea = base.result.competition.newArea;
+  check('Llamada al Club on (Ana)', (await call('POST', `/api/inventory/${await grant(ana, 'rally')}/activate`, { token: ana.token, body: {} })).status === 200);
+  const boosted = await run(mate, 'Con la llamada', loop(Z[0] + 0.34, Z[1] + 0.3, r), start + 3 * HOUR);
+  const other = await run(rivalMate, 'Otro equipo', loop(Z[0] + 0.38, Z[1] + 0.3, r), start + 4 * HOUR);
+  check('Llamada al Club: +50% for her team, nothing for the other', Math.abs(boosted.result.competition.newArea / baseArea - 1.5) < 0.08 && Math.abs(other.result.competition.newArea / baseArea - 1) < 0.05,
+    { boosted: boosted.result.competition.newArea / baseArea, other: other.result.competition.newArea / baseArea });
+  await tick(close + 10 * 60_000);
+  const after = (await call('GET', `/api/clubs/${clubA.id}/chats`, { token: ana.token })).data;
+  check('after the competition, only the club chat', after.chats.length === 1 && after.chats[0].channel === 'club' && after.chats[0].title === 'Club', after);
+  const closedChat = await call('GET', `/api/clubs/${clubA.id}/messages?channel=team`, { token: ana.token });
+  check('the team chat closes with the competition', closedChat.status === 404 && closedChat.data.code === 'chat_closed', closedChat);
+}
+
 // ───────────── Derbi ─────────────
 
 {
@@ -257,15 +303,19 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check('the Derbi shows both clubs\' scores', view.mode === 'derby' && view.duel?.opponent?.id === clubB.id && view.duel.myClubScore > 0 && view.duel.opponentScore > 0, view.duel);
   // ── Competition powers ──
   const activate = async (u, itemId, extra = {}) => call('POST', `/api/inventory/${await grant(u, itemId)}/activate`, { token: u.token, body: extra });
-  check('Emboscada and Venganza ready', (await activate(ana, 'ambush')).status === 200 && (await activate(ben, 'revenge')).status === 200);
+  const revengeEarly = await activate(ben, 'revenge');
+  check('Venganza: not before somebody has stolen from you', revengeEarly.status === 409 && revengeEarly.data.code === 'no_thieves', revengeEarly);
+  check('Emboscada ready', (await activate(ana, 'ambush')).status === 200);
   const h1 = await run(hugo, 'Derbi: Hugo', loop(centre[0] - 0.004, centre[1], 450), start + 9 * HOUR);
   check('Hugo steals from Ana and Ben', ['ana', 'ben'].every((k) => h1.result.victims?.some((v) => v.userId === users[k].id && v.stolenArea > 0)), h1.result.victims);
   const trap = await one("select metadata, status from user_powers where user_id = ? and power_type = 'sabotage' and source = 'ambush'", [ana.id]);
   check("Emboscada: the thief is sabotaged at once", trap?.status === 'active' && JSON.parse(trap.metadata).targetUserId === hugo.id, trap);
   const ambushUsed = await one("select status from user_powers where user_id = ? and power_type = 'ambush' and activated_at is not null", [ana.id]);
   check('Emboscada works once', ambushUsed.status === 'used', ambushUsed);
-  const revengeRow = await one("select metadata from user_powers where user_id = ? and power_type = 'revenge' and status = 'active'", [ben.id]);
-  check('Venganza remembers who stole', JSON.parse(revengeRow?.metadata || '{}').targets?.includes(hugo.id), revengeRow);
+  const thieves = (await call('GET', '/api/season/revenge-targets', { token: ben.token })).data.targets;
+  check('Venganza: the ones who stole from you in the last 3 days, with how much', thieves.length === 1 && thieves[0].userId === hugo.id && thieves[0].area > 0 && thieves[0].user?.name === 'Hugo', thieves);
+  check('Venganza: only against one of them', (await activate(ben, 'revenge', { targetUserId: iris.id })).status === 400);
+  check('Venganza on Hugo', (await activate(ben, 'revenge', { targetUserId: hugo.id })).status === 200);
   const benBefore = Number((await one('select p.bonus from competition_participants p join club_competitions c on c.id = p.competition_id where c.cycle_number = 4 and p.user_id = ?', [ben.id])).bonus);
   const b2 = await run(ben, 'Derbi: Ben se venga', loop(centre[0] - 0.006, centre[1], 450), start + 11 * HOUR);
   const benAfter = Number((await one('select p.bonus from competition_participants p join club_competitions c on c.id = p.competition_id where c.cycle_number = 4 and p.user_id = ?', [ben.id])).bonus);
@@ -273,12 +323,21 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check('Saqueo ready', (await activate(gala, 'plunder')).status === 200);
   const g2 = await run(gala, 'Derbi: saqueo', loop(centre[0], centre[1] + 0.003, 700), start + 12 * HOUR);
   const plundered = await one("select power_type from user_powers where user_id = ? and source = 'plunder'", [gala.id]);
-  check('Saqueo: a big steal wins an item', g2.result.competition?.areaStolen >= 100_000 && !!plundered, { stolen: g2.result.competition?.areaStolen, plundered });
+  const catalog = (await call('GET', '/api/inventory', { token: gala.token })).data.catalog;
+  check('Saqueo: stealing 0.5 km² or more wins a rare power', g2.result.competition?.areaStolen >= 500_000 && catalog[plundered?.power_type]?.rarity === 'rare', { stolen: g2.result.competition?.areaStolen, plundered });
+  // Bastión: the zone around a point of her territory (Gala's last loop: 700 m around this point)
+  const inside = { lat: centre[0], lng: centre[1] + 0.003 };
+  const preview = await call('POST', '/api/season/bastion/preview', { token: gala.token, body: inside });
+  check('Bastión: the zone around the point, all of it her territory', preview.status === 200 && !preview.data.zone.snapped && preview.data.zone.area > 1_000_000 && preview.data.zone.area <= 2_500_000 * 1.02, preview.data);
+  const outside = await call('POST', '/api/season/bastion/preview', { token: gala.token, body: { lat: centre[0] + 0.05, lng: centre[1] + 0.05 } });
+  check('Bastión: a point outside her territory moves to the nearest part of it', outside.status === 200 && outside.data.zone.snapped === true && outside.data.zone.snappedMeters > 1000 && outside.data.zone.area > 0, outside.data.zone && { ...outside.data.zone, geometry: undefined });
+  check('Bastión: without a point it is refused', (await activate(gala, 'bastion')).status === 400);
   const fortsBefore = Number((await one('select count(*) as n from territory_fortifications where user_id = ?', [gala.id])).n);
-  const bastion = await activate(gala, 'bastion');
-  check('Bastión applied', bastion.status === 200, bastion);
+  const bastion = await activate(gala, 'bastion', inside);
+  check('Bastión applied', bastion.status === 200 && Math.abs(bastion.data.zone.area - preview.data.zone.area) < 1, bastion);
+  const forts = await all('select area from territory_fortifications where user_id = ? order by rowid desc limit 3', [gala.id]);
   const fortsAfter = Number((await one('select count(*) as n from territory_fortifications where user_id = ?', [gala.id])).n);
-  check('Bastión: 3 layers on the largest zone', fortsAfter - fortsBefore === 3, { fortsBefore, fortsAfter });
+  check('Bastión: 3 layers over the zone', fortsAfter - fortsBefore === 3 && forts.every((f) => Math.abs(Number(f.area) - preview.data.zone.area) < 1), { fortsBefore, fortsAfter, forts });
   await run(hugo, 'Derbi: Hugo saboteado', loop(centre[0] + 0.03, centre[1] + 0.03, 300), start + 13 * HOUR);
   const trapAfter = await one("select status from user_powers where user_id = ? and power_type = 'sabotage' and source = 'ambush'", [ana.id]);
   check("the ambush's sabotage is used by the thief's next run", trapAfter.status === 'used', trapAfter);
@@ -291,6 +350,39 @@ const competitionOf = async (index, club) => one('select * from club_competition
   check('Doble o Nada ready', (await activate(cris, 'double_or_nothing')).status === 200);
   const short = await run(cris, 'Derbi: corta', loop(centre[0] + 0.06, centre[1] - 0.06, 300), start + 17 * HOUR);
   check('Doble o Nada: a short run conquers half', short.result.competition?.newArea > 0 && short.result.competition.newArea < 0.6 * Math.PI * 300 * 300, short.result.competition);
+  // "Next run" powers count for the runs that start after they were activated
+  backdateActivations = false;
+  const magnetId = await grant(cris, 'magnet');
+  check('Imán ready (now)', (await call('POST', `/api/inventory/${magnetId}/activate`, { token: cris.token, body: {} })).status === 200);
+  backdateActivations = true;
+  await run(cris, 'Derbi: empezada antes de activar', loop(centre[0] + 0.07, centre[1] - 0.07, 300), start + 18 * HOUR);
+  const magnetRow = await one('select status from user_powers where id = ?', [magnetId]);
+  check('a run that started before the activation does not use it', magnetRow.status === 'active', magnetRow);
+  const saved = await call('POST', `/api/inventory/${magnetId}/deactivate`, { token: cris.token, body: {} });
+  check('changed your mind: an activated "next run" power goes back to the inventory', saved.status === 200 && (await one('select status from user_powers where id = ?', [magnetId])).status === 'available', saved);
+  // Actividad of the competition: powers, steals and traps, of both clubs in the Derbi
+  const activity = (await call('GET', '/api/season/activity', { token: gala.token })).data.events;
+  check('Actividad: steals of both clubs', activity.some((e) => e.kind === 'steal' && e.actor?.id === hugo.id) && activity.some((e) => e.kind === 'steal' && e.actor?.id === gala.id && e.mine), activity.map((e) => e.text));
+  check('Actividad: powers activated, with who', activity.some((e) => e.kind === 'power' && e.itemId === 'revenge' && /Ben ha activado Venganza contra Hugo/.test(e.text)), activity.map((e) => e.text));
+  check('Actividad: a trap stays secret for the others, and shows who fell in it', activity.some((e) => e.kind === 'trap' && e.itemId === null && /trampa/.test(e.text)) && activity.some((e) => e.kind === 'trap_hit' && e.itemId === 'ambush'), activity.map((e) => [e.kind, e.itemId, e.text]));
+  const anaActivity = (await call('GET', '/api/season/activity', { token: ana.token })).data.events;
+  check('Actividad: the one who set the trap sees which', anaActivity.some((e) => e.kind === 'trap' && e.itemId === 'ambush' && e.mine), anaActivity.map((e) => [e.kind, e.itemId]));
+  check('Actividad: newest first', activity.every((e, i) => i === 0 || activity[i - 1].createdAt >= e.createdAt));
+  // Chats of the Derbi: one with both clubs and one only for the club
+  const chats = (await call('GET', `/api/clubs/${clubA.id}/chats`, { token: ana.token })).data;
+  check('Derbi chats: "Competición" (both clubs) and "Mi equipo"', chats.chats?.map((c) => c.channel).join() === 'match,club' && chats.chats[0].title === 'Competición', chats);
+  const sent = await call('POST', `/api/clubs/${clubA.id}/messages`, { token: ana.token, body: { body: '¡Vamos @gala!', channel: 'match' } });
+  check('Derbi chat: a message to both clubs, mentioning a rival', sent.status === 200 && sent.data.message.mentions.includes(gala.id), sent.data);
+  const galaChats = (await call('GET', `/api/clubs/${clubB.id}/chats`, { token: gala.token })).data;
+  check('Derbi chat: the rival club sees it unread', galaChats.chats.find((c) => c.channel === 'match')?.unread === 1 && galaChats.total >= 1, galaChats);
+  const galaMatch = (await call('GET', `/api/clubs/${clubB.id}/messages?channel=match`, { token: gala.token })).data;
+  check('Derbi chat: the same conversation from the other club', galaMatch.messages?.some((m) => m.body === '¡Vamos @gala!'), galaMatch.messages?.map((m) => m.body));
+  const clubOnly = (await call('GET', `/api/clubs/${clubB.id}/messages?channel=club`, { token: gala.token })).data;
+  check('Derbi chat: the club chat stays the club\'s', !clubOnly.messages?.some((m) => m.body === '¡Vamos @gala!'));
+  const read = await call('POST', `/api/clubs/${clubB.id}/messages/read`, { token: gala.token, body: { channel: 'match' } });
+  check('Derbi chat: read, nothing unread there', read.data.chats?.find((c) => c.channel === 'match')?.unread === 0, read.data);
+  const officerDelete = await call('DELETE', `/api/clubs/${clubB.id}/messages/${sent.data.message.id}`, { token: gala.token });
+  check('Derbi chat: a rival club cannot delete your messages', officerDelete.status === 403, officerDelete);
 
   const closeTick = await tick(close + 10 * 60_000);
   check('the Derbi closes (and Huesca\'s objective)', closeTick.data.finished_4 === 3, closeTick.data);
@@ -424,23 +516,38 @@ const competitionOf = async (index, club) => one('select * from club_competition
   // "Now" is a rest day (day 11 of cycle 7)
   env.SEASON_ANCHOR_DATE = addDays(madridDay(Date.now()), -(11 + 14 * 7));
   const today = madridDay(Date.now());
-  // In the evening a city is due most of its daily chests (one per tick)
-  let spawned;
-  for (let n = 0; n < 3; n++) spawned = await tick(Date.parse(`${today}T19:00:00Z`));
-  const chests = await all("select * from treasures where active = 1 and city_key = 'ES:zaragoza' order by spawned_at");
-  check('rest days: chests around Zaragoza', spawned.data.phase === 'rest' && chests.length >= 2, { tick: spawned.data, chests: chests.length });
-  // The test ticked in the evening: make them all public now (one is made new again below)
-  await db.execute({ sql: 'update treasures set hidden = 0, public_at = ?', args: [new Date(Date.now() - 60_000).toISOString()] });
-  const [first, second] = chests;
+  // Earlier ticks of this test planned chests for another phase (the test moves the season around)
+  await db.execute('delete from treasures');
+  // A tick plans the chests of today and the next days at once (a second tick adds nothing)
+  const planned = await tick(Date.parse(`${today}T19:00:00Z`));
+  const again = await tick(Date.parse(`${today}T19:00:00Z`));
+  const tomorrowStart = new Date(Date.parse(`${addDays(today, 1)}T00:00:00Z`) - 2 * HOUR).toISOString(); // Madrid midnight, give or take
+  const todays = await all("select * from treasures where active = 1 and city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at < ? order by spawned_at", [tomorrowStart]);
+  const later = await all("select * from treasures where active = 1 and city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at >= ?", [tomorrowStart]);
+  check('rest days: chests around Zaragoza, today and planned for the next days', planned.data.phase === 'rest' && todays.length >= 2 && later.length >= 2 && planned.data.chestsPlanned >= todays.length + later.length, { tick: planned.data, today: todays.length, later: later.length });
+  check('chests are planned once', again.data.chestsPlanned === 0, again.data);
+  check('chests are never hidden', (await one("select count(*) as n from treasures where hidden = 1")).n === 0);
+  // The test ticked in the evening: today's are out by now (one is made to come out later below)
+  await db.execute({ sql: 'update treasures set spawned_at = ? where spawned_at < ?', args: [new Date(Date.now() - 60_000).toISOString(), tomorrowStart] });
+  const [first, second] = todays;
   const activate = async (u, itemId) => call('POST', `/api/inventory/${await grant(u, itemId)}/activate`, { token: u.token, body: {} });
-  // Mapa del Tesoro: a chest that is not public yet is only seen with it
-  await db.execute({ sql: 'update treasures set public_at = ? where id = ?', args: [new Date(Date.now() + HOUR).toISOString(), second.id] });
+  // Mapa del Tesoro: a chest coming out within the hour is only seen with it
+  await db.execute({ sql: 'update treasures set spawned_at = ? where id = ?', args: [new Date(Date.now() + 30 * 60_000).toISOString(), second.id] });
   const before = (await call('GET', '/api/season/map', { token: ana.token })).data.chests.map((c) => c.id);
-  check('a new chest is hidden from everybody for its first hour', !before.includes(second.id) && before.includes(first.id), before);
+  check('a chest is seen when it comes out, not before', !before.includes(second.id) && before.includes(first.id), before);
   check('Mapa del Tesoro ready', (await activate(ana, 'treasure_map')).status === 200);
-  const after = (await call('GET', '/api/season/map', { token: ana.token })).data.chests.map((c) => c.id);
-  check('Mapa del Tesoro: seen before everybody else', after.includes(second.id), after);
+  const afterMap = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
+  const early = afterMap.find((c) => c.id === second.id);
+  check('Mapa del Tesoro: seen an hour before it comes out, marked upcoming', early?.upcoming === true && !!early.appearsAt && !afterMap.some((c) => later.some((l) => l.id === c.id)), afterMap.map((c) => [c.id === second.id, c.upcoming]));
+  const after = afterMap.map((c) => c.id);
+  // Faro: the next two chests of the city, whenever they come out
+  check('Faro ready', (await activate(ben, 'reveal')).status === 200);
+  const lighthouse = (await call('GET', '/api/season/map', { token: ben.token })).data.chests.filter((c) => c.upcoming);
+  check('Faro: the next two chests of the city, before they come out', lighthouse.length === 2 && lighthouse[0].id === second.id && lighthouse.every((c) => Date.parse(c.appearsAt) > Date.now()), lighthouse.map((c) => [c.appearsAt, c.id === second.id]));
+  const notYet = await run(cris, 'Antes de tiempo', loop(Number(second.lat) + 300 / 111320, Number(second.lng), 300), Date.now() - 3 * HOUR);
+  check('a chest that has not come out yet cannot be opened', !(notYet.result.treasuresCollected ?? []).some((t) => t.treasureId === second.id), notYet.result.treasuresCollected);
   // Llave Maestra + Botín Doble: a run passing 500 m from the chest opens it, and it gives two items
+  void after;
   check('Llave Maestra and Botín Doble ready', (await activate(ana, 'master_key')).status === 200 && (await activate(ana, 'double_loot')).status === 200);
   const lat = Number(first.lat);
   const lng = Number(first.lng);

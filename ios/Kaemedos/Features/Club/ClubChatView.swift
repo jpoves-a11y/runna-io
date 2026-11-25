@@ -11,6 +11,8 @@ import UIKit
 @Observable
 final class ClubChatStore {
     let clubId: String
+    /// "club", "team" (only my team) or "match" (both clubs): see ClubChatChannel
+    let channel: String
 
     private(set) var messages: [ClubChatMessage] = []
     private(set) var hasMore = false
@@ -22,21 +24,30 @@ final class ClubChatStore {
     private(set) var mutedUntil: Date?
     /// Who is muted (only for the leader and officers)
     private(set) var mutes: [String: Date] = [:]
+    /// The people of a competition chat (both clubs in Duelo / Derbi), for @mentions
+    private(set) var people: [GameUser]?
+    /// The competition ended and its chat with it
+    private(set) var isClosed = false
     var errorMessage: String?
 
-    init(clubId: String) {
+    init(clubId: String, channel: String = "club") {
         self.clubId = clubId
+        self.channel = channel
     }
+
+    private var channelQuery: [String: String] { channel == "club" ? [:] : ["channel": channel] }
 
     var isMuted: Bool { (mutedUntil ?? .distantPast) > Date() }
 
     /// The latest page, merged with what is on screen (new messages, reactions, deletions).
     func refresh() async {
         do {
-            let response: ClubChatResponse = try await APIClient.shared.request("GET", "/api/clubs/\(clubId)/messages")
+            let response: ClubChatResponse = try await APIClient.shared.request("GET", "/api/clubs/\(clubId)/messages", query: channelQuery)
             apply(response, older: false)
         } catch is CancellationError {
             return
+        } catch let error as APIError where error.status == 404 && channel != "club" {
+            isClosed = true
         } catch {
             if !hasLoaded { errorMessage = error.localizedDescription }
         }
@@ -47,7 +58,7 @@ final class ClubChatStore {
         guard hasMore, !isLoadingOlder, let first = messages.first else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
-        if let response: ClubChatResponse = try? await APIClient.shared.request("GET", "/api/clubs/\(clubId)/messages", query: ["before": first.id]) {
+        if let response: ClubChatResponse = try? await APIClient.shared.request("GET", "/api/clubs/\(clubId)/messages", query: channelQuery.merging(["before": first.id]) { a, _ in a }) {
             apply(response, older: true)
         }
     }
@@ -67,13 +78,14 @@ final class ClubChatStore {
             mutedUntil = APIDate.parse(me.mutedUntil)
         }
         mutes = Dictionary(response.mutes.compactMap { mute in APIDate.parse(mute.until).map { (mute.userId, $0) } }, uniquingKeysWith: { a, _ in a })
+        if let members = response.members { people = members }
     }
 
     func send(_ text: String, replyTo: String?) async -> Bool {
         guard !isSending else { return false }
         isSending = true
         defer { isSending = false }
-        var body: [String: Any] = ["body": text]
+        var body: [String: Any] = ["body": text, "channel": channel]
         if let replyTo { body["replyTo"] = replyTo }
         do {
             let response: ClubChatPostResponse = try await APIClient.shared.request("POST", "/api/clubs/\(clubId)/messages", body: body)
@@ -128,7 +140,10 @@ final class ClubChatStore {
     func markRead() async {
         guard let last = messages.last, last.id != readUpTo else { return }
         readUpTo = last.id
-        try? await APIClient.shared.send("POST", "/api/clubs/\(clubId)/messages/read", body: ["messageId": last.id])
+        // The answer has the fresh counts of every chat (the badges)
+        if let chats: ClubChatsResponse = try? await APIClient.shared.request("POST", "/api/clubs/\(clubId)/messages/read", body: ["messageId": last.id, "channel": channel]) {
+            ClubModel.shared.updateChats(chats)
+        }
     }
 }
 
@@ -139,6 +154,7 @@ final class ClubChatStore {
 struct ClubChatView: View {
     let clubId: String
     let members: [ClubMember]
+    var channel: String = "club"
 
     @Environment(SessionStore.self) private var session
     @Environment(\.scenePhase) private var scenePhase
@@ -152,10 +168,11 @@ struct ClubChatView: View {
     /// Seconds between refreshes while the chat is open
     private static let pollSeconds: UInt64 = 8
 
-    init(clubId: String, members: [ClubMember]) {
+    init(clubId: String, members: [ClubMember], channel: String = "club") {
         self.clubId = clubId
         self.members = members
-        _store = State(initialValue: ClubChatStore(clubId: clubId))
+        self.channel = channel
+        _store = State(initialValue: ClubChatStore(clubId: clubId, channel: channel))
     }
 
     var body: some View {
@@ -176,11 +193,18 @@ struct ClubChatView: View {
                         .buttonStyle(.pressable)
                         .padding(.vertical, DS.Spacing.s)
                     }
-                    if store.hasLoaded && store.messages.isEmpty {
+                    if store.isClosed {
+                        EmptyStateView(
+                            systemImage: "flag.checkered",
+                            title: "La competición ha terminado",
+                            message: "Este chat era solo para la competición. Seguid hablando en el chat del club."
+                        )
+                        .padding(.top, DS.Spacing.xxxl)
+                    } else if store.hasLoaded && store.messages.isEmpty {
                         EmptyStateView(
                             systemImage: "bubble.left.and.bubble.right",
                             title: "Aún no hay mensajes",
-                            message: "Escribe al club para quedar, animar o comentar la competición."
+                            message: emptyMessage
                         )
                         .padding(.top, DS.Spacing.xxxl)
                     }
@@ -204,7 +228,7 @@ struct ClubChatView: View {
             if !store.hasLoaded { ProgressView() }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-        .task(id: clubId) { await poll() }
+        .task(id: "\(clubId)|\(channel)") { await poll() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await refreshAndRead() } }
         }
@@ -235,8 +259,16 @@ struct ClubChatView: View {
 
     private func refreshAndRead() async {
         await store.refresh()
+        ClubModel.shared.markChatRead(channel)
         await store.markRead()
-        ClubModel.shared.markChatRead()
+    }
+
+    private var emptyMessage: String {
+        switch channel {
+        case "team": return "Solo lo ve tu equipo: aquí podéis planear la competición sin que el otro equipo se entere."
+        case "match": return "Aquí estáis los dos clubes. Que reine el buen rollo: los mensajes ofensivos se pueden denunciar."
+        default: return "Escribe al club para quedar, animar o comentar la competición."
+        }
     }
 
     // MARK: Rows
@@ -311,7 +343,8 @@ struct ClubChatView: View {
                     Label("Denunciar", systemImage: "exclamationmark.bubble")
                 }
             }
-            if mine || store.canModerate {
+            // Officers moderate their own club's members (in the chat with the rival club too)
+            if mine || (store.canModerate && message.user.map { isClubMember($0.id) } ?? true) {
                 Button(role: .destructive) {
                     confirmDelete = message
                 } label: {
@@ -319,7 +352,7 @@ struct ClubChatView: View {
                 }
             }
         }
-        if store.canModerate, !mine, let author = message.user, role(of: author.id) != "owner" {
+        if store.canModerate, !mine, let author = message.user, isClubMember(author.id), role(of: author.id) != "owner" {
             if store.mutes[author.id] != nil {
                 Button {
                     Task { await store.mute(userId: author.id, hours: 0) }
@@ -342,9 +375,18 @@ struct ClubChatView: View {
         members.first { $0.user.id == userId }?.role
     }
 
-    /// Usernames of the club, to highlight @mentions.
+    private func isClubMember(_ userId: String) -> Bool {
+        members.contains { $0.user.id == userId }
+    }
+
+    /// Who's in this chat: the club, my team, or both clubs (the server says, for competition chats).
+    private var people: [GameUser] {
+        store.people ?? members.map(\.user)
+    }
+
+    /// Usernames of the chat, to highlight @mentions.
     private var usernames: Set<String> {
-        Set(members.map { $0.user.username.lowercased() })
+        Set(people.map { $0.username.lowercased() })
     }
 
     // MARK: Composer
@@ -445,11 +487,11 @@ struct ClubChatView: View {
         return String(last.dropFirst()).lowercased()
     }
 
-    private var mentionSuggestions: [ClubMember] {
+    private var mentionSuggestions: [GameUser] {
         guard let query = mentionQuery else { return [] }
-        return members
-            .filter { $0.user.id != session.userId }
-            .filter { query.isEmpty || $0.user.username.lowercased().hasPrefix(query) || $0.user.name.lowercased().hasPrefix(query) }
+        return people
+            .filter { $0.id != session.userId }
+            .filter { query.isEmpty || $0.username.lowercased().hasPrefix(query) || $0.name.lowercased().hasPrefix(query) }
             .prefix(6)
             .map { $0 }
     }
@@ -457,13 +499,13 @@ struct ClubChatView: View {
     private var mentionBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: DS.Spacing.s) {
-                ForEach(mentionSuggestions) { member in
+                ForEach(mentionSuggestions) { user in
                     Button {
-                        insertMention(member.user.username)
+                        insertMention(user.username)
                     } label: {
                         HStack(spacing: 6) {
-                            AvatarView(name: member.user.name, avatar: member.user.avatar, color: member.user.color, size: 22, ring: false)
-                            Text(member.user.name)
+                            AvatarView(name: user.name, avatar: user.avatar, color: user.color, size: 22, ring: false)
+                            Text(user.name)
                                 .font(.footnote.weight(.medium))
                                 .lineLimit(1)
                         }

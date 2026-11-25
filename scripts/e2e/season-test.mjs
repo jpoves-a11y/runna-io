@@ -78,8 +78,15 @@ async function call(method, route, { token, body } = {}) {
   const text = await res.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
   while (pending.length) await Promise.allSettled(pending.splice(0));
+  // The runs of these tests are dated in the past, and a "next run" power only counts for runs that
+  // start after it was activated: activations are dated back (except where a check needs them not)
+  const activation = /^\/api\/inventory\/([^/]+)\/activate$/.exec(route);
+  if (activation && res.status === 200 && backdateActivations) {
+    await db.execute({ sql: "update user_powers set activated_at = '2000-01-01T00:00:00.000Z' where id = ? and status = 'active'", args: [activation[1]] });
+  }
   return { status: res.status, data };
 }
+let backdateActivations = true;
 const admin = (route, body = {}) => call('POST', route, { token: 'e2e-cron-secret', body });
 const one = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows[0];
 const all = async (sqlText, args = []) => (await db.execute({ sql: sqlText, args })).rows;
@@ -421,7 +428,7 @@ check('and the queued push is dropped', !(await one('select 1 as x from pending_
 const headStart = await grant(cris, 'head_start');
 await call('POST', `/api/inventory/${headStart}/activate`, { token: cris.token, body: {} });
 const crisPart = await one('select bonus from competition_participants where user_id = ?', [cris.id]);
-check('Ventaja Inicial adds 0.1 km² to the score', Number(crisPart.bonus) === 100_000, crisPart);
+check('Ventaja Inicial adds 0.5 km² to the score', Number(crisPart.bonus) === 500_000, crisPart);
 const nick = await grant(ana, 'nickname');
 const wrongTarget = await call('POST', `/api/inventory/${nick}/activate`, { token: ana.token, body: { targetUserId: dani.id, nickname: 'Lento' } });
 check('target powers only aim at rivals of your competition', wrongTarget.status === 400, wrongTarget);
@@ -469,7 +476,75 @@ check('legacy treasures: nothing spawned or listed', (await call('GET', '/api/tr
 const compMap = (await call('GET', '/api/season/map', { token: ana.token })).data;
 check('competition map: only my competition', compMap.territories.length >= 2 && compMap.territories.every((t) => [ana.id, ben.id, cris.id].includes(t.userId)), compMap.territories.map((t) => t.userId));
 const current = (await call('GET', '/api/season/current', { token: cris.token })).data;
-check('standings include bonus and stolen area', current.competition.standings.length === 3 && current.competition.standings.some((s) => s.bonus === 100_000), current.competition.standings.map((s) => [s.user?.name, Math.round(s.score)]));
+check('standings include bonus and stolen area', current.competition.standings.length === 3 && current.competition.standings.some((s) => s.bonus === 500_000), current.competition.standings.map((s) => [s.user?.name, Math.round(s.score)]));
+
+// ───────────── More powers (Todos contra todos: Ana, Ben, Cris) ─────────────
+{
+  const use = async (u, itemId, body = {}) => call('POST', `/api/inventory/${await grant(u, itemId)}/activate`, { token: u.token, body });
+  const hours = (h) => t0 + h * 3600_000;
+  const at = (dLat, dLng) => [C[0] + dLat, C[1] + dLng];
+  const partOf = async (u) => one('select area, bonus, area_stolen from competition_participants p join club_competitions c on c.id = p.competition_id where c.cycle_number = 0 and p.user_id = ?', [u.id]);
+  // Escudo under a Capa: refused (the Capa already covers it)
+  check('Capa de Sombras on', (await use(cris, 'invisibility')).status === 200);
+  const shieldUnder = await use(cris, 'shield');
+  check('the Escudo is refused while the Capa is on', shieldUnder.status === 409, shieldUnder.data);
+  await db.execute({ sql: "update user_powers set status = 'used' where user_id = ? and power_type in ('invisibility', 'shield')", args: [cris.id] });
+  // Daga: only used when it steals; then what it steals counts 50% more
+  const Z3 = at(-0.08, 0.08);
+  // (Ana keeps out of it: her Escudo is on, and the global map check after the close counts her area)
+  await run(cris, 'Zona para la Daga', loop(Z3[0], Z3[1], 400), hours(19));
+  check('Daga ready', (await use(ben, 'steal_boost')).status === 200);
+  await run(ben, 'Daga sin robar', loop(C[0] + 0.15, C[1] + 0.15, 250), hours(19.5));
+  check('Daga: a run that steals nothing does not use it', (await one("select status from user_powers where user_id = ? and power_type = 'steal_boost' order by created_at desc", [ben.id])).status === 'active');
+  const dagger = await run(ben, 'Daga', loop(Z3[0], Z3[1] + 0.002, 400), hours(20));
+  const daggerVictim = (dagger.result.victims ?? []).find((v) => v.userId === cris.id);
+  check('Daga: what it steals counts 50% more, and then it is used', daggerVictim && Math.abs(dagger.result.competition.areaStolen - 1.5 * daggerVictim.stolenArea) < 1
+    && (await one("select status from user_powers where user_id = ? and power_type = 'steal_boost' order by created_at desc", [ben.id])).status === 'used', { competition: dagger.result.competition, victims: dagger.result.victims });
+  // Ariete: a zone with 3 layers stops a normal run; the Ariete destroys them and steals
+  const Z5 = at(-0.12, 0.12);
+  await run(cris, 'Zona fortificada', loop(Z5[0], Z5[1], 500), hours(21));
+  check('Bastión on the zone', (await use(cris, 'bastion', { lat: Z5[0], lng: Z5[1] })).status === 200);
+  const blocked = await run(ben, 'Contra el bastión', loop(Z5[0], Z5[1] + 0.001, 450), hours(22));
+  check('3 layers of fortress stop a normal run', !(blocked.result.victims ?? []).some((v) => v.userId === cris.id), blocked.result.victims);
+  // (that run broke 2 of the 3 layers: Cris reinforces the zone again)
+  check('Bastión again', (await use(cris, 'bastion', { lat: Z5[0], lng: Z5[1] })).status === 200);
+  const fortsBefore = Number((await one('select count(*) as n from territory_fortifications where user_id = ?', [cris.id])).n);
+  check('Ariete ready', (await use(ben, 'battering_ram')).status === 200);
+  const ram = await run(ben, 'Ariete', loop(Z5[0], Z5[1] - 0.001, 450), hours(23));
+  const fortsLeft = Number((await one('select count(*) as n from territory_fortifications where user_id = ?', [cris.id])).n);
+  check('Ariete: it destroys the layers it crosses and steals anyway', (ram.result.victims ?? []).some((v) => v.userId === cris.id && v.stolenArea > 100_000) && fortsBefore >= 4 && fortsLeft === 0, { victims: ram.result.victims, fortsBefore, fortsLeft });
+  // Bomba Temporal: the thief takes nothing and loses that much from the score; both are told in the Actividad
+  check('Bomba Temporal ready', (await use(ben, 'time_bomb')).status === 200);
+  const crisBefore = await partOf(cris);
+  const bomb = await run(cris, 'Sobre la bomba', loop(Z3[0], Z3[1] + 0.003, 400), hours(24));
+  const crisAfter = await partOf(cris);
+  check('Bomba Temporal: nothing stolen from its owner, the thief loses points', !(bomb.result.victims ?? []).some((v) => v.userId === ben.id) && Number(crisAfter.bonus) < Number(crisBefore.bonus) - 1000, { victims: bomb.result.victims, before: crisBefore.bonus, after: crisAfter.bonus });
+  const bombEvents = (await call('GET', '/api/season/activity', { token: cris.token })).data.events.filter((e) => e.kind === 'trap_hit' && e.itemId === 'time_bomb');
+  check('Bomba Temporal: in the Actividad, for the one who stepped on it', bombEvents.length === 1 && /Has caído en Bomba Temporal de Ben/.test(bombEvents[0].text) && bombEvents[0].area > 1000, bombEvents);
+  // Baseline: a fresh loop with no power
+  const r = 300;
+  const base = await run(ben, 'Base', loop(C[0] + 0.2, C[1] - 0.2, r), hours(25));
+  const baseArea = base.result.competition.newArea;
+  // Sabotajes add up: two of them, 0.8 × 0.8
+  check('two Sabotajes on Cris', (await use(ana, 'sabotage', { targetUserId: cris.id })).status === 200 && (await use(ben, 'sabotage', { targetUserId: cris.id })).status === 200);
+  const sabotaged = await run(cris, 'Saboteado dos veces', loop(C[0] + 0.24, C[1] - 0.2, r), hours(26));
+  const ratio = sabotaged.result.competition.newArea / baseArea;
+  check('Sabotaje: two of them add up (×0.64)', Math.abs(ratio - 0.64) < 0.05, { ratio });
+  check('Sabotaje: both used by that run', Number((await one("select count(*) as n from user_powers where power_type = 'sabotage' and status = 'active' and json_extract(metadata, '$.targetUserId') = ?", [cris.id])).n) === 0);
+  // Llamada al Club in Todos contra todos: only for whoever activates it
+  check('Llamada al Club on (Ben)', (await use(ben, 'rally')).status === 200);
+  const anaRally = await run(cris, 'Rival de la llamada', loop(C[0] + 0.28, C[1] - 0.2, r), hours(27));
+  const benRally = await run(ben, 'Con la llamada', loop(C[0] + 0.32, C[1] - 0.2, r), hours(28));
+  check('Llamada al Club: in Todos contra todos it helps only whoever activated it', Math.abs(anaRally.result.competition.newArea / baseArea - 1) < 0.05 && Math.abs(benRally.result.competition.newArea / baseArea - 1.5) < 0.08,
+    { ana: anaRally.result.competition.newArea / baseArea, ben: benRally.result.competition.newArea / baseArea });
+  // Activity: steals and powers, newest first; the nickname can be reported by its target
+  const activity = (await call('GET', '/api/season/activity', { token: ben.token })).data.events;
+  const nickEvent = activity.find((e) => e.itemId === 'nickname');
+  check('Actividad: the nickname is there and its target can report it', nickEvent && nickEvent.aboutMe && !!nickEvent.reportNicknameId && nickEvent.reportUserId === ana.id && /te ha puesto un apodo: «Ladrón»/.test(nickEvent.text), nickEvent);
+  const report = await call('POST', '/api/reports', { token: ben.token, body: { targetType: 'nickname', targetId: nickEvent.reportNicknameId, reportedUserId: ana.id, reason: 'Ofensivo' } });
+  check('a nickname can be reported', report.status === 200, report);
+  check('Actividad: nobody else can report it', activity.length > 0 && (await call('GET', '/api/season/activity', { token: cris.token })).data.events.every((e) => !e.reportNicknameId));
+}
 
 // ───────────── End of the competition ─────────────
 
@@ -603,20 +678,39 @@ await db.execute({
     spots = ?, spots_count = ?, status = 'ready', error = null, refreshed_at = ? where city_key = 'ES:zaragoza'`,
   args: [C[0], C[1], JSON.stringify(zaragozaSpots), zaragozaSpots.length, new Date().toISOString()],
 });
-let chests = 0;
-for (let i = 0; i < 10; i++) chests += Number((await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data.chests ?? 0);
-check('rest days: chests spawn around the club city, capped per day', chests >= 2 && chests <= 8, chests);
-const spawnedChests = await all("select lat, lng from treasures where city_key = 'ES:zaragoza'");
+// Earlier ticks of this test planned chests for another phase (the test moves the season around)
+await db.execute('delete from treasures');
+// One tick plans the chests of today and the next days; a second one adds nothing
+const planTick = (await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data;
+const replan = (await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data;
+const madridMidnight = (ymd) => {
+  // 00:00 in Madrid of that day (CET or CEST)
+  for (const offset of [1, 2]) {
+    const t = Date.parse(`${ymd}T00:00:00Z`) - offset * 3600_000;
+    if (madrid.format(new Date(t)) === ymd && madrid.format(new Date(t - 3600_000)) !== ymd) return t;
+  }
+  return Date.parse(`${ymd}T00:00:00Z`) - 3600_000;
+};
+const tomorrowYmd = madrid.format(new Date(madridMidnight(today) + 36 * 3600_000));
+const tomorrowStart = new Date(madridMidnight(tomorrowYmd)).toISOString();
+const spawnedChests = await all("select id, lat, lng, spawned_at from treasures where city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at < ?", [tomorrowStart]);
+const chests = spawnedChests.length;
+const planned = await all("select id, spawned_at from treasures where city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at >= ?", [tomorrowStart]);
+check('rest days: chests around the club city every day, capped per day', chests >= 2 && chests <= 8, chests);
+check('chests are planned for the next days too, once', planned.length >= 2 && planTick.chestsPlanned >= chests + planned.length && replan.chestsPlanned === 0, { planned: planned.length, planTick: planTick.chestsPlanned, replan: replan.chestsPlanned });
 const atAPlace = (c) => zaragozaSpots.some((p) => Math.abs(p.lat - Number(c.lat)) < 1e-9 && Math.abs(p.lng - Number(c.lng)) < 1e-9);
-check('chests appear exactly at places of the city (not random points)', spawnedChests.length === chests && spawnedChests.every(atAPlace), spawnedChests);
+check('chests appear exactly at places of the city (not random points)', spawnedChests.every(atAPlace), spawnedChests);
 const distinct = new Set(spawnedChests.map((c) => `${c.lat},${c.lng}`)).size;
 check('chests of the same day spread over different places', distinct >= Math.min(spawnedChests.length, zaragozaSpots.length) - 1, { distinct, chests: spawnedChests.length });
+const nextDay = await all("select spawned_at from treasures where city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at >= ? order by spawned_at", [tomorrowStart]);
+const hourOf = (iso) => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Madrid', hour: '2-digit', hourCycle: 'h23' }).format(new Date(iso)));
+check('chests come out between 07:00 and 21:00, spread over the day', nextDay.every((c) => hourOf(c.spawned_at) >= 7 && hourOf(c.spawned_at) < 21), nextDay.map((c) => c.spawned_at));
 const freshChests = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
-check('a chest is hidden from everybody during its first hour (Mapa del Tesoro)', freshChests.length === 0 || Date.now() >= spawnAt + 3600_000, freshChests.length);
-// The tick was in the evening: an hour later they are public
-await db.execute({ sql: 'update treasures set public_at = ?', args: [new Date(Date.now() - 60_000).toISOString()] });
+check('a chest is seen when it comes out (never before, never hidden)', freshChests.every((c) => !c.hidden && !c.upcoming), freshChests.length);
+// The tick was in the evening: today's are out by now
+await db.execute({ sql: 'update treasures set spawned_at = ? where spawned_at < ?', args: [new Date(Date.now() - 60_000).toISOString(), tomorrowStart] });
 const visible = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
-check('club members see the chests (not the hidden ones)', visible.length >= 1 && visible.every((c) => !c.hidden), visible.length);
+check('club members see the chests of today (not the ones still to come)', visible.length === chests && visible.every((c) => !c.hidden && !c.upcoming), { visible: visible.length, chests });
 check('chests on the map do not tell what is inside until opened', visible.every((c) => c.item === undefined && c.itemId === undefined && c.rarity), visible[0]);
 const nonMember = (await call('GET', '/api/season/map', { token: (await register('ivan', 'Iván', '#E78AC3')).token })).data.chests;
 check('people without a club (and without a city) see no club chests', nonMember.length === 0);
@@ -679,8 +773,10 @@ check('open chests: none for a runner without a club who has not run lately', (a
 // Olga runs (far from everything): she now counts for the open chests of her city
 await run(olga, 'Primera carrera', loop(C[0] + 0.2, C[1] + 0.2, 300), Date.now() - 2 * DAY);
 let openSpawned = 0;
-for (let i = 0; i < 4; i++) openSpawned += Number((await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data.openChests ?? 0);
+for (let i = 0; i < 2; i++) await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() });
+openSpawned = Number((await one("select count(*) as n from treasures where audience = 'open' and spawned_at < ?", [tomorrowStart])).n);
 check('open chests: a city with runners without a club gets a few a day (1 for one runner)', openSpawned === 1, openSpawned);
+await db.execute({ sql: "update treasures set spawned_at = ? where audience = 'open' and spawned_at < ?", args: [new Date(Date.now() - 60_000).toISOString(), tomorrowStart] });
 const olgaChests = (await call('GET', '/api/season/map', { token: olga.token })).data.chests;
 const openChest = olgaChests[0];
 check('open chests: the runner without a club sees them at once, marked open', olgaChests.length === 1 && openChest.open === true && !openChest.hidden, olgaChests);
@@ -695,6 +791,29 @@ const opened = olgaRun.result.treasuresCollected?.find((t) => t.treasureId === o
 check('open chests: what was inside comes with the run (only global powers or cosmetics)', ['global', 'cosmetic'].includes(opened?.powerScope) && opened?.powerName && opened?.powerEmoji && opened?.powerType, opened);
 const olgaItems = (await call('GET', '/api/inventory', { token: olga.token })).data.items;
 check('open chests: its item lands in the inventory', olgaItems.length === olgaItemsBefore + 1, { before: olgaItemsBefore, after: olgaItems.length });
+
+// ───────────── Salvarrachas: every missed day while it lasts ─────────────
+{
+  const pep = await register('pep', 'Pep', '#A6D854');
+  const quim = await register('quim', 'Quim', '#FFD92F');
+  const dayAt = (daysAgo) => Date.now() - daysAgo * DAY;
+  const far = (k) => loop(C[0] - 0.3 - 0.01 * k, C[1] - 0.3, 200);
+  for (const u of [pep, quim]) {
+    await run(u, 'Día 1', far(u === pep ? 1 : 2), dayAt(9));
+    await run(u, 'Día 2', far(u === pep ? 3 : 4), dayAt(8));
+  }
+  // Pep holds a Salvarrachas since before the gap
+  const saverId = await grant(pep, 'streak_saver');
+  await db.execute({ sql: 'update user_powers set created_at = ?, unused_expires_at = ? where id = ?', args: [new Date(dayAt(8.5)).toISOString(), new Date(Date.now() + 3 * DAY).toISOString(), saverId] });
+  const pepBack = await run(pep, 'Vuelta tras 3 días', far(5), dayAt(4));
+  const quimBack = await run(quim, 'Vuelta tras 3 días', far(6), dayAt(4));
+  check('Salvarrachas: three missed days and the streak goes on', pepBack.result.streak === 3, pepBack.result);
+  check('without it the streak starts again', quimBack.result.streak === 1, quimBack.result);
+  const saverRow = await one('select status, expires_at from user_powers where id = ?', [saverId]);
+  check('Salvarrachas: it stays on until it expires (it is not used up)', saverRow.status === 'active' && Date.parse(saverRow.expires_at) > Date.now(), saverRow);
+  const pepAgain = await run(pep, 'Otro hueco', far(7), dayAt(1));
+  check('Salvarrachas: it covers the next gap too', pepAgain.result.streak === 4, pepAgain.result);
+}
 
 console.log(failures === 0 ? '\nAll season checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

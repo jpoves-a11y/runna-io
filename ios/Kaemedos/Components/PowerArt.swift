@@ -79,7 +79,7 @@ struct PowerScopeBadge: View {
     private var explanation: String {
         switch scope {
         case "global": return "Suma en tu mapa global, con tope: como mucho 1 km² extra por carrera."
-        case "rest": return "Para los cofres de los días de descanso."
+        case "rest": return "Para encontrar y abrir cofres (salen todos los días)."
         case "cosmetic": return "Para siempre: un título o una pieza para el escudo de tu club."
         default: return "Solo cuenta en la competición de tu club."
         }

@@ -491,7 +491,7 @@ final class RunTracker {
         }
 
         // Chests: once when it gets close, once inside the pickup radius
-        for chest in chests where !chest.hidden {
+        for chest in chests where !chest.isUpcoming {
             let meters = location.distance(from: CLLocation(latitude: chest.lat, longitude: chest.lng))
             if meters <= RunCueState.chestRadiusMeters, !cues.chestsAnnouncedNear.contains(chest.id) {
                 cues.chestsAnnouncedNear.insert(chest.id)

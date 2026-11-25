@@ -12,6 +12,7 @@ import {
   type ClubRow,
   type ClubMessageRow,
   type CompetitionRow,
+  type CompetitionEventRow,
   type InventoryRow,
   type PublicUserLite,
 } from './gameStorage';
@@ -36,6 +37,8 @@ import {
 import { competitionContextFor, rebuildGlobalForUser, rebuildCompetitionForUser } from './runPipeline';
 import { parseGeometry, unexploredSpots } from './globalTerritory';
 import * as turf from '@turf/turf';
+import { bastionZone } from './bastion';
+import { privacyCut, PRIVACY_ZONE_METERS } from './privacyZone';
 import { canInvite, isOfficer, joinDecision, parseEntryMode, entryModeFromVisibility, cityRefusal, sameCity, CLUB_DESCRIPTION_MAX, type JoinVia } from './clubRules';
 import { withReasons, haversineMeters } from './antiCheat';
 import { CHAT_PAGE_SIZE, CHAT_REACTIONS, canDeleteMessage, canMute, isReaction, muteHours, normalizeMessage, parseMentions } from './clubChat';
@@ -47,9 +50,13 @@ import {
   CHALLENGES,
   INVENTORY_CAP,
   HEAD_START_BONUS_M2,
+  TREASURE_MAP_HEAD_START_MINUTES,
+  LIGHTHOUSE_UPCOMING_CHESTS,
   LATE_JOIN_HOURS,
   ELIMINATION_CUTS,
   BASTION_LAYERS,
+  BASTION_AREA_M2,
+  REVENGE_WINDOW_HOURS,
   CLUB_MAX_MEMBERS,
   CLUB_NAME_MIN,
   CLUB_NAME_MAX,
@@ -578,27 +585,106 @@ async function challengesJson(game: GameStorage, userId: string, info: CycleInfo
   });
 }
 
-/** Bastión: BASTION_LAYERS fortification layers over the user's largest competition zone. */
-async function fortifyLargestZone(storage: WorkerStorage, userId: string): Promise<number> {
+/** Bastión: the zone around a point of the user's competition territory (bastion.ts). */
+async function bastionZoneFor(storage: WorkerStorage, userId: string, point: { lat: number; lng: number }) {
   const territories = await storage.getTerritoriesByUserId(userId);
-  let best: { geometry: any; area: number; routeId: string | null } | null = null;
-  for (const territory of territories) {
-    const geometry = typeof territory.geometry === 'string' ? JSON.parse(territory.geometry) : territory.geometry;
-    const polygons = geometry?.type === 'MultiPolygon' ? geometry.coordinates.map((c: any) => ({ type: 'Polygon', coordinates: c })) : geometry?.type === 'Polygon' ? [geometry] : [];
-    for (const polygon of polygons) {
-      const area = turf.area(polygon as any);
-      if (!best || area > best.area) best = { geometry: polygon, area, routeId: territory.routeId ?? null };
-    }
-  }
-  if (!best || best.area < 10) return 0;
-  const bbox = turf.bbox(best.geometry as any);
+  return bastionZone(territories.map((t: any) => t.geometry), point);
+}
+
+/** BASTION_LAYERS fortification layers over a zone of the user's territory. */
+async function fortifyZone(storage: WorkerStorage, userId: string, geometry: any, area: number): Promise<number> {
+  const bbox = turf.bbox(geometry as any);
   for (let i = 0; i < BASTION_LAYERS; i++) {
     await storage.createFortificationRecord({
-      userId, routeId: best.routeId as any, geometry: JSON.stringify(best.geometry), area: best.area,
+      userId, routeId: null as any, geometry: JSON.stringify(geometry), area,
       bboxMinLng: bbox[0], bboxMinLat: bbox[1], bboxMaxLng: bbox[2], bboxMaxLat: bbox[3],
     });
   }
   return BASTION_LAYERS;
+}
+
+function formatKm2(m2: number): string {
+  const km2 = m2 / 1e6;
+  return `${km2.toLocaleString('es-ES', { minimumFractionDigits: km2 < 10 ? 2 : 1, maximumFractionDigits: km2 < 10 ? 2 : 1 })} km²`;
+}
+
+/** Rivals I can aim at in my competition (Espía, Sabotaje, Pluma, Venganza). */
+async function rivalIdsOf(game: GameStorage, context: { competition: CompetitionRow; enemyIds: string[] }): Promise<Set<string>> {
+  let rivals = new Set(context.enemyIds);
+  if ((context.competition.mode === 'duel' || context.competition.mode === 'derby') && context.competition.opponentClubId) {
+    const opponent = await game.getClubCompetition(context.competition.opponentClubId, context.competition.cycleNumber);
+    if (opponent) rivals = new Set((await game.getParticipants(opponent.id)).map((p) => p.userId));
+  }
+  return rivals;
+}
+
+/**
+ * A rival's run as Espía and Radar show it: its first and last PRIVACY_ZONE_METERS are always left
+ * out (they usually start and end at home), whatever the rival's privacy setting.
+ */
+function rivalRouteJson(run: any) {
+  let coordinates: Array<[number, number]> = [];
+  try { coordinates = JSON.parse(run.coordinates); } catch { coordinates = []; }
+  const cut = privacyCut(coordinates, PRIVACY_ZONE_METERS);
+  return {
+    id: run.id, name: run.name, distance: run.distance, duration: run.duration, startedAt: run.started_at,
+    coordinates: coordinates.slice(cut.start, cut.end),
+  };
+}
+
+/** One line of the competition's Actividad, written for the one who reads it ("tú" when it's them). */
+function activityEventJson(e: CompetitionEventRow, users: Map<string, PublicUserLite>, viewerId: string) {
+  const who = (id: string | null, subject: boolean) => {
+    if (!id) return subject ? 'Alguien' : 'alguien';
+    if (id === viewerId) return subject ? 'Tú' : 'ti';
+    return users.get(id)?.name ?? (subject ? 'Alguien' : 'alguien');
+  };
+  const iAmActor = e.actorId === viewerId;
+  const item = e.itemId ? ITEMS[e.itemId] ?? null : null;
+  const itemName = item?.name ?? 'un poder';
+  let text: string;
+  switch (e.kind) {
+    case 'steal':
+      text = iAmActor
+        ? `Le has robado ${formatKm2(e.area ?? 0)} a ${who(e.targetId, false)}`
+        : e.targetId === viewerId
+          ? `${who(e.actorId, true)} te ha robado ${formatKm2(e.area ?? 0)}`
+          : `${who(e.actorId, true)} le ha robado ${formatKm2(e.area ?? 0)} a ${who(e.targetId, false)}`;
+      break;
+    case 'trap':
+      // Which trap stays secret until someone falls in it (it's no trap if everybody knows)
+      text = iAmActor ? `Has preparado ${itemName} (los demás solo ven que hay una trampa)` : `${who(e.actorId, true)} ha preparado una trampa 🤫`;
+      break;
+    case 'trap_hit':
+      text = e.targetId === viewerId
+        ? `Has caído en ${item?.name ?? 'la trampa'} de ${who(e.actorId, false)}${e.area ? ` (−${formatKm2(e.area)})` : ''}`
+        : `${who(e.targetId, true)} ha caído en ${item?.name ?? 'la trampa'} de ${who(e.actorId, false)}${e.area ? ` (−${formatKm2(e.area)})` : ''}`;
+      break;
+    default: {
+      const target = e.targetId ? ` contra ${who(e.targetId, false)}` : '';
+      const nickname = e.itemId === 'nickname' && e.metadata?.nickname ? `: «${e.metadata.nickname}»` : '';
+      text = e.itemId === 'nickname'
+        ? (iAmActor ? `Has puesto un apodo a ${who(e.targetId, false)}${nickname}` : e.targetId === viewerId ? `${who(e.actorId, true)} te ha puesto un apodo${nickname}` : `${who(e.actorId, true)} ha puesto un apodo a ${who(e.targetId, false)}${nickname}`)
+        : iAmActor ? `Has activado ${itemName}${target}` : `${who(e.actorId, true)} ha activado ${itemName}${target}`;
+    }
+  }
+  return {
+    id: e.id,
+    kind: e.kind,
+    text,
+    // Traps: which one only for whoever set it or once someone fell in it
+    itemId: e.kind === 'trap' && !iAmActor ? null : e.itemId,
+    emoji: e.kind === 'steal' ? '⚔️' : e.kind === 'trap' && !iAmActor ? '🤫' : item?.emoji ?? '✨',
+    actor: e.actorId ? users.get(e.actorId) ?? null : null,
+    target: e.targetId ? users.get(e.targetId) ?? null : null,
+    area: e.area,
+    mine: iAmActor,
+    aboutMe: e.targetId === viewerId,
+    // The one with the nickname can report it
+    reportNicknameId: e.itemId === 'nickname' && e.targetId === viewerId ? e.metadata?.nicknameId ?? null : null,
+    reportUserId: e.itemId === 'nickname' && e.targetId === viewerId ? e.actorId : null,
+    createdAt: e.createdAt,
+  };
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
@@ -754,10 +840,10 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const audience = (await game.getMembership(userId)) ? 'club' : 'open';
     {
       const myEffects = await game.activeEffects([userId], now);
-      const canSeeHidden = myEffects.some((e) => e.itemId === 'reveal');
-      // Mapa del Tesoro: new chests an hour before everybody else
+      // Faro: the next chests of my city, wherever and whenever they will come out
+      const lighthouse = myEffects.some((e) => e.itemId === 'reveal');
+      // Mapa del Tesoro: the chests that come out within the next hour
       const seesEarly = myEffects.some((e) => e.itemId === 'treasure_map');
-      const nowIso = new Date(now).toISOString();
       // Only the chests of my city (or near my home): others are noise, and a small city's chests
       // would hint where its few runners live
       const me = await game.getUserGameRow(userId);
@@ -766,16 +852,24 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       const hasHome = me?.home_lat !== null && me?.home_lat !== undefined && Number.isFinite(homeLat) && Number.isFinite(homeLng);
       const myCity = hasHome ? cityKeyOf(me?.country_code, me?.city, homeLat, homeLng) : null;
       const near = (t: any) => hasHome && haversineMeters([homeLat, homeLng], [Number(t.lat), Number(t.lng)]) <= 30_000;
-      chests = (await game.activeChests(now, audience))
-        .filter((t) => t.city_key === myCity || near(t))
-        .filter((t) => Number(t.hidden) !== 1 || canSeeHidden)
-        .filter((t) => seesEarly || !t.public_at || t.public_at <= nowIso)
-        .map((t) => ({
-          // What is inside stays a surprise until the chest is opened (it comes with the run's result)
-          id: t.id, name: t.name, rarity: rarityJson(t.rarity),
-          lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: Number(t.hidden) === 1, expiresAt: t.expires_at,
-          open: audience === 'open',
-        }));
+      const mine = (t: any) => t.city_key === myCity || near(t);
+      const out = (await game.activeChests(now, audience)).filter(mine);
+      const coming: any[] = [];
+      if (lighthouse || seesEarly) {
+        const planned = (await game.upcomingChests(now, audience)).filter(mine);
+        const early = seesEarly ? planned.filter((t) => Date.parse(t.spawned_at) <= now + TREASURE_MAP_HEAD_START_MINUTES * 60_000) : [];
+        const next = lighthouse ? planned.slice(0, LIGHTHOUSE_UPCOMING_CHESTS) : [];
+        for (const t of [...next, ...early]) if (!coming.some((c) => c.id === t.id)) coming.push(t);
+      }
+      chests = [...out, ...coming].map((t) => ({
+        // What is inside stays a surprise until the chest is opened (it comes with the run's result)
+        id: t.id, name: t.name, rarity: rarityJson(t.rarity),
+        lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: false, expiresAt: t.expires_at,
+        // A chest that hasn't come out yet (Faro, Mapa del Tesoro): seen, but it can't be opened until then
+        appearsAt: t.spawned_at,
+        upcoming: Date.parse(t.spawned_at) > now,
+        open: audience === 'open',
+      }));
     }
     return c.json({ cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, flags, chests, participating: !!participation });
   }));
@@ -800,7 +894,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const fresh = await game.getInventoryItem(item.id);
     if (!fresh || fresh.status !== 'available') return fail(c, 409, 'Ese objeto ya se ha usado o ha caducado.');
     const def = ITEMS[fresh.itemId];
-    if (!def) return fail(c, 400, 'Objeto desconocido.');
+    if (!def) return fail(c, 400, 'Este poder ya no existe.');
     if (def.activation === 'owned') return fail(c, 400, 'Los cosméticos no se activan: equípalos desde tu perfil.');
     if (def.activation === 'passive') return fail(c, 400, `${def.name} se usa solo cuando hace falta.`);
 
@@ -812,39 +906,63 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (def.usablePhase === 'competition' && !context) {
       return fail(c, 409, 'Este poder solo se puede usar mientras participas en una competición de tu club.');
     }
-    if (def.usablePhase === 'rest') {
-      if (!isRestLike(info.phase)) return fail(c, 409, `${def.name} solo se puede usar en los días de descanso.`);
-      if (!(await game.getMembership(userId))) return fail(c, 409, 'Los cofres son para los miembros de un club.');
-    }
+    if (def.usablePhase === 'rest' && !isRestLike(info.phase)) return fail(c, 409, `${def.name} solo se puede usar en los días de descanso.`);
+    if (def.scope === 'rest' && !(await game.getMembership(userId))) return fail(c, 409, 'Los cofres de los clubes son para sus miembros.');
     // Some powers make no sense in some modes (no map in Banderas / Exploradores...)
     if (context && def.scope === 'competition' && !itemUsableInMode(def, context.competition.mode as CompetitionMode)) {
       return fail(c, 409, `${def.name} no sirve en el modo ${MODE_INFO[context.competition.mode as CompetitionMode]?.name ?? context.competition.mode}.`);
     }
 
-    // One active effect of each type at a time
+    // One active effect of each type at a time (Sabotaje: as many as you like, they add up)
     const effects = await game.activeEffects([userId], now);
-    if (def.activation !== 'target' && def.activation !== 'instant' && effects.some((e) => e.itemId === def.id)) {
+    const oneAtATime = def.activation === 'timed' || def.activation === 'next_run' || def.id === 'revenge';
+    if (oneAtATime && effects.some((e) => e.itemId === def.id)) {
       return fail(c, 409, `Ya tienes ${def.name} activo.`);
     }
+    // The Capa already protects everything the Escudo would
+    if (def.id === 'shield' && effects.some((e) => e.itemId === 'invisibility')) {
+      return fail(c, 409, 'Ya tienes la Capa de Sombras activa: tu territorio ya es intocable.');
+    }
+    if (def.id === 'tourist') {
+      const me = await game.getUserGameRow(userId);
+      if (!me?.city || me.home_lat === null || me.home_lat === undefined) return fail(c, 409, 'Pon tu ciudad en tu perfil para usar el Turista.', { code: 'no_city' });
+    }
+
+    /** What the competition's Actividad shows (only competition powers) */
+    const record = async (targetId: string | null = null, metadata: any = null) => {
+      if (!context || def.scope !== 'competition') return;
+      const secret = def.id === 'time_bomb' || def.id === 'ambush';
+      try {
+        await game.addCompetitionEvent({
+          competitionId: context.competition.id, actorId: userId, kind: secret ? 'trap' : 'power',
+          itemId: def.id, targetId, metadata, createdAt: new Date(now).toISOString(),
+        });
+      } catch (error) {
+        console.error('[SEASON] Could not record the activation:', error);
+      }
+    };
 
     if (def.activation === 'next_run') {
       // Turista and Expedición wait for the first run where they apply, for up to a week
       const waits = def.id === 'tourist' || def.id === 'expedition';
       const until = waits ? new Date(now + 7 * 24 * 3600 * 1000).toISOString() : null;
       if (!(await game.activateItem(fresh.id, until, null, now))) return fail(c, 409, 'No se pudo activar.');
+      await record();
       const message = def.id === 'double_loot'
         ? `${def.name}: se aplicará al siguiente cofre que abras.`
         : def.id === 'tourist'
-          ? `${def.name}: se aplicará en tu primera carrera a más de 30 km de tu ciudad (durante 7 días).`
+          ? `${def.name}: se aplicará en la primera carrera que empieces a más de 30 km de tu ciudad (durante 7 días).`
           : def.id === 'expedition'
-            ? `${def.name}: se aplicará en tu primera carrera con un amigo o alguien de tu club (durante 7 días).`
-            : `${def.name}: se aplicará en tu siguiente carrera.`;
+            ? `${def.name}: se aplicará en la primera carrera que empieces con un amigo o alguien de tu club (durante 7 días).`
+            : `${def.name}: se aplicará a la siguiente carrera que empieces. Si cambias de idea antes de salir, puedes guardarlo otra vez.`;
       return c.json({ success: true, message, item: itemJson((await game.getInventoryItem(fresh.id))!) });
     }
     if (def.activation === 'timed') {
       const until = new Date(now + (def.activeHours ?? 24) * 3600 * 1000).toISOString();
       if (!(await game.activateItem(fresh.id, until, null, now))) return fail(c, 409, 'No se pudo activar.');
-      if (def.id === 'rally' && context) {
+      await record();
+      if (def.id === 'rally' && context && ['teams', 'duel', 'derby', 'target'].includes(context.competition.mode)) {
+        // Only the ones it helps: my team (Por equipos) or my club (Duelo, Derbi, Objetivo)
         const mates = context.participants.map((p) => p.userId).filter((id) => id !== userId && !context.enemyIds.includes(id));
         const me = (await game.getUserLite([userId])).get(userId);
         await notifyUsers(storage, c.env, mates, {
@@ -860,21 +978,40 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       if (def.id === 'head_start' && context) {
         await game.updateParticipant(context.competition.id, userId, { addBonus: HEAD_START_BONUS_M2 });
       }
-      if (def.id === 'bastion') {
-        const layers = await fortifyLargestZone(storage, userId);
-        if (layers === 0) return fail(c, 409, 'Todavía no tienes territorio en esta competición que reforzar.');
-      }
       await game.consumeItems([fresh.id], now);
+      await record();
       return c.json({ success: true, message: `${def.name} aplicado.` });
+    }
+    if (def.activation === 'zone') {
+      // Bastión: the zone around the point chosen on the map (the one previewed)
+      const lat = Number(input.lat);
+      const lng = Number(input.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+        return fail(c, 400, 'Toca en el mapa el punto de tu territorio que quieres reforzar.');
+      }
+      const zone = await bastionZoneFor(storage, userId, { lat, lng });
+      if (!zone) return fail(c, 409, 'Todavía no tienes territorio en esta competición que reforzar.');
+      if (!(await game.activateItem(fresh.id, null, null, now))) return fail(c, 409, 'No se pudo activar.');
+      await fortifyZone(storage, userId, zone.geometry, zone.area);
+      await game.consumeItems([fresh.id], now);
+      await record(null, { area: Math.round(zone.area) });
+      return c.json({ success: true, message: `${def.name}: ${formatKm2(zone.area)} de tu territorio reforzados con ${BASTION_LAYERS} capas.`, zone });
     }
 
     // Target items: a rival of my competition
     const targetUserId = typeof input.targetUserId === 'string' ? input.targetUserId : '';
     if (!context) return fail(c, 409, 'Necesitas estar en una competición.');
-    let rivals = new Set(context.enemyIds);
-    if ((context.competition.mode === 'duel' || context.competition.mode === 'derby') && context.competition.opponentClubId) {
-      const opponent = await game.getClubCompetition(context.competition.opponentClubId, context.competition.cycleNumber);
-      if (opponent) rivals = new Set((await game.getParticipants(opponent.id)).map((p) => p.userId));
+    const rivals = await rivalIdsOf(game, context);
+    if (def.id === 'revenge') {
+      // Venganza: only against who stole from me in the last 3 days (and is still a rival)
+      const stealers = (await game.stealersOf(userId, new Date(now - REVENGE_WINDOW_HOURS * 3600 * 1000).toISOString())).filter((s) => rivals.has(s.userId));
+      if (stealers.length === 0) return fail(c, 409, 'Nadie te ha robado en los últimos 3 días: guárdala para cuando lo hagan.', { code: 'no_thieves' });
+      if (!targetUserId || !stealers.some((s) => s.userId === targetUserId)) return fail(c, 400, 'Elige a alguien que te haya robado en los últimos 3 días.', { candidates: stealers.map((s) => s.userId) });
+      const until = new Date(now + (def.activeHours ?? 24) * 3600 * 1000).toISOString();
+      if (!(await game.activateItem(fresh.id, until, { targetUserId }, now))) return fail(c, 409, 'No se pudo activar.');
+      await record(targetUserId);
+      const name = (await game.getUserLite([targetUserId])).get(targetUserId)?.name ?? 'tu rival';
+      return c.json({ success: true, message: `Venganza contra ${name}: durante 24 h, lo que le robes cuenta el doble.`, activeUntil: until });
     }
     if (rivals.size === 0) return fail(c, 409, 'En este modo no tienes rivales a los que apuntar.');
     if (!targetUserId || !rivals.has(targetUserId)) return fail(c, 400, 'Elige a un rival de tu competición.', { rivals: [...rivals] });
@@ -884,28 +1021,30 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       const runs = await game.getCountedRunsChronological(targetUserId, new Date(bounds.competitionStart).toISOString(), new Date(bounds.competitionEnd).toISOString());
       const last = runs[runs.length - 1];
       await game.consumeItems([fresh.id], now);
+      await record(targetUserId);
       return c.json({
         success: true,
         message: last ? 'Esta es su última carrera de la competición.' : 'Todavía no ha corrido en esta competición.',
-        route: last ? { id: last.id, name: last.name, distance: last.distance, duration: last.duration, startedAt: last.started_at, coordinates: JSON.parse(last.coordinates) } : null,
+        route: last ? rivalRouteJson(last) : null,
       });
     }
     if (def.id === 'nickname') {
-      const nickname = typeof input.nickname === 'string' ? input.nickname.trim() : '';
+      const nickname = typeof input.nickname === 'string' ? input.nickname.trim().replace(/\s+/g, ' ') : '';
       if (!nickname || [...nickname].length > 20) return fail(c, 400, 'Escribe un apodo de 1 a 20 caracteres.');
       const expiresAt = new Date(now + (def.activeHours ?? 48) * 3600 * 1000).toISOString();
-      await storage.createNickname({ targetUserId, setByUserId: userId, nickname, expiresAt });
+      const created = await storage.createNickname({ targetUserId, setByUserId: userId, nickname, expiresAt });
       await game.consumeItems([fresh.id], now);
+      await record(targetUserId, { nickname, nicknameId: created?.id ?? null });
       const names = await game.getUserLite([userId, targetUserId]);
       try {
         await storage.createFeedEvent({
           userId, eventType: 'nickname_changed', victimId: targetUserId,
-          metadata: JSON.stringify({ nickname, targetName: names.get(targetUserId)?.name, attackerName: names.get(userId)?.name, expiresAt }),
+          metadata: JSON.stringify({ nickname, nicknameId: created?.id ?? null, targetName: names.get(targetUserId)?.name, attackerName: names.get(userId)?.name, expiresAt }),
         });
       } catch (_) {}
       await notifyUsers(storage, c.env, [targetUserId], {
         title: '✏️ Tienes un apodo nuevo',
-        body: `${names.get(userId)?.name ?? 'Un rival'} te ha puesto el apodo «${nickname}» durante 48 h.`,
+        body: `${names.get(userId)?.name ?? 'Un rival'} te ha puesto el apodo «${nickname}» durante 48 h. Si es ofensivo, denúncialo desde la actividad de la competición.`,
         tag: `nickname-${targetUserId}`,
         data: { type: 'nickname_changed' },
       });
@@ -914,9 +1053,74 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     if (def.id === 'sabotage') {
       const until = new Date(now + (def.activeHours ?? 24) * 3600 * 1000).toISOString();
       if (!(await game.activateItem(fresh.id, until, { targetUserId }, now))) return fail(c, 409, 'No se pudo activar.');
-      return c.json({ success: true, message: 'Sabotaje preparado: su siguiente carrera en 24 h conquistará un 20% menos.', activeUntil: until });
+      await record(targetUserId);
+      return c.json({ success: true, message: 'Sabotaje preparado: su siguiente carrera en 24 h conquistará un 20% menos (más si otros también le sabotean).', activeUntil: until });
     }
     return fail(c, 400, 'Este objeto no se puede activar.');
+  }));
+
+  /** A next-run power activated but not used yet goes back to the inventory (changed your mind before going out). */
+  app.post('/api/inventory/:id/deactivate', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const item = await game.getInventoryItem(c.req.param('id'));
+    if (!item || item.userId !== userId) return fail(c, 404, 'No tienes ese objeto.');
+    const def = ITEMS[item.itemId];
+    if (!def || def.activation !== 'next_run' || item.status !== 'active') return fail(c, 409, 'Este poder no se puede guardar otra vez.');
+    if (!(await game.deactivateItem(item.id))) return fail(c, 409, 'Ya se ha usado.');
+    return c.json({ success: true, message: `${def.name} guardado otra vez en tus poderes.`, item: itemJson((await game.getInventoryItem(item.id))!) });
+  }));
+
+  /** Venganza: who stole from me in the last 3 days (and is still a rival), to choose one. */
+  app.get('/api/season/revenge-targets', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const now = Date.now();
+    const context = await competitionContextFor(game, userId, new Date(now).toISOString(), cycleAt(now), now);
+    if (!context) return c.json({ targets: [] });
+    const rivals = await rivalIdsOf(game, context);
+    const stealers = (await game.stealersOf(userId, new Date(now - REVENGE_WINDOW_HOURS * 3600 * 1000).toISOString())).filter((s) => rivals.has(s.userId));
+    const users = await game.getUserLite(stealers.map((s) => s.userId));
+    return c.json({ targets: stealers.map((s) => ({ user: users.get(s.userId) ?? null, userId: s.userId, area: s.area, lastAt: s.lastAt })) });
+  }));
+
+  /** Bastión: the zone it would reinforce around a point (shown before confirming). */
+  app.post('/api/season/bastion/preview', requireAuth, handler(async (c) => {
+    const { storage } = stores(c);
+    const userId = c.get('authUserId');
+    const input = await body(c);
+    const lat = Number(input.lat);
+    const lng = Number(input.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return fail(c, 400, 'Punto no válido.');
+    const zone = await bastionZoneFor(storage, userId, { lat, lng });
+    if (!zone) return fail(c, 409, 'Todavía no tienes territorio en esta competición que reforzar.', { code: 'no_territory' });
+    return c.json({ zone, target: BASTION_AREA_M2 });
+  }));
+
+  /** The competition's Actividad: powers activated, steals and traps, newest first. */
+  app.get('/api/season/activity', requireAuth, handler(async (c) => {
+    const { game } = stores(c);
+    const userId = c.get('authUserId');
+    const now = Date.now();
+    const info = cycleAt(now);
+    const participation = await game.getActiveParticipation(userId);
+    let competition: CompetitionRow | null = participation?.competition ?? null;
+    if (!competition || competition.cycleNumber !== info.number) {
+      const membership = await game.getMembership(userId);
+      competition = membership ? await game.getClubCompetition(membership.clubId, info.number) : null;
+    }
+    if (!competition) return c.json({ competitionId: null, events: [] });
+    const ids = [competition.id];
+    if ((competition.mode === 'duel' || competition.mode === 'derby') && competition.opponentClubId) {
+      const rival = await game.getClubCompetition(competition.opponentClubId, competition.cycleNumber);
+      if (rival) ids.push(rival.id);
+    }
+    const events = await game.listCompetitionEvents(ids, 60);
+    const users = await game.getUserLite(events.flatMap((e) => [e.actorId, e.targetId].filter((id): id is string => !!id)));
+    return c.json({
+      competitionId: competition.id,
+      events: events.map((e) => activityEventJson(e, users, userId)),
+    });
   }));
 
   /** Brújula (active): the nearest spots not explored yet around the last run (or home). */
@@ -966,7 +1170,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       const last = runs[runs.length - 1];
       rivals.push({
         user: users.get(rivalId) ?? null,
-        route: last ? { id: last.id, name: last.name, distance: last.distance, duration: last.duration, startedAt: last.started_at, coordinates: JSON.parse(last.coordinates) } : null,
+        route: last ? rivalRouteJson(last) : null,
       });
     }
     return c.json({ active: true, rivals });
@@ -1249,8 +1453,9 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       }),
     };
     if (!membership) return c.json({ club: null, role: null, ...base });
-    const unreadCount = await game.chatUnreadCount(membership.clubId, userId, await storage.getBlockedUserIds(userId));
-    return c.json({ ...(await clubDetail(game, membership.clubId, userId)), ...base, unreadCount });
+    // Every chat of mine (the club's and, during a competition, its own ones): the total is the badge
+    const chats = await chatsJson(storage, game, membership.clubId, userId);
+    return c.json({ ...(await clubDetail(game, membership.clubId, userId)), ...base, unreadCount: chats.total, chats: chats.chats });
   }));
 
   async function clubDetail(game: GameStorage, clubId: string, userId: string) {
@@ -1566,11 +1771,84 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
   }));
 
   // ── Club chat (members only) ──
+  //
+  // Outside competitions a club has one chat. During a competition with sides:
+  //   - Por equipos: "Competición" (the club's chat) and "Mi equipo" (only my team);
+  //   - Duelo / Derbi: "Competición" (both clubs together) and "Mi equipo" (the club's chat).
+  // Each chat is a conversation of club_messages (club_id = its key); `channel` picks it.
 
   /** The user's membership when it is of this club. */
   async function chatMembership(game: GameStorage, clubId: string, userId: string) {
     const membership = await game.getMembership(userId);
     return membership && membership.clubId === clubId ? membership : null;
+  }
+
+  type ChatChannel = 'club' | 'team' | 'match';
+  interface Conversation {
+    channel: ChatChannel;
+    /** club_messages.club_id of its messages */
+    key: string;
+    title: string;
+    /** Who's in it (mentions) */
+    memberIds: string[];
+    /** Unread counts from here when the user never opened it (the competition's start) */
+    since: string | null;
+    /** Clubs whose members are in it (moderation: officers only over their own club's members) */
+    clubIds: string[];
+  }
+
+  /** The chats a club member has now: the club's, plus the competition ones while it runs. */
+  async function chatConversations(game: GameStorage, clubId: string, userId: string, now = Date.now()): Promise<Conversation[]> {
+    const clubMembers = await game.getClubMemberIds(clubId);
+    const club: Conversation = { channel: 'club', key: clubId, title: 'Club', memberIds: clubMembers, since: null, clubIds: [clubId] };
+    const info = cycleAt(now);
+    if (info.phase !== 'competition' && !isClosing(info, now)) return [club];
+    const competition = await game.getClubCompetition(clubId, info.number);
+    if (!competition || competition.status !== 'active') return [club];
+    const since = new Date(cycleBounds(competition.cycleNumber).competitionStart).toISOString();
+    if (competition.mode === 'teams') {
+      const me = await game.getParticipant(competition.id, userId);
+      if (!me || me.team === null || me.team === undefined) return [club];
+      const participants = await game.getParticipants(competition.id);
+      const names: string[] = competition.config?.teamNames ?? ['Equipo Sol', 'Equipo Luna'];
+      return [
+        { ...club, title: 'Competición' },
+        {
+          channel: 'team', key: `team:${competition.id}:${me.team}`, title: 'Mi equipo', since, clubIds: [clubId],
+          memberIds: participants.filter((p) => p.team === me.team).map((p) => p.userId),
+          ...(names[me.team] ? { subtitle: names[me.team] } : {}),
+        } as Conversation,
+      ];
+    }
+    if ((competition.mode === 'duel' || competition.mode === 'derby') && competition.opponentClubId) {
+      const pair = [clubId, competition.opponentClubId].sort();
+      const rivalMembers = await game.getClubMemberIds(competition.opponentClubId);
+      return [
+        { channel: 'match', key: `match:${competition.cycleNumber}:${pair.join(':')}`, title: 'Competición', since, clubIds: pair, memberIds: [...clubMembers, ...rivalMembers] },
+        { ...club, title: 'Mi equipo' },
+      ];
+    }
+    return [club];
+  }
+
+  async function conversationFor(game: GameStorage, clubId: string, userId: string, channel: unknown): Promise<Conversation | null> {
+    const wanted = channel === 'team' || channel === 'match' ? channel : 'club';
+    return (await chatConversations(game, clubId, userId)).find((c) => c.channel === wanted) ?? null;
+  }
+
+  async function conversationUnread(game: GameStorage, conversation: Conversation, userId: string, hidden: string[]): Promise<number> {
+    if (conversation.channel === 'club') return game.chatUnreadCount(conversation.key, userId, hidden);
+    return game.conversationUnreadCount(conversation.key, userId, conversation.since, hidden);
+  }
+
+  /** Every chat of mine with its unread messages, and the total (tab and app badges). */
+  async function chatsJson(storage: WorkerStorage, game: GameStorage, clubId: string, userId: string) {
+    const hidden = await storage.getBlockedUserIds(userId);
+    const chats = [];
+    for (const conversation of await chatConversations(game, clubId, userId)) {
+      chats.push({ channel: conversation.channel, title: conversation.title, subtitle: (conversation as any).subtitle ?? null, unread: await conversationUnread(game, conversation, userId, hidden) });
+    }
+    return { chats, total: chats.reduce((sum, c) => sum + c.unread, 0) };
   }
 
   /** Messages as the app shows them: author, reply preview, reactions (with mine), deleted ones without text. */
@@ -1608,27 +1886,40 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     });
   }
 
+  app.get('/api/clubs/:id/chats', requireAuth, handler(async (c) => {
+    const { storage, game } = stores(c);
+    const userId = c.get('authUserId');
+    const clubId = c.req.param('id');
+    if (!(await chatMembership(game, clubId, userId))) return fail(c, 404, 'No estás en este club.');
+    return c.json(await chatsJson(storage, game, clubId, userId));
+  }));
+
   app.get('/api/clubs/:id/messages', requireAuth, handler(async (c) => {
     const { storage, game } = stores(c);
     const userId = c.get('authUserId');
     const clubId = c.req.param('id');
     const membership = await chatMembership(game, clubId, userId);
     if (!membership) return fail(c, 404, 'No estás en este club.');
+    const conversation = await conversationFor(game, clubId, userId, c.req.query('channel'));
+    if (!conversation) return fail(c, 404, 'Este chat ya no está abierto.', { code: 'chat_closed' });
     const hidden = await storage.getBlockedUserIds(userId);
-    const page = await game.getClubMessages(clubId, { beforeId: c.req.query('before') || null, limit: CHAT_PAGE_SIZE, hiddenUserIds: hidden });
+    const page = await game.getClubMessages(conversation.key, { beforeId: c.req.query('before') || null, limit: CHAT_PAGE_SIZE, hiddenUserIds: hidden });
     const moderator = isOfficer(membership.role);
     return c.json({
       messages: await messagesJson(game, page.messages, userId, hidden),
       hasMore: page.hasMore,
       reactions: CHAT_REACTIONS,
+      channel: conversation.channel,
       me: {
         role: membership.role,
         canModerate: moderator,
         mutedUntil: await game.getMuteUntil(clubId, userId),
-        lastReadAt: await game.getChatReadAt(userId),
+        lastReadAt: conversation.channel === 'club' ? await game.getChatReadAt(userId) : await game.getConversationReadAt(conversation.key, userId, conversation.since),
       },
       // Who is silenced now (only the leader and officers see it)
       mutes: moderator ? await game.getClubMutes(clubId) : [],
+      // People in this chat (for @mentions): in the Derbi / Duelo one, both clubs
+      members: conversation.channel === 'club' ? undefined : [...(await game.getUserLite(conversation.memberIds)).values()],
     });
   }));
 
@@ -1638,37 +1929,41 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const clubId = c.req.param('id');
     const membership = await chatMembership(game, clubId, userId);
     if (!membership) return fail(c, 404, 'No estás en este club.');
+    const input = await body(c);
+    const conversation = await conversationFor(game, clubId, userId, input.channel ?? c.req.query('channel'));
+    if (!conversation) return fail(c, 404, 'Este chat ya no está abierto.', { code: 'chat_closed' });
     const mutedUntil = await game.getMuteUntil(clubId, userId);
     if (mutedUntil) return fail(c, 403, 'Un oficial te ha silenciado en el chat del club.', { code: 'muted', mutedUntil });
     const rateKey = `chat:${userId}`;
     const wait = await lockedForSeconds(storage, rateKey);
     if (wait > 0) return c.json({ error: `Vas muy rápido. Espera ${wait} s para escribir de nuevo.`, code: 'rate_limited', retryAfter: wait }, 429);
-    const input = await body(c);
     const text = normalizeMessage(input.body);
     if (!text) return fail(c, 400, 'Escribe un mensaje de hasta 1000 caracteres.');
     let replied: ClubMessageRow | null = null;
     if (input.replyTo) {
       replied = await game.getClubMessage(String(input.replyTo));
-      if (!replied || replied.clubId !== clubId || replied.deletedAt) return fail(c, 400, 'Ese mensaje ya no existe.');
+      if (!replied || replied.clubId !== conversation.key || replied.deletedAt) return fail(c, 400, 'Ese mensaje ya no existe.');
     }
-    const members = await game.getClubMembers(clubId);
-    const mentions = parseMentions(text, members.map((m) => ({ userId: m.userId, username: m.user.username })), userId);
-    const message = await game.addClubMessage({ clubId, userId, kind: 'user', body: text, replyTo: replied?.id ?? null, mentions });
+    const people = await game.getUserLite(conversation.memberIds);
+    const mentions = parseMentions(text, [...people.values()].map((u) => ({ userId: u.id, username: u.username })), userId);
+    const message = await game.addClubMessage({ clubId: conversation.key, userId, kind: 'user', body: text, replyTo: replied?.id ?? null, mentions });
     await recordAttempt(storage, rateKey, LIMITS.chatMessage);
-    await game.markChatRead(clubId, userId, message.createdAt);
+    if (conversation.channel === 'club') await game.markChatRead(clubId, userId, message.createdAt);
+    else await game.markConversationRead(conversation.key, userId, message.createdAt);
 
     // Pushes only for mentions and replies, never for every message (and never across a block)
     const blocked = new Set(await storage.getBlockedUserIds(userId));
     const club = await game.getClub(clubId);
-    const author = members.find((m) => m.userId === userId)?.user.name ?? 'Alguien';
+    const author = people.get(userId)?.name ?? 'Alguien';
     const excerpt = text.length > 120 ? `${text.slice(0, 119)}…` : text;
+    const where = conversation.channel === 'club' && conversation.title === 'Club' ? (club?.name ?? 'tu club') : `el chat «${conversation.title}»`;
     const mentioned = mentions.filter((id) => !blocked.has(id));
     if (mentioned.length > 0) {
       await notifyUsers(storage, c.env, mentioned, {
-        title: `💬 ${author} te ha mencionado en ${club?.name ?? 'tu club'}`,
+        title: `💬 ${author} te ha mencionado en ${where}`,
         body: excerpt,
-        tag: `club-chat-${clubId}`,
-        data: { type: 'club_chat', clubId, messageId: message.id },
+        tag: `club-chat-${conversation.key}`,
+        data: { type: 'club_chat', clubId, channel: conversation.channel, messageId: message.id },
       });
     }
     const replyAuthor = replied?.userId;
@@ -1676,8 +1971,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       await notifyUsers(storage, c.env, [replyAuthor], {
         title: `💬 ${author} ha respondido a tu mensaje`,
         body: excerpt,
-        tag: `club-chat-${clubId}`,
-        data: { type: 'club_chat', clubId, messageId: message.id },
+        tag: `club-chat-${conversation.key}`,
+        data: { type: 'club_chat', clubId, channel: conversation.channel, messageId: message.id },
       });
     }
     return c.json({ message: (await messagesJson(game, [message], userId))[0] });
@@ -1689,10 +1984,20 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const clubId = c.req.param('id');
     if (!(await chatMembership(game, clubId, userId))) return fail(c, 404, 'No estás en este club.');
     const input = await body(c);
+    const conversation = await conversationFor(game, clubId, userId, input.channel ?? c.req.query('channel'));
+    if (!conversation) return fail(c, 404, 'Este chat ya no está abierto.', { code: 'chat_closed' });
     const message = input.messageId ? await game.getClubMessage(String(input.messageId)) : null;
-    await game.markChatRead(clubId, userId, message && message.clubId === clubId ? message.createdAt : new Date().toISOString());
-    return c.json({ ok: true, unreadCount: await game.chatUnreadCount(clubId, userId, await storage.getBlockedUserIds(userId)) });
+    const at = message && message.clubId === conversation.key ? message.createdAt : new Date().toISOString();
+    if (conversation.channel === 'club') await game.markChatRead(clubId, userId, at);
+    else await game.markConversationRead(conversation.key, userId, at);
+    const chats = await chatsJson(storage, game, clubId, userId);
+    return c.json({ ok: true, unreadCount: chats.chats.find((ch) => ch.channel === conversation.channel)?.unread ?? 0, ...chats });
   }));
+
+  /** The conversation of a message, when the user is in it. */
+  async function messageConversation(game: GameStorage, clubId: string, userId: string, message: ClubMessageRow): Promise<Conversation | null> {
+    return (await chatConversations(game, clubId, userId)).find((conv) => conv.key === message.clubId) ?? null;
+  }
 
   app.delete('/api/clubs/:id/messages/:messageId', requireAuth, handler(async (c) => {
     const { game } = stores(c);
@@ -1701,8 +2006,13 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const membership = await chatMembership(game, clubId, userId);
     if (!membership) return fail(c, 404, 'No estás en este club.');
     const message = await game.getClubMessage(c.req.param('messageId'));
-    if (!message || message.clubId !== clubId) return fail(c, 404, 'Mensaje no encontrado.');
-    if (!canDeleteMessage(userId, membership.role, message)) return fail(c, 403, 'Solo puedes borrar tus mensajes. El líder y los oficiales pueden borrar cualquiera.');
+    const conversation = message ? await messageConversation(game, clubId, userId, message) : null;
+    if (!message || !conversation) return fail(c, 404, 'Mensaje no encontrado.');
+    // In the chat with the rival club, officers moderate only their own club's members
+    const authorInMyClub = !message.userId || (await game.getMembership(message.userId))?.clubId === clubId;
+    if (!canDeleteMessage(userId, membership.role, message) || (message.userId !== userId && !authorInMyClub)) {
+      return fail(c, 403, 'Solo puedes borrar tus mensajes. El líder y los oficiales pueden borrar los de su club.');
+    }
     await game.deleteClubMessage(message.id, userId);
     return c.json({ deleted: true });
   }));
@@ -1713,7 +2023,7 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
     const clubId = c.req.param('id');
     if (!(await chatMembership(game, clubId, userId))) return fail(c, 404, 'No estás en este club.');
     const message = await game.getClubMessage(c.req.param('messageId'));
-    if (!message || message.clubId !== clubId || message.deletedAt) return fail(c, 404, 'Mensaje no encontrado.');
+    if (!message || message.deletedAt || !(await messageConversation(game, clubId, userId, message))) return fail(c, 404, 'Mensaje no encontrado.');
     const input = await body(c);
     if (!isReaction(input.emoji)) return fail(c, 400, 'Reacción no válida.');
     const added = await game.toggleReaction(message.id, userId, input.emoji);

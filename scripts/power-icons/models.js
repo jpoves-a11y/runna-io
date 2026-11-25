@@ -156,13 +156,31 @@ export const MODELS = {
   },
 
   wall: (r) => {
-    const g = brickWall(4, 3, 0.62, 0.36, enamel(0xc4522b, 0.55), matte(0xb8a890));
-    // Steel band and rivets (rare)
-    g.add(mesh(rbox(2.0, 0.16, 0.42, 0.04), metal(r.metal), { pos: [0, 0.2, 0.02] }));
-    [-0.8, -0.27, 0.27, 0.8].forEach(x => g.add(mesh(sphere(0.05), metal(0xffffff, 0.2), { pos: [x, 0.2, 0.24] })));
+    // Refuerzo: a wall being built up: bricks, a fresh course on top, the trowel and steel braces
+    const g = brickWall(3, 3, 0.62, 0.36, enamel(0xc4522b, 0.55), matte(0xb8a890));
+    // A new course of bricks going up (lighter: fresh mortar), one still floating into place
+    const fresh = enamel(0xd86a3c, 0.5);
+    g.add(mesh(rbox(0.57, 0.31, 0.34, 0.04), fresh, { pos: [-0.31, 0.72, 0] }));
+    g.add(mesh(rbox(0.57, 0.31, 0.34, 0.04), fresh, { pos: [0.31, 0.95, 0.12], rot: [0, 0, -0.18] }));
+    // Two steel braces bolted on the front (rare: steel)
+    [-0.62, 0.62].forEach(x => {
+      g.add(mesh(rbox(0.14, 1.1, 0.08, 0.03), metal(r.metal, 0.2), { pos: [x, 0, 0.21] }));
+      [-0.38, 0.38].forEach(y => g.add(mesh(sphere(0.05), metal(0xffffff, 0.2), { pos: [x, y, 0.27] })));
+    });
+    // The trowel, leaning against the wall
+    const blade = new THREE.Shape();
+    blade.moveTo(0, 0); blade.lineTo(0.28, 0.5); blade.quadraticCurveTo(0, 0.62, -0.28, 0.5); blade.lineTo(0, 0);
+    const trowel = new THREE.Group();
+    trowel.add(mesh(extrude(blade, 0.03, 0.015), metal(0xe2e8ef, 0.15)));
+    trowel.add(mesh(cyl(0.025, 0.025, 0.3), metal(0x9aa4b2, 0.3), { pos: [0, -0.12, 0.02] }));
+    trowel.add(mesh(cyl(0.07, 0.06, 0.42), wood(0x8a5228), { pos: [0, -0.45, 0.02] }));
+    trowel.position.set(0.95, -0.25, 0.4); trowel.rotation.set(0.3, -0.4, -0.5);
+    g.add(trowel);
+    const s = spark(r.light, 0.14); s.position.set(0.55, 1.15, 0.3); g.add(s);
     g.rotation.y = -0.2;
     return g;
   },
+
 
   sentinel: (r) => {
     const copper = metal(r.metal, 0.25);
@@ -185,17 +203,32 @@ export const MODELS = {
   },
 
   steal_boost: (r) => {
+    // Daga: a short leaf-shaped blade with a fuller, a wide guard, a wrapped grip and a gem
     const steel = metal(0xe2e8ef, 0.12);
     const gold = metal(r.metal, 0.2);
-    const blade = [[-0.11, -0.2], [0.11, -0.2], [0.11, 1.35], [0, 1.6], [-0.11, 1.35]];
-    const g = group(mesh(extrude(blade, 0.06, 0.035), steel));
-    g.add(mesh(rbox(0.9, 0.14, 0.18, 0.06), gold, { pos: [0, -0.24, 0] }));
-    g.add(mesh(cyl(0.08, 0.08, 0.55), wood(0x5a2a12), { pos: [0, -0.6, 0] }));
-    g.add(mesh(sphere(0.12), gold, { pos: [0, -0.92, 0] }));
-    g.add(mesh(new THREE.OctahedronGeometry(0.1, 0), gemMaterial(0xe0193a), { pos: [0, -0.24, 0.12] }));
+    const blade = new THREE.Shape();
+    blade.moveTo(-0.13, 0);
+    blade.quadraticCurveTo(-0.2, 0.45, -0.07, 0.85);
+    blade.lineTo(0, 1.05);
+    blade.lineTo(0.07, 0.85);
+    blade.quadraticCurveTo(0.2, 0.45, 0.13, 0);
+    blade.lineTo(-0.13, 0);
+    const g = group(mesh(extrude(blade, 0.07, 0.035), steel));
+    // Fuller (the groove along the blade)
+    g.add(mesh(rbox(0.035, 0.6, 0.03, 0.015), metal(0xaab4c0, 0.25), { pos: [0, 0.4, 0.06] }));
+    // Curved guard with round ends
+    g.add(mesh(rbox(0.7, 0.12, 0.16, 0.06), gold, { pos: [0, -0.05, 0] }));
+    [-0.36, 0.36].forEach(x => g.add(mesh(sphere(0.08), gold, { pos: [x, -0.01, 0] })));
+    // Grip wrapped in leather, pommel
+    g.add(mesh(cyl(0.075, 0.085, 0.42), wood(0x3b1d0e), { pos: [0, -0.32, 0] }));
+    for (let k = 0; k < 4; k++) g.add(mesh(torus(0.085, 0.018), gold, { pos: [0, -0.16 - k * 0.1, 0], rot: [PI / 2, 0, 0] }));
+    g.add(mesh(sphere(0.11), gold, { pos: [0, -0.6, 0] }));
+    g.add(mesh(new THREE.OctahedronGeometry(0.09, 0), gemMaterial(0x8b5cf6), { pos: [0, -0.05, 0.12] }));
+    const s = spark(r.light, 0.15); s.position.set(0.05, 0.98, 0.1); g.add(s);
     g.rotation.z = -PI / 4;
     return g;
   },
+
 
   magnet: (r) => {
     const red = enamel(0xd92b2b, 0.25);
@@ -249,31 +282,43 @@ export const MODELS = {
   },
 
   sabotage: (r) => {
-    // Caltrops (abrojos) thrown on the rival's path: four-pointed spikes that always land point up
-    const gold = metal(r.metal, 0.2);
-    const tips = metal(0xf2f4f7, 0.12);
-    const caltrop = (scale) => {
-      const g = new THREE.Group();
-      const dirs = [[0, 1, 0], [0.943, -0.333, 0], [-0.471, -0.333, 0.816], [-0.471, -0.333, -0.816]];
-      dirs.forEach(d => {
-        const v = new THREE.Vector3(...d);
-        const spike = new THREE.Group();
-        spike.add(mesh(new THREE.ConeGeometry(0.12, 0.62, 24), gold, { pos: [0, 0.31, 0] }));
-        spike.add(mesh(new THREE.ConeGeometry(0.05, 0.16, 16), tips, { pos: [0, 0.6, 0] }));
-        spike.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v);
-        g.add(spike);
-      });
-      g.add(mesh(sphere(0.15), enamel(0x8b5cf6, 0.2)));
-      g.scale.setScalar(scale);
-      return g;
+    // Sabotaje: a wrench jammed between two gears, with sparks where they grind
+    const gold = metal(r.metal, 0.22);
+    const steel = metal(0xc8d0da, 0.18);
+    const gearShape = (teeth, outer, inner, hole) => {
+      const shape = new THREE.Shape();
+      const step = (2 * PI) / teeth;
+      for (let t = 0; t < teeth; t++) {
+        const a = t * step;
+        const pts = [[a, inner], [a + step * 0.15, outer], [a + step * 0.5, outer], [a + step * 0.65, inner]];
+        pts.forEach(([ang, rad], k) => {
+          const x = Math.cos(ang) * rad; const y = Math.sin(ang) * rad;
+          if (t === 0 && k === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+        });
+      }
+      const h = new THREE.Path(); h.absarc(0, 0, hole, 0, 2 * PI, true); shape.holes.push(h);
+      return shape;
     };
-    const a = caltrop(1.2); a.position.set(0, 0.1, 0.25); a.rotation.y = 0.4;
-    const b = caltrop(0.85); b.position.set(0.6, -0.12, -0.45); b.rotation.y = 1.2;
-    const c = caltrop(0.75); c.position.set(-0.65, -0.16, -0.5); c.rotation.y = 2.1;
-    const g = group(a, b, c);
-    g.rotation.x = 0.6;
+    const big = mesh(extrude(gearShape(12, 0.72, 0.58, 0.18), 0.22, 0.04), gold, { pos: [-0.35, -0.1, 0] });
+    const small = mesh(extrude(gearShape(9, 0.48, 0.37, 0.12), 0.2, 0.04), steel, { pos: [0.62, 0.46, -0.05], rot: [0, 0, 0.2] });
+    const g = group(big, small);
+    g.add(mesh(cyl(0.12, 0.12, 0.3), enamel(0x8b5cf6, 0.2), { pos: [-0.35, -0.1, 0], rot: [PI / 2, 0, 0] }));
+    // The wrench: open jaw at the top, ring at the bottom, across the teeth
+    const wrench = new THREE.Group();
+    wrench.add(mesh(rbox(0.16, 1.35, 0.1, 0.05), metal(0xe2e8ef, 0.12)));
+    const jaw = new THREE.Shape();
+    jaw.absarc(0, 0, 0.24, 0, 2 * PI, false);
+    const mouth = new THREE.Path(); mouth.moveTo(-0.09, 0.3); mouth.lineTo(-0.09, -0.02); mouth.lineTo(0.09, -0.02); mouth.lineTo(0.09, 0.3); mouth.lineTo(-0.09, 0.3);
+    jaw.holes.push(mouth);
+    wrench.add(mesh(extrude(jaw, 0.1, 0.03), metal(0xe2e8ef, 0.12), { pos: [0, 0.72, 0] }));
+    wrench.add(mesh(torus(0.17, 0.06), metal(0xe2e8ef, 0.12), { pos: [0, -0.72, 0] }));
+    wrench.position.set(0.18, 0.12, 0.25); wrench.rotation.z = -0.75;
+    g.add(wrench);
+    [[0.25, 0.25], [0.38, 0.05]].forEach(([x, y], k) => { const s = spark(r.light, 0.12 - k * 0.03); s.position.set(x, y, 0.4); g.add(s); });
+    g.rotation.x = 0.35;
     return g;
   },
+
 
   rally: (r) => {
     const shell = enamel(0x1d4ed8, 0.25);

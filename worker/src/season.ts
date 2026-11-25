@@ -21,7 +21,6 @@ import {
   COMPETITION_GRACE_HOURS,
   CHEST_RADIUS_M,
   MASTER_KEY_RADIUS_M,
-  TREASURE_MAP_HEAD_START_MINUTES,
   flagCount,
   eliminationsAt,
   CHALLENGES,
@@ -1349,72 +1348,128 @@ export async function prepareChestAreas(game: GameStorage, fetchFn: FetchLike, n
 }
 
 /**
- * Where a new chest of a city goes: a place from OpenStreetMap (parks, squares, monuments...;
- * streets in towns) away from the city's other chests, or, while the city has none, a point near
- * its club members within FALLBACK_CHEST_RADIUS_M.
+ * Where the new chests of a city go: places from OpenStreetMap (parks, squares, monuments...;
+ * streets in towns) away from the city's other chests and from each other, or, while the city has
+ * none, points near its club members within FALLBACK_CHEST_RADIUS_M.
  */
-async function chestSpotFor(game: GameStorage, city: { cityKey: string; lat: number; lng: number }, rarity: string, random: () => number, now: number): Promise<{ lat: number; lng: number }> {
+async function chestSpotsFor(game: GameStorage, city: { cityKey: string; lat: number; lng: number }, rarities: string[], random: () => number, now: number): Promise<Array<{ lat: number; lng: number }>> {
   const area = await game.getChestArea(city.cityKey);
-  if (area && area.spots.length > 0) {
-    const recent = await game.recentChestPoints(city.cityKey, new Date(now - 3 * 86_400_000).toISOString(), now);
-    const spot = pickSpot(area.spots, rarity, recent, random);
-    if (spot) return { lat: spot.lat, lng: spot.lng };
+  const avoid = area && area.spots.length > 0 ? await game.recentChestPoints(city.cityKey, new Date(now - 3 * 86_400_000).toISOString(), now) : [];
+  return rarities.map((rarity) => {
+    const spot = area && area.spots.length > 0 ? pickSpot(area.spots, rarity, avoid, random) : null;
+    const point = spot ? { lat: spot.lat, lng: spot.lng } : randomPointAround(city.lat, city.lng, 200, FALLBACK_CHEST_RADIUS_M, random);
+    avoid.push(point);
+    return point;
+  });
+}
+
+/** Chests of a club city on a competition day (on rest days: chestsPerDay). */
+export const COMPETITION_DAY_CHESTS = 1;
+/** Chests are planned for today and the next days (Faro shows the next ones before they appear). */
+export const CHEST_PLAN_DAYS = 3;
+/** Chests appear between these local hours (Madrid), spread over the day */
+const CHEST_FIRST_HOUR = 7;
+const CHEST_LAST_HOUR = 21;
+/** A chest lasts this long after appearing */
+const CHEST_LIFETIME_MS = 24 * 3600 * 1000;
+
+/**
+ * When the `count` chests of a day appear: one in each equal part of 07:00-21:00 (Madrid), at a
+ * random moment inside it (never at the very edges), so there's one every few hours but not at
+ * fixed times.
+ */
+export function chestTimes(day: string, count: number, random: () => number): number[] {
+  const first = localMidnight(day) + CHEST_FIRST_HOUR * 3600 * 1000;
+  const span = (CHEST_LAST_HOUR - CHEST_FIRST_HOUR) * 3600 * 1000;
+  const times: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const offset = 0.1 + 0.8 * random();
+    times.push(Math.round(first + (span * (k + offset)) / count));
   }
-  return randomPointAround(city.lat, city.lng, 200, FALLBACK_CHEST_RADIUS_M, random);
+  return times;
+}
+
+/** How many chests a city gets on a day: club ones by its members and the phase, open ones by its runners. */
+export function chestsForDay(audience: ChestAudience, members: number, restDay: boolean): number {
+  if (audience === 'open') return openChestsPerDay(members);
+  return restDay ? chestsPerDay(members) : COMPETITION_DAY_CHESTS;
 }
 
 /**
- * Spawns rest-phase chests in each city with club members, spread over the day (07:00-21:00
- * Madrid): at each tick a city gets a chest if it is behind its daily schedule.
+ * Plans the chests of every city for today and the next CHEST_PLAN_DAYS - 1 days: every city gets
+ * chests every day (club cities more on rest days; runners without a club, their open ones), at
+ * places, times and with contents decided now. They show up (and can be opened) at their time,
+ * never hidden. A day is planned once: cities that appear later get theirs on the next tick.
  */
-export async function spawnRestChests(storage: WorkerStorage, game: GameStorage, env: any, info: CycleInfo, now = Date.now()): Promise<number> {
-  if (!isRestLike(info.phase)) return 0;
-  const hour = localHour(now);
-  if (hour < 7 || hour >= 21) return 0;
-  const dayStart = localMidnight(localDate(now));
-  const dayFraction = Math.min(1, (now - (dayStart + 7 * 3600 * 1000)) / (14 * 3600 * 1000));
-  const restEnd = restWindow(info).end;
-  let spawned = 0;
-  for (const city of await game.clubMemberCities()) {
-    checkBudget('rest-day chests', 10);
-    const perDay = chestsPerDay(city.members);
-    const due = Math.ceil(perDay * dayFraction);
-    const already = await game.countChestsSpawnedSince(city.cityKey, new Date(dayStart).toISOString());
-    if (already >= due || already >= perDay) continue;
-    // `already` in the seed: two chests of the same day (or a retried tick with the same time) never
-    // land on the same spot with the same item
-    const random = seededRandom(`chest:${city.cityKey}:${now}:${already}`);
-    const rarity = pickRarity(random);
-    const itemId = pickRewardItem(rarity, random);
-    const spot = await chestSpotFor(game, city, rarity, random, now);
-    const expiresAt = new Date(Math.min(restEnd, now + 24 * 3600 * 1000)).toISOString();
-    const hidden = random() < 0.2;
-    // Everybody sees it an hour after it appears; whoever has the Mapa del Tesoro, at once
-    const publicAt = new Date(now + TREASURE_MAP_HEAD_START_MINUTES * 60 * 1000).toISOString();
-    await game.createChest({
-      competitionId: `cycle-${info.number}`,
-      name: `Cofre ${RARITY_INFO[rarity].label.toLowerCase()}`,
-      itemId, rarity, lat: spot.lat, lng: spot.lng, expiresAt, zone: city.city, hidden, cityKey: city.cityKey, publicAt,
-    });
-    spawned++;
-    if (!hidden && rarity === 'legendary') {
-      // In the chat of every club with members in that city
-      const clubIds = new Set([...(await game.getMemberships(city.memberIds)).values()].map((m) => m.clubId));
-      for (const clubId of clubIds) {
-        await game.postSystemMessage(clubId, `Ha aparecido un cofre legendario en ${city.city}. Se ve en el mapa a partir de las ${new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit' }).format(new Date(publicAt))}.`);
+export async function planChests(game: GameStorage, now = Date.now()): Promise<number> {
+  const club = await game.clubMemberCities();
+  const open = await game.openChestCities(new Date(now - OPEN_CHEST_ACTIVE_DAYS * 86_400_000).toISOString());
+  const today = localDate(now);
+  let planned = 0;
+  for (const [audience, cities] of [['club', club], ['open', open]] as const) {
+    for (const city of cities) {
+      for (let d = 0; d < CHEST_PLAN_DAYS; d++) {
+        const day = addDays(today, d);
+        const dayStart = localMidnight(day);
+        const dayEnd = localMidnight(addDays(day, 1));
+        // Past this day's last moment for chests: nothing to plan
+        if (dayEnd <= now) continue;
+        checkBudget('chest plan', 6);
+        if (await game.countPlannedChests(city.cityKey, audience, new Date(dayStart).toISOString(), new Date(dayEnd).toISOString()) > 0) continue;
+        const restDay = isRestLike(cycleAt(dayStart + 12 * 3600 * 1000).phase);
+        const count = chestsForDay(audience, city.members, restDay);
+        const random = seededRandom(`chest-plan:${audience}:${city.cityKey}:${day}`);
+        // Today's moments that already went by: those chests appear now, a minute apart
+        const times = chestTimes(day, count, random).map((t, i) => Math.max(t, now + i * 60_000));
+        const rarities = times.map(() => pickRarity(random));
+        const items = rarities.map((rarity) => (audience === 'open' ? pickOpenRewardItem(rarity, random) : pickRewardItem(rarity, random)));
+        const spots = await chestSpotsFor(game, city, rarities, random, now);
+        await game.createChests(times.map((time, i) => ({
+          competitionId: audience === 'open' ? 'open' : `cycle-${cycleAt(time).number}`,
+          name: `Cofre ${RARITY_INFO[rarities[i]].label.toLowerCase()}`,
+          itemId: items[i], rarity: rarities[i], lat: spots[i].lat, lng: spots[i].lng,
+          appearsAt: new Date(time).toISOString(),
+          expiresAt: new Date(time + CHEST_LIFETIME_MS).toISOString(),
+          zone: city.city, cityKey: city.cityKey, audience,
+        })));
+        planned += times.length;
       }
     }
-    if (!hidden && (rarity === 'epic' || rarity === 'legendary')) {
-      await notifyUsers(storage, env, city.memberIds, {
-        title: `🗝️ ¡Cofre ${RARITY_INFO[rarity].label.toLowerCase()} en ${city.city}!`,
-        // What is inside is a surprise until the chest is opened
-        body: '¿Qué habrá dentro? Pasa corriendo a menos de 250 m para descubrirlo.',
-        tag: `chest-${city.cityKey}-${now}`,
-        data: { type: 'chest_spawned' },
-      });
-    }
   }
-  return spawned;
+  return planned;
+}
+
+/**
+ * Chests that have just appeared: an epic or legendary club chest is announced to the club members
+ * of its city (and a legendary one also in their clubs' chats). Chests that appeared more than an
+ * hour ago (the cron was down) are only marked.
+ */
+export async function announceChests(storage: WorkerStorage, game: GameStorage, env: any, now = Date.now()): Promise<number> {
+  const due = await game.chestsToAnnounce(new Date(now).toISOString(), new Date(now - 3600 * 1000).toISOString());
+  if (due.length === 0) return 0;
+  await game.markChestsAnnounced(due.map((c) => c.id));
+  const loud = due.filter((c) => !c.stale && (c.audience ?? 'club') === 'club' && (c.rarity === 'epic' || c.rarity === 'legendary'));
+  if (loud.length === 0) return due.length;
+  const cities = new Map((await game.clubMemberCities()).map((c) => [c.cityKey, c]));
+  for (const chest of loud) {
+    const city = cities.get(chest.city_key);
+    if (!city) continue;
+    checkBudget('chest announcements', 6);
+    const label = RARITY_INFO[chest.rarity as Rarity]?.label.toLowerCase() ?? chest.rarity;
+    if (chest.rarity === 'legendary') {
+      // In the chat of every club with members in that city
+      const clubIds = new Set([...(await game.getMemberships(city.memberIds)).values()].map((m) => m.clubId));
+      for (const clubId of clubIds) await game.postSystemMessage(clubId, `Ha aparecido un cofre legendario en ${city.city}. ¡Corre a por él!`);
+    }
+    await notifyUsers(storage, env, city.memberIds, {
+      title: `🗝️ ¡Cofre ${label} en ${city.city}!`,
+      // What is inside is a surprise until the chest is opened
+      body: '¿Qué habrá dentro? Pasa corriendo a menos de 250 m para descubrirlo.',
+      tag: `chest-${chest.id}`,
+      data: { type: 'chest_spawned' },
+    });
+  }
+  return due.length;
 }
 
 /** A chest opened by a run: what was inside is only told here, once it is opened. */
@@ -1440,41 +1495,8 @@ function collectedChest(treasureId: string, treasureName: string, itemId: string
 }
 
 /**
- * A few chests a day for runners without a club, in their cities' places (07:00-21:00 Madrid,
- * spread over the day like the club ones). Any day, they have no competition and rest phases;
- * only global powers and cosmetics, visible at once, never hidden; they last 24 hours.
- */
-export async function spawnOpenChests(game: GameStorage, now = Date.now()): Promise<number> {
-  const hour = localHour(now);
-  if (hour < 7 || hour >= 21) return 0;
-  const dayStart = localMidnight(localDate(now));
-  const dayFraction = Math.min(1, (now - (dayStart + 7 * 3600 * 1000)) / (14 * 3600 * 1000));
-  let spawned = 0;
-  for (const city of await game.openChestCities(new Date(now - OPEN_CHEST_ACTIVE_DAYS * 86_400_000).toISOString())) {
-    checkBudget('open chests', 10);
-    const perDay = openChestsPerDay(city.members);
-    const due = Math.ceil(perDay * dayFraction);
-    const already = await game.countChestsSpawnedSince(city.cityKey, new Date(dayStart).toISOString(), 'open');
-    if (already >= due || already >= perDay) continue;
-    const random = seededRandom(`open-chest:${city.cityKey}:${now}:${already}`);
-    const rarity = pickRarity(random);
-    const itemId = pickOpenRewardItem(rarity, random);
-    const spot = await chestSpotFor(game, city, rarity, random, now);
-    await game.createChest({
-      competitionId: 'open',
-      name: `Cofre ${RARITY_INFO[rarity].label.toLowerCase()}`,
-      itemId, rarity, lat: spot.lat, lng: spot.lng,
-      expiresAt: new Date(now + 24 * 3600 * 1000).toISOString(),
-      zone: city.city, hidden: false, cityKey: city.cityKey, publicAt: null, audience: 'open',
-    });
-    spawned++;
-  }
-  return spawned;
-}
-
-/**
- * Collects the chests a run passes within 250 m of: club chests for club members (rest phase),
- * open chests for runners without a club (any day).
+ * Collects the chests a run passes within 250 m of (750 m with Llave Maestra): club chests for club
+ * members, open chests for runners without a club. Any day; only chests already out.
  */
 export async function collectChestsAlongRun(storage: WorkerStorage, game: GameStorage, userId: string, coords: Array<[number, number]>, routeId: string, now = Date.now(), audience: ChestAudience = 'club'): Promise<CollectedChest[]> {
   const collected: CollectedChest[] = [];
@@ -1482,13 +1504,11 @@ export async function collectChestsAlongRun(storage: WorkerStorage, game: GameSt
   const chests = await game.activeChests(now, audience);
   if (chests.length === 0) return collected;
   const effects = await game.activeEffects([userId], now);
-  const canSeeHidden = effects.some((e) => e.itemId === 'reveal');
   // Llave Maestra: chests open from further away
   const radius = effects.some((e) => e.itemId === 'master_key') ? MASTER_KEY_RADIUS_M : CHEST_RADIUS_M;
   let doubleLoot = effects.find((e) => e.itemId === 'double_loot') ?? null;
   const sample = coords.filter((_, i) => i % 3 === 0 || i === coords.length - 1);
   for (const chest of chests) {
-    if (Number(chest.hidden) === 1 && !canSeeHidden) continue;
     const near = sample.some((p) => haversineMeters(p, [Number(chest.lat), Number(chest.lng)]) <= radius);
     if (!near) continue;
     if (!(await game.claimChest(chest.id, userId))) continue;
@@ -1677,12 +1697,10 @@ async function runSeasonTick(storage: WorkerStorage, game: GameStorage, env: any
     }
   }
 
-  // 3. Chests: club chests in the rest phase; open chests (runners without a club) every day
+  // 3. Chests: planned ahead for every city (club and open ones), announced when they appear
   await game.expireChests(new Date(now).toISOString());
-  if (isRestLike(info.phase)) {
-    report.chests = await spawnRestChests(storage, game, env, info, now);
-  }
-  report.openChests = await spawnOpenChests(game, now);
+  report.chestsPlanned = await planChests(game, now);
+  report.chestsAppeared = await announceChests(storage, game, env, now);
 
   await game.expireItems(null, now);
 

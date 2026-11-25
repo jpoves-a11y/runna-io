@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import UserNotifications
 
 /// My club (or the invitations and requests while I have none), and every club action.
 /// Shared by the Club tab; reset on logout.
@@ -28,19 +29,54 @@ final class ClubModel {
     var invites: [ClubInvite] { detail?.invites ?? [] }
     var myRequests: [ClubOwnRequest] { detail?.myRequests ?? [] }
     var pendingCount: Int { (detail?.pendingRequests.count ?? 0) + (isMember ? 0 : invites.count) }
-    /// Chat messages I haven't read (the server's count, cleared while the chat is open).
-    var chatUnread: Int { chatReadLocally ? 0 : (detail?.unreadCount ?? 0) }
-    /// The chat was read on this device after the last load.
-    private var chatReadLocally = false
+    /// My chats: the club's and, during some competitions, "Competición" and "Mi equipo".
+    private(set) var chats: [ClubChatChannel] = []
+    /// Chats read on this device after the last load (nothing unread there until the next one)
+    private var readLocally: Set<String> = []
 
-    /// The chat is on screen: nothing unread until the next load.
-    func markChatRead() {
-        chatReadLocally = true
+    /// Unread messages of one chat.
+    func unread(_ channel: String) -> Int {
+        readLocally.contains(channel) ? 0 : (chats.first { $0.channel == channel }?.unread ?? 0)
+    }
+
+    /// Chat messages I haven't read, in all my chats: the Chat badge and the app icon's.
+    var chatUnread: Int {
+        chats.isEmpty ? (readLocally.isEmpty ? (detail?.unreadCount ?? 0) : 0) : chats.reduce(0) { $0 + unread($1.channel) }
+    }
+
+    /// During a competition with sides there are two chats to switch between.
+    var hasCompetitionChats: Bool { chats.count > 1 }
+
+    /// A chat is on screen: nothing unread there until the next load.
+    func markChatRead(_ channel: String = "club") {
+        readLocally.insert(channel)
+        syncAppBadge()
+    }
+
+    /// Fresh counts (after reading a chat, or a push).
+    func updateChats(_ response: ClubChatsResponse) {
+        chats = response.chats
+        readLocally = []
+        syncAppBadge()
+    }
+
+    func refreshChats() async {
+        guard let clubId = club?.id else { return }
+        if let response: ClubChatsResponse = try? await APIClient.shared.request("GET", "/api/clubs/\(clubId)/chats") {
+            updateChats(response)
+        }
+    }
+
+    /// The app icon shows the unread chat messages.
+    func syncAppBadge() {
+        let count = isMember ? chatUnread : 0
+        UNUserNotificationCenter.current().setBadgeCount(count, withCompletionHandler: nil)
     }
 
     func reset() {
         detail = nil
-        chatReadLocally = false
+        chats = []
+        readLocally = []
         isLoading = false
         hasLoaded = false
         errorMessage = nil
@@ -51,6 +87,7 @@ final class ClubModel {
     func load(force: Bool = false) async {
         if let cached = await mineResource.loadCached() {
             detail = cached
+            if chats.isEmpty { chats = cached.chats }
             hasLoaded = true
         }
         if !force && hasLoaded && mineResource.isFresh { return }
@@ -63,8 +100,10 @@ final class ClubModel {
             if let value = try await mineResource.fetch() {
                 withAnimation(.snappy) {
                     detail = value
-                    chatReadLocally = false
+                    chats = value.chats
+                    readLocally = []
                 }
+                syncAppBadge()
             }
             errorMessage = nil
         } catch is CancellationError {
