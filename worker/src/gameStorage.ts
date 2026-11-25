@@ -354,6 +354,8 @@ export async function applyGameSchema(db: Database): Promise<void> {
     error TEXT,
     refreshed_at TEXT NOT NULL
   )`);
+  // Version of the place rules (chestSpots.ts CHEST_AREA_VERSION): older cities are prepared again
+  await tryRun(db, sql`ALTER TABLE chest_areas ADD COLUMN version INTEGER NOT NULL DEFAULT 1`);
   await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_users_global_area ON users(global_area)`);
   await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_users_city ON users(country_code, city)`);
   await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_routes_validation ON routes(validation_status)`);
@@ -1797,19 +1799,19 @@ export class GameStorage {
   }
 
   /** All the cities' rows without their spots (to see which ones to prepare). */
-  async listChestAreas(): Promise<Array<{ cityKey: string; status: string; refreshedAt: string; spotsCount: number }>> {
-    const rows = await this.db.all<Row>(sql`SELECT city_key, status, refreshed_at, spots_count FROM chest_areas`);
-    return rows.map((r) => ({ cityKey: String(r.city_key), status: String(r.status), refreshedAt: String(r.refreshed_at), spotsCount: Number(r.spots_count ?? 0) }));
+  async listChestAreas(): Promise<Array<{ cityKey: string; status: string; refreshedAt: string; spotsCount: number; version: number }>> {
+    const rows = await this.db.all<Row>(sql`SELECT city_key, status, refreshed_at, spots_count, version FROM chest_areas`);
+    return rows.map((r) => ({ cityKey: String(r.city_key), status: String(r.status), refreshedAt: String(r.refreshed_at), spotsCount: Number(r.spots_count ?? 0), version: Number(r.version ?? 1) }));
   }
 
-  async saveChestArea(cityKey: string, data: { name: string; lat: number; lng: number; placeType: string; population: number | null; radiusM: number; mode: string; spots: ChestSpot[] }): Promise<void> {
+  async saveChestArea(cityKey: string, data: { name: string; lat: number; lng: number; placeType: string; population: number | null; radiusM: number; mode: string; spots: ChestSpot[]; version: number }): Promise<void> {
     const now = nowIso();
-    await this.db.run(sql`INSERT INTO chest_areas (city_key, name, lat, lng, place_type, population, radius_m, mode, spots, spots_count, status, error, refreshed_at)
+    await this.db.run(sql`INSERT INTO chest_areas (city_key, name, lat, lng, place_type, population, radius_m, mode, spots, spots_count, status, error, refreshed_at, version)
       VALUES (${cityKey}, ${data.name}, ${data.lat}, ${data.lng}, ${data.placeType}, ${data.population}, ${data.radiusM}, ${data.mode},
-        ${JSON.stringify(data.spots)}, ${data.spots.length}, 'ready', NULL, ${now})
+        ${JSON.stringify(data.spots)}, ${data.spots.length}, 'ready', NULL, ${now}, ${data.version})
       ON CONFLICT(city_key) DO UPDATE SET name = excluded.name, lat = excluded.lat, lng = excluded.lng, place_type = excluded.place_type,
         population = excluded.population, radius_m = excluded.radius_m, mode = excluded.mode, spots = excluded.spots,
-        spots_count = excluded.spots_count, status = 'ready', error = NULL, refreshed_at = excluded.refreshed_at`);
+        spots_count = excluded.spots_count, status = 'ready', error = NULL, refreshed_at = excluded.refreshed_at, version = excluded.version`);
   }
 
   /** A failed attempt (retried after CHEST_AREA_RETRY_MS). A city that had places keeps using them. */

@@ -39,7 +39,7 @@ import {
 import { computeAwards, runDaysByUser, type AwardCandidate, type AwardContext } from './awards';
 import { CHAT_RETENTION_DAYS } from './clubChat';
 import { checkBudget, countSubrequest, subrequestsLeft, SubrequestBudgetError } from './db';
-import { prepareArea, pickSpot, CHEST_AREA_REFRESH_MS, CHEST_AREA_RETRY_MS, type FetchLike } from './chestSpots';
+import { prepareArea, pickSpot, CHEST_AREA_REFRESH_MS, CHEST_AREA_RETRY_MS, CHEST_AREA_VERSION, type FetchLike } from './chestSpots';
 import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
 import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow } from './gameStorage';
 import { haversineMeters } from './antiCheat';
@@ -1300,19 +1300,21 @@ export async function prepareChestAreas(game: GameStorage, fetchFn: FetchLike, n
       if (!area) return { city, priority: 0, age: Infinity };
       const age = now - Date.parse(area.refreshedAt);
       if (area.status === 'failed') return age >= CHEST_AREA_RETRY_MS ? { city, priority: area.spotsCount > 0 ? 2 : 1, age } : null;
+      // Places chosen with older rules: prepared again at once (they keep being used meanwhile)
+      if (area.version < CHEST_AREA_VERSION) return { city, priority: 2, age };
       return age >= CHEST_AREA_REFRESH_MS ? { city, priority: 3, age } : null;
     })
     .filter((d): d is NonNullable<typeof d> => d !== null)
     .sort((a, b) => a.priority - b.priority || b.city.members - a.city.members || b.age - a.age);
   const next = due[0];
   if (!next) return { prepared: null, pending: 0 };
-  // Up to 3 queries, each of which may go through all 4 Overpass servers, and 2 writes
-  checkBudget('chest areas', 16);
+  // Up to 4 queries, each of which may go through all 4 Overpass servers, and 2 writes
+  checkBudget('chest areas', 20);
   try {
     const area = await prepareArea({ name: next.city.city, lat: next.city.lat, lng: next.city.lng }, fetchFn, () => countSubrequest());
     await game.saveChestArea(next.city.cityKey, {
       name: area.place.name, lat: area.place.lat, lng: area.place.lng, placeType: area.place.placeType,
-      population: area.place.population, radiusM: area.radiusM, mode: area.mode, spots: area.spots,
+      population: area.place.population, radiusM: area.radiusM, mode: area.mode, spots: area.spots, version: CHEST_AREA_VERSION,
     });
     console.log(`[CHESTS] ${next.city.cityKey}: ${area.spots.length} places (${area.mode}, ${area.radiusM} m around ${area.place.name})`);
     return { prepared: next.city.cityKey, spots: area.spots.length, mode: area.mode, radiusM: area.radiusM, pending: due.length - 1 };
