@@ -1268,9 +1268,12 @@ export async function finishCycle(storage: WorkerStorage, game: GameStorage, env
 
 // ─── Rest phase: chests ──────────────────────────────────────────────────────
 
+/** Most chests a club city gets on a rest day */
+export const MAX_CHESTS_PER_DAY = 12;
+
 /** Chests a city gets per rest day, by the number of club members living there. */
 export function chestsPerDay(members: number): number {
-  return Math.min(8, 2 + Math.floor(members / 5));
+  return Math.min(MAX_CHESTS_PER_DAY, 2 + Math.floor(members / 5));
 }
 
 /** Random point at `minM`..`maxM` metres from a centre. */

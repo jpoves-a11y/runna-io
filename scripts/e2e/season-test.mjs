@@ -696,7 +696,7 @@ const tomorrowStart = new Date(madridMidnight(tomorrowYmd)).toISOString();
 const spawnedChests = await all("select id, lat, lng, spawned_at from treasures where city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at < ?", [tomorrowStart]);
 const chests = spawnedChests.length;
 const planned = await all("select id, spawned_at from treasures where city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at >= ?", [tomorrowStart]);
-check('rest days: chests around the club city every day, capped per day', chests >= 2 && chests <= 8, chests);
+check('rest days: chests around the club city every day, capped per day', chests >= 2 && chests <= 12, chests);
 check('chests are planned for the next days too, once', planned.length >= 2 && planTick.chestsPlanned >= chests + planned.length && replan.chestsPlanned === 0, { planned: planned.length, planTick: planTick.chestsPlanned, replan: replan.chestsPlanned });
 const atAPlace = (c) => zaragozaSpots.some((p) => Math.abs(p.lat - Number(c.lat)) < 1e-9 && Math.abs(p.lng - Number(c.lng)) < 1e-9);
 check('chests appear exactly at places of the city (not random points)', spawnedChests.every(atAPlace), spawnedChests);
