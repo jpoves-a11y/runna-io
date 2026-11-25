@@ -348,8 +348,8 @@ private struct ConquestInboxView: View {
                 tauntVictim = victim
             }
             let treasures: [TreasureLine] = TreasureLine.merge(live: [], server: result.treasuresCollected)
-            if !treasures.isEmpty {
-                TreasuresCard(treasures: treasures)
+            if !treasures.isEmpty || result.chestsBlocked > 0 {
+                TreasuresCard(treasures: treasures, blocked: result.chestsBlocked)
             }
         } else if isLoading {
             RunStatusCard(

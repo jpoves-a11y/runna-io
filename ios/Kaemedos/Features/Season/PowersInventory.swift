@@ -129,7 +129,7 @@ struct InventorySheet: View {
             Label("**Global**: extras para tu mapa global, como mucho 1 km² más por carrera.", systemImage: "globe.europe.africa.fill")
             Label("**Cofres**: para encontrar y abrir cofres (salen todos los días). Duran dos semanas.", systemImage: "gift.fill")
             Label("Los de **siguiente carrera** se activan antes de salir: cuentan para la carrera que empieces después. Si cambias de idea, puedes guardarlos otra vez.", systemImage: "figure.run")
-            Label("Si no los usas, los de defensa caducan a los 3 días y el resto a los 7. Puedes tener \(model.cap) de cada.", systemImage: "hourglass")
+            Label("Si no los usas, los de defensa caducan a los 3 días y el resto a los 7. Puedes tener \(model.cap) en total: con el inventario lleno no se abren cofres.", systemImage: "hourglass")
         }
         .font(.footnote)
         .foregroundStyle(.secondary)

@@ -438,7 +438,7 @@ const passive = await grant(ana, 'streak_saver');
 check('passive items are not activated', (await call('POST', `/api/inventory/${passive}/activate`, { token: ana.token, body: {} })).status === 400);
 for (let i = 0; i < 3; i++) await grant(gala, 'magnet');
 const capRes = await call('GET', '/api/inventory', { token: gala.token });
-check('inventory listing', capRes.data.items.filter((i) => i.status === 'available').length === 3 && capRes.data.cap === 3, capRes.data.items.length);
+check('inventory listing (5 powers at most, all kinds together)', capRes.data.items.filter((i) => i.status === 'available').length === 3 && capRes.data.cap === 5, capRes.data.items.length);
 
 // Club rules during the competition
 const leave = await call('POST', `/api/clubs/${club1.id}/leave`, { token: ben.token, body: {} });
@@ -734,6 +734,16 @@ check('challenges progress with the run', progressed.filter((c) => c.type !== 'c
 check('challenges this run satisfies are completed', progressed.filter((c) => completable.includes(c.type)).every((c) => c.status === 'completed' && !!c.rewardItem), progressed.map((c) => [c.type, c.status]));
 const after = (await call('GET', '/api/inventory', { token: ana.token })).data.items.length;
 check('chest and challenge rewards land in the inventory', after > before, { before, after });
+
+// A full inventory (5 powers) opens no chest: it stays for others and the run says so
+for (let i = 0; i < 5; i++) await grant(ben, 'wide_trail');
+const fullMap = (await call('GET', '/api/season/map', { token: ben.token })).data;
+check('the map says when the inventory is full', fullMap.inventory?.full === true && fullMap.inventory.cap === 5, fullMap.inventory);
+const other = visible.find((c) => c.id !== chest.id);
+const fullRun = await run(ben, 'Inventario lleno', loop(other.lat, other.lng + 0.022, 1670, 400), morning + 6 * 3600_000, { speedKmh: 11.25 });
+check('full inventory: the chest is not opened, and the run says so', !(fullRun.result.treasuresCollected ?? []).some((t) => t.treasureId === other.id) && fullRun.result.chestsBlocked >= 1, { collected: fullRun.result.treasuresCollected, blocked: fullRun.result.chestsBlocked });
+check('full inventory: the chest stays for others', (await call('GET', '/api/season/map', { token: ana.token })).data.chests.some((c) => c.id === other.id));
+await db.execute({ sql: "update user_powers set status = 'used' where user_id = ? and power_type = 'wide_trail' and status = 'available'", args: [ben.id] });
 
 // Global boosts
 const explorer = await grant(ben, 'explorer');

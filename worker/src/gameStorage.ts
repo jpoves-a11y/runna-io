@@ -1757,7 +1757,7 @@ export class GameStorage {
   // ─── Inventory (user_powers) ──────────────────────────────────────────────
 
   /**
-   * Gives a user an item. Powers: if they already hold INVENTORY_CAP unused items of the same scope,
+   * Gives a user an item. Powers: if they already hold INVENTORY_CAP unused powers (all kinds together),
    * the oldest one is discarded. Cosmetics: owned forever (granting one twice does nothing).
    * Returns the id of the inventory row (null for an already-owned cosmetic) and what was discarded.
    */
@@ -1775,7 +1775,7 @@ export class GameStorage {
     await this.expireItems(userId, now);
     let discarded: string | null = null;
     const held = await this.db.all<Row>(sql`SELECT id, power_type FROM user_powers WHERE user_id = ${userId} AND status = 'available'
-      AND COALESCE(scope, 'competition') = ${def.scope} ORDER BY created_at ASC`);
+      AND COALESCE(scope, 'competition') != 'cosmetic' ORDER BY created_at ASC`);
     if (held.length >= INVENTORY_CAP) {
       const oldest = held[0];
       await this.db.run(sql`UPDATE user_powers SET status = 'expired', used_at = ${new Date(now).toISOString()} WHERE id = ${oldest.id}`);
@@ -1795,6 +1795,14 @@ export class GameStorage {
     await this.db.run(sql`INSERT INTO user_powers (id, user_id, competition_id, power_type, treasure_id, status, scope, source, unused_expires_at, created_at)
       VALUES (${id}, ${userId}, ${SEASON_INVENTORY}, ${itemId}, ${sourceId}, 'available', ${def.scope}, ${source}, ${unusedExpiresAt}, ${new Date(now).toISOString()})`);
     return { id, discarded };
+  }
+
+  /** Unused powers held (cosmetics don't count): the inventory is full at INVENTORY_CAP. */
+  async heldPowersCount(userId: string, now = Date.now()): Promise<number> {
+    await this.expireItems(userId, now);
+    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM user_powers WHERE user_id = ${userId} AND status = 'available'
+      AND COALESCE(scope, 'competition') != 'cosmetic'`);
+    return Number(rows[0]?.n ?? 0);
   }
 
   /** End of a competition: competition effects waiting for a run don't carry over to the next one. */

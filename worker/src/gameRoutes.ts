@@ -871,7 +871,12 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
         open: audience === 'open',
       }));
     }
-    return c.json({ cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, flags, chests, participating: !!participation });
+    // A full inventory opens no chest: the map says so
+    const held = await game.heldPowersCount(userId, now);
+    return c.json({
+      cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, flags, chests, participating: !!participation,
+      inventory: { held, cap: INVENTORY_CAP, full: held >= INVENTORY_CAP },
+    });
   }));
 
   // ── Inventory ──

@@ -1395,8 +1395,13 @@ struct SeasonMapResponse: Decodable {
     let chests: [Chest]
     /// Banderas: the flags and who holds them.
     let flags: [CompetitionFlag]
+    /// Full inventory (5 powers): chests can't be opened
+    let inventoryFull: Bool
+    let inventoryCap: Int
 
-    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests, flags }
+    private struct InventoryRef: Decodable { let full: Bool?; let cap: Int? }
+
+    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests, flags, inventory }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1406,6 +1411,9 @@ struct SeasonMapResponse: Decodable {
         fortifications = (try? c.decodeIfPresent([Fortification].self, forKey: .fortifications)) ?? []
         chests = (try? c.decodeIfPresent([Chest].self, forKey: .chests)) ?? []
         flags = (try? c.decodeIfPresent([CompetitionFlag].self, forKey: .flags)) ?? []
+        let inventory = try? c.decodeIfPresent(InventoryRef.self, forKey: .inventory)
+        inventoryFull = inventory?.full ?? false
+        inventoryCap = inventory?.cap ?? 5
     }
 }
 

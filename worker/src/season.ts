@@ -27,6 +27,7 @@ import {
   CHALLENGES_PER_REST,
   ITEMS,
   RARITY_INFO,
+  INVENTORY_CAP,
   pickRewardItem,
   pickOpenRewardItem,
   pickRarity,
@@ -1503,27 +1504,37 @@ function collectedChest(treasureId: string, treasureName: string, itemId: string
  * Collects the chests a run passes within 250 m of (750 m with Llave Maestra): club chests for club
  * members, open chests for runners without a club. Any day; only chests already out.
  */
-export async function collectChestsAlongRun(storage: WorkerStorage, game: GameStorage, userId: string, coords: Array<[number, number]>, routeId: string, now = Date.now(), audience: ChestAudience = 'club'): Promise<CollectedChest[]> {
+export async function collectChestsAlongRun(storage: WorkerStorage, game: GameStorage, userId: string, coords: Array<[number, number]>, routeId: string, now = Date.now(), audience: ChestAudience = 'club'): Promise<{ chests: CollectedChest[]; blocked: number }> {
   const collected: CollectedChest[] = [];
-  if (coords.length === 0) return collected;
+  let blocked = 0;
+  if (coords.length === 0) return { chests: collected, blocked };
   const chests = await game.activeChests(now, audience);
-  if (chests.length === 0) return collected;
+  if (chests.length === 0) return { chests: collected, blocked };
   const effects = await game.activeEffects([userId], now);
   // Llave Maestra: chests open from further away
   const radius = effects.some((e) => e.itemId === 'master_key') ? MASTER_KEY_RADIUS_M : CHEST_RADIUS_M;
   let doubleLoot = effects.find((e) => e.itemId === 'double_loot') ?? null;
   const sample = coords.filter((_, i) => i % 3 === 0 || i === coords.length - 1);
-  for (const chest of chests) {
-    const near = sample.some((p) => haversineMeters(p, [Number(chest.lat), Number(chest.lng)]) <= radius);
-    if (!near) continue;
+  const near = chests.filter((chest) => sample.some((p) => haversineMeters(p, [Number(chest.lat), Number(chest.lng)]) <= radius));
+  if (near.length === 0) return { chests: collected, blocked };
+  // A full inventory opens no chest: it stays for others, and the run says so
+  let room = INVENTORY_CAP - (await game.heldPowersCount(userId, now));
+  for (const chest of near) {
+    if (room <= 0) {
+      blocked++;
+      continue;
+    }
     if (!(await game.claimChest(chest.id, userId))) continue;
     const grant = await game.grantItem(userId, chest.power_type, 'chest', chest.id, now);
+    if (ITEMS[chest.power_type]?.scope !== 'cosmetic') room--;
     collected.push(collectedChest(chest.id, chest.name, chest.power_type, chest.rarity, chest.zone ?? null));
-    // Botín Doble: the first chest opened with it gives a second item of the same rarity
-    if (doubleLoot) {
+    // Botín Doble: the first chest opened with it gives a second item of the same rarity (if there's
+    // room for it; else the Botín Doble waits for another chest)
+    if (doubleLoot && room > 0) {
       const pick = audience === 'open' ? pickOpenRewardItem : pickRewardItem;
       const extra = pick(chest.rarity as Rarity, seededRandom(`double-loot:${chest.id}`), await game.ownedCosmetics(userId));
       await game.grantItem(userId, extra, 'chest', chest.id, now);
+      if (ITEMS[extra]?.scope !== 'cosmetic') room--;
       collected.push(collectedChest(`${chest.id}:extra`, chest.name, extra, chest.rarity, chest.zone ?? null));
       await game.consumeItems([doubleLoot.id], now);
       doubleLoot = null;
@@ -1541,7 +1552,7 @@ export async function collectChestsAlongRun(storage: WorkerStorage, game: GameSt
       });
     } catch (_) { /* feed is best effort */ }
   }
-  return collected;
+  return { chests: collected, blocked };
 }
 
 // ─── Rest phase: challenges ──────────────────────────────────────────────────

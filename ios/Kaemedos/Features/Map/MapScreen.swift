@@ -45,7 +45,7 @@ struct MapScreen: View {
             UserProfileSheet(userId: selected.id)
         }
         .sheet(item: $selectedChest) { chest in
-            ChestDetailView(chest: chest)
+            ChestDetailView(chest: chest, inventoryFull: model.inventoryFull)
         }
         .sheet(isPresented: $router.showPowers, onDismiss: { Task { await season.load(force: true) } }) {
             InventorySheet()

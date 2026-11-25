@@ -433,6 +433,10 @@ struct TreasureLine: Identifiable, Hashable {
 /// opens in 3D and the power inside appears. Once opened on this iPhone, the row shows the power.
 struct TreasuresCard: View {
     let treasures: [TreasureLine]
+    /// Chests passed by with a full inventory (not opened)
+    var blocked = 0
+    /// The closed chests open by themselves, one after another, when the result shows up
+    var autoOpen = true
 
     @State private var opening: TreasureLine?
     /// Opened in this view (RevealedChests remembers them across launches)
@@ -440,7 +444,18 @@ struct TreasuresCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            SectionHeader(title: treasures.count == 1 ? "Cofre abierto" : "\(treasures.count) cofres abiertos")
+            SectionHeader(title: treasures.isEmpty ? "Cofres" : treasures.count == 1 ? "Cofre abierto" : "\(treasures.count) cofres abiertos")
+            if blocked > 0 {
+                Label(blocked == 1
+                      ? "Has pasado por un cofre, pero tienes el inventario lleno (5 poderes): no se ha abierto y se queda para otro. Usa algún poder para hacer hueco."
+                      : "Has pasado por \(blocked) cofres, pero tienes el inventario lleno (5 poderes): no se han abierto y se quedan para otros. Usa algún poder para hacer hueco.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .card(padding: DS.Spacing.m)
+            }
+            if !treasures.isEmpty {
             VStack(spacing: 0) {
                 ForEach(Array(treasures.enumerated()), id: \.element.id) { index, treasure in
                     if index > 0 {
@@ -455,20 +470,33 @@ struct TreasuresCard: View {
                 }
             }
             .card(padding: 0)
+            }
         }
         .onAppear {
-            if treasures.contains(where: isClosed) { ChestOpening3DView.prewarm() }
+            guard treasures.contains(where: isClosed) else { return }
+            ChestOpening3DView.prewarm()
+            // Right after "your run is up": the first chest opens by itself
+            if autoOpen { openNext(after: 0.9) }
         }
         .fullScreenCover(item: $opening) { treasure in
             ChestRevealOverlay(
                 content: ChestContent(itemId: treasure.itemId ?? "", name: treasure.name, rarity: treasure.rarity, detail: treasure.detail),
-                buttonTitle: "Genial"
+                buttonTitle: "Guardar en mis poderes"
             ) {
                 RevealedChests.insert(treasure.id)
                 openedNow.insert(treasure.id)
                 opening = nil
+                // The next closed one, if any
+                if autoOpen { openNext(after: 0.6) }
             }
             .presentationBackground(.black)
+        }
+    }
+
+    private func openNext(after seconds: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            guard opening == nil, let next = treasures.first(where: isClosed) else { return }
+            opening = next
         }
     }
 

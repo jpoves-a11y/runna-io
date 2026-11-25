@@ -53,6 +53,8 @@ export interface RunPipelineResult {
     explored?: number;
   };
   chests: CollectedChest[];
+  /** Chests passed by with a full inventory */
+  chestsBlocked?: number;
   challengesCompleted: Array<{ type: string; rewardItem: string }>;
   ranTogetherWith: string[];
   /** This run made an inactive member enter their club's running competition */
@@ -668,7 +670,9 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
   const streak = await updateStreak(game, userId, route.startedAt);
   const membership = await game.getMembership(userId);
   if (membership) {
-    result.chests = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now);
+    const opened = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now);
+    result.chests = opened.chests;
+    result.chestsBlocked = opened.blocked;
   }
   if (membership && isRestLike(info.phase)) {
     const clubmates = (await game.getClubMemberIds(membership.clubId)).filter((id) => id !== userId);
@@ -683,7 +687,9 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     });
   } else if (!membership) {
     // Runners without a club: the few open chests of their city
-    result.chests = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now, 'open');
+    const opened = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now, 'open');
+    result.chests = opened.chests;
+    result.chestsBlocked = opened.blocked;
   }
   if (result.ranTogetherWith.length > 0) await storage.updateRouteRanTogether(routeId, result.ranTogetherWith);
 
@@ -701,6 +707,8 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       : null,
     streak: streak.days,
     streakSaverUsed: streak.saverUsed,
+    // Chests passed by with a full inventory (not opened: they stay for others)
+    chestsBlocked: result.chestsBlocked ?? 0,
     challengesCompleted: result.challengesCompleted.map((c) => ({
       type: c.type, title: CHALLENGES[c.type as keyof typeof CHALLENGES]?.title ?? c.type,
       rewardItem: c.rewardItem, rewardName: ITEMS[c.rewardItem]?.name ?? c.rewardItem,

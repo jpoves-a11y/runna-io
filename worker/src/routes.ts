@@ -3479,6 +3479,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         competitionNote: meta.competitionNote ?? null,
         challengesCompleted: meta.challengesCompleted ?? [],
         streak: meta.streak ?? null,
+        chestsBlocked: Number(meta.chestsBlocked) || 0,
         territoryError: meta.territoryError === true,
       });
     } catch (error: any) {

@@ -445,6 +445,8 @@ struct ChestMarker: View {
 
 struct ChestDetailView: View {
     let chest: Chest
+    /// 5 powers already: it can't be opened until one is used
+    var inventoryFull = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -462,6 +464,12 @@ struct ChestDetailView: View {
             Label("Contenido sorpresa: descubrirás qué poder lleva cuando lo abras.", systemImage: "questionmark.circle")
                 .font(.subheadline)
                 .fixedSize(horizontal: false, vertical: true)
+            if inventoryFull {
+                Label("Tienes el inventario lleno (5 poderes): usa alguno para poder abrir cofres. Si pasas sin hueco, el cofre se queda para otro.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if chest.isUpcoming, let appears = chest.appearsDate {
                 // Seen early (Faro, Mapa del Tesoro): it can't be opened until it comes out
                 Label("Sale \(Format.relative(appears)), a las \(appears.formatted(.dateTime.hour().minute().locale(Locale(identifier: "es_ES")))). Hasta entonces no se puede abrir: solo tú sabes que va a estar aquí.", systemImage: "hourglass")

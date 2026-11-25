@@ -334,8 +334,11 @@ export function itemUsableInMode(item: ItemDefinition, mode: CompetitionMode): b
   return true;
 }
 
-/** Items of a scope you can hold unused at the same time; a new one replaces the oldest. */
-export const INVENTORY_CAP = 3;
+/**
+ * Powers you can hold unused at the same time, all kinds together (cosmetics don't count). With a
+ * full inventory chests can't be opened (they stay for others); other rewards replace the oldest.
+ */
+export const INVENTORY_CAP = 5;
 
 /** Explorer: extra global area = min(newArea * 0.5, cap) */
 export const EXPLORER_BONUS_RATIO = 0.5;

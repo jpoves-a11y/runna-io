@@ -435,10 +435,12 @@ struct ConquestResult: Decodable {
     let competitionNote: String?
     let challengesCompleted: [CompletedChallenge]
     let streak: Int?
+    /// Chests passed by with a full inventory: not opened (they stay for others)
+    let chestsBlocked: Int
 
     enum CodingKeys: String, CodingKey {
         case ready, newAreaConquered, areaStolen, victims, treasuresCollected
-        case validation, globalArea, competition, joinedCompetition, competitionNote, challengesCompleted, streak
+        case validation, globalArea, competition, joinedCompetition, competitionNote, challengesCompleted, streak, chestsBlocked
     }
 
     init(from decoder: Decoder) throws {
@@ -459,6 +461,7 @@ struct ConquestResult: Decodable {
         competitionNote = c.string(.competitionNote)
         challengesCompleted = (try? c.decodeIfPresent([CompletedChallenge].self, forKey: .challengesCompleted)) ?? []
         streak = c.int(.streak)
+        chestsBlocked = c.int(.chestsBlocked) ?? 0
     }
 
     /// The run doesn't count (anti-cheat)
