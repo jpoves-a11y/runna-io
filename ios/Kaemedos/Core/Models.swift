@@ -480,10 +480,14 @@ struct CollectedTreasure: Decodable, Identifiable, Hashable {
     let treasureName: String
     let powerType: String?
     let rarity: String
+    /// What was inside (only told once the chest is opened): revealed with the chest animation
+    var powerName: String? = nil
+    var powerEmoji: String? = nil
+    var powerDescription: String? = nil
 
     var id: String { treasureId }
 
-    enum CodingKeys: String, CodingKey { case treasureId, treasureName, powerType, rarity }
+    enum CodingKeys: String, CodingKey { case treasureId, treasureName, powerType, rarity, powerName, powerEmoji, powerDescription }
 
     init(treasureId: String, treasureName: String, powerType: String?, rarity: String) {
         self.treasureId = treasureId
@@ -498,6 +502,9 @@ struct CollectedTreasure: Decodable, Identifiable, Hashable {
         treasureName = c.string(.treasureName) ?? "Tesoro"
         powerType = c.string(.powerType)
         rarity = c.string(.rarity) ?? "common"
+        powerName = c.string(.powerName)
+        powerEmoji = c.string(.powerEmoji)
+        powerDescription = c.string(.powerDescription)
     }
 }
 

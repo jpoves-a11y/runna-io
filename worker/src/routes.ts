@@ -302,6 +302,8 @@ export async function generateFeedEvents(
         treasureId: t.treasureId || t.id,
         treasureName: t.treasureName || t.name,
         powerType: t.powerType,
+        // What was inside: the app reveals it with the chest-opening animation
+        ...(t.powerName ? { powerName: t.powerName, powerEmoji: t.powerEmoji, powerDescription: t.powerDescription, powerScope: t.powerScope } : {}),
         rarity: t.rarity,
       }));
     }

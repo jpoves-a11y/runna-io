@@ -617,6 +617,7 @@ check('a chest is hidden from everybody during its first hour (Mapa del Tesoro)'
 await db.execute({ sql: 'update treasures set public_at = ?', args: [new Date(Date.now() - 60_000).toISOString()] });
 const visible = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
 check('club members see the chests (not the hidden ones)', visible.length >= 1 && visible.every((c) => !c.hidden), visible.length);
+check('chests on the map do not tell what is inside until opened', visible.every((c) => c.item === undefined && c.itemId === undefined && c.rarity), visible[0]);
 const nonMember = (await call('GET', '/api/season/map', { token: (await register('ivan', 'Iván', '#E78AC3')).token })).data.chests;
 check('people without a club (and without a city) see no club chests', nonMember.length === 0);
 const challenges = (await call('GET', '/api/challenges', { token: ana.token })).data.challenges;
@@ -630,6 +631,8 @@ const big = loop(chest.lat, chest.lng + 0.022, 1670, 400); // radius 1.67 km: pa
 const before = (await call('GET', '/api/inventory', { token: ana.token })).data.items.length;
 const restRun = await run(ana, 'Tirada larga del descanso', big, morning, { speedKmh: 11.25 });
 check('a run through a chest collects it', restRun.result.treasuresCollected?.some((t) => t.treasureId === chest.id), restRun.result.treasuresCollected);
+const openedClubChest = restRun.result.treasuresCollected?.find((t) => t.treasureId === chest.id);
+check('opening a chest reveals its power (name, emoji, description)', openedClubChest?.powerType && openedClubChest.powerName && openedClubChest.powerEmoji && typeof openedClubChest.powerDescription === 'string', openedClubChest);
 const progressed = (await call('GET', '/api/challenges', { token: ana.token })).data.challenges;
 // This run (10.5 km at 5:20/km from 07:30, new area) completes these; the others only progress
 const completable = ['early_bird', 'long_run', 'fast_5k', 'new_ground'];
@@ -681,13 +684,15 @@ check('open chests: a city with runners without a club gets a few a day (1 for o
 const olgaChests = (await call('GET', '/api/season/map', { token: olga.token })).data.chests;
 const openChest = olgaChests[0];
 check('open chests: the runner without a club sees them at once, marked open', olgaChests.length === 1 && openChest.open === true && !openChest.hidden, olgaChests);
-check('open chests: only global powers or cosmetics inside', ['global', 'cosmetic'].includes(openChest?.item?.scope), openChest?.item);
+check('open chests: the map does not tell what is inside', openChest && openChest.item === undefined && openChest.itemId === undefined, openChest);
 check('open chests: at one of the city places', zaragozaSpots.some((p) => Math.abs(p.lat - openChest.lat) < 1e-9 && Math.abs(p.lng - openChest.lng) < 1e-9), openChest);
 const anaChestIds = new Set((await call('GET', '/api/season/map', { token: ana.token })).data.chests.map((c) => c.id));
 check('open chests: club members do not see them (they have their own)', !anaChestIds.has(openChest.id));
 const olgaItemsBefore = (await call('GET', '/api/inventory', { token: olga.token })).data.items.length;
 const olgaRun = await run(olga, 'Al cofre', loop(openChest.lat, openChest.lng + 0.022, 1670, 400), Date.now() - DAY);
 check('open chests: a run through one collects it', olgaRun.result.treasuresCollected?.some((t) => t.treasureId === openChest.id), olgaRun.result.treasuresCollected);
+const opened = olgaRun.result.treasuresCollected?.find((t) => t.treasureId === openChest.id);
+check('open chests: what was inside comes with the run (only global powers or cosmetics)', ['global', 'cosmetic'].includes(opened?.powerScope) && opened?.powerName && opened?.powerEmoji && opened?.powerType, opened);
 const olgaItems = (await call('GET', '/api/inventory', { token: olga.token })).data.items;
 check('open chests: its item lands in the inventory', olgaItems.length === olgaItemsBefore + 1, { before: olgaItemsBefore, after: olgaItems.length });
 
