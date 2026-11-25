@@ -410,6 +410,9 @@ struct ProfileView: View {
             SocialSettingsLabel(title: "Versión", systemImage: "info.circle", value: Bundle.main.appVersion)
         } header: {
             SocialSectionHeader(title: "Información")
+        } footer: {
+            // ODbL: the chests' places come from OpenStreetMap (worker/src/chestSpots.ts)
+            Text("Los lugares de los cofres usan datos de [© OpenStreetMap contributors](https://www.openstreetmap.org/copyright).")
         }
         .listRowBackground(Color.surface)
     }
