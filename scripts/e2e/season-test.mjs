@@ -618,7 +618,7 @@ await db.execute({ sql: 'update treasures set public_at = ?', args: [new Date(Da
 const visible = (await call('GET', '/api/season/map', { token: ana.token })).data.chests;
 check('club members see the chests (not the hidden ones)', visible.length >= 1 && visible.every((c) => !c.hidden), visible.length);
 const nonMember = (await call('GET', '/api/season/map', { token: (await register('ivan', 'Iván', '#E78AC3')).token })).data.chests;
-check('people without a club see no chests', nonMember.length === 0);
+check('people without a club (and without a city) see no club chests', nonMember.length === 0);
 const challenges = (await call('GET', '/api/challenges', { token: ana.token })).data.challenges;
 check('3 challenges per rest phase', challenges.length === 3, challenges.map((c) => c.type));
 // A 10.5 km run at 5:20/km yesterday at 07:30 Madrid, passing by a chest
@@ -667,6 +667,29 @@ check('deleting a run rebuilds the global map without it', del.status === 200 &&
 const delAccount = await call('DELETE', `/api/users/${dani.id}`, { token: dani.token });
 const club2After = await one('select owner_id, member_count from clubs where id = ?', [club2.id]);
 check('deleting the owner hands the club over', delAccount.status === 200 && [eva.id, fede.id].includes(club2After.owner_id) && Number(club2After.member_count) === 2, { status: delAccount.status, club2After });
+
+// ───────────── Open chests: runners without a club ─────────────
+
+const olga = await register('olga', 'Olga', '#66C2A5');
+await call('PATCH', '/api/users/me/location', { token: olga.token, body: { city: 'Zaragoza', countryCode: 'ES', countryName: 'España', lat: C[0] - 0.01, lng: C[1] } });
+check('open chests: none for a runner without a club who has not run lately', (await call('GET', '/api/season/map', { token: olga.token })).data.chests.length === 0);
+// Olga runs (far from everything): she now counts for the open chests of her city
+await run(olga, 'Primera carrera', loop(C[0] + 0.2, C[1] + 0.2, 300), Date.now() - 2 * DAY);
+let openSpawned = 0;
+for (let i = 0; i < 4; i++) openSpawned += Number((await admin('/api/admin/season/tick', { time: new Date(spawnAt).toISOString() })).data.openChests ?? 0);
+check('open chests: a city with runners without a club gets a few a day (1 for one runner)', openSpawned === 1, openSpawned);
+const olgaChests = (await call('GET', '/api/season/map', { token: olga.token })).data.chests;
+const openChest = olgaChests[0];
+check('open chests: the runner without a club sees them at once, marked open', olgaChests.length === 1 && openChest.open === true && !openChest.hidden, olgaChests);
+check('open chests: only global powers or cosmetics inside', ['global', 'cosmetic'].includes(openChest?.item?.scope), openChest?.item);
+check('open chests: at one of the city places', zaragozaSpots.some((p) => Math.abs(p.lat - openChest.lat) < 1e-9 && Math.abs(p.lng - openChest.lng) < 1e-9), openChest);
+const anaChestIds = new Set((await call('GET', '/api/season/map', { token: ana.token })).data.chests.map((c) => c.id));
+check('open chests: club members do not see them (they have their own)', !anaChestIds.has(openChest.id));
+const olgaItemsBefore = (await call('GET', '/api/inventory', { token: olga.token })).data.items.length;
+const olgaRun = await run(olga, 'Al cofre', loop(openChest.lat, openChest.lng + 0.022, 1670, 400), Date.now() - DAY);
+check('open chests: a run through one collects it', olgaRun.result.treasuresCollected?.some((t) => t.treasureId === openChest.id), olgaRun.result.treasuresCollected);
+const olgaItems = (await call('GET', '/api/inventory', { token: olga.token })).data.items;
+check('open chests: its item lands in the inventory', olgaItems.length === olgaItemsBefore + 1, { before: olgaItemsBefore, after: olgaItems.length });
 
 console.log(failures === 0 ? '\nAll season checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

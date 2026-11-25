@@ -10,6 +10,7 @@ import {
   pickChallenges,
   challengeProgress,
   chestsPerDay,
+  openChestsPerDay,
   seededRandom,
   randomPointAround,
   lateEntryOpen,
@@ -299,4 +300,23 @@ test('powers by mode: no map powers in Banderas, none in Exploradores', () => {
   assert.equal(itemUsableInMode(ITEMS.reveal, 'explorers'), true);
   assert.equal(itemUsableInMode(ITEMS.double_area, 'elimination'), true);
   assert.equal(itemUsableInMode(ITEMS.explorer, 'flags'), true); // global items are not competition items
+});
+
+test('open chests (runners without a club): fewer than a club city gets', () => {
+  assert.equal(openChestsPerDay(1), 1);
+  assert.equal(openChestsPerDay(10), 2);
+  assert.equal(openChestsPerDay(500), 3);
+  for (const n of [1, 5, 10, 50, 200]) assert.ok(openChestsPerDay(n) < chestsPerDay(n));
+});
+
+test('open chests only give global powers and cosmetics, never competition or rest-day items', async () => {
+  const { pickOpenRewardItem, ITEMS, RARITIES } = await import('../../shared/game');
+  let state = 42;
+  const random = () => { state = (state * 1664525 + 1013904223) % 4294967296; return state / 4294967296; };
+  const scopes = new Set<string>();
+  for (let i = 0; i < 2000; i++) {
+    const id = pickOpenRewardItem(RARITIES[i % RARITIES.length], random);
+    scopes.add(ITEMS[id].scope);
+  }
+  assert.deepEqual([...scopes].sort(), ['cosmetic', 'global']);
 });

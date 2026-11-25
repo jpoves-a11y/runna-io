@@ -16,6 +16,44 @@ import { parseEntryMode, entryModeFromVisibility, visibilityOf, type EntryMode, 
 
 type Row = Record<string, any>;
 
+export type ChestAudience = 'club' | 'open';
+
+export interface CityGroupRow {
+  cityKey: string;
+  city: string;
+  countryCode: string | null;
+  lat: number;
+  lng: number;
+  members: number;
+  memberIds: string[];
+}
+
+/** Users grouped by city; the centre is the mean of their homes, so no single home is exposed. */
+function groupByCity(rows: Row[]): CityGroupRow[] {
+  type CityGroup = { city: string; countryCode: string | null; lats: number[]; lngs: number[]; memberIds: string[] };
+  const groups = new Map<string, CityGroup>();
+  for (const r of rows) {
+    const lat = Number(r.home_lat);
+    const lng = Number(r.home_lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    const key = cityKeyOf(r.country_code, r.city, lat, lng);
+    const group: CityGroup = groups.get(key) ?? { city: r.city || 'Tu zona', countryCode: r.country_code ?? null, lats: [], lngs: [], memberIds: [] };
+    group.lats.push(lat);
+    group.lngs.push(lng);
+    group.memberIds.push(r.id);
+    groups.set(key, group);
+  }
+  return [...groups.entries()].map(([cityKey, g]) => ({
+    cityKey,
+    city: g.city,
+    countryCode: g.countryCode,
+    lat: g.lats.reduce((a, b) => a + b, 0) / g.lats.length,
+    lng: g.lngs.reduce((a, b) => a + b, 0) / g.lngs.length,
+    members: g.memberIds.length,
+    memberIds: g.memberIds,
+  }));
+}
+
 export interface ChestAreaRow {
   cityKey: string;
   name: string | null;
@@ -374,6 +412,8 @@ export async function applyCompetitionColumns(db: Database): Promise<void> {
   await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN zone TEXT`);
   // Mapa del Tesoro: everybody sees a chest from this time; its holders, from when it appears
   await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN public_at TEXT`);
+  // 'club': rest-day chests of club members; 'open': the few chests of runners without a club
+  await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN audience TEXT NOT NULL DEFAULT 'club'`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN scope TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN source TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN unused_expires_at TEXT`);
@@ -1754,16 +1794,17 @@ export class GameStorage {
 
   // ─── Chests ───────────────────────────────────────────────────────────────
 
-  async countChestsSpawnedSince(cityKey: string, sinceIso: string): Promise<number> {
-    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM treasures WHERE city_key = ${cityKey} AND spawned_at >= ${sinceIso}`);
+  async countChestsSpawnedSince(cityKey: string, sinceIso: string, audience: ChestAudience = 'club'): Promise<number> {
+    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM treasures WHERE city_key = ${cityKey} AND spawned_at >= ${sinceIso}
+      AND coalesce(audience, 'club') = ${audience}`);
     return Number(rows[0]?.n ?? 0);
   }
 
-  async createChest(data: { competitionId: string; name: string; itemId: string; rarity: string; lat: number; lng: number; expiresAt: string; zone: string; hidden: boolean; cityKey: string; publicAt?: string | null }): Promise<string> {
+  async createChest(data: { competitionId: string; name: string; itemId: string; rarity: string; lat: number; lng: number; expiresAt: string; zone: string; hidden: boolean; cityKey: string; publicAt?: string | null; audience?: ChestAudience }): Promise<string> {
     const id = newId();
-    await this.db.run(sql`INSERT INTO treasures (id, competition_id, name, power_type, rarity, lat, lng, spawned_at, expires_at, active, zone, hidden, city_key, public_at)
+    await this.db.run(sql`INSERT INTO treasures (id, competition_id, name, power_type, rarity, lat, lng, spawned_at, expires_at, active, zone, hidden, city_key, public_at, audience)
       VALUES (${id}, ${data.competitionId}, ${data.name}, ${data.itemId}, ${data.rarity}, ${data.lat}, ${data.lng}, ${nowIso()}, ${data.expiresAt}, 1,
-        ${data.zone}, ${data.hidden ? 1 : 0}, ${data.cityKey}, ${data.publicAt ?? null})`);
+        ${data.zone}, ${data.hidden ? 1 : 0}, ${data.cityKey}, ${data.publicAt ?? null}, ${data.audience ?? 'club'})`);
     return id;
   }
 
@@ -1822,8 +1863,13 @@ export class GameStorage {
       ON CONFLICT(city_key) DO UPDATE SET status = 'failed', error = excluded.error, refreshed_at = excluded.refreshed_at`);
   }
 
-  async activeChests(now = Date.now()): Promise<Row[]> {
+  /** Active chests; with `audience`, only club chests or only open chests. */
+  async activeChests(now = Date.now(), audience?: ChestAudience): Promise<Row[]> {
     const iso = new Date(now).toISOString();
+    if (audience) {
+      return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND city_key IS NOT NULL
+        AND coalesce(audience, 'club') = ${audience}`);
+    }
     return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND city_key IS NOT NULL`);
   }
 
@@ -1843,32 +1889,24 @@ export class GameStorage {
    * Club cities: club members with a home location grouped by city (centre = mean of their homes,
    * so no single home is exposed). Members without a city are grouped by ~10 km grid cell.
    */
-  async clubMemberCities(): Promise<Array<{ cityKey: string; city: string; countryCode: string | null; lat: number; lng: number; members: number; memberIds: string[] }>> {
+  async clubMemberCities(): Promise<CityGroupRow[]> {
     const rows = await this.db.all<Row>(sql`SELECT u.id, u.country_code, u.city, u.home_lat, u.home_lng
       FROM club_members m JOIN users u ON u.id = m.user_id
       WHERE u.home_lat IS NOT NULL AND u.home_lng IS NOT NULL`);
-    type CityGroup = { city: string; countryCode: string | null; lats: number[]; lngs: number[]; memberIds: string[] };
-    const groups = new Map<string, CityGroup>();
-    for (const r of rows) {
-      const lat = Number(r.home_lat);
-      const lng = Number(r.home_lng);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-      const key = cityKeyOf(r.country_code, r.city, lat, lng);
-      const group: CityGroup = groups.get(key) ?? { city: r.city || 'Tu zona', countryCode: r.country_code ?? null, lats: [], lngs: [], memberIds: [] };
-      group.lats.push(lat);
-      group.lngs.push(lng);
-      group.memberIds.push(r.id);
-      groups.set(key, group);
-    }
-    return [...groups.entries()].map(([cityKey, g]) => ({
-      cityKey,
-      city: g.city,
-      countryCode: g.countryCode,
-      lat: g.lats.reduce((a, b) => a + b, 0) / g.lats.length,
-      lng: g.lngs.reduce((a, b) => a + b, 0) / g.lngs.length,
-      members: g.memberIds.length,
-      memberIds: g.memberIds,
-    }));
+    return groupByCity(rows);
+  }
+
+  /**
+   * Cities of runners without a club who ran since `sinceIso` (they get a few open chests), grouped
+   * like clubMemberCities.
+   */
+  async openChestCities(sinceIso: string): Promise<CityGroupRow[]> {
+    const rows = await this.db.all<Row>(sql`SELECT u.id, u.country_code, u.city, u.home_lat, u.home_lng
+      FROM users u
+      WHERE u.home_lat IS NOT NULL AND u.home_lng IS NOT NULL AND u.banned_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM club_members m WHERE m.user_id = u.id)
+        AND EXISTS (SELECT 1 FROM routes r WHERE r.user_id = u.id AND r.started_at >= ${sinceIso})`);
+    return groupByCity(rows);
   }
 
   // ─── Account deletion ─────────────────────────────────────────────────────

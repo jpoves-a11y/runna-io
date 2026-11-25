@@ -8,7 +8,7 @@ Se escribe KM2 y se pronuncia «kaemedos». Lo que no ve el público conserva de
 - **Modo competición**: para quien está en un club. Ciclos de 14 días (hora de Madrid):
   - **Competición:** de viernes a domingo de la semana siguiente (10 días), en un mapa que empieza vacío. Se puntúa el lunes a las 6:00: hasta entonces cuentan las carreras que empezaron antes del domingo a las 23:59 y llegan tarde (reloj, Strava).
   - **Quién participa:** los miembros que corrieron en los 14 días anteriores al inicio. Los inactivos reciben un aviso. En los modos individuales entran con su primera carrera (en Eliminación, solo antes del primer corte); en los de equipo contra equipo (Por equipos, Duelo, Derbi) la plantilla se cierra al empezar.
-  - **Descanso:** de lunes a jueves (4 días). Aparecen cofres ilustrados alrededor de las ciudades de los clubes y cada miembro tiene 3 retos.
+  - **Descanso:** de lunes a jueves (4 días). Aparecen cofres ilustrados en sitios reales de las ciudades de los clubes (ver [Dónde salen los cofres](#dónde-salen-los-cofres)) y cada miembro tiene 3 retos.
   - **Modos** (rotación de 8, con alternativas si el club no llega al mínimo):
     - Todos contra todos.
     - Duelo contra otro club de nivel parecido.
@@ -119,7 +119,8 @@ npx wrangler deploy -c wrangler.worker.toml
 
 | Tarea | Cuándo |
 |---|---|
-| season-tick | cada 5 minutos: reset inicial (una vez), empieza y termina las competiciones (cierre el lunes a las 6:00), cortes de la Eliminación, cofres de los días de descanso, caducidad de objetos y, una vez al día, borra los mensajes de chat de más de 90 días |
+| season-tick | cada 5 minutos: reset inicial (una vez), empieza y termina las competiciones (cierre el lunes a las 6:00), cortes de la Eliminación, cofres de los días de descanso y cofres abiertos, caducidad de objetos y, una vez al día, borra los mensajes de chat de más de 90 días |
+| chest-areas | cada 10 minutos: una ciudad consigue sus sitios para cofres de OpenStreetMap |
 | steal-notifications | cada minuto (envía los avisos pendientes de "te han robado" y "tu carrera está lista"; ver más abajo) |
 | polar-auto-sync | cada 3 minutos |
 | inactivity-check | 10:00 y 19:00 |
@@ -191,6 +192,19 @@ Para activarlo:
 2. APIs y servicios → Credenciales → **Crear credenciales → ID de cliente de OAuth**, tipo **iOS**, ID del paquete `com.jpoves.runnaio`. Copia el ID de cliente (`….apps.googleusercontent.com`).
 3. Ponlo en `GOOGLE_CLIENT_IDS` de `wrangler.worker.toml` y despliega el Worker.
 4. Ponlo en `googleClientID` de `ios/Kaemedos/Core/AppConfig.swift` y sube una versión de la app. Mientras esté vacío, el botón de Google no aparece.
+
+### Dónde salen los cofres
+
+Los cofres salen en sitios reales de cada ciudad, sacados de OpenStreetMap (`worker/src/chestSpots.ts`). La tarea `chest-areas` prepara una ciudad cada 10 minutos (las nuevas primero), la guarda en `chest_areas` y la renueva cada mes. Si OpenStreetMap no responde, prueba cuatro servidores públicos de Overpass y reintenta a los 30 minutos.
+
+1. **Centro y tamaño:** el nodo `place=city/town/village` de la ciudad (por nombre, sin tildes; para buscarlo solo se envía la posición redondeada a ~10 km) y su población. Radio del casco urbano: 4 km (≥ 500.000 habitantes), 3 km (≥ 100.000), 2 km (≥ 30.000), 1,3 km (≥ 10.000), 800 m.
+2. **Sitios:** en ciudades (≥ 20.000), parques, plazas, calles peatonales, monumentos, miradores, museos, fuentes y pistas de atletismo (en las de más de 3 km, solo parques y calles peatonales con nombre); en pueblos, calles peatonales, residenciales y caminos, parques y plazas. Nunca memoriales.
+3. **Fuera:** polígonos industriales, zonas comerciales, vías de tren, campos, canteras, obras, terrenos militares, cementerios y aeropuertos.
+4. **Reparto:** como mucho un sitio cada 120 m (el más interesante); cada cofre, a 400 m o más de los otros de la ciudad (activos y de los últimos 3 días). Legendarios y épicos, sobre todo en monumentos y plazas.
+
+Mientras una ciudad no tiene sitios, los cofres salen a menos de 1,2 km de sus corredores. Vista previa de cualquier ciudad: Actions → Chest places preview. Estado en producción: `GET /api/admin/chest-areas`.
+
+**Cofres de club** (miembros de un club, días de descanso): 2 + 1 por cada 5 miembros al día, hasta 8. **Cofres abiertos** (corredores sin club que han corrido en los últimos 30 días): cualquier día, 1 + 1 por cada 10 corredores, hasta 3; solo poderes globales y cosméticos, visibles al momento. Cada uno solo ve y abre los suyos; los dos se ven en el mapa global y en el de competición.
 
 ### Emails
 

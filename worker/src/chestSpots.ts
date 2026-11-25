@@ -26,7 +26,10 @@ export const OVERPASS_URLS = [
 /** How long the places of a city are kept before asking OpenStreetMap again. */
 export const CHEST_AREA_REFRESH_MS = 30 * 24 * 3600 * 1000;
 /** After a failed attempt, the next one waits this long. */
-export const CHEST_AREA_RETRY_MS = 6 * 3600 * 1000;
+// 30 min: the task prepares one city every 10 minutes, so at most ~6 attempts an hour of up to 4
+// queries each go to OpenStreetMap, far below the public Overpass servers' fair use (10,000 a day),
+// and a busy server gets time to recover between two attempts at the same city
+export const CHEST_AREA_RETRY_MS = 30 * 60 * 1000;
 /**
  * Version of the rules that choose the places. Cities prepared with an older one are prepared again
  * at once. 2: no memorials, cemeteries avoided.

@@ -392,6 +392,25 @@ export function pickRewardItem(rarity: Rarity, random: () => number = Math.rando
   return 'magnet';
 }
 
+/**
+ * Item in an open chest (runners without a club): only global powers (70%) and cosmetics (30%),
+ * never competition or rest-day items they could not use.
+ */
+export function pickOpenRewardItem(rarity: Rarity, random: () => number = Math.random, owned: Set<string> = new Set()): string {
+  const scope: ItemScope = random() < 0.7 ? 'global' : 'cosmetic';
+  const order = [rarity, ...RARITIES.slice(0, RARITIES.indexOf(rarity)).reverse(), ...RARITIES.slice(RARITIES.indexOf(rarity) + 1)];
+  const pools: ItemScope[] = scope === 'cosmetic' ? ['cosmetic', 'global'] : ['global', 'cosmetic'];
+  for (const poolScope of pools) {
+    for (const r of order) {
+      const candidates = Object.values(ITEMS).filter((item) =>
+        item.scope === poolScope && item.rarity === r && !(poolScope === 'cosmetic' && owned.has(item.id)),
+      );
+      if (candidates.length > 0) return candidates[Math.floor(random() * candidates.length) % candidates.length].id;
+    }
+  }
+  return 'streak_saver';
+}
+
 export function pickRarity(random: () => number = Math.random, boost = 0): Rarity {
   // boost shifts probability towards rarer chests (0 = normal)
   let roll = random() * (1 - boost);

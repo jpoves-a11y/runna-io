@@ -1329,10 +1329,12 @@ struct Chest: Decodable, Identifiable, Hashable {
     let zone: String?
     let hidden: Bool
     let expiresAt: String?
+    /// An open chest: for runners without a club (any day, global powers and cosmetics only)
+    let isOpen: Bool
 
     private struct RarityRef: Decodable { let id: String? }
 
-    enum CodingKeys: String, CodingKey { case id, name, itemId, item, rarity, lat, lng, zone, hidden, expiresAt }
+    enum CodingKeys: String, CodingKey { case id, name, itemId, item, rarity, lat, lng, zone, hidden, expiresAt, open }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1346,6 +1348,7 @@ struct Chest: Decodable, Identifiable, Hashable {
         zone = c.string(.zone)
         hidden = c.bool(.hidden) ?? false
         expiresAt = c.string(.expiresAt)
+        isOpen = c.bool(.open) ?? false
     }
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
