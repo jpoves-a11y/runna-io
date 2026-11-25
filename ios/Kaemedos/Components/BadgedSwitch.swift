@@ -34,7 +34,7 @@ struct BadgedSwitch<ID: Hashable>: View {
                         .frame(maxWidth: .infinity)
                         .overlay(alignment: .topTrailing) {
                             if segment.badge > 0 {
-                                CountBadge(count: segment.badge)
+                                GreenCountBadge(count: segment.badge)
                                     .offset(x: 2, y: -7)
                                     .transition(.scale.combined(with: .opacity))
                             }
@@ -61,7 +61,7 @@ struct BadgedSwitch<ID: Hashable>: View {
 }
 
 /// The green notification sphere with a count (99+ at most).
-struct CountBadge: View {
+struct GreenCountBadge: View {
     let count: Int
 
     var body: some View {

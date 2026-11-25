@@ -68,7 +68,7 @@ struct ClubChatsView: View {
         VStack(spacing: 0) {
             if model.hasCompetitionChats {
                 BadgedSwitch(
-                    segments: model.chats.map { .init(id: $0.channel, title: $0.title, badge: $0.channel == channel ? 0 : model.unread($0.channel)) },
+                    segments: model.chats.map { BadgedSwitch<String>.Segment(id: $0.channel, title: $0.title, badge: $0.channel == channel ? 0 : model.unread($0.channel)) },
                     selection: $channel
                 )
                 .padding(.horizontal, DS.Spacing.l)
@@ -539,7 +539,7 @@ struct ClubHomeView: View {
     }
 
     private func historySection(_ history: [ClubHistoryEntry]) -> some View {
-        FoldedSection(title: "Historial") {
+        FoldedSection(title: "Historial", actionTitle: nil, action: nil) {
             Text(history.count == 1 ? "1 competición" : "\(history.count) competiciones")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
