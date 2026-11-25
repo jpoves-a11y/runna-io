@@ -19,7 +19,7 @@ import {
 } from './gameStorage';
 import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, haversineMeters, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
-import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
+import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, timeZoneAt, type CycleInfo } from './cycles';
 import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry, type CollectedChest } from './season';
 import { detectRanTogether, type ConquestVictimInfo } from './territory';
 import {
@@ -272,11 +272,7 @@ function seededRandomFor(seed: string): () => number {
   };
 }
 
-/** Time zone of a point in Spain: the Canary Islands, or the peninsula and the Balearic Islands. */
-export function timeZoneAt(lat: number, lng: number): string {
-  if (lat >= 27.4 && lat <= 29.6 && lng >= -18.4 && lng <= -13.2) return 'Atlantic/Canary';
-  return 'Europe/Madrid';
-}
+export { timeZoneAt };
 
 /** A "next run" power applies to runs that STARTED after it was activated (it's activated before going out). */
 export function appliesToRun(effect: { itemId: string; activatedAt: string | null }, runStartedAt: string): boolean {

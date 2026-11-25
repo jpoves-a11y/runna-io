@@ -40,7 +40,7 @@ import { computeAwards, runDaysByUser, type AwardCandidate, type AwardContext } 
 import { CHAT_RETENTION_DAYS } from './clubChat';
 import { checkBudget, countSubrequest, subrequestsLeft, SubrequestBudgetError } from './db';
 import { prepareArea, pickSpot, CHEST_AREA_REFRESH_MS, CHEST_AREA_RETRY_MS, CHEST_AREA_VERSION, type FetchLike } from './chestSpots';
-import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, type CycleInfo } from './cycles';
+import { cycleAt, cycleBounds, cycleInfo, isRestLike, localDate, localHour, localMidnight, addDays, restWindow, inLateJoinWindow, timeZoneAt, type CycleInfo } from './cycles';
 import { GameStorage, setRunsCountFrom, runsCountFromMs, cityKeyOf, type CompetitionRow, type ParticipantRow, type ChestAudience } from './gameStorage';
 import { haversineMeters } from './antiCheat';
 import type { WorkerStorage } from './storage';
@@ -1374,12 +1374,12 @@ const CHEST_LAST_HOUR = 21;
 const CHEST_LIFETIME_MS = 24 * 3600 * 1000;
 
 /**
- * When the `count` chests of a day appear: one in each equal part of 07:00-21:00 (Madrid), at a
- * random moment inside it (never at the very edges), so there's one every few hours but not at
- * fixed times.
+ * When the `count` chests of a day appear: one in each equal part of 07:00-21:00 (local time of the
+ * city), at a random moment inside it (never at the very edges), so there's one every few hours but
+ * not at fixed times.
  */
-export function chestTimes(day: string, count: number, random: () => number): number[] {
-  const first = localMidnight(day) + CHEST_FIRST_HOUR * 3600 * 1000;
+export function chestTimes(day: string, count: number, random: () => number, timeZone?: string): number[] {
+  const first = localMidnight(day, timeZone) + CHEST_FIRST_HOUR * 3600 * 1000;
   const span = (CHEST_LAST_HOUR - CHEST_FIRST_HOUR) * 3600 * 1000;
   const times: number[] = [];
   for (let k = 0; k < count; k++) {
@@ -1404,23 +1404,27 @@ export function chestsForDay(audience: ChestAudience, members: number, restDay: 
 export async function planChests(game: GameStorage, now = Date.now()): Promise<number> {
   const club = await game.clubMemberCities();
   const open = await game.openChestCities(new Date(now - OPEN_CHEST_ACTIVE_DAYS * 86_400_000).toISOString());
-  const today = localDate(now);
+  // Days are planned in order and never empty: a day is planned when the city's last planned chest
+  // comes out on it or later (one query for every city)
+  const lastPlanned = await game.lastPlannedChests(new Date(now - 2 * 86_400_000).toISOString());
   let planned = 0;
   for (const [audience, cities] of [['club', club], ['open', open]] as const) {
     for (const city of cities) {
+      const timeZone = timeZoneAt(city.lat, city.lng);
+      const today = localDate(now, timeZone);
+      let last = lastPlanned.get(`${audience}|${city.cityKey}`) ?? 0;
       for (let d = 0; d < CHEST_PLAN_DAYS; d++) {
         const day = addDays(today, d);
-        const dayStart = localMidnight(day);
-        const dayEnd = localMidnight(addDays(day, 1));
-        // Past this day's last moment for chests: nothing to plan
-        if (dayEnd <= now) continue;
+        const dayStart = localMidnight(day, timeZone);
+        const dayEnd = localMidnight(addDays(day, 1), timeZone);
+        // Past this day's last moment for chests (21:00), or already planned: nothing to do
+        if (dayStart + CHEST_LAST_HOUR * 3600 * 1000 <= now || dayEnd <= now || last >= dayStart) continue;
         checkBudget('chest plan', 6);
-        if (await game.countPlannedChests(city.cityKey, audience, new Date(dayStart).toISOString(), new Date(dayEnd).toISOString()) > 0) continue;
         const restDay = isRestLike(cycleAt(dayStart + 12 * 3600 * 1000).phase);
         const count = chestsForDay(audience, city.members, restDay);
         const random = seededRandom(`chest-plan:${audience}:${city.cityKey}:${day}`);
         // Today's moments that already went by: those chests appear now, a minute apart
-        const times = chestTimes(day, count, random).map((t, i) => Math.max(t, now + i * 60_000));
+        const times = chestTimes(day, count, random, timeZone).map((t, i) => Math.max(t, now + i * 60_000));
         const rarities = times.map(() => pickRarity(random));
         const items = rarities.map((rarity) => (audience === 'open' ? pickOpenRewardItem(rarity, random) : pickRewardItem(rarity, random)));
         const spots = await chestSpotsFor(game, city, rarities, random, now);
@@ -1433,6 +1437,7 @@ export async function planChests(game: GameStorage, now = Date.now()): Promise<n
           zone: city.city, cityKey: city.cityKey, audience,
         })));
         planned += times.length;
+        last = Math.max(last, ...times);
       }
     }
   }

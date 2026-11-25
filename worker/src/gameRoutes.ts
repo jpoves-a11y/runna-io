@@ -855,8 +855,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       const mine = (t: any) => t.city_key === myCity || near(t);
       const out = (await game.activeChests(now, audience)).filter(mine);
       const coming: any[] = [];
-      if (lighthouse || seesEarly) {
-        const planned = (await game.upcomingChests(now, audience)).filter(mine);
+      if ((lighthouse || seesEarly) && hasHome) {
+        const planned = (await game.upcomingChests(now, audience, { cityKey: myCity, lat: homeLat, lng: homeLng })).filter(mine);
         const early = seesEarly ? planned.filter((t) => Date.parse(t.spawned_at) <= now + TREASURE_MAP_HEAD_START_MINUTES * 60_000) : [];
         const next = lighthouse ? planned.slice(0, LIGHTHOUSE_UPCOMING_CHESTS) : [];
         for (const t of [...next, ...early]) if (!coming.some((c) => c.id === t.id)) coming.push(t);

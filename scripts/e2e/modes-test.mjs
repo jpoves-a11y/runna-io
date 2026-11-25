@@ -519,8 +519,8 @@ const competitionOf = async (index, club) => one('select * from club_competition
   // Earlier ticks of this test planned chests for another phase (the test moves the season around)
   await db.execute('delete from treasures');
   // A tick plans the chests of today and the next days at once (a second tick adds nothing)
-  const planned = await tick(Date.parse(`${today}T19:00:00Z`));
-  const again = await tick(Date.parse(`${today}T19:00:00Z`));
+  const planned = await tick(Date.parse(`${today}T17:00:00Z`));
+  const again = await tick(Date.parse(`${today}T17:00:00Z`));
   const tomorrowStart = new Date(Date.parse(`${addDays(today, 1)}T00:00:00Z`) - 2 * HOUR).toISOString(); // Madrid midnight, give or take
   const todays = await all("select * from treasures where active = 1 and city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at < ? order by spawned_at", [tomorrowStart]);
   const later = await all("select * from treasures where active = 1 and city_key = 'ES:zaragoza' and coalesce(audience, 'club') = 'club' and spawned_at >= ?", [tomorrowStart]);

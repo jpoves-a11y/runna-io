@@ -1983,6 +1983,13 @@ export class GameStorage {
     return Number(rows[0]?.n ?? 0);
   }
 
+  /** When the last planned chest of each city comes out ("audience|cityKey" → ms), from chests since `sinceIso`. */
+  async lastPlannedChests(sinceIso: string): Promise<Map<string, number>> {
+    const rows = await this.db.all<Row>(sql`SELECT city_key, coalesce(audience, 'club') AS audience, MAX(spawned_at) AS last FROM treasures
+      WHERE spawned_at >= ${sinceIso} AND city_key IS NOT NULL GROUP BY city_key, coalesce(audience, 'club')`);
+    return new Map(rows.map((r) => [`${r.audience}|${r.city_key}`, Date.parse(r.last)]));
+  }
+
   /** Chests that have appeared and haven't been announced yet (only those of the last hour are announced). */
   async chestsToAnnounce(nowIsoValue: string, sinceIso: string): Promise<Row[]> {
     return this.db.all<Row>(sql`SELECT * FROM treasures WHERE announced = 0 AND spawned_at <= ${nowIsoValue}
@@ -1994,14 +2001,18 @@ export class GameStorage {
     await this.db.run(sql.join([sql`UPDATE treasures SET announced = 1 WHERE id IN (`, sql.join(ids.map((id) => sql`${id}`), sql`, `), sql`)`], sql``));
   }
 
-  /** Chests that will appear (planned, not out yet), soonest first. */
-  async upcomingChests(now: number, audience: ChestAudience, untilIso: string | null = null): Promise<Row[]> {
+  /**
+   * Chests of a city (or within ~30 km of a point) that will appear (planned, not out yet), soonest
+   * first.
+   */
+  async upcomingChests(now: number, audience: ChestAudience, near: { cityKey: string | null; lat: number; lng: number }, limit = 50): Promise<Row[]> {
     const iso = new Date(now).toISOString();
-    return untilIso
-      ? this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND spawned_at > ${iso} AND spawned_at <= ${untilIso}
-        AND city_key IS NOT NULL AND coalesce(audience, 'club') = ${audience} ORDER BY spawned_at ASC`)
-      : this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND spawned_at > ${iso}
-        AND city_key IS NOT NULL AND coalesce(audience, 'club') = ${audience} ORDER BY spawned_at ASC LIMIT 200`);
+    const dLat = 0.3;
+    const dLng = 0.3 / Math.max(0.2, Math.cos((near.lat * Math.PI) / 180));
+    return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND spawned_at > ${iso}
+      AND city_key IS NOT NULL AND coalesce(audience, 'club') = ${audience}
+      AND (city_key = ${near.cityKey ?? ''} OR (lat BETWEEN ${near.lat - dLat} AND ${near.lat + dLat} AND lng BETWEEN ${near.lng - dLng} AND ${near.lng + dLng}))
+      ORDER BY spawned_at ASC LIMIT ${limit}`);
   }
 
   /** Chests of a city that are active or appeared since `sinceIso`: new ones keep away from them. */
