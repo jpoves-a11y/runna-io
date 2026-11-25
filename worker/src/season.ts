@@ -1387,7 +1387,6 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
     const rarity = pickRarity(random);
     const itemId = pickRewardItem(rarity, random);
     const spot = await chestSpotFor(game, city, rarity, random, now);
-    const item = ITEMS[itemId];
     const expiresAt = new Date(Math.min(restEnd, now + 24 * 3600 * 1000)).toISOString();
     const hidden = random() < 0.2;
     // Everybody sees it an hour after it appears; whoever has the Mapa del Tesoro, at once
@@ -1408,13 +1407,36 @@ export async function spawnRestChests(storage: WorkerStorage, game: GameStorage,
     if (!hidden && (rarity === 'epic' || rarity === 'legendary')) {
       await notifyUsers(storage, env, city.memberIds, {
         title: `🗝️ ¡Cofre ${RARITY_INFO[rarity].label.toLowerCase()} en ${city.city}!`,
-        body: `Contiene ${item?.emoji ?? '🎁'} ${item?.name ?? 'una recompensa'}. Pasa corriendo a menos de 250 m para abrirlo.`,
+        // What is inside is a surprise until the chest is opened
+        body: '¿Qué habrá dentro? Pasa corriendo a menos de 250 m para descubrirlo.',
         tag: `chest-${city.cityKey}-${now}`,
         data: { type: 'chest_spawned' },
       });
     }
   }
   return spawned;
+}
+
+/** A chest opened by a run: what was inside is only told here, once it is opened. */
+export interface CollectedChest {
+  treasureId: string;
+  treasureName: string;
+  powerType: string;
+  powerName: string;
+  powerEmoji: string;
+  powerDescription: string;
+  powerScope: string;
+  rarity: string;
+  zone: string | null;
+}
+
+function collectedChest(treasureId: string, treasureName: string, itemId: string, rarity: string, zone: string | null): CollectedChest {
+  const item = ITEMS[itemId];
+  return {
+    treasureId, treasureName, powerType: itemId,
+    powerName: item?.name ?? 'Recompensa', powerEmoji: item?.emoji ?? '🎁', powerDescription: item?.description ?? '', powerScope: item?.scope ?? '',
+    rarity, zone,
+  };
 }
 
 /**
@@ -1454,8 +1476,8 @@ export async function spawnOpenChests(game: GameStorage, now = Date.now()): Prom
  * Collects the chests a run passes within 250 m of: club chests for club members (rest phase),
  * open chests for runners without a club (any day).
  */
-export async function collectChestsAlongRun(storage: WorkerStorage, game: GameStorage, userId: string, coords: Array<[number, number]>, routeId: string, now = Date.now(), audience: ChestAudience = 'club'): Promise<Array<{ treasureId: string; treasureName: string; powerType: string; rarity: string; zone: string | null }>> {
-  const collected: Array<{ treasureId: string; treasureName: string; powerType: string; rarity: string; zone: string | null }> = [];
+export async function collectChestsAlongRun(storage: WorkerStorage, game: GameStorage, userId: string, coords: Array<[number, number]>, routeId: string, now = Date.now(), audience: ChestAudience = 'club'): Promise<CollectedChest[]> {
+  const collected: CollectedChest[] = [];
   if (coords.length === 0) return collected;
   const chests = await game.activeChests(now, audience);
   if (chests.length === 0) return collected;
@@ -1471,13 +1493,13 @@ export async function collectChestsAlongRun(storage: WorkerStorage, game: GameSt
     if (!near) continue;
     if (!(await game.claimChest(chest.id, userId))) continue;
     const grant = await game.grantItem(userId, chest.power_type, 'chest', chest.id, now);
-    collected.push({ treasureId: chest.id, treasureName: chest.name, powerType: chest.power_type, rarity: chest.rarity, zone: chest.zone ?? null });
+    collected.push(collectedChest(chest.id, chest.name, chest.power_type, chest.rarity, chest.zone ?? null));
     // Botín Doble: the first chest opened with it gives a second item of the same rarity
     if (doubleLoot) {
       const pick = audience === 'open' ? pickOpenRewardItem : pickRewardItem;
       const extra = pick(chest.rarity as Rarity, seededRandom(`double-loot:${chest.id}`), await game.ownedCosmetics(userId));
       await game.grantItem(userId, extra, 'chest', chest.id, now);
-      collected.push({ treasureId: `${chest.id}:extra`, treasureName: chest.name, powerType: extra, rarity: chest.rarity, zone: chest.zone ?? null });
+      collected.push(collectedChest(`${chest.id}:extra`, chest.name, extra, chest.rarity, chest.zone ?? null));
       await game.consumeItems([doubleLoot.id], now);
       doubleLoot = null;
     }

@@ -453,24 +453,15 @@ struct ChestDetailView: View {
                 ChestView(rarity: chest.rarity, size: 64)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(chest.item?.name ?? chest.name)
+                    Text("Cofre \(Rarity.label(chest.rarity).lowercased())")
                         .font(.title3.weight(.semibold))
-                    HStack(spacing: 6) {
-                        PowerArt(itemId: chest.itemId, rarity: chest.rarity, size: 28, glow: false)
-                        RarityPill(rarity: chest.rarity)
-                    }
+                    RarityPill(rarity: chest.rarity)
                 }
             }
-            if let description = chest.item?.description, !description.isEmpty {
-                Text(description)
-                    .font(.subheadline)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if let scope = chest.item?.scopeLabel {
-                Label("Alcance: \(scope)", systemImage: "scope")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            // What is inside stays a surprise: it appears with the chest animation when it's opened
+            Label("Contenido sorpresa: descubrirás qué poder lleva cuando lo abras.", systemImage: "questionmark.circle")
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
             if let expires = chest.expiresDate, expires > Date() {
                 Label("Desaparece en \(SeasonStore.remaining(expires.timeIntervalSinceNow))", systemImage: "clock")
                     .font(.footnote)

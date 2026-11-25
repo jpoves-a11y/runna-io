@@ -20,7 +20,7 @@ import {
 import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, haversineMeters, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
 import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
-import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry } from './season';
+import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry, type CollectedChest } from './season';
 import { detectRanTogether, type ConquestVictimInfo } from './territory';
 import {
   ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, FLAG_CAPTURE_RADIUS_M, ITEMS,
@@ -52,7 +52,7 @@ export interface RunPipelineResult {
     /** Exploradores: new global area of this run (its score) */
     explored?: number;
   };
-  chests: Array<{ treasureId: string; treasureName: string; powerType: string; rarity: string; zone: string | null }>;
+  chests: CollectedChest[];
   challengesCompleted: Array<{ type: string; rewardItem: string }>;
   ranTogetherWith: string[];
   /** This run made an inactive member enter their club's running competition */

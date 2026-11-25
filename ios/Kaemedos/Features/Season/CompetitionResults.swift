@@ -162,7 +162,7 @@ struct CompetitionResultsView: View {
         }
         .overlay {
             if let item = opening {
-                ChestOpeningOverlay(item: item) { collect(item) }
+                ChestRevealOverlay(content: ChestContent(itemId: item.itemId, name: item.name, rarity: item.rarity, detail: item.definition?.scopeLabel)) { collect(item) }
                     .transition(.opacity)
             }
         }
@@ -500,46 +500,6 @@ struct CompetitionResultsView: View {
                 }
             }
         }
-    }
-}
-
-/// Full screen: the chest opens in 3D, then what was inside rises into view.
-private struct ChestOpeningOverlay: View {
-    let item: InventoryItem
-    let onCollect: () -> Void
-
-    @State private var revealed = false
-
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            ChestOpening3DView(rarity: item.rarity) {
-                withAnimation(.spring(response: 0.55, dampingFraction: 0.78)) { revealed = true }
-            }
-            .ignoresSafeArea()
-
-            if revealed {
-                VStack(spacing: DS.Spacing.m) {
-                    PowerArt(itemId: item.itemId, rarity: item.rarity, size: 128)
-                    Text(item.name)
-                        .font(.title2.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                    RarityPill(rarity: item.rarity)
-                    if let scope = item.definition?.scopeLabel {
-                        Text(scope)
-                            .font(Font.meta)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("Recoger", action: onCollect)
-                        .buttonStyle(PrimaryButtonStyle())
-                        .padding(.top, DS.Spacing.s)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, DS.Spacing.screen)
-                .padding(.bottom, DS.Spacing.xxl)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .environment(\.colorScheme, .dark)
     }
 }
 

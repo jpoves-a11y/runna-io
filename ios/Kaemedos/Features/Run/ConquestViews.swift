@@ -374,6 +374,11 @@ struct TreasureLine: Identifiable, Hashable {
     let emoji: String
     let name: String
     let rarity: String
+    /// The power inside (art in the asset catalog: power_<itemId>)
+    var itemId: String? = nil
+    var detail: String? = nil
+    /// A chest whose power is revealed with the opening animation (until it has been opened here)
+    var sealed = false
 
     /// Live-collected treasures plus the ones the server collected along the route, without duplicates.
     static func merge(live: [Treasure], server: [CollectedTreasure]) -> [TreasureLine] {
@@ -390,7 +395,16 @@ struct TreasureLine: Identifiable, Hashable {
         }
         for treasure in server where !seen.contains(treasure.treasureId) {
             seen.insert(treasure.treasureId)
-            lines.append(TreasureLine(id: treasure.treasureId, emoji: "🎁", name: treasure.treasureName, rarity: treasure.rarity))
+            lines.append(TreasureLine(
+                id: treasure.treasureId,
+                emoji: treasure.powerEmoji ?? "🎁",
+                name: treasure.powerName ?? treasure.treasureName,
+                rarity: treasure.rarity,
+                itemId: treasure.powerType,
+                detail: treasure.powerDescription,
+                // Servers that tell what was inside: the chest opens in 3D before showing it
+                sealed: treasure.powerName != nil && treasure.powerType != nil
+            ))
         }
         return lines
     }
@@ -415,32 +429,94 @@ struct TreasureLine: Identifiable, Hashable {
     }
 }
 
-/// Treasures found in a run: simple rows (small emoji, name, rarity as secondary text).
+/// Chests opened in a run. Each one stays closed ("Toca para abrirlo") until it's tapped: then it
+/// opens in 3D and the power inside appears. Once opened on this iPhone, the row shows the power.
 struct TreasuresCard: View {
     let treasures: [TreasureLine]
 
+    @State private var opening: TreasureLine?
+    /// Opened in this view (RevealedChests remembers them across launches)
+    @State private var openedNow: Set<String> = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.s) {
-            SectionHeader(title: treasures.count == 1 ? "Tesoro encontrado" : "\(treasures.count) tesoros encontrados")
+            SectionHeader(title: treasures.count == 1 ? "Cofre abierto" : "\(treasures.count) cofres abiertos")
             VStack(spacing: 0) {
                 ForEach(Array(treasures.enumerated()), id: \.element.id) { index, treasure in
                     if index > 0 {
                         HairlineDivider()
-                            .padding(.leading, 52)
+                            .padding(.leading, 60)
                     }
-                    row(treasure)
+                    if isClosed(treasure) {
+                        closedRow(treasure)
+                    } else {
+                        row(treasure)
+                    }
                 }
             }
             .card(padding: 0)
         }
+        .onAppear {
+            if treasures.contains(where: isClosed) { ChestOpening3DView.prewarm() }
+        }
+        .fullScreenCover(item: $opening) { treasure in
+            ChestRevealOverlay(
+                content: ChestContent(itemId: treasure.itemId ?? "", name: treasure.name, rarity: treasure.rarity, detail: treasure.detail),
+                buttonTitle: "Genial"
+            ) {
+                RevealedChests.insert(treasure.id)
+                openedNow.insert(treasure.id)
+                opening = nil
+            }
+            .presentationBackground(.black)
+        }
+    }
+
+    private func isClosed(_ treasure: TreasureLine) -> Bool {
+        treasure.sealed && !openedNow.contains(treasure.id) && !RevealedChests.contains(treasure.id)
+    }
+
+    private func closedRow(_ treasure: TreasureLine) -> some View {
+        Button {
+            Haptics.tap()
+            opening = treasure
+        } label: {
+            HStack(spacing: DS.Spacing.m) {
+                ChestView(rarity: treasure.rarity, size: 36)
+                    .frame(width: 36)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cofre \(TreasureLine.rarityName(treasure.rarity).lowercased())")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("Toca para abrirlo")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: DS.Spacing.s)
+                Image(systemName: "sparkles")
+                    .foregroundStyle(TreasureLine.rarityColor(treasure.rarity))
+            }
+            .padding(.horizontal, DS.Spacing.l)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pressable)
+        .accessibilityLabel("Cofre \(TreasureLine.rarityName(treasure.rarity).lowercased()). Toca para abrirlo")
     }
 
     private func row(_ treasure: TreasureLine) -> some View {
         HStack(spacing: DS.Spacing.m) {
-            Text(treasure.emoji)
-                .font(.body)
-                .frame(width: 24)
-                .accessibilityHidden(true)
+            Group {
+                if let itemId = treasure.itemId, UIImage(named: "power_\(itemId)") != nil {
+                    PowerArt(itemId: itemId, rarity: treasure.rarity, size: 36, glow: false)
+                } else {
+                    Text(treasure.emoji)
+                        .font(.title3)
+                }
+            }
+            .frame(width: 36)
+            .accessibilityHidden(true)
             Text(treasure.name)
                 .font(.body)
                 .lineLimit(2)
@@ -450,7 +526,7 @@ struct TreasuresCard: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, DS.Spacing.l)
-        .frame(minHeight: 48)
+        .frame(minHeight: 56)
         .accessibilityElement(children: .combine)
     }
 }

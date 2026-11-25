@@ -771,7 +771,8 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
         .filter((t) => Number(t.hidden) !== 1 || canSeeHidden)
         .filter((t) => seesEarly || !t.public_at || t.public_at <= nowIso)
         .map((t) => ({
-          id: t.id, name: t.name, itemId: t.power_type, item: ITEMS[t.power_type] ?? null, rarity: rarityJson(t.rarity),
+          // What is inside stays a surprise until the chest is opened (it comes with the run's result)
+          id: t.id, name: t.name, rarity: rarityJson(t.rarity),
           lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: Number(t.hidden) === 1, expiresAt: t.expires_at,
           open: audience === 'open',
         }));
