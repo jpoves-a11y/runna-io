@@ -587,7 +587,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     }
   }
 
-  // ── 5. Streak, chests, challenges (club members in the rest phase) ──
+  // ── 5. Streak, chests, challenges (club members in the rest phase; open chests without a club) ──
   const streak = await updateStreak(game, userId, route.startedAt);
   const membership = await game.getMembership(userId);
   if (membership && isRestLike(info.phase)) {
@@ -603,6 +603,9 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       globalGain: result.globalGain,
       ranWithClubmate: withMates.length > 0,
     });
+  } else if (!membership) {
+    // Runners without a club: the few open chests of their city, any day
+    result.chests = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now, 'open');
   }
   if (result.ranTogetherWith.length > 0) await storage.updateRouteRanTogether(routeId, result.ranTogetherWith);
 

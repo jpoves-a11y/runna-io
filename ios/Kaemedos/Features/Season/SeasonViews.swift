@@ -476,7 +476,9 @@ struct ChestDetailView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Label("Pasa corriendo a menos de 250 m para abrirlo. Solo para miembros de un club.", systemImage: "figure.run")
+            Label(chest.isOpen
+                  ? "Pasa corriendo a menos de 250 m para abrirlo. En un club encontrarás más cofres y poderes de competición."
+                  : "Pasa corriendo a menos de 250 m para abrirlo. Solo para miembros de un club.", systemImage: "figure.run")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

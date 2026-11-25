@@ -750,7 +750,9 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       } catch (_) { /* no fortifications table yet */ }
     }
     let chests: any[] = [];
-    if (await game.getMembership(userId)) {
+    // Club members: their club's chests; runners without a club: the open chests (fewer, any day)
+    const audience = (await game.getMembership(userId)) ? 'club' : 'open';
+    {
       const myEffects = await game.activeEffects([userId], now);
       const canSeeHidden = myEffects.some((e) => e.itemId === 'reveal');
       // Mapa del Tesoro: new chests an hour before everybody else
@@ -764,13 +766,14 @@ export function registerGameRoutes(app: Hono<AppEnv>): void {
       const hasHome = me?.home_lat !== null && me?.home_lat !== undefined && Number.isFinite(homeLat) && Number.isFinite(homeLng);
       const myCity = hasHome ? cityKeyOf(me?.country_code, me?.city, homeLat, homeLng) : null;
       const near = (t: any) => hasHome && haversineMeters([homeLat, homeLng], [Number(t.lat), Number(t.lng)]) <= 30_000;
-      chests = (await game.activeChests(now))
+      chests = (await game.activeChests(now, audience))
         .filter((t) => t.city_key === myCity || near(t))
         .filter((t) => Number(t.hidden) !== 1 || canSeeHidden)
         .filter((t) => seesEarly || !t.public_at || t.public_at <= nowIso)
         .map((t) => ({
           id: t.id, name: t.name, itemId: t.power_type, item: ITEMS[t.power_type] ?? null, rarity: rarityJson(t.rarity),
           lat: Number(t.lat), lng: Number(t.lng), zone: t.zone ?? null, hidden: Number(t.hidden) === 1, expiresAt: t.expires_at,
+          open: audience === 'open',
         }));
     }
     return c.json({ cycle: cycleJson(info, now), competitionId, mode, territories, fortifications, flags, chests, participating: !!participation });

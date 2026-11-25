@@ -390,7 +390,8 @@ struct MapScreen: View {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 60_000_000_000)
             if Task.isCancelled { return }
-            guard model.mode == .competition, !tracker.isPresented else { continue }
+            // Chests are on both maps; the competition map also changes during the day
+            guard !tracker.isPresented else { continue }
             await model.refreshCompetitionOverlays()
             syncTracker()
         }
