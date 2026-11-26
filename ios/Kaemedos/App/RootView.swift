@@ -58,6 +58,7 @@ struct MainTabView: View {
     @Environment(AppRouter.self) private var router
     @Environment(RunTracker.self) private var tracker
     @Environment(SessionStore.self) private var session
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(OnboardingView.doneKey) private var onboardingDone = false
     /// First-login guided tour over the real app (GuidedTour.swift)
     @State private var tour = TourController.shared
@@ -121,6 +122,11 @@ struct MainTabView: View {
         .seasonResultsInbox()
         // My club (and its unread chat messages) on launch and whenever something changes
         .task(id: router.reloadSignal) { await clubModel.load() }
+        // Back to the app: fresh unread counts (Chat badge and the app icon's)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await clubModel.refreshChats() } }
+            if phase == .background { clubModel.syncAppBadge() }
+        }
         // "Empezar una carrera" (Siri, Shortcuts, Control Center, runnaio://run/start)
         .onAppear {
             openRunIfRequested()

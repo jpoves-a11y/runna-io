@@ -3,6 +3,15 @@ name: iOS build
 # Run by hand (Actions -> iOS build -> Run workflow): macOS minutes count 10x on private repos
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Mac image (try another one if the queue is cancelled for lack of Macs)"
+        type: choice
+        default: macos-latest
+        options:
+          - macos-latest
+          - macos-26
+          - macos-15
 
 permissions:
   contents: write
@@ -14,7 +23,7 @@ concurrency:
 jobs:
   build:
     name: Build iOS app (unsigned)
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4

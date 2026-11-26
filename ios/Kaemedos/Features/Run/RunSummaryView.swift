@@ -65,8 +65,9 @@ struct RunSummaryView: View {
                     }
                     resultSection
                     let treasures: [TreasureLine] = treasureLines
-                    if !treasures.isEmpty {
-                        TreasuresCard(treasures: treasures)
+                    let blocked = chestsBlocked
+                    if !treasures.isEmpty || blocked > 0 {
+                        TreasuresCard(treasures: treasures, blocked: blocked)
                     }
                 }
                 .padding(.horizontal, DS.Spacing.screen)
@@ -186,6 +187,12 @@ struct RunSummaryView: View {
         if retrying { return true }
         if case .uploading = submission.state { return true }
         return false
+    }
+
+    /// Chests passed by with a full inventory (the server's result)
+    private var chestsBlocked: Int {
+        if case .done(let result) = submission.state, let result { return result.chestsBlocked }
+        return 0
     }
 
     private var treasureLines: [TreasureLine] {

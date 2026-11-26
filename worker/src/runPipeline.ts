@@ -19,14 +19,14 @@ import {
 } from './gameStorage';
 import { analyzeRun, parseTrackMeta, timeOverlapShare, withReasons, haversineMeters, REASON_MESSAGES, type RunAnalysis, type ValidationReason } from './antiCheat';
 import { runAreaGeometry, mergeIntoGlobal, parseGeometry, geometryArea } from './globalTerritory';
-import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, type CycleInfo } from './cycles';
+import { cycleAt, cycleBounds, isRestLike, localDate, localHour, localMidnight, addDays, monthPeriod, competitionCycleForRun, arrivedAfterClose, timeZoneAt, type CycleInfo } from './cycles';
 import { applyRunToChallenges, collectChestsAlongRun, ensureParticipantOnRun, flagHolders, notifyUsers, MAPLESS_MODES, type CompetitionEntry, type CollectedChest } from './season';
 import { detectRanTogether, type ConquestVictimInfo } from './territory';
 import {
   ANTI_CHEAT, CHALLENGES, EXPLORER_BONUS_CAP_M2, EXPLORER_BONUS_RATIO, FLAG_CAPTURE_RADIUS_M, ITEMS,
   TOURIST_MIN_DISTANCE_M, TOURIST_BONUS_CAP_M2, DAWN_HOUR, DAWN_BONUS_RATIO, DAWN_BONUS_CAP_M2,
   EXPEDITION_BONUS_RATIO, EXPEDITION_BONUS_CAP_M2, GLOBAL_BONUS_RUN_CAP_M2,
-  DOUBLE_OR_NOTHING_DISTANCE_M, PLUNDER_MIN_STOLEN_M2, pickRewardItem,
+  DOUBLE_OR_NOTHING_DISTANCE_M, PLUNDER_MIN_STOLEN_M2, PLUNDER_REWARD_RARITY, SABOTAGE_FACTOR, pickRewardItem,
 } from '../../shared/game';
 
 export interface RunPipelineInput {
@@ -53,6 +53,8 @@ export interface RunPipelineResult {
     explored?: number;
   };
   chests: CollectedChest[];
+  /** Chests passed by with a full inventory */
+  chestsBlocked?: number;
   challengesCompleted: Array<{ type: string; rewardItem: string }>;
   ranTogetherWith: string[];
   /** This run made an inactive member enter their club's running competition */
@@ -118,7 +120,11 @@ async function isDuplicateRun(game: GameStorage, userId: string, route: { id: st
   return false;
 }
 
-/** Updates the streak of consecutive running days (Salvarrachas covers one missed day). */
+/**
+ * Updates the streak of consecutive running days. A Salvarrachas covers every missed day while it
+ * lasts (until it expires): it must have been held before the first missed day ended, and still be
+ * valid when the gap ends. The first time it saves the streak it switches to active until then.
+ */
 async function updateStreak(game: GameStorage, userId: string, startedAt: string): Promise<{ days: number; saverUsed: boolean }> {
   const user = await game.getUserGameRow(userId);
   if (!user) return { days: 0, saverUsed: false };
@@ -130,10 +136,11 @@ async function updateStreak(game: GameStorage, userId: string, startedAt: string
   let saverUsed = false;
   if (last && addDays(last, 1) === today) {
     days = current + 1;
-  } else if (last && addDays(last, 2) === today && current > 0) {
-    const saver = await game.availableItemOfType(userId, 'streak_saver');
+  } else if (last && current > 0) {
+    const firstMissed = addDays(last, 1);
+    const saver = await game.streakSaverCovering(userId, new Date(localMidnight(addDays(firstMissed, 1))).toISOString(), new Date(localMidnight(today)).toISOString());
     if (saver) {
-      await game.consumeItems([saver.id]);
+      if (saver.status === 'available') await game.activateItem(saver.id, saver.validUntil, null);
       days = current + 1;
       saverUsed = true;
     }
@@ -200,7 +207,15 @@ export async function competitionContextFor(game: GameStorage, userId: string, r
 
   let areaFactor = 1;
   const effects = await game.activeEffects(participants.map((p) => p.userId), now);
-  if (effects.some((e) => e.itemId === 'rally')) areaFactor *= 1.5;
+  // Llamada al Club: mine always; a mate's in Por equipos (same team) and in the club modes
+  // (Duelo, Derbi, Objetivo: everybody here is my club); never a rival's
+  const rally = effects.some((e) => {
+    if (e.itemId !== 'rally') return false;
+    if (e.userId === userId) return true;
+    if (mode === 'teams') return participants.find((p) => p.userId === e.userId)?.team === me.team;
+    return mode === 'duel' || mode === 'derby' || mode === 'target';
+  });
+  if (rally) areaFactor *= 1.5;
   // Muralla del Club: nobody can steal from the team (Por equipos) or the club (Derbi) of its holder
   if (mode === 'teams' || mode === 'derby') {
     const enemyEffects = await game.activeEffects(enemyIds, now);
@@ -214,8 +229,9 @@ export async function competitionContextFor(game: GameStorage, userId: string, r
       }
     }
   }
+  // Sabotajes: they add up (two of them, 0.8 × 0.8)
   const sabotages = await game.sabotagesAgainst(userId, now);
-  if (sabotages.length > 0) areaFactor *= 0.8;
+  areaFactor *= SABOTAGE_FACTOR ** sabotages.length;
   return { competition: participation.competition, participant: me, participants, enemyIds, rivalCompetitionId, areaFactor, sabotageIds: sabotages.map((s) => s.id) };
 }
 
@@ -258,24 +274,79 @@ function seededRandomFor(seed: string): () => number {
   };
 }
 
-/**
- * Someone stole from these victims: a victim with Venganza remembers who (their next steal back
- * counts double); a victim with Emboscada sabotages the thief (once) and is told.
- */
-async function reactToSteal(storage: WorkerStorage, game: GameStorage, env: any, thiefId: string, victims: ConquestVictimInfo[], now: number): Promise<void> {
+export { timeZoneAt };
+
+/** A "next run" power applies to runs that STARTED after it was activated (it's activated before going out). */
+export function appliesToRun(effect: { itemId: string; activatedAt: string | null }, runStartedAt: string): boolean {
+  if (ITEMS[effect.itemId]?.activation !== 'next_run' || !effect.activatedAt) return true;
+  const activated = Date.parse(effect.activatedAt);
+  const started = Date.parse(runStartedAt);
+  // Two minutes of slack for the watch's clock
+  return !Number.isFinite(activated) || !Number.isFinite(started) || activated <= started + NEXT_RUN_CLOCK_SLACK_MS;
+}
+
+const NEXT_RUN_CLOCK_SLACK_MS = 2 * 60 * 1000;
+
+/** The steals of a run in the competition's Actividad (written again if the run is processed again). */
+async function recordSteals(game: GameStorage, context: CompetitionContext, thiefId: string, routeId: string, victims: ConquestVictimInfo[]): Promise<void> {
+  try {
+    await game.deleteStealEventsOfRoute(routeId);
+    for (const victim of victims) {
+      if (victim.stolenArea < 1) continue;
+      await game.addCompetitionEvent({
+        competitionId: context.competition.id, actorId: thiefId, kind: 'steal', targetId: victim.userId,
+        area: victim.stolenArea, routeId,
+      });
+    }
+  } catch (error) {
+    console.error('[PIPELINE] Could not record the steals:', error);
+  }
+}
+
+/** Someone stepped on Bombas Temporales: in the Actividad, and both are told by push. */
+async function reportTimeBombs(storage: WorkerStorage, game: GameStorage, env: any, context: CompetitionContext, thiefId: string, routeId: string, hits: Array<{ userId: string; area: number }>, now: number): Promise<void> {
+  const names = await game.getUserLite([thiefId, ...hits.map((h) => h.userId)]);
+  const thief = names.get(thiefId)?.name ?? 'Un rival';
+  const km2 = (m2: number) => `${(m2 / 1e6).toLocaleString('es-ES', { maximumFractionDigits: 2 })} km²`;
+  for (const hit of hits) {
+    try {
+      await game.addCompetitionEvent({ competitionId: context.competition.id, actorId: hit.userId, kind: 'trap_hit', itemId: 'time_bomb', targetId: thiefId, area: hit.area, routeId, createdAt: new Date(now).toISOString() });
+    } catch (error) {
+      console.error('[PIPELINE] Could not record the time bomb:', error);
+    }
+    await notifyUsers(storage, env, [hit.userId], {
+      title: '💣 ¡Tu Bomba Temporal ha explotado!',
+      body: `${thief} intentó robarte y no te ha quitado nada: pierde ${km2(hit.area)} de su puntuación.`,
+      tag: `time-bomb-${routeId}-${hit.userId}`,
+      data: { type: 'time_bomb', competitionId: context.competition.id },
+    });
+  }
+  const total = hits.reduce((sum, h) => sum + h.area, 0);
+  const owners = hits.map((h) => names.get(h.userId)?.name ?? 'un rival').join(', ');
+  await notifyUsers(storage, env, [thiefId], {
+    title: '💣 Has pisado una Bomba Temporal',
+    body: `El territorio de ${owners} tenía una Bomba Temporal: no le has robado nada y pierdes ${km2(total)} de tu puntuación.`,
+    tag: `time-bomb-${routeId}`,
+    data: { type: 'time_bomb', competitionId: context.competition.id },
+  });
+}
+
+/** Someone stole from these victims: a victim with Emboscada sabotages the thief (once) and is told. */
+async function reactToSteal(storage: WorkerStorage, game: GameStorage, env: any, context: CompetitionContext, thiefId: string, victims: ConquestVictimInfo[], now: number): Promise<void> {
   const hit = victims.filter((v) => v.stolenArea > 0).map((v) => v.userId);
   if (hit.length === 0) return;
   const effects = await game.activeEffects(hit, now);
   const thief = (await game.getUserLite([thiefId])).get(thiefId);
   for (const e of effects) {
-    if (e.itemId === 'revenge') {
-      const targets: string[] = Array.isArray(e.metadata?.targets) ? e.metadata.targets : [];
-      if (!targets.includes(thiefId)) await game.setEffectMetadata(e.id, { ...(e.metadata ?? {}), targets: [...targets, thiefId] });
-    }
     if (e.itemId === 'ambush') {
       const until = new Date(now + (ITEMS.sabotage.activeHours ?? 24) * 3600 * 1000).toISOString();
       await game.createActiveEffect(e.userId, 'sabotage', until, { targetUserId: thiefId, fromAmbush: true }, 'ambush', now);
       await game.consumeItems([e.id], now);
+      try {
+        await game.addCompetitionEvent({ competitionId: context.competition.id, actorId: e.userId, kind: 'trap_hit', itemId: 'ambush', targetId: thiefId, createdAt: new Date(now).toISOString() });
+      } catch (error) {
+        console.error('[PIPELINE] Could not record the ambush:', error);
+      }
       await notifyUsers(storage, env, [e.userId], {
         title: '🪤 ¡Ha caído en tu Emboscada!',
         body: `${thief?.name ?? 'Un rival'} te ha robado y queda saboteado: su siguiente carrera conquistará un 20% menos.`,
@@ -404,7 +475,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
   }
 
   // ── 3. Global mode ──
-  const ownEffects = await game.activeEffects([userId], now);
+  const ownEffects = (await game.activeEffects([userId], now)).filter((e) => appliesToRun(e, route.startedAt));
   const effect = (itemId: string) => ownEffects.find((e) => e.itemId === itemId);
   const explorer = effect('explorer');
   const wideTrail = effect('wide_trail');
@@ -430,7 +501,8 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
   const startPoint = coords[0];
   const homeLat = Number(me?.home_lat);
   const homeLng = Number(me?.home_lng);
-  const farFromHome = !!startPoint && me?.home_lat !== null && me?.home_lat !== undefined && Number.isFinite(homeLat) && Number.isFinite(homeLng)
+  // Turista: away from the city of the profile (its point is set with it)
+  const farFromHome = !!startPoint && !!me?.city && me?.home_lat !== null && me?.home_lat !== undefined && Number.isFinite(homeLat) && Number.isFinite(homeLng)
     && haversineMeters([homeLat, homeLng], startPoint) > TOURIST_MIN_DISTANCE_M;
   if (globalRunGeometry) {
     const existing = await game.getGlobalTerritory(userId);
@@ -442,7 +514,8 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
         newArea: globalNewArea,
         explorer: !!explorer,
         tourist: !!tourist && farFromHome,
-        dawn: !!dawn && localHour(Date.parse(route.startedAt)) < DAWN_HOUR,
+        // Alba: the hour where the run happened (Canarias is an hour behind)
+        dawn: !!dawn && localHour(Date.parse(route.startedAt), startPoint ? timeZoneAt(startPoint[0], startPoint[1]) : undefined) < DAWN_HOUR,
         expedition: !!expedition && companions.length > 0,
       });
       bonus = boosts.total;
@@ -501,7 +574,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     const mode = context.competition.mode;
     let conquest: Awaited<ReturnType<typeof processTerritoryConquest>> | null = null;
     // Banderas and Exploradores have no competition map: no territory, no steals
-    const myEffects = await game.activeEffects([userId], now);
+    const myEffects = (await game.activeEffects([userId], now)).filter((e) => appliesToRun(e, route.startedAt));
     const doubleOrNothing = myEffects.find((e) => e.itemId === 'double_or_nothing');
     const plunder = myEffects.find((e) => e.itemId === 'plunder');
     const revenge = myEffects.find((e) => e.itemId === 'revenge');
@@ -517,24 +590,28 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       if (context.sabotageIds.length > 0) await game.consumeItems(context.sabotageIds, now);
       const usedNow = [doubleOrNothing, plunder].filter((e): e is NonNullable<typeof e> => !!e).map((e) => e.id);
       if (usedNow.length > 0) await game.consumeItems(usedNow, now);
-      // Saqueo: a big steal wins an item
+      // Saqueo: a big steal wins a rare power
       if (plunder && conquest.areaStolen >= PLUNDER_MIN_STOLEN_M2) {
-        const loot = pickRewardItem('common', seededRandomFor(`plunder:${routeId}`));
+        const loot = pickRewardItem(PLUNDER_REWARD_RARITY, seededRandomFor(`plunder:${routeId}`));
         await game.grantItem(userId, loot, 'plunder', routeId, now);
         result.plunderItem = loot;
       }
-      // Venganza: what this run steals from whoever stole from me counts double (once)
-      const targets: string[] = Array.isArray(revenge?.metadata?.targets) ? revenge!.metadata.targets : [];
-      if (revenge && targets.length > 0) {
-        const fromTargets = conquest.victims.filter((v) => targets.includes(v.userId)).reduce((sum, v) => sum + v.stolenArea, 0);
-        if (fromTargets > 0) {
-          extraBonus += fromTargets;
-          result.revengeBonus = fromTargets;
-          await game.consumeItems([revenge.id], now);
+      // Venganza: while it lasts (24 h), what I steal from the one I chose counts double. It runs
+      // out by time, whether I steal from them or not
+      const revengeTarget = typeof revenge?.metadata?.targetUserId === 'string' ? revenge.metadata.targetUserId : null;
+      if (revenge && revengeTarget) {
+        const fromTarget = conquest.victims.filter((v) => v.userId === revengeTarget).reduce((sum, v) => sum + v.stolenArea, 0);
+        if (fromTarget > 0) {
+          extraBonus += fromTarget;
+          result.revengeBonus = fromTarget;
         }
       }
-      // Venganza and Emboscada of the victims
-      await reactToSteal(storage, game, env, userId, conquest.victims, now);
+      // The competition's Actividad: who stole how much from whom (a reprocessed run, once)
+      await recordSteals(game, context, userId, routeId, conquest.victims);
+      // Bomba Temporal: whoever set it and whoever stepped on it are told
+      if (conquest.timeBombHits.length > 0) await reportTimeBombs(storage, game, env, context, userId, routeId, conquest.timeBombHits, now);
+      // Emboscada of the victims
+      await reactToSteal(storage, game, env, context, userId, conquest.victims, now);
     }
     await game.updateParticipant(context.competition.id, userId, {
       addRuns: 1,
@@ -558,6 +635,7 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
         victimId: userId,
         area: revert.area,
       });
+      try { await game.reduceStealEvent(revert.routeId, userId, revert.area); } catch (error) { console.error('[PIPELINE] Could not correct the steal event:', error); }
     }
     if (context.rivalCompetitionId && ((conquest?.victims.length ?? 0) > 0 || (conquest?.coRunReverts.length ?? 0) > 0)) await game.syncParticipantAreas(context.rivalCompetitionId);
     // Banderas: the flags this run passed by
@@ -587,12 +665,16 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
     }
   }
 
-  // ── 5. Streak, chests, challenges (club members in the rest phase; open chests without a club) ──
+  // ── 5. Streak, chests (every day: club ones for club members, open ones without a club),
+  //       challenges (club members in the rest phase) ──
   const streak = await updateStreak(game, userId, route.startedAt);
   const membership = await game.getMembership(userId);
+  if (membership) {
+    const opened = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now);
+    result.chests = opened.chests;
+    result.chestsBlocked = opened.blocked;
+  }
   if (membership && isRestLike(info.phase)) {
-    const flat = analysis.segments.flat();
-    result.chests = await collectChestsAlongRun(storage, game, userId, flat, routeId, now);
     const clubmates = (await game.getClubMemberIds(membership.clubId)).filter((id) => id !== userId);
     const withMates = await ranWithClubmates(storage, clubmates, route);
     for (const id of withMates) if (!result.ranTogetherWith.includes(id)) result.ranTogetherWith.push(id);
@@ -604,8 +686,10 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       ranWithClubmate: withMates.length > 0,
     });
   } else if (!membership) {
-    // Runners without a club: the few open chests of their city, any day
-    result.chests = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now, 'open');
+    // Runners without a club: the few open chests of their city
+    const opened = await collectChestsAlongRun(storage, game, userId, analysis.segments.flat(), routeId, now, 'open');
+    result.chests = opened.chests;
+    result.chestsBlocked = opened.blocked;
   }
   if (result.ranTogetherWith.length > 0) await storage.updateRouteRanTogether(routeId, result.ranTogetherWith);
 
@@ -623,6 +707,8 @@ export async function processRun(storage: WorkerStorage, env: any, input: RunPip
       : null,
     streak: streak.days,
     streakSaverUsed: streak.saverUsed,
+    // Chests passed by with a full inventory (not opened: they stay for others)
+    chestsBlocked: result.chestsBlocked ?? 0,
     challengesCompleted: result.challengesCompleted.map((c) => ({
       type: c.type, title: CHALLENGES[c.type as keyof typeof CHALLENGES]?.title ?? c.type,
       rewardItem: c.rewardItem, rewardName: ITEMS[c.rewardItem]?.name ?? c.rewardItem,

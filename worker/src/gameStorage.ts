@@ -7,6 +7,7 @@ import type { ChestSpot } from './chestSpots';
 import {
   ITEMS,
   INVENTORY_CAP,
+  RETIRED_ITEMS,
   type Crest,
   type ClubRole,
   type ItemScope,
@@ -17,6 +18,49 @@ import { parseEntryMode, entryModeFromVisibility, visibilityOf, type EntryMode, 
 type Row = Record<string, any>;
 
 export type ChestAudience = 'club' | 'open';
+
+export interface NewChest {
+  competitionId: string;
+  name: string;
+  itemId: string;
+  rarity: string;
+  lat: number;
+  lng: number;
+  expiresAt: string;
+  zone: string;
+  cityKey: string;
+  audience?: ChestAudience;
+  /** When it shows up (default: now) */
+  appearsAt?: string;
+  announced?: boolean;
+}
+
+export type CompetitionEventKind =
+  | 'power' // a power activated (item_id; target_id for the ones aimed at someone)
+  | 'trap' // a hidden power prepared (Bomba Temporal, Emboscada): shown without saying which
+  | 'trap_hit' // someone fell in a trap (actor: who set it, target: who fell, area: what it cost)
+  | 'steal'; // a run stole territory (actor: thief, target: victim, area)
+
+export interface CompetitionEventRow {
+  id: string;
+  competitionId: string;
+  actorId: string | null;
+  kind: CompetitionEventKind;
+  itemId: string | null;
+  targetId: string | null;
+  area: number | null;
+  routeId: string | null;
+  metadata: any;
+  createdAt: string;
+}
+
+function toCompetitionEvent(r: Row): CompetitionEventRow {
+  return {
+    id: r.id, competitionId: r.competition_id, actorId: r.actor_id ?? null, kind: r.kind, itemId: r.item_id ?? null,
+    targetId: r.target_id ?? null, area: r.area === null || r.area === undefined ? null : Number(r.area), routeId: r.route_id ?? null,
+    metadata: parseJson(r.metadata, null), createdAt: r.created_at,
+  };
+}
 
 export interface CityGroupRow {
   cityKey: string;
@@ -316,6 +360,28 @@ export async function applyGameSchema(db: Database): Promise<void> {
   await db.run(sql`CREATE INDEX IF NOT EXISTS idx_user_awards_user ON user_awards(user_id, created_at)`);
   // Members who didn't take part also see their club's result once (up to this cycle)
   await tryRun(db, sql`ALTER TABLE club_members ADD COLUMN result_seen_cycle INTEGER`);
+  // What happens in a competition, for its "Actividad" section: powers activated, steals, traps
+  await db.run(sql`CREATE TABLE IF NOT EXISTS competition_events (
+    id TEXT PRIMARY KEY,
+    competition_id TEXT NOT NULL,
+    actor_id TEXT,
+    kind TEXT NOT NULL,
+    item_id TEXT,
+    target_id TEXT,
+    area REAL,
+    route_id TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL
+  )`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_events_comp ON competition_events(competition_id, created_at)`);
+  await db.run(sql`CREATE INDEX IF NOT EXISTS idx_competition_events_target ON competition_events(target_id, kind, created_at)`);
+  // Chats other than the club's (competition chats): what each user read of each one
+  await db.run(sql`CREATE TABLE IF NOT EXISTS chat_reads (
+    user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, conversation_id)
+  )`);
   // Club chat: messages (kind 'user' or 'system'), reactions, mutes and what each member read
   await db.run(sql`CREATE TABLE IF NOT EXISTS club_messages (
     id TEXT PRIMARY KEY,
@@ -417,6 +483,16 @@ export async function applyCompetitionColumns(db: Database): Promise<void> {
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN scope TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN source TEXT`);
   await tryRun(db, sql`ALTER TABLE user_powers ADD COLUMN unused_expires_at TEXT`);
+  // Chests are planned ahead (spawned_at in the future = when they appear); announced once they do.
+  // The chests that existed before were announced when they were created
+  if (await tryRun(db, sql`ALTER TABLE treasures ADD COLUMN announced INTEGER NOT NULL DEFAULT 0`)) {
+    await tryRun(db, sql`UPDATE treasures SET announced = 1`);
+  }
+  await tryRun(db, sql`CREATE INDEX IF NOT EXISTS idx_treasures_city_spawned ON treasures(city_key, spawned_at)`);
+  // Retired powers: copies still unused (or running) go
+  for (const itemId of RETIRED_ITEMS) {
+    await tryRun(db, sql`UPDATE user_powers SET status = 'expired' WHERE power_type = ${itemId} AND status IN ('available', 'active')`);
+  }
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1266,6 +1342,46 @@ export class GameStorage {
     }));
   }
 
+  // ─── Competition activity ───
+
+  async addCompetitionEvent(data: { competitionId: string; actorId: string | null; kind: CompetitionEventKind; itemId?: string | null; targetId?: string | null; area?: number | null; routeId?: string | null; metadata?: any; createdAt?: string }): Promise<string> {
+    const id = newId();
+    await this.db.run(sql`INSERT INTO competition_events (id, competition_id, actor_id, kind, item_id, target_id, area, route_id, metadata, created_at)
+      VALUES (${id}, ${data.competitionId}, ${data.actorId}, ${data.kind}, ${data.itemId ?? null}, ${data.targetId ?? null}, ${data.area ?? null},
+        ${data.routeId ?? null}, ${data.metadata === undefined || data.metadata === null ? null : JSON.stringify(data.metadata)}, ${data.createdAt ?? nowIso()})`);
+    return id;
+  }
+
+  /** Latest events of some competitions (a Derbi or Duelo shows both clubs'), newest first. */
+  async listCompetitionEvents(competitionIds: string[], limit = 50): Promise<CompetitionEventRow[]> {
+    if (competitionIds.length === 0) return [];
+    const rows = await this.db.all<Row>(sql.join([
+      sql`SELECT * FROM competition_events WHERE competition_id IN (`,
+      sql.join([...new Set(competitionIds)].map((id) => sql`${id}`), sql`, `),
+      sql`) ORDER BY created_at DESC, id DESC LIMIT ${limit}`,
+    ], sql``));
+    return rows.map(toCompetitionEvent);
+  }
+
+  /** Steals of a run against a victim got smaller (ran together after all): the event follows. */
+  async reduceStealEvent(routeId: string, victimId: string, area: number): Promise<void> {
+    await this.db.run(sql`UPDATE competition_events SET area = MAX(0, coalesce(area, 0) - ${area}) WHERE kind = 'steal' AND route_id = ${routeId} AND target_id = ${victimId}`);
+    await this.db.run(sql`DELETE FROM competition_events WHERE kind = 'steal' AND route_id = ${routeId} AND target_id = ${victimId} AND coalesce(area, 0) < 1`);
+  }
+
+  /** A run processed again (rebuild, re-import): its steal events are written again. */
+  async deleteStealEventsOfRoute(routeId: string): Promise<void> {
+    await this.db.run(sql`DELETE FROM competition_events WHERE kind = 'steal' AND route_id = ${routeId}`);
+  }
+
+  /** Who stole from a user since `sinceIso` (Venganza), with how much and when last, most recent first. */
+  async stealersOf(victimId: string, sinceIso: string): Promise<Array<{ userId: string; area: number; lastAt: string }>> {
+    const rows = await this.db.all<Row>(sql`SELECT actor_id, SUM(area) AS area, MAX(created_at) AS last_at FROM competition_events
+      WHERE kind = 'steal' AND target_id = ${victimId} AND created_at >= ${sinceIso} AND actor_id IS NOT NULL
+      GROUP BY actor_id ORDER BY last_at DESC`);
+    return rows.map((r) => ({ userId: r.actor_id, area: Number(r.area ?? 0), lastAt: r.last_at })).filter((r) => r.area > 0);
+  }
+
   // ─── Club chat ───
 
   async addClubMessage(data: { clubId: string; userId: string | null; kind: 'user' | 'system'; body: string; replyTo?: string | null; mentions?: string[] }): Promise<ClubMessageRow> {
@@ -1384,6 +1500,28 @@ export class GameStorage {
       ? sql.join([sql`AND (user_id IS NULL OR user_id NOT IN (`, sql.join(hiddenUserIds.map((id) => sql`${id}`), sql`, `), sql`))`], sql``)
       : sql``;
     const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM (SELECT 1 FROM club_messages WHERE club_id = ${clubId} AND created_at > ${since}
+      AND deleted_at IS NULL AND (user_id IS NULL OR user_id != ${userId}) ${notHidden} LIMIT 99)`);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** When the user last read a competition chat (else `fallback`: its start). */
+  async getConversationReadAt(conversationId: string, userId: string, fallback: string | null): Promise<string | null> {
+    const rows = await this.db.all<Row>(sql`SELECT read_at FROM chat_reads WHERE user_id = ${userId} AND conversation_id = ${conversationId}`);
+    return rows[0]?.read_at ?? fallback;
+  }
+
+  async markConversationRead(conversationId: string, userId: string, at = nowIso()): Promise<void> {
+    await this.db.run(sql`INSERT INTO chat_reads (user_id, conversation_id, read_at) VALUES (${userId}, ${conversationId}, ${at})
+      ON CONFLICT(user_id, conversation_id) DO UPDATE SET read_at = excluded.read_at WHERE excluded.read_at > chat_reads.read_at`);
+  }
+
+  /** Unread messages of others in a competition chat (capped at 99). */
+  async conversationUnreadCount(conversationId: string, userId: string, fallbackSince: string | null, hiddenUserIds: string[] = []): Promise<number> {
+    const since = (await this.getConversationReadAt(conversationId, userId, fallbackSince)) ?? '1970-01-01';
+    const notHidden = hiddenUserIds.length > 0
+      ? sql.join([sql`AND (user_id IS NULL OR user_id NOT IN (`, sql.join(hiddenUserIds.map((id) => sql`${id}`), sql`, `), sql`))`], sql``)
+      : sql``;
+    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM (SELECT 1 FROM club_messages WHERE club_id = ${conversationId} AND created_at > ${since}
       AND deleted_at IS NULL AND (user_id IS NULL OR user_id != ${userId}) ${notHidden} LIMIT 99)`);
     return Number(rows[0]?.n ?? 0);
   }
@@ -1619,7 +1757,7 @@ export class GameStorage {
   // ─── Inventory (user_powers) ──────────────────────────────────────────────
 
   /**
-   * Gives a user an item. Powers: if they already hold INVENTORY_CAP unused items of the same scope,
+   * Gives a user an item. Powers: if they already hold INVENTORY_CAP unused powers (all kinds together),
    * the oldest one is discarded. Cosmetics: owned forever (granting one twice does nothing).
    * Returns the id of the inventory row (null for an already-owned cosmetic) and what was discarded.
    */
@@ -1637,7 +1775,7 @@ export class GameStorage {
     await this.expireItems(userId, now);
     let discarded: string | null = null;
     const held = await this.db.all<Row>(sql`SELECT id, power_type FROM user_powers WHERE user_id = ${userId} AND status = 'available'
-      AND COALESCE(scope, 'competition') = ${def.scope} ORDER BY created_at ASC`);
+      AND COALESCE(scope, 'competition') != 'cosmetic' ORDER BY created_at ASC`);
     if (held.length >= INVENTORY_CAP) {
       const oldest = held[0];
       await this.db.run(sql`UPDATE user_powers SET status = 'expired', used_at = ${new Date(now).toISOString()} WHERE id = ${oldest.id}`);
@@ -1657,6 +1795,14 @@ export class GameStorage {
     await this.db.run(sql`INSERT INTO user_powers (id, user_id, competition_id, power_type, treasure_id, status, scope, source, unused_expires_at, created_at)
       VALUES (${id}, ${userId}, ${SEASON_INVENTORY}, ${itemId}, ${sourceId}, 'available', ${def.scope}, ${source}, ${unusedExpiresAt}, ${new Date(now).toISOString()})`);
     return { id, discarded };
+  }
+
+  /** Unused powers held (cosmetics don't count): the inventory is full at INVENTORY_CAP. */
+  async heldPowersCount(userId: string, now = Date.now()): Promise<number> {
+    await this.expireItems(userId, now);
+    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM user_powers WHERE user_id = ${userId} AND status = 'available'
+      AND COALESCE(scope, 'competition') != 'cosmetic'`);
+    return Number(rows[0]?.n ?? 0);
   }
 
   /** End of a competition: competition effects waiting for a run don't carry over to the next one. */
@@ -1716,6 +1862,26 @@ export class GameStorage {
       metadata = ${metadata === null ? null : JSON.stringify(metadata)} WHERE id = ${id} AND status = 'available'`);
     const rows = await this.db.all<Row>(sql`SELECT status, activated_at FROM user_powers WHERE id = ${id}`);
     return rows[0]?.status === 'active' && rows[0]?.activated_at === iso;
+  }
+
+  /**
+   * A Salvarrachas that covers a gap in the streak: obtained before `obtainedBeforeIso` and still
+   * valid at `validAtIso` (unused, or already saving the streak).
+   */
+  async streakSaverCovering(userId: string, obtainedBeforeIso: string, validAtIso: string): Promise<{ id: string; status: string; validUntil: string | null } | null> {
+    const rows = await this.db.all<Row>(sql`SELECT id, status, unused_expires_at, expires_at FROM user_powers WHERE user_id = ${userId} AND power_type = 'streak_saver'
+      AND status IN ('available', 'active') AND created_at < ${obtainedBeforeIso}
+      AND coalesce(CASE WHEN status = 'active' THEN expires_at ELSE unused_expires_at END, '9999') >= ${validAtIso}
+      ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, created_at ASC LIMIT 1`);
+    const r = rows[0];
+    return r ? { id: r.id, status: r.status, validUntil: (r.status === 'active' ? r.expires_at : r.unused_expires_at) ?? null } : null;
+  }
+
+  /** A next-run power activated but not used yet goes back to the inventory. */
+  async deactivateItem(id: string): Promise<boolean> {
+    await this.db.run(sql`UPDATE user_powers SET status = 'available', activated_at = NULL, expires_at = NULL, metadata = NULL WHERE id = ${id} AND status = 'active'`);
+    const rows = await this.db.all<Row>(sql`SELECT status FROM user_powers WHERE id = ${id}`);
+    return rows[0]?.status === 'available';
   }
 
   /** available/active -> used. */
@@ -1800,12 +1966,61 @@ export class GameStorage {
     return Number(rows[0]?.n ?? 0);
   }
 
-  async createChest(data: { competitionId: string; name: string; itemId: string; rarity: string; lat: number; lng: number; expiresAt: string; zone: string; hidden: boolean; cityKey: string; publicAt?: string | null; audience?: ChestAudience }): Promise<string> {
-    const id = newId();
-    await this.db.run(sql`INSERT INTO treasures (id, competition_id, name, power_type, rarity, lat, lng, spawned_at, expires_at, active, zone, hidden, city_key, public_at, audience)
-      VALUES (${id}, ${data.competitionId}, ${data.name}, ${data.itemId}, ${data.rarity}, ${data.lat}, ${data.lng}, ${nowIso()}, ${data.expiresAt}, 1,
-        ${data.zone}, ${data.hidden ? 1 : 0}, ${data.cityKey}, ${data.publicAt ?? null}, ${data.audience ?? 'club'})`);
+  async createChest(data: NewChest): Promise<string> {
+    const [id] = await this.createChests([data]);
     return id;
+  }
+
+  /** Several chests in one statement. `appearsAt` (default now) is when they show up and can be opened. */
+  async createChests(chests: NewChest[]): Promise<string[]> {
+    if (chests.length === 0) return [];
+    const ids = chests.map(() => newId());
+    const now = nowIso();
+    await this.db.run(sql.join([
+      sql`INSERT INTO treasures (id, competition_id, name, power_type, rarity, lat, lng, spawned_at, expires_at, active, zone, hidden, city_key, public_at, audience, announced) VALUES `,
+      sql.join(chests.map((data, i) => sql`(${ids[i]}, ${data.competitionId}, ${data.name}, ${data.itemId}, ${data.rarity}, ${data.lat}, ${data.lng},
+        ${data.appearsAt ?? now}, ${data.expiresAt}, 1, ${data.zone}, 0, ${data.cityKey}, NULL, ${data.audience ?? 'club'}, ${data.announced ? 1 : 0})`), sql`, `),
+    ], sql``));
+    return ids;
+  }
+
+  /** Chests of a city and audience appearing in [fromIso, toIso): a day already planned has some. */
+  async countPlannedChests(cityKey: string, audience: ChestAudience, fromIso: string, toIso: string): Promise<number> {
+    const rows = await this.db.all<Row>(sql`SELECT COUNT(*) AS n FROM treasures WHERE city_key = ${cityKey} AND spawned_at >= ${fromIso} AND spawned_at < ${toIso}
+      AND coalesce(audience, 'club') = ${audience}`);
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  /** When the last planned chest of each city comes out ("audience|cityKey" → ms), from chests since `sinceIso`. */
+  async lastPlannedChests(sinceIso: string): Promise<Map<string, number>> {
+    const rows = await this.db.all<Row>(sql`SELECT city_key, coalesce(audience, 'club') AS audience, MAX(spawned_at) AS last FROM treasures
+      WHERE spawned_at >= ${sinceIso} AND city_key IS NOT NULL GROUP BY city_key, coalesce(audience, 'club')`);
+    return new Map(rows.map((r) => [`${r.audience}|${r.city_key}`, Date.parse(r.last)]));
+  }
+
+  /** Chests that have appeared and haven't been announced yet (only those of the last hour are announced). */
+  async chestsToAnnounce(nowIsoValue: string, sinceIso: string): Promise<Row[]> {
+    return this.db.all<Row>(sql`SELECT * FROM treasures WHERE announced = 0 AND spawned_at <= ${nowIsoValue}
+      ORDER BY spawned_at ASC LIMIT 200`).then((rows) => rows.map((r) => ({ ...r, stale: r.spawned_at < sinceIso })));
+  }
+
+  async markChestsAnnounced(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.run(sql.join([sql`UPDATE treasures SET announced = 1 WHERE id IN (`, sql.join(ids.map((id) => sql`${id}`), sql`, `), sql`)`], sql``));
+  }
+
+  /**
+   * Chests of a city (or within ~30 km of a point) that will appear (planned, not out yet), soonest
+   * first.
+   */
+  async upcomingChests(now: number, audience: ChestAudience, near: { cityKey: string | null; lat: number; lng: number }, limit = 50): Promise<Row[]> {
+    const iso = new Date(now).toISOString();
+    const dLat = 0.3;
+    const dLng = 0.3 / Math.max(0.2, Math.cos((near.lat * Math.PI) / 180));
+    return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND spawned_at > ${iso}
+      AND city_key IS NOT NULL AND coalesce(audience, 'club') = ${audience}
+      AND (city_key = ${near.cityKey ?? ''} OR (lat BETWEEN ${near.lat - dLat} AND ${near.lat + dLat} AND lng BETWEEN ${near.lng - dLng} AND ${near.lng + dLng}))
+      ORDER BY spawned_at ASC LIMIT ${limit}`);
   }
 
   /** Chests of a city that are active or appeared since `sinceIso`: new ones keep away from them. */
@@ -1864,13 +2079,15 @@ export class GameStorage {
   }
 
   /** Active chests; with `audience`, only club chests or only open chests. */
+  /** Chests out now (planned ones only once they have appeared). */
   async activeChests(now = Date.now(), audience?: ChestAudience): Promise<Row[]> {
     const iso = new Date(now).toISOString();
     if (audience) {
-      return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND city_key IS NOT NULL
-        AND coalesce(audience, 'club') = ${audience}`);
+      return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND spawned_at <= ${iso}
+        AND city_key IS NOT NULL AND coalesce(audience, 'club') = ${audience}`);
     }
-    return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND city_key IS NOT NULL`);
+    return this.db.all<Row>(sql`SELECT * FROM treasures WHERE active = 1 AND collected_by IS NULL AND expires_at > ${iso} AND spawned_at <= ${iso}
+      AND city_key IS NOT NULL`);
   }
 
   /** Atomically claims a chest; true if this user got it. */
@@ -1949,6 +2166,8 @@ export class GameStorage {
       sql`DELETE FROM club_message_reactions WHERE user_id = ${userId} OR message_id IN (SELECT id FROM club_messages WHERE user_id = ${userId})`,
       sql`DELETE FROM club_messages WHERE user_id = ${userId}`,
       sql`DELETE FROM club_mutes WHERE user_id = ${userId}`,
+      sql`DELETE FROM competition_events WHERE actor_id = ${userId} OR target_id = ${userId}`,
+      sql`DELETE FROM chat_reads WHERE user_id = ${userId}`,
     ], 'DELETE ACCOUNT');
   }
 

@@ -418,33 +418,35 @@ struct ChallengesCard: View {
 
 // MARK: - Chests
 
-/// A chest on the competition map (rest days): rarity-coloured box.
-/// A chest on the map: the illustrated chest of its rarity. Hidden chests (seen thanks to the Faro)
-/// are drawn faded with an eye badge.
+/// A chest on the map: the illustrated chest of its rarity. One that hasn't come out yet (seen
+/// with the Faro or the Mapa del Tesoro) is drawn faded, with the time it comes out.
 struct ChestMarker: View {
     let chest: Chest
 
     var body: some View {
-        ChestView(rarity: chest.rarity, size: 38)
-            .opacity(chest.hidden ? 0.6 : 1)
+        ChestView(rarity: chest.rarity, size: 38, animated: !chest.isUpcoming)
+            .opacity(chest.isUpcoming ? 0.55 : 1)
             .shadow(color: Color.black.opacity(0.28), radius: 3, x: 0, y: 2)
-            .overlay(alignment: .topTrailing) {
-                if chest.hidden {
-                    Image(systemName: "eye.fill")
-                        .font(.system(size: 9, weight: .bold))
+            .overlay(alignment: .bottom) {
+                if chest.isUpcoming, let appears = chest.appearsDate {
+                    Text(appears, format: .dateTime.hour().minute().locale(Locale(identifier: "es_ES")))
+                        .font(.system(size: 10, weight: .bold).monospacedDigit())
                         .foregroundStyle(.white)
-                        .frame(width: 17, height: 17)
-                        .background(Color.black.opacity(0.65), in: Circle())
-                        .offset(x: 4, y: -4)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.black.opacity(0.7), in: Capsule())
+                        .offset(y: 10)
                 }
             }
             .contentShape(Rectangle())
-            .accessibilityLabel(chest.hidden ? "Cofre oculto \(Rarity.label(chest.rarity))" : "Cofre \(Rarity.label(chest.rarity))")
+            .accessibilityLabel(chest.isUpcoming ? "Cofre \(Rarity.label(chest.rarity)) que saldrá pronto" : "Cofre \(Rarity.label(chest.rarity))")
     }
 }
 
 struct ChestDetailView: View {
     let chest: Chest
+    /// 5 powers already: it can't be opened until one is used
+    var inventoryFull = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -462,7 +464,19 @@ struct ChestDetailView: View {
             Label("Contenido sorpresa: descubrirás qué poder lleva cuando lo abras.", systemImage: "questionmark.circle")
                 .font(.subheadline)
                 .fixedSize(horizontal: false, vertical: true)
-            if let expires = chest.expiresDate, expires > Date() {
+            if inventoryFull {
+                Label("Tienes el inventario lleno (5 poderes): usa alguno para poder abrir cofres. Si pasas sin hueco, el cofre se queda para otro.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if chest.isUpcoming, let appears = chest.appearsDate {
+                // Seen early (Faro, Mapa del Tesoro): it can't be opened until it comes out
+                Label("Sale \(Format.relative(appears)), a las \(appears.formatted(.dateTime.hour().minute().locale(Locale(identifier: "es_ES")))). Hasta entonces no se puede abrir: solo tú sabes que va a estar aquí.", systemImage: "hourglass")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.brand)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let expires = chest.expiresDate, expires > Date() {
                 Label("Desaparece en \(SeasonStore.remaining(expires.timeIntervalSinceNow))", systemImage: "clock")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -509,14 +523,32 @@ final class InventoryModel {
         }
     }
 
-    func activate(_ item: InventoryItem, targetUserId: String? = nil, nickname: String? = nil) async throws -> ItemActivationResponse {
+    func activate(_ item: InventoryItem, targetUserId: String? = nil, nickname: String? = nil, point: CLLocationCoordinate2D? = nil) async throws -> ItemActivationResponse {
         var body: [String: Any] = [:]
         if let targetUserId { body["targetUserId"] = targetUserId }
         if let nickname { body["nickname"] = nickname }
+        if let point {
+            body["lat"] = point.latitude
+            body["lng"] = point.longitude
+        }
         let response: ItemActivationResponse = try await APIClient.shared.request("POST", "/api/inventory/\(item.id)/activate", body: body)
         await load()
         await SeasonStore.shared.load(force: true)
         return response
+    }
+
+    /// A "next run" power activated but not used yet goes back to the inventory.
+    func deactivate(_ item: InventoryItem) async throws -> ItemActivationResponse {
+        let response: ItemActivationResponse = try await APIClient.shared.request("POST", "/api/inventory/\(item.id)/deactivate", body: [:])
+        await load()
+        await SeasonStore.shared.load(force: true)
+        return response
+    }
+
+    /// Venganza: who stole from me in the last 3 days.
+    func revengeTargets() async throws -> [RevengeTargetsResponse.Target] {
+        let response: RevengeTargetsResponse = try await APIClient.shared.request("GET", "/api/season/revenge-targets")
+        return response.targets
     }
 
     func equipTitle(_ itemId: String?) async throws {
@@ -530,10 +562,14 @@ final class InventoryModel {
     var cosmetics: [InventoryItem] { items.filter(\.isOwnedCosmetic) }
 }
 
-/// Picks the rival for Espía / Sabotaje / Pluma del Troll (and the nickname text).
+/// Picks the rival for Espía / Sabotaje / Pluma del Troll (and the nickname text), or, for the
+/// Venganza, one of those who stole from you in the last 3 days (with how much and when).
 struct TargetPickerSheet: View {
     let item: InventoryItem
     let rivals: [GameUser]
+    /// A line under each name (Venganza: "Te robó 0,12 km² · hace 3 h")
+    var details: [String: String] = [:]
+    var header = "Elige a un rival"
     let onConfirm: (String, String?) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedId: String?
@@ -555,8 +591,15 @@ struct TargetPickerSheet: View {
                         } label: {
                             HStack(spacing: DS.Spacing.m) {
                                 AvatarView(name: rival.name, avatar: rival.avatar, color: rival.color, size: 32)
-                                Text(rival.name)
-                                    .foregroundStyle(Color.primary)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(rival.name)
+                                        .foregroundStyle(Color.primary)
+                                    if let detail = details[rival.id] {
+                                        Text(detail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                                 Spacer()
                                 if selectedId == rival.id {
                                     Image(systemName: "checkmark")
@@ -566,7 +609,7 @@ struct TargetPickerSheet: View {
                         }
                     }
                 } header: {
-                    Text("Elige a un rival")
+                    Text(header)
                 }
                 if needsNickname {
                     Section {
@@ -574,6 +617,8 @@ struct TargetPickerSheet: View {
                             .textInputAutocapitalization(.sentences)
                     } header: {
                         Text("Apodo")
+                    } footer: {
+                        Label("Que reine el respeto en la competición: un apodo ofensivo se puede denunciar, y quien lo pone se arriesga a una sanción.", systemImage: "hand.raised")
                     }
                 }
             }

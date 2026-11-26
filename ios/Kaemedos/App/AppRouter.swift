@@ -171,7 +171,9 @@ final class AppRouter {
         case "club_invite", "club_request", "club_request_accepted", "club_member_joined":
             clubSection = .club
             selectedTab = .club
-        case "season_competition_started", "season_competition_finished", "season_inactive", "rally", "challenge_completed":
+        case "season_competition_started", "season_competition_finished", "season_inactive", "rally", "challenge_completed",
+             "nickname_changed", "time_bomb", "ambush":
+            // The club screen: the competition and its Actividad (where a nickname can be reported)
             clubSection = .club
             selectedTab = .club
         case "club_chat":
@@ -181,7 +183,7 @@ final class AppRouter {
              "biggest_conquest", "longest_run", "fastest_pace":
             activitySection = .feed
             selectedTab = .activity
-        case "area_overtake", "nickname_changed":
+        case "area_overtake":
             selectedTab = .rankings
         case "weekly_summary":
             selectedTab = .rankings

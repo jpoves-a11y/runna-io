@@ -74,6 +74,12 @@ export function zoneOffsetMs(time: number, timeZone = SEASON_TIME_ZONE): number 
 }
 
 /** Local date "YYYY-MM-DD" of `time` in `timeZone`. */
+/** Time zone of a point in Spain: the Canary Islands (an hour behind), or the peninsula and the Balearic Islands. */
+export function timeZoneAt(lat: number, lng: number): string {
+  if (lat >= 27.4 && lat <= 29.6 && lng >= -18.4 && lng <= -13.2) return 'Atlantic/Canary';
+  return SEASON_TIME_ZONE;
+}
+
 export function localDate(time: number, timeZone = SEASON_TIME_ZONE): string {
   const w = wallClock(time, timeZone);
   return `${w.year}-${String(w.month).padStart(2, '0')}-${String(w.day).padStart(2, '0')}`;

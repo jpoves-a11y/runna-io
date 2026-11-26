@@ -538,12 +538,14 @@ struct ClubDetailResponse: Decodable {
     let myRequests: [ClubOwnRequest]
     /// I can invite (personal invites, links) and see the code.
     let canInvite: Bool
-    /// Only in /api/clubs/mine: club chat messages I haven't read (99 at most)
+    /// Only in /api/clubs/mine: chat messages I haven't read, in all my chats (the badge)
     let unreadCount: Int
+    /// Only in /api/clubs/mine: my chats (the club's; during some competitions, also its own ones)
+    let chats: [ClubChatChannel]
 
     enum CodingKeys: String, CodingKey {
         case club, role, isMember, canInvite, members, competition, pendingRequests, history, trophies, unlockedCrestPieces
-        case requestPending, invites, myRequests, unreadCount
+        case requestPending, invites, myRequests, unreadCount, chats
     }
 
     init(from decoder: Decoder) throws {
@@ -564,6 +566,7 @@ struct ClubDetailResponse: Decodable {
         invites = (try? c.decodeIfPresent([ClubInvite].self, forKey: .invites)) ?? []
         myRequests = (try? c.decodeIfPresent([ClubOwnRequest].self, forKey: .myRequests)) ?? []
         unreadCount = c.int(.unreadCount) ?? 0
+        chats = (try? c.decodeIfPresent([ClubChatChannel].self, forKey: .chats)) ?? []
     }
 
     var isAdmin: Bool { role == "owner" || role == "admin" }
@@ -1173,10 +1176,14 @@ struct ItemDefinition: Decodable, Hashable {
     }
 
     var needsTarget: Bool { activation == "target" }
+    /// Bastión: a point of your territory, chosen on the map
+    var needsZone: Bool { activation == "zone" }
+    /// Activated before going out: it applies to the next run you start
+    var isNextRun: Bool { activation == "next_run" }
     var scopeLabel: String {
         switch scope {
         case "global": return "Global"
-        case "rest": return "Descanso"
+        case "rest": return "Cofres"
         case "cosmetic": return "Cosmético"
         default: return "Competición"
         }
@@ -1331,10 +1338,14 @@ struct Chest: Decodable, Identifiable, Hashable {
     let expiresAt: String?
     /// An open chest: for runners without a club (any day, global powers and cosmetics only)
     let isOpen: Bool
+    /// When it comes out
+    let appearsAt: String?
+    /// Not out yet (seen with Faro or Mapa del Tesoro): it can't be opened until `appearsAt`
+    let upcoming: Bool
 
     private struct RarityRef: Decodable { let id: String? }
 
-    enum CodingKeys: String, CodingKey { case id, name, itemId, item, rarity, lat, lng, zone, hidden, expiresAt, open }
+    enum CodingKeys: String, CodingKey { case id, name, itemId, item, rarity, lat, lng, zone, hidden, expiresAt, open, appearsAt, upcoming }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1349,10 +1360,15 @@ struct Chest: Decodable, Identifiable, Hashable {
         hidden = c.bool(.hidden) ?? false
         expiresAt = c.string(.expiresAt)
         isOpen = c.bool(.open) ?? false
+        appearsAt = c.string(.appearsAt)
+        upcoming = c.bool(.upcoming) ?? false
     }
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lng) }
     var expiresDate: Date? { APIDate.parse(expiresAt) }
+    var appearsDate: Date? { APIDate.parse(appearsAt) }
+    /// Still to come out (by the clock, in case the map is a few minutes old)
+    var isUpcoming: Bool { upcoming && (appearsDate.map { $0 > Date() } ?? true) }
 }
 
 /// GET /api/season/map
@@ -1379,8 +1395,13 @@ struct SeasonMapResponse: Decodable {
     let chests: [Chest]
     /// Banderas: the flags and who holds them.
     let flags: [CompetitionFlag]
+    /// Full inventory (5 powers): chests can't be opened
+    let inventoryFull: Bool
+    let inventoryCap: Int
 
-    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests, flags }
+    private struct InventoryRef: Decodable { let full: Bool?; let cap: Int? }
+
+    enum CodingKeys: String, CodingKey { case competitionId, mode, territories, fortifications, chests, flags, inventory }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1390,6 +1411,9 @@ struct SeasonMapResponse: Decodable {
         fortifications = (try? c.decodeIfPresent([Fortification].self, forKey: .fortifications)) ?? []
         chests = (try? c.decodeIfPresent([Chest].self, forKey: .chests)) ?? []
         flags = (try? c.decodeIfPresent([CompetitionFlag].self, forKey: .flags)) ?? []
+        let inventory = try? c.decodeIfPresent(InventoryRef.self, forKey: .inventory)
+        inventoryFull = inventory?.full ?? false
+        inventoryCap = inventory?.cap ?? 5
     }
 }
 
@@ -1940,8 +1964,10 @@ struct ClubChatResponse: Decodable {
     let reactions: [String]
     let me: Me?
     let mutes: [Mute]
+    /// The people of a competition chat (both clubs in Duelo / Derbi): who can be @mentioned
+    let members: [GameUser]?
 
-    enum CodingKeys: String, CodingKey { case messages, hasMore, reactions, me, mutes }
+    enum CodingKeys: String, CodingKey { case messages, hasMore, reactions, me, mutes, members }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1950,6 +1976,7 @@ struct ClubChatResponse: Decodable {
         reactions = (try? c.decodeIfPresent([String].self, forKey: .reactions)) ?? ["👍", "❤️", "🔥", "😂", "👏", "💪"]
         me = try? c.decodeIfPresent(Me.self, forKey: .me)
         mutes = (try? c.decodeIfPresent([Mute].self, forKey: .mutes)) ?? []
+        members = try? c.decodeIfPresent([GameUser].self, forKey: .members)
     }
 }
 
@@ -1959,4 +1986,171 @@ struct ClubChatPostResponse: Decodable {
 
 struct ClubChatReactionResponse: Decodable {
     let reactions: [ClubChatMessage.Reaction]
+}
+
+// MARK: - Competition chats
+
+/// One chat of the club: "club" (the club's), "team" (only my team, Por equipos) or "match"
+/// (both clubs, Duelo and Derbi). During a competition the app switches between two of them.
+struct ClubChatChannel: Decodable, Identifiable, Hashable {
+    let channel: String
+    let title: String
+    let subtitle: String?
+    let unread: Int
+    var id: String { channel }
+
+    enum CodingKeys: String, CodingKey { case channel, title, subtitle, unread }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        channel = c.string(.channel) ?? "club"
+        title = c.string(.title) ?? "Club"
+        subtitle = c.string(.subtitle)
+        unread = c.int(.unread) ?? 0
+    }
+}
+
+/// GET /api/clubs/:id/chats (and the answer of marking a chat read)
+struct ClubChatsResponse: Decodable {
+    let chats: [ClubChatChannel]
+    let total: Int
+
+    enum CodingKeys: String, CodingKey { case chats, total }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let list = (try? c.decodeIfPresent([ClubChatChannel].self, forKey: .chats)) ?? []
+        chats = list
+        total = c.int(.total) ?? list.reduce(0) { $0 + $1.unread }
+    }
+}
+
+// MARK: - Competition activity
+
+/// One line of the competition's Actividad: a power activated, a steal, a trap.
+struct CompetitionActivityEvent: Decodable, Identifiable, Hashable {
+    let id: String
+    /// "power", "trap", "trap_hit" or "steal"
+    let kind: String
+    /// Written for me ("Has activado…", "Ana te ha robado…")
+    let text: String
+    /// The power (nil for a trap whose kind is secret)
+    let itemId: String?
+    let emoji: String
+    let actor: GameUser?
+    let target: GameUser?
+    let area: Double?
+    let mine: Bool
+    let aboutMe: Bool
+    /// A nickname put on me: I can report it
+    let reportNicknameId: String?
+    let reportUserId: String?
+    let createdAt: String
+
+    enum CodingKeys: String, CodingKey { case id, kind, text, itemId, emoji, actor, target, area, mine, aboutMe, reportNicknameId, reportUserId, createdAt }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.string(.id) ?? UUID().uuidString
+        kind = c.string(.kind) ?? "power"
+        text = c.string(.text) ?? ""
+        itemId = c.string(.itemId)
+        emoji = c.string(.emoji) ?? "✨"
+        actor = try? c.decodeIfPresent(GameUser.self, forKey: .actor)
+        target = try? c.decodeIfPresent(GameUser.self, forKey: .target)
+        area = c.double(.area)
+        mine = c.bool(.mine) ?? false
+        aboutMe = c.bool(.aboutMe) ?? false
+        reportNicknameId = c.string(.reportNicknameId)
+        reportUserId = c.string(.reportUserId)
+        createdAt = c.string(.createdAt) ?? ""
+    }
+
+    var date: Date? { APIDate.parse(createdAt) }
+}
+
+/// GET /api/season/activity
+struct CompetitionActivityResponse: Decodable {
+    let competitionId: String?
+    let events: [CompetitionActivityEvent]
+
+    enum CodingKeys: String, CodingKey { case competitionId, events }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        competitionId = c.string(.competitionId)
+        events = (try? c.decodeIfPresent([CompetitionActivityEvent].self, forKey: .events)) ?? []
+    }
+}
+
+// MARK: - Venganza and Bastión
+
+/// GET /api/season/revenge-targets: who stole from me in the last 3 days
+struct RevengeTargetsResponse: Decodable {
+    struct Target: Decodable, Identifiable, Hashable {
+        let userId: String
+        let user: GameUser?
+        let area: Double
+        let lastAt: String?
+        var id: String { userId }
+
+        enum CodingKeys: String, CodingKey { case userId, user, area, lastAt }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            userId = c.string(.userId) ?? ""
+            user = try? c.decodeIfPresent(GameUser.self, forKey: .user)
+            area = c.double(.area) ?? 0
+            lastAt = c.string(.lastAt)
+        }
+    }
+
+    let targets: [Target]
+
+    enum CodingKeys: String, CodingKey { case targets }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        targets = (try? c.decodeIfPresent([Target].self, forKey: .targets)) ?? []
+    }
+}
+
+/// The zone a Bastión reinforces around a point of the territory (POST /api/season/bastion/preview).
+struct BastionZone: Decodable {
+    let center: CLLocationCoordinate2D
+    /// The point was outside the territory: the centre moved to its nearest part
+    let snapped: Bool
+    let snappedMeters: Double
+    let polygons: [[[CLLocationCoordinate2D]]]
+    let area: Double
+    /// It reached the full 2.5 km² (else there wasn't that much territory around)
+    let complete: Bool
+
+    private struct Point: Decodable { let lat: Double; let lng: Double }
+
+    enum CodingKeys: String, CodingKey { case center, snapped, snappedMeters, geometry, area, complete }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let point = try? c.decodeIfPresent(Point.self, forKey: .center)
+        center = CLLocationCoordinate2D(latitude: point?.lat ?? 0, longitude: point?.lng ?? 0)
+        snapped = c.bool(.snapped) ?? false
+        snappedMeters = c.double(.snappedMeters) ?? 0
+        polygons = GeoJSON.polygons(from: c.jsonObject(.geometry))
+        area = c.double(.area) ?? 0
+        complete = c.bool(.complete) ?? true
+    }
+}
+
+struct BastionPreviewResponse: Decodable {
+    let zone: BastionZone
+    let target: Double
+
+    enum CodingKeys: String, CodingKey { case zone, target }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        zone = try c.decode(BastionZone.self, forKey: .zone)
+        target = c.double(.target) ?? 2_500_000
+    }
 }

@@ -759,6 +759,8 @@ export async function processTerritoryConquest(
   fortificationArea: number;
   sentinelAlerts: string[];
   timeBombPenalty: number;
+  /** Bombas Temporales stepped on: whose, and what each cost */
+  timeBombHits: Array<{ userId: string; area: number }>;
   /** Steals of co-runners who uploaded first that this run undid (their area_stolen, my area_lost) */
   coRunReverts: Array<{ userId: string; routeId: string; area: number }>;
 }> {
@@ -772,8 +774,12 @@ export async function processTerritoryConquest(
   let hasWallPower = false;
   try {
     const activePowers = await storage.getActivePowersForUser(userId, SEASON_INVENTORY);
+    // "Next run" powers count for runs that started after they were activated (2 min of slack)
+    const started = activityStartedAt ? Date.parse(activityStartedAt) : NaN;
+    const forThisRun = (power: { activatedAt?: string | null }) =>
+      !Number.isFinite(started) || !power.activatedAt || Date.parse(power.activatedAt) <= started + 2 * 60 * 1000;
     for (const power of activePowers) {
-      if (['double_area', 'steal_boost', 'magnet', 'bulldozer', 'battering_ram'].includes(power.powerType) && !powerIds[power.powerType]) {
+      if (['double_area', 'steal_boost', 'magnet', 'bulldozer', 'battering_ram'].includes(power.powerType) && !powerIds[power.powerType] && forThisRun(power)) {
         powerIds[power.powerType] = power.id;
       }
       if (power.powerType === 'wall') hasWallPower = true;
@@ -887,6 +893,8 @@ export async function processTerritoryConquest(
 
   const victimsToUpdate = new Set<string>();
   let timeBombPenalty = 0;
+  /** Whose Bomba Temporal this run stepped on, and what it cost */
+  const timeBombHits = new Map<string, number>();
   const pendingConquestMetrics: Array<{ attackerId: string; defenderId: string; areaStolen: number; routeId?: string; stolenGeometry?: any }> = [];
   const sentinelAlerts: string[] = [];
   const pendingSentinelAlerts: Array<{ userId: string; eventType: string; metadata: string }> = [];
@@ -953,10 +961,16 @@ export async function processTerritoryConquest(
           }
           const fortLevel = 1 + overlappingLayers * 0.5;
           if (fortLevel >= 2) {
-            const layersToBreak = Math.min(overlappingLayers, hasBatteringRamPower ? 6 : 2);
-            for (let i = 0; i < layersToBreak && i < layersToRemove.length; i++) pendingFortificationDeletes.push(layersToRemove[i]);
-            fortressesDestroyed += layersToBreak;
-            continue;
+            if (hasBatteringRamPower) {
+              // Ariete: every layer it crosses is destroyed, and the run steals anyway
+              for (const id of layersToRemove) pendingFortificationDeletes.push(id);
+              fortressesDestroyed += layersToRemove.length;
+            } else {
+              const layersToBreak = Math.min(overlappingLayers, 2);
+              for (let i = 0; i < layersToBreak && i < layersToRemove.length; i++) pendingFortificationDeletes.push(layersToRemove[i]);
+              fortressesDestroyed += layersToBreak;
+              continue;
+            }
           }
         }
       }
@@ -966,7 +980,13 @@ export async function processTerritoryConquest(
         try {
           const defenderGeometry = typeof enemyTerritory.geometry === 'string' ? JSON.parse(enemyTerritory.geometry) : enemyTerritory.geometry;
           const overlap = turf.intersect(turf.featureCollection([turf.feature(attackGeometry) as any, turf.feature(defenderGeometry) as any]));
-          if (overlap) timeBombPenalty += turf.area(overlap);
+          if (overlap) {
+            const area = turf.area(overlap);
+            if (area >= 1) {
+              timeBombPenalty += area;
+              timeBombHits.set(enemyTerritory.userId, (timeBombHits.get(enemyTerritory.userId) ?? 0) + area);
+            }
+          }
         } catch (_) {}
         continue;
       }
@@ -1058,10 +1078,10 @@ export async function processTerritoryConquest(
     }
   }
 
-  // Next-run powers are used up by this run
+  // Next-run powers are used up by this run (the Daga only when it stole something)
   const powersUsed: string[] = [];
   try {
-    const ids = Object.entries(powerIds);
+    const ids = Object.entries(powerIds).filter(([type]) => type !== 'steal_boost' || totalStolenArea > 0);
     if (ids.length > 0) {
       await storage.usePowersBatch(ids.map(([, id]) => id));
       for (const [type] of ids) powersUsed.push(type);
@@ -1087,6 +1107,7 @@ export async function processTerritoryConquest(
     fortificationArea: result.fortificationArea,
     sentinelAlerts,
     timeBombPenalty,
+    timeBombHits: [...timeBombHits.entries()].map(([hitUserId, area]) => ({ userId: hitUserId, area })),
     coRunReverts,
   };
 }
@@ -3458,6 +3479,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
         competitionNote: meta.competitionNote ?? null,
         challengesCompleted: meta.challengesCompleted ?? [],
         streak: meta.streak ?? null,
+        chestsBlocked: Number(meta.chestsBlocked) || 0,
         territoryError: meta.territoryError === true,
       });
     } catch (error: any) {
@@ -4308,7 +4330,7 @@ export function registerRoutes(app: Hono<AppEnv>) {
 
   // ==================== REPORTS & BLOCKS (App Store guideline 1.2) ====================
 
-  const REPORT_TARGET_TYPES = ['user', 'comment', 'feed_event', 'photo', 'club_message'] as const;
+  const REPORT_TARGET_TYPES = ['user', 'comment', 'feed_event', 'photo', 'club_message', 'nickname'] as const;
 
   app.post('/api/reports', requireAuth, async (c) => {
     let body: any;

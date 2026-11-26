@@ -160,7 +160,7 @@ test('every item has a coherent definition', () => {
 test('chests per day grow with members and are capped', () => {
   assert.equal(chestsPerDay(1), 2);
   assert.equal(chestsPerDay(10), 4);
-  assert.equal(chestsPerDay(200), 8);
+  assert.equal(chestsPerDay(200), 12);
 });
 
 test('chest spots stay between the min and max distance from the city centre', () => {

@@ -43,7 +43,7 @@ struct TourCompetitionCalendar: View {
                 legend(color: Color.brand, symbol: "flag.fill",
                        text: "**10 días de competición**: tu club contra los demás. Empieza el viernes con el mapa vacío.")
                 legend(color: Color.gold, symbol: "gift.fill",
-                       text: "**4 días de descanso**: cofres alrededor de tu ciudad y retos.")
+                       text: "**4 días de descanso**: más cofres por tu ciudad y retos. (Algún cofre sale todos los días.)")
             }
         }
     }

@@ -11,6 +11,10 @@ struct KaemedosApp: App {
     init() {
         // Avatars and other remote images survive relaunches (the default cache is tiny)
         URLCache.shared = URLCache(memoryCapacity: 16 * 1024 * 1024, diskCapacity: 150 * 1024 * 1024, directory: nil)
+        // Unread chat messages on the Club tab: a green sphere, like the rest of the app's counts
+        let badge = UITabBarItem.appearance()
+        badge.badgeColor = UIColor(Color.brand)
+        badge.setBadgeTextAttributes([.foregroundColor: UIColor(Color.onBrand), .font: UIFont.systemFont(ofSize: 12, weight: .bold)], for: .normal)
         #if DEBUG
         // e2e tests open a screen at launch (simctl openurl shows a confirmation prompt instead)
         if let link = ProcessInfo.processInfo.environment["KAEMEDOS_TEST_DEEP_LINK"], let url = URL(string: link) {

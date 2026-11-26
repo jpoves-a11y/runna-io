@@ -104,6 +104,8 @@ final class MapModel {
         didSet { restyle() }
     }
     private(set) var chests: [Chest] = []
+    /// Full inventory: chests can't be opened until a power is used
+    private(set) var inventoryFull = false
     /// Banderas: the flags of my competition and who holds them.
     private(set) var flags: [CompetitionFlag] = []
     /// Brújula (while active): the nearest spots I haven't explored yet.
@@ -366,6 +368,7 @@ final class MapModel {
         competitionMode = response.mode
         competitionShapes = Self.makeShapes(response.territories)
         chests = response.chests
+        inventoryFull = response.inventoryFull
         flags = response.flags
         hasCompetitionMap = response.competitionId != nil
         makeFortifications(response.fortifications, ownColor: ownColor)
